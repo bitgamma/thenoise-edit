@@ -10,6 +10,7 @@ and AGENTS.md disagree, AGENTS.md wins.
 | [MVP.md](MVP.md) | scope, P0 feature set, explicit non-goals, feature-availability matrix, milestones, UI layout, risks, decision log, open questions |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | stack + module layout, threading, compositing, painting path, undo/blob store, file format (`.noise` vs OpenRaster/PSD), locked design decisions |
 | [AI-BACKEND.md](AI-BACKEND.md) | the Lemonade/`thenoise` contract: supported models & roles, field tiers (and why `mask` is never sent), region compiler, result compositor, draft/refine flow, recipes, error handling, the probe harness |
+| [PLAN.md](PLAN.md) | working note: what the last milestone actually delivered, the ordered next steps, machine quirks worth knowing |
 
 Reading order for a contributor: **MVP.md → AI-BACKEND.md → ARCHITECTURE.md**.
 
