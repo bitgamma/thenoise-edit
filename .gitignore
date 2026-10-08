@@ -1,0 +1,17 @@
+build/
+build-*/
+out/
+.cache/
+compile_commands.json
+
+# local probes / captures against a real server
+docs/probes/*.json
+!docs/probes/*.md
+*.log
+.env
+
+# editor/OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
