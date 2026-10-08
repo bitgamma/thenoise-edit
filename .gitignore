@@ -15,3 +15,6 @@ docs/probes/*.json
 .idea/
 *.swp
 .DS_Store
+
+# python helpers
+tools/__pycache__/

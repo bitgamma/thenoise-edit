@@ -207,8 +207,10 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 
 * Transport: localhost TCP, JSON-lines, one object per request and per response, plus async
   event frames. `--debug-wire=<port>` (default on in debug builds, `--no-debug-wire` to
-  disable), auth token written to a 0600 file in the runtime dir. Never bound to a
-  non-loopback interface.
+  disable). The bound port is written to `<runtime dir>/wire-port` so a driver can find an
+  ephemeral one. Never bound to a non-loopback interface. `WireConfig::token` gates the first
+  frame (`{"auth": …}`); the app binds loopback with an empty token — the 0600 token file is
+  not generated yet.
 * **It dispatches through the same string-keyed command table the UI and the keyboard use**
   (`command.list`, `command.invoke {name, args}`), so exercising the wire exercises the real
   path. The wire reads state and invokes commands; it never reimplements behaviour.
@@ -218,16 +220,23 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 
 | Group | Commands | Why |
 |---|---|---|
-| state | `app.state`, `command.list`, `doc.get`, `layer.list`, `selection.get`, `server.state`, `job.list`, `log.tail` | read what the app believes, cheaply |
-| drive | `command.invoke`, `doc.new/open/save`, `layer.add/set/delete`, `selection.set`, `tool.stroke {points}` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse |
-| pixels | `image.get {layer\|composite, region}`, `screenshot {viewport\|window\|composite}`, `pixels.compare {a, b, region}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable |
+| state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `selection.get`, `server.state`, `job.list`, `log.tail` | read what the app believes, cheaply |
+| drive | `command.invoke`, `app.quit`, `doc.new/open/save`, `log.level`, `view.fit/set/pan/zoom`, `layer.add/set/delete`, `selection.set`, `tool.stroke {points}` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse |
+| pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable |
 | ai | `ai.preview {recipe, args}` (compiled request + prepped PNG, **no send**), `ai.run`, `job.wait {id}`, `cache.stats` | verify what we *would* send before spending minutes of someone's GPU |
+
+Live now: the state/drive/pixels rows minus `layer.*`, `selection.*`, `server.state`,
+`job.list`, `tool.stroke` and the whole ai row, which arrive with their milestones.
+`app.state` reports `frame` (frames presented), `frame_ms` (last presented frame), `canvas`
+(origin + size of the canvas content area in framebuffer px) and the view transform — enough
+for a driver to place an image rect on screen and wait for the frame that drew it.
 
 * `screenshot`/`image.get` write PNGs to a capture dir and answer with path + sha256, so a
   test can compare bytes and an agent can open the file.
 * `--headless` boots `SG_BACKEND_NULL` with a CPU composite path: same commands, no window,
-  for CI. Anything that needs real GPU shading stays a golden-image test of the shader pair,
-  not a headless assertion.
+  for CI. Not implemented — CI renders under Xvfb + llvmpipe instead (`tools/wire_drive.py`
+  skips with a loud reason when it can get neither). Anything that needs real GPU shading
+  stays a golden-image test of the shader pair, not a headless assertion.
 * **Definition of done includes the wire command that makes a new feature observable.**
 
 ## Testing

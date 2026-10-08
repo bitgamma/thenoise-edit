@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: Apache-2.0
+#pragma once
+
+#include <cmath>
+#include <cstdio>
+#include <string>
+#include <type_traits>
+
+namespace noise::test {
+
+template <typename T>
+inline std::string describe(const T& value) {
+    if constexpr (std::is_convertible_v<T, std::string>) {
+        return std::string(value);
+    } else if constexpr (std::is_same_v<T, bool>) {
+        return value ? "true" : "false";
+    } else {
+        return std::to_string(value);
+    }
+}
+
+template <typename A, typename B>
+inline std::string diff(const A& a, const B& b) {
+    return "lhs=" + describe(a) + " rhs=" + describe(b);
+}
+
+inline int failures = 0;
+inline int checks = 0;
+
+inline void report(const char* expression, const char* file, int line, const std::string& detail) {
+    ++failures;
+    std::fprintf(stderr, "FAIL %s:%d  %s  %s\n", file, line, expression, detail.c_str());
+}
+
+inline void expect(bool condition, const char* expression, const char* file, int line,
+                   const std::string& detail = {}) {
+    ++checks;
+    if (!condition) {
+        report(expression, file, line, detail);
+    }
+}
+
+inline void expect_near(double a, double b, double epsilon, const char* expression,
+                        const char* file, int line) {
+    ++checks;
+    if (!(std::fabs(a - b) <= epsilon)) {
+        report(expression, file, line, "expected " + std::to_string(a) + " ~= " + std::to_string(b));
+    }
+}
+
+// Anything with `.ok` and `.error` (CommandResult): evaluated once, so the argument
+// may be a call.
+template <typename R>
+inline void expect_ok(const R& result, const char* expression, const char* file, int line) {
+    ++checks;
+    if (!result.ok) {
+        report(expression, file, line, result.error);
+    }
+}
+
+inline int summary(const char* suite) {
+    std::fprintf(stderr, "%s: %d checks, %d failures\n", suite, checks, failures);
+    return failures == 0 ? 0 : 1;
+}
+
+}
+
+// CHECK_EQ / CHECK_NE evaluate both arguments twice (once for the comparison, once
+// for the failure detail): pass plain values, not calls with side effects.
+#define CHECK(...) ::noise::test::expect((__VA_ARGS__), #__VA_ARGS__, __FILE__, __LINE__)
+#define CHECK_OK(expr) ::noise::test::expect_ok((expr), #expr " ok", __FILE__, __LINE__)
+#define CHECK_EQ(a, b) ::noise::test::expect((a) == (b), #a " == " #b, __FILE__, __LINE__, \
+                                             ::noise::test::diff((a), (b)))
+#define CHECK_NE(a, b) ::noise::test::expect((a) != (b), #a " != " #b, __FILE__, __LINE__, \
+                                             ::noise::test::diff((a), (b)))
+#define CHECK_NEAR(a, b, eps) ::noise::test::expect_near((a), (b), (eps), #a " ~= " #b, __FILE__, __LINE__)
