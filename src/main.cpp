@@ -4,6 +4,7 @@
 #include "app/ui.h"
 #include "core/log.h"
 #include "dbg/wire.h"
+#include "gfx/checker.h"
 #include "gfx/renderer.h"
 #include "platform/platform.h"
 
@@ -84,6 +85,7 @@ Args parse_args(int argc, char** argv) {
 struct Runtime {
     AppState state;
     gfx::Texture canvas_texture;
+    gfx::Checker checker;
     CommandTable commands;
     dbg::DebugWire wire{commands};
     Args args;
@@ -120,7 +122,10 @@ void init(void) {
     gfx::init();
 
     const sg_swapchain swapchain = sglue_swapchain();
+    g.checker.init();
+
     simgui_desc_t simgui{};
+    simgui.max_vertices = app::kUiVertexLimit;
     simgui.color_format = swapchain.color_format;
     simgui.depth_format = swapchain.depth_format;
     simgui.sample_count = swapchain.sample_count;
@@ -132,6 +137,7 @@ void init(void) {
 
     g.state.framebuffer = Extent{sapp_width(), sapp_height()};
     g.state.viewport = g.state.framebuffer;
+    g.state.ui_vertex_limit = app::kUiVertexLimit;
 
     if (g.args.wire_enabled) {
         std::string error;
@@ -169,9 +175,14 @@ void frame(void) {
     frame_desc.dpi_scale = sapp_dpi_scale();
     simgui_new_frame(&frame_desc);
 
-    app::draw_ui(g.state, g.commands, g.canvas_texture);
+    app::draw_ui(g.state, g.commands, g.canvas_texture, g.checker);
+    // The UI has now measured the canvas for this frame, so a fit that was waiting for a
+    // real viewport can be applied before the commands this frame's wire poll serves.
+    g.state.viewport_published = true;
+    app::apply_pending_fit(g.state);
     // flush() must run outside the UI pass; draw() inside it.
     simgui_flush();
+    g.state.ui_vertices = static_cast<std::uint64_t>(ImGui::GetDrawData()->TotalVtxCount);
 
     sg_pass_action action{};
     action.colors[0].load_action = SG_LOADACTION_CLEAR;
@@ -202,6 +213,7 @@ void event(const sapp_event* ev) {
 void cleanup(void) {
     g.wire.stop();
     g.canvas_texture.discard();
+    g.checker.discard();
     simgui_shutdown();
     gfx::shutdown();
 }

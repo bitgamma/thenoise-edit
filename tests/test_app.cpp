@@ -50,7 +50,10 @@ struct Harness {
                              ("noise-app-test-" + std::to_string(platform::pid()))).string();
         std::filesystem::remove_all(state.runtime_dir);
         std::filesystem::create_directories(state.runtime_dir);
+        // The host publishes the canvas area every frame it draws; a harness with no
+        // frames has to publish it by hand or viewport commands stay pending.
         state.viewport = Extent{1280, 800};
+        state.viewport_published = true;
         state.framebuffer = Extent{1280, 800};
         state.canvas_origin = {0.0, 0.0};
         const app::HostHooks hooks{&stub_frame, [this] { ++quits; }};
@@ -263,6 +266,40 @@ void test_screenshot_returns_exactly_what_the_capture_gave() {
     std::filesystem::remove(shot["path"].get<std::string>());
 }
 
+// The canvas area only exists once the UI has laid it out, so opening a document before
+// the first frame must leave the view alone rather than fit it to whatever extent is on
+// hand. Latching that wrong scale is what made a document opened on the command line
+// spill past the canvas panel.
+void test_a_fit_waits_for_the_canvas_area_to_be_published() {
+    Harness h;
+    h.state.viewport_published = false;
+    h.state.viewport = Extent{1, 1};
+
+    CHECK_OK(h.run("doc.new", json{{"width", 800}, {"height", 600}}));
+    CHECK(h.value("app.state", json::object())["view"]["fit_pending"].get<bool>());
+    CHECK_EQ(h.state.view.scale, 1.0);
+
+    // A viewport too small to hold the document with its margin is not a canvas either.
+    h.state.viewport_published = true;
+    app::apply_pending_fit(h.state);
+    CHECK(h.value("app.state", json::object())["view"]["fit_pending"].get<bool>());
+    CHECK_EQ(h.state.view.scale, 1.0);
+
+    h.state.viewport = Extent{1280, 800};
+    app::apply_pending_fit(h.state);
+    const json fitted = h.value("app.state", json::object())["view"];
+    CHECK(!fitted["fit_pending"].get<bool>());
+    const double margin = static_cast<double>(kViewPolicy.fit_margin_px);
+    const double expected =
+        std::min((1280.0 - 2.0 * margin) / 800.0, (800.0 - 2.0 * margin) / 600.0);
+    CHECK_NEAR(fitted["scale"].get<double>(), expected, 1e-12);
+
+    // Once a document exists the request is served again: opening a new one re-fits.
+    CHECK_OK(h.run("doc.new", json{{"width", 200}, {"height", 100}}));
+    CHECK(!h.value("app.state", json::object())["view"]["fit_pending"].get<bool>());
+    CHECK(h.state.view.scale > 1.0);
+}
+
 void test_a_shorter_image_stays_centred_under_panning() {
     Harness h;
     h.value("doc.new", json{{"width", 4000}, {"height", 1000}});
@@ -337,6 +374,7 @@ int main() {
     test_document_round_trip_through_disk();
     test_image_get_returns_the_documents_own_pixels();
     test_pixels_compare_finds_a_single_changed_byte();
+    test_a_fit_waits_for_the_canvas_area_to_be_published();
     test_screenshot_returns_exactly_what_the_capture_gave();
     test_a_shorter_image_stays_centred_under_panning();
     test_view_navigation_keeps_the_image_reachable();

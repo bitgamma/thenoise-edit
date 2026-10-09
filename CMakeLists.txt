@@ -82,6 +82,7 @@ target_link_libraries(noise_core PUBLIC ${LIBPNG_LIBRARIES})
 target_compile_options(noise_core PUBLIC ${LIBPNG_CFLAGS_OTHER})
 
 add_library(noise_gfx STATIC
+    src/gfx/checker.cpp
     src/gfx/renderer.cpp)
 target_include_directories(noise_gfx PUBLIC src)
 target_link_libraries(noise_gfx PUBLIC noise_core sokol imgui OpenGL::GL)

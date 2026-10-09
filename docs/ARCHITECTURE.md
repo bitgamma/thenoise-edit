@@ -126,7 +126,12 @@ reload after a crash. Hard requirement, not a nicety.
   Sub-32 layers: full re-composite of a dirty rect only; the union of dirty rects from
   `sg_update` requests, clamped to the visible viewport ∪ margin.
 * Composite result → `comp_tex`; viewport pass draws it with zoom/pan, checkerboard
-  underneath, then overlay, then ImGui.
+  underneath, then overlay, then ImGui. The transparency checker is one `2x2` texel tile
+  drawn repeat-sampled over the canvas rect (`gfx/checker.h`), so it costs four vertices at
+  any zoom. Drawing it as one overlay element per screen square instead costs
+  `canvas_area / square²` and is unbounded in zoom, because the canvas rect grows with the
+  scale: that overflowed the UI vertex buffer and blanked the canvas at fit zoom on a
+  2400×1600 document.
 * Layer visibility/opacity/blend changes are uniform-only ⇒ free. Pixel edits are the only
   dirty source.
 
@@ -228,8 +233,14 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 Live now: the state/drive/pixels rows minus `layer.*`, `selection.*`, `server.state`,
 `job.list`, `tool.stroke` and the whole ai row, which arrive with their milestones.
 `app.state` reports `frame` (frames presented), `frame_ms` (last presented frame), `canvas`
-(origin + size of the canvas content area in framebuffer px) and the view transform — enough
-for a driver to place an image rect on screen and wait for the frame that drew it.
+(origin + size of the canvas content area in framebuffer px) and the view transform
+(`scale`, `origin`, `image`, `fit_pending`) — enough for a driver to place an image rect on
+screen and wait for the frame that drew it. `fit_pending` is true while a fit waits for a
+frame to publish a canvas area wide enough to hold the document: the framebuffer is not the
+canvas, and fitting against it latches a scale that spills past the panel.
+`ui_vertices` / `ui_vertex_limit` report the geometry the last frame demanded against the
+buffer simgui stages it into — past the limit simgui drops the frame's draw commands, so any
+feature generating one element per canvas square or per log line shows up here first.
 
 * `screenshot`/`image.get` write PNGs to a capture dir and answer with path + sha256, so a
   test can compare bytes and an agent can open the file.

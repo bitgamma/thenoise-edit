@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Debug-wire client and viewport golden test (M0 acceptance).
 
-Boots the real app, drives view commands over the loopback wire the same way a UI
-action does, captures the canvas and diffs the capture against a committed golden.
+Boots the real app on a document named on its command line, checks that the startup
+view fitted into the canvas area, then drives view commands over the loopback wire the
+same way a UI action does, captures the canvas and diffs the capture against a
+committed golden.
 
 Run through ctest (`test_view_golden`) or directly:
 
@@ -30,6 +32,17 @@ from pathlib import Path
 FIXTURE_SIZE = (137, 89)  # odd on purpose: resampling artefacts must show up
 CAPTURE_MARGIN = 12
 FRAME_SETTLE = 3
+# A frame this close to simgui's vertex buffer has effectively started dropping draw
+# commands (it refuses the whole overflowed buffer, so the screen loses pieces).
+VERTEX_HEADROOM = 0.75
+FIT_WAIT_TIMEOUT = 10.0
+FIT_SLACK_PX = 1.0
+# Zooming multiplies any canvas geometry that is generated per screen element (the canvas
+# rect grows, so `rects = canvas_area / square^2` grows with it) while chrome and text stay
+# put. Four steps of zoom is enough to separate the two without costing much either way.
+GEOMETRY_ZOOM = 4.0
+GEOMETRY_ZOOM_TOLERANCE = 1.5
+GEOMETRY_SLACK_VERTICES = 200
 # Software rasterizers round texture filtering differently from hardware ones; a
 # golden capture is only portable across drivers within a small band. Anything
 # structural (wrong crop, wrong scale, blank frame) is orders of magnitude worse.
@@ -103,23 +116,27 @@ def write_fixture_png(path: Path, width: int, height: int) -> None:
     )
 
 
-def app_command(args: argparse.Namespace, width: int, height: int) -> list[str]:
+def app_command(args: argparse.Namespace, width: int, height: int, open_path: Path | None) -> list[str]:
     app = [
         str(args.bin),
         f"--width={width}",
         f"--height={height}",
         "--debug-wire=0",
     ]
+    if open_path is not None:
+        app.append(str(open_path))
     if shutil.which("xvfb-run") and not os.environ.get("DISPLAY"):
         return ["xvfb-run", "-a", "--server-args", f"-screen 0 {width}x{height}x24", *app]
     return app
 
 
-def start_app(args: argparse.Namespace, runtime_dir: Path, width: int, height: int) -> subprocess.Popen:
+def start_app(args: argparse.Namespace, runtime_dir: Path, width: int, height: int,
+              open_path: Path | None, app_stderr) -> subprocess.Popen:
     env = dict(os.environ)
     env["NOISE_RUNTIME_DIR"] = str(runtime_dir)
     env.pop("NOISE_CONFIG_DIR", None)
-    return subprocess.Popen(app_command(args, width, height), env=env)
+    return subprocess.Popen(app_command(args, width, height, open_path), env=env,
+                            stderr=app_stderr)
 
 
 def wire_port(runtime_dir: Path, proc: subprocess.Popen, timeout: float) -> int:
@@ -141,22 +158,106 @@ def capture_canvas(wire: Wire, name: str) -> dict:
     view transform and not about panel chrome or the wire port number."""
     state = wire.call("app.state")
     ox, oy, cw, ch = state["canvas"]
-    scale = state["view"]["scale"]
-    origin_x, origin_y = state["view"]["origin"]
-    image_w, image_h = state["view"]["image"]
+    left, top, right, bottom = document_screen_rect(state)
 
-    left = ox + (0.0 - origin_x) * scale
-    top = oy + (0.0 - origin_y) * scale
     x0 = max(int(left) - CAPTURE_MARGIN, int(ox))
     y0 = max(int(top) - CAPTURE_MARGIN, int(oy))
-    x1 = min(int(left + image_w * scale) + CAPTURE_MARGIN, int(ox + cw))
-    y1 = min(int(top + image_h * scale) + CAPTURE_MARGIN, int(oy + ch))
+    x1 = min(int(right) + CAPTURE_MARGIN, int(ox + cw))
+    y1 = min(int(bottom) + CAPTURE_MARGIN, int(oy + ch))
     if x1 - x0 < 16 or y1 - y0 < 16:
         raise WireError(f"capture region {x0},{y0},{x1},{y1} is too small to mean anything")
 
     shot = wire.call("screenshot", {"region": [x0, y0, x1 - x0, y1 - y0], "name": name})
     shot["region"] = [x0, y0, x1 - x0, y1 - y0]
     return shot
+
+
+def document_screen_rect(state: dict) -> tuple[float, float, float, float]:
+    """The document's rect inside the framebuffer, from the state the app reports."""
+    ox, oy = state["canvas"][0], state["canvas"][1]
+    scale = state["view"]["scale"]
+    origin_x, origin_y = state["view"]["origin"]
+    left = ox + (0.0 - origin_x) * scale
+    top = oy + (0.0 - origin_y) * scale
+    width = state["view"]["image"][0] * scale
+    height = state["view"]["image"][1] * scale
+    return left, top, left + width, top + height
+
+
+def field(container: dict, key: str) -> object:
+    if key not in container:
+        raise WireError(f"app.state has no {key!r}: the binary predates this driver")
+    return container[key]
+
+
+def check_frame_budget(state: dict, label: str) -> None:
+    """Geometry the UI demanded for a frame, against the buffer it is staged into.
+
+    Anything that grows with canvas area or content length (one draw element per
+    checker square, per log line) crosses the limit and takes the frame down with it,
+    which is what this catches.
+    """
+    vertices, limit = field(state, "ui_vertices"), field(state, "ui_vertex_limit")
+    if not limit:
+        raise WireError(f"{label}: app.state reported no ui_vertex_limit")
+    if vertices > limit * VERTEX_HEADROOM:
+        raise WireError(
+            f"{label}: frame demanded {vertices} of {limit} UI vertices "
+            f"({100.0 * vertices / limit:.0f}%); past the limit simgui drops draw commands"
+        )
+
+
+def wait_for_fit(wire: Wire) -> dict:
+    """A fit is applied on the first frame whose canvas area can hold the document."""
+    deadline = time.monotonic() + FIT_WAIT_TIMEOUT
+    while True:
+        state = wire.call("app.state")
+        if not field(state["view"], "fit_pending"):
+            settle(wire)
+            return wire.call("app.state")
+        if time.monotonic() > deadline:
+            raise WireError("fit never applied: the app never published a canvas area")
+        time.sleep(0.02)
+
+
+def check_fit_holds_document(state: dict, label: str) -> None:
+    left, top, right, bottom = document_screen_rect(state)
+    ox, oy, cw, ch = state["canvas"]
+    if (left < ox - FIT_SLACK_PX or top < oy - FIT_SLACK_PX
+            or right > ox + cw + FIT_SLACK_PX or bottom > oy + ch + FIT_SLACK_PX):
+        raise WireError(
+            f"{label}: fitted document rect {left:.1f},{top:.1f},{right:.1f},{bottom:.1f} "
+            f"overflows the canvas area {ox:.1f},{oy:.1f},{cw},{ch}"
+        )
+
+
+def check_zoom_does_not_grow_geometry(wire: Wire) -> None:
+    """How big the document is on screen must not change what the frame asks for.
+
+    This is the shape of the bug that blanked the canvas: the checker was one rect per
+    screen square, so the canvas rect growing with zoom grew the vertex count with it,
+    until simgui rejected the frame and nothing was drawn.
+    """
+    state = wire.call("app.state")
+    base = field(state, "ui_vertices")
+    wire.call("view.set", {"scale": state["view"]["scale"] * GEOMETRY_ZOOM,
+                           "origin": [0.0, 0.0]})
+    settle(wire)
+    grown_state = wire.call("app.state")
+    grown = field(grown_state, "ui_vertices")
+    check_frame_budget(grown_state, f"zoom x{GEOMETRY_ZOOM}")
+    if grown > base * GEOMETRY_ZOOM_TOLERANCE + GEOMETRY_SLACK_VERTICES:
+        raise WireError(
+            f"zooming x{GEOMETRY_ZOOM} took the frame from {base} to {grown} UI vertices: "
+            "canvas geometry must not be generated per screen element"
+        )
+    print(f"geometry {base} -> {grown} vertices across x{GEOMETRY_ZOOM} zoom")
+
+
+def logged_overflows(path: Path) -> int:
+    """sokol reports a dropped frame on stderr only, so this is the direct read of the
+    symptom the vertex budget exists to keep away."""
+    return path.read_text(errors="replace").count("BUFFER_OVERFLOW")
 
 
 def settle(wire: Wire, frames: int = FRAME_SETTLE) -> None:
@@ -167,63 +268,102 @@ def settle(wire: Wire, frames: int = FRAME_SETTLE) -> None:
         time.sleep(0.005)
 
 
+def drive(wire: Wire, args: argparse.Namespace, width: int, height: int, fixture: Path) -> int:
+    ids = {entry["id"] for entry in wire.call("command.list")["commands"]}
+    missing = {"doc.open", "view.fit", "view.zoom", "view.pan", "screenshot"} - ids
+    if missing:
+        raise WireError(f"wire reached the app but the table lacks {sorted(missing)}")
+
+    # The document named on the command line is loaded before the first frame, when the
+    # only extent on hand is the framebuffer: its fit must wait for the canvas area.
+    startup = wait_for_fit(wire)
+    check_frame_budget(startup, "startup open")
+    check_fit_holds_document(startup, "startup open")
+
+    wire.call("doc.open", {"path": str(fixture)})
+    opened = wait_for_fit(wire)
+    check_frame_budget(opened, "doc.open")
+    check_fit_holds_document(opened, "doc.open")
+    fitted = capture_canvas(wire, "fitted")
+    wire.call("view.zoom", {"factor": 1.21, "anchor": [width * 0.38, height * 0.42]})
+    settle(wire)
+    zoomed = capture_canvas(wire, "zoomed")
+    check_frame_budget(wire.call("app.state"), "zoom")
+
+    wire.call("view.pan", {"dx": -23, "dy": 17})
+    settle(wire)
+    panned = capture_canvas(wire, "panned")
+    state = wire.call("app.state")
+    check_frame_budget(state, "pan")
+
+    # After the captures: it moves the view around.
+    check_zoom_does_not_grow_geometry(wire)
+
+    if fitted["sha256"] == zoomed["sha256"] or zoomed["sha256"] == panned["sha256"]:
+        raise WireError(
+            "pan/zoom did not change the captured pixels: "
+            f"{fitted['sha256'][:12]} {zoomed['sha256'][:12]} {panned['sha256'][:12]}"
+        )
+
+    if not args.golden.exists() or args.update_golden:
+        shutil.copyfile(panned["path"], args.golden)
+        print(f"SKIP: golden written to {args.golden} "
+              f"(sha256 {panned['sha256'][:12]}); run again to compare")
+        return 0
+
+    check = wire.call("pixels.compare", {"a": panned["path"], "b": str(args.golden)})
+    if "differing_bytes" not in check:
+        raise WireError(f"cannot compare with the golden: {check.get('reason', check)}")
+    budget = int(check["width"] * check["height"] * 4 * TOLERANCE_DIFFERING_FRACTION)
+    print(f"capture {panned['path']}")
+    print(f"golden  {args.golden}")
+    print(f"view    scale {state['view']['scale']:.6f} "
+          f"origin {state['view']['origin'][0]:.3f},{state['view']['origin'][1]:.3f}")
+    print(f"ui      {state['ui_vertices']} vertices of {state['ui_vertex_limit']} "
+          f"({100.0 * state['ui_vertices'] / state['ui_vertex_limit']:.1f}%)")
+    print(f"diff    differing_bytes={check['differing_bytes']} (budget {budget}) "
+          f"max_channel_delta={check['max_channel_delta']} (max {TOLERANCE_MAX_DELTA})")
+    if check["differing_bytes"] <= budget and check["max_channel_delta"] <= TOLERANCE_MAX_DELTA:
+        print("PASS: viewport capture matches the golden")
+        return 0
+    print(f"FAIL: viewport capture diverged from {args.golden}")
+    return 1
+
+
+def app_stderr_tail(path: Path, lines: int = 20) -> str:
+    if not path.exists():
+        return ""
+    kept = path.read_text(errors="replace").splitlines()[-lines:]
+    return "\n".join(kept)
+
+
 def run(args: argparse.Namespace) -> int:
     width, height = args.width, args.height
     args.golden.parent.mkdir(parents=True, exist_ok=True)
     runtime_dir = Path(tempfile.mkdtemp(prefix="noise-golden-"))
     fixture = runtime_dir / "fixture.png"
     write_fixture_png(fixture, *FIXTURE_SIZE)
+    err_log = runtime_dir / "app-stderr.log"
 
-    proc = start_app(args, runtime_dir, width, height)
-    wire = None
-    try:
-        wire = Wire(wire_port(runtime_dir, proc, args.startup_timeout))
-        ids = {entry["id"] for entry in wire.call("command.list")["commands"]}
-        missing = {"doc.open", "view.fit", "view.zoom", "view.pan", "screenshot"} - ids
-        if missing:
-            raise WireError(f"wire reached the app but the table lacks {sorted(missing)}")
-
-        wire.call("doc.open", {"path": str(fixture)})
-        settle(wire)
-        fitted = capture_canvas(wire, "fitted")
-        wire.call("view.zoom", {"factor": 1.21, "anchor": [width * 0.38, height * 0.42]})
-        settle(wire)
-        zoomed = capture_canvas(wire, "zoomed")
-        wire.call("view.pan", {"dx": -23, "dy": 17})
-        settle(wire)
-        panned = capture_canvas(wire, "panned")
-        state = wire.call("app.state")
-
-        if fitted["sha256"] == zoomed["sha256"] or zoomed["sha256"] == panned["sha256"]:
-            raise WireError(
-                "pan/zoom did not change the captured pixels: "
-                f"{fitted['sha256'][:12]} {zoomed['sha256'][:12]} {panned['sha256'][:12]}"
-            )
-
-        if not args.golden.exists() or args.update_golden:
-            shutil.copyfile(panned["path"], args.golden)
-            print(f"SKIP: golden written to {args.golden} "
-                  f"(sha256 {panned['sha256'][:12]}); run again to compare")
-            return 0
-
-        check = wire.call("pixels.compare", {"a": panned["path"], "b": str(args.golden)})
-        if "differing_bytes" not in check:
-            raise WireError(f"cannot compare with the golden: {check.get('reason', check)}")
-        budget = int(check["width"] * check["height"] * 4 * TOLERANCE_DIFFERING_FRACTION)
-        print(f"capture {panned['path']}")
-        print(f"golden  {args.golden}")
-        print(f"view    scale {state['view']['scale']:.6f} "
-              f"origin {state['view']['origin'][0]:.3f},{state['view']['origin'][1]:.3f}")
-        print(f"diff    differing_bytes={check['differing_bytes']} (budget {budget}) "
-              f"max_channel_delta={check['max_channel_delta']} (max {TOLERANCE_MAX_DELTA})")
-        if check["differing_bytes"] <= budget and check["max_channel_delta"] <= TOLERANCE_MAX_DELTA:
-            print("PASS: viewport capture matches the golden")
-            return 0
-        print(f"FAIL: viewport capture diverged from {args.golden}")
-        return 1
-    finally:
-        shutdown(proc, wire)
-        shutil.rmtree(runtime_dir, ignore_errors=True)
+    with err_log.open("w") as app_stderr:
+        proc = start_app(args, runtime_dir, width, height, fixture, app_stderr)
+        wire = None
+        status = 1
+        try:
+            wire = Wire(wire_port(runtime_dir, proc, args.startup_timeout))
+            status = drive(wire, args, width, height, fixture)
+        except WireError as exc:
+            print(f"FAIL: {exc}")
+            status = 1
+        finally:
+            shutdown(proc, wire)
+    overflow = logged_overflows(err_log)
+    if overflow:
+        print(f"FAIL: the app logged {overflow} BUFFER_OVERFLOW lines")
+        print(app_stderr_tail(err_log))
+        status = 1
+    shutil.rmtree(runtime_dir, ignore_errors=True)
+    return status
 
 
 def shutdown(proc: subprocess.Popen, wire: Wire | None) -> None:

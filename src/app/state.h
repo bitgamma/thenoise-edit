@@ -41,7 +41,11 @@ struct AppState {
     // Where the app writes: captures, the wire endpoint file, the imgui layout. Set once
     // by the host so nothing in the command layer reaches for an ambient directory.
     std::string runtime_dir;
+    // The canvas content area, published by the host every frame it draws.
     Extent viewport{1, 1};
+    // False until the host has published `viewport` once: before that the only extent on
+    // hand is the framebuffer, and a fit measured against it latches the wrong scale.
+    bool viewport_published = false;
     Extent framebuffer{1, 1};
     // Top-left of the canvas content area inside the framebuffer. View coordinates are
     // relative to it, so a capture needs it to place an image rect on screen.
@@ -52,6 +56,14 @@ struct AppState {
     std::uint64_t frame = 0;
     // Wall time of the last presented frame, as the compositor reported it.
     double frame_ms = 0.0;
+    // A fit asked for before there was a canvas to measure against waits here; the host
+    // applies it on the first frame whose viewport can hold the document.
+    bool fit_pending = false;
+    // Vertices the last frame's UI demanded, against the ceiling it was staged into.
+    // Past the ceiling ImGui drops draw commands, so this is what to read when the screen
+    // is missing pieces rather than broken.
+    std::uint64_t ui_vertices = 0;
+    std::uint64_t ui_vertex_limit = 0;
 };
 
 }

@@ -2,6 +2,7 @@
 #include "app/ui.h"
 
 #include "core/log.h"
+#include "gfx/checker.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"  // DockBuilder*: the default dock layout has no public equivalent yet
@@ -9,7 +10,6 @@
 #include "sokol_imgui.h"
 
 #include <algorithm>
-#include <cmath>
 #include <string>
 #include <vector>
 
@@ -19,13 +19,8 @@ using nlohmann::json;
 
 namespace {
 
-constexpr ImU32 kCheckerLight = IM_COL32(204, 204, 204, 255);
-constexpr ImU32 kCheckerDark = IM_COL32(153, 153, 153, 255);
 constexpr ImU32 kBackdrop = IM_COL32(38, 38, 42, 255);
 constexpr ImU32 kCanvasBorder = IM_COL32(90, 90, 100, 255);
-constexpr int kCheckerWorldPx = 8;
-constexpr float kCheckerMinTile = 4.0f;
-constexpr float kCheckerMaxTile = 64.0f;
 constexpr float kRightPanelFraction = 0.30f;
 constexpr float kStatusBarHeightPx = 40.0f;
 
@@ -35,7 +30,8 @@ constexpr const char* kWindowLayers = "Layers";
 constexpr const char* kWindowLog = "Log";
 constexpr const char* kWindowStatus = "Status";
 
-void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture) {
+void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
+                 const gfx::Checker& checker) {
     if (!ImGui::Begin(kWindowCanvas)) {
         ImGui::End();
         return;
@@ -50,7 +46,11 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
     list->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y), kBackdrop);
 
     ImGuiIO& io = ImGui::GetIO();
-    const bool hovered = ImGui::IsItemHovered();
+    // The canvas window submits no items, so there is no item of this frame to test:
+    // IsItemHovered() would report whatever widget another window submitted last.
+    // The canvas window submits no items, so there is no item of this frame to test:
+    // IsItemHovered() would report whatever widget another window submitted last.
+    const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 
     if (!state.doc.image.empty()) {
         const Vec2 image_screen = state.view.world_to_view({0.0, 0.0});
@@ -59,24 +59,17 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
         const ImVec2 canvas_max(canvas_min.x + static_cast<float>(state.view.image_width()),
                                 canvas_min.y + static_cast<float>(state.view.image_height()));
 
-        const float tile = std::clamp(static_cast<float>(kCheckerWorldPx) *
-                                          static_cast<float>(state.view.scale),
-                                      kCheckerMinTile, kCheckerMaxTile);
-        const float first_x = canvas_min.x - std::fmod(canvas_min.x - origin.x, tile);
-        const float first_y = canvas_min.y - std::fmod(canvas_min.y - origin.y, tile);
-        for (float y = first_y; y < canvas_max.y; y += tile) {
-            for (float x = first_x; x < canvas_max.x; x += tile) {
-                const ImVec2 top_left(std::max(x, canvas_min.x), std::max(y, canvas_min.y));
-                const ImVec2 bottom_right(std::min(x + tile, canvas_max.x),
-                                          std::min(y + tile, canvas_max.y));
-                if (bottom_right.x <= top_left.x || bottom_right.y <= top_left.y) {
-                    continue;
-                }
-                const int col = static_cast<int>(std::floor((top_left.x - first_x) / tile));
-                const int row = static_cast<int>(std::floor((top_left.y - first_y) / tile));
-                list->AddRectFilled(top_left, bottom_right,
-                                    ((col + row) % 2 == 0) ? kCheckerLight : kCheckerDark);
-            }
+        const ImVec2 check_min(std::max(canvas_min.x, origin.x), std::max(canvas_min.y, origin.y));
+        const ImVec2 check_max(std::min(canvas_max.x, origin.x + avail.x),
+                               std::min(canvas_max.y, origin.y + avail.y));
+        if (checker.valid() && check_max.x > check_min.x && check_max.y > check_min.y) {
+            const gfx::CheckerUv uv = gfx::checker_uv(
+                {check_min.x, check_min.y},
+                {check_max.x - check_min.x, check_max.y - check_min.y},
+                {canvas_min.x, canvas_min.y}, state.view.scale);
+            list->AddImage(simgui_imtextureid_with_sampler(checker.tile, checker.sampler),
+                           check_min, check_max, ImVec2(uv.min_x, uv.min_y),
+                           ImVec2(uv.max_x, uv.max_y));
         }
 
         canvas_texture.sync(state.doc.image, state.doc.revision);
@@ -155,7 +148,8 @@ void build_default_dock(ImGuiID dockspace, const ImVec2& size) {
 
 }
 
-void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture) {
+void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
+             const gfx::Checker& checker) {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImGuiID dockspace = ImGui::DockSpaceOverViewport(0, viewport);
     static bool layout_built = false;
@@ -164,7 +158,7 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
         build_default_dock(dockspace, viewport->WorkSize);
     }
 
-    draw_canvas(state, commands, canvas_texture);
+    draw_canvas(state, commands, canvas_texture, checker);
     draw_layers_panel(state);
     draw_log_panel();
 

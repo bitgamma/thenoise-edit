@@ -20,4 +20,11 @@ struct HostHooks {
 void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wire,
                        const HostHooks& hooks);
 
+// A fit is measured against the canvas area, which only exists once the UI has laid it
+// out. Applied at once when the viewport in hand can hold the document, and left pending
+// otherwise; the host calls `apply_pending_fit` after publishing the viewport each frame,
+// so a fit requested at startup lands on the real canvas instead of on the framebuffer.
+void request_fit(AppState& state);
+void apply_pending_fit(AppState& state);
+
 }

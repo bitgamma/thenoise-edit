@@ -121,7 +121,15 @@ bool arg_name(const json& args, const char* key, std::string& out) {
 json view_json(const AppState& state) {
     return json{{"scale", state.view.scale},
                 {"origin", json::array({state.view.origin.x, state.view.origin.y})},
-                {"image", json::array({state.view.image.w, state.view.image.h})}};
+                {"image", json::array({state.view.image.w, state.view.image.h})},
+                {"fit_pending", state.fit_pending}};
+}
+
+// A viewport this small cannot hold a document with the fit margin on both axes, so a fit
+// measured against it is not a fit: the request waits for the next frame instead.
+bool viewport_holds_fit(const Extent& viewport) {
+    const int margins = 2 * kViewPolicy.fit_margin_px;
+    return viewport.w > margins && viewport.h > margins;
 }
 
 json image_json(const Image& image, const std::string& label) {
@@ -147,6 +155,21 @@ json document_json(const AppState& state) {
 
 }
 
+void request_fit(AppState& state) {
+    state.fit_pending = !state.doc.image.empty();
+    apply_pending_fit(state);
+}
+
+void apply_pending_fit(AppState& state) {
+    if (!state.fit_pending || state.doc.image.empty() || !state.viewport_published ||
+        !viewport_holds_fit(state.viewport)) {
+        return;
+    }
+    state.view = fit_view(state.doc.image.size(), state.viewport, kViewPolicy.fit_margin_px,
+                          kViewPolicy.max_scale);
+    state.fit_pending = false;
+}
+
 void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wire,
                        const HostHooks& hooks) {
     table.add("app.state", "Report application, document and view state",
@@ -159,6 +182,8 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                {"pid", platform::pid()},
                                {"frame", state.frame},
                                {"frame_ms", state.frame_ms},
+                               {"ui_vertices", state.ui_vertices},
+                               {"ui_vertex_limit", state.ui_vertex_limit},
                                {"canvas", json::array({state.canvas_origin.x, state.canvas_origin.y,
                                                        state.viewport.w, state.viewport.h})},
                                {"framebuffer", json::array({state.framebuffer.w, state.framebuffer.h})},
@@ -249,8 +274,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         }
         state.doc.replace(Image::filled(Extent{width, height}, fill[0], fill[1], fill[2], fill[3]),
                           std::string());
-        state.view = fit_view(state.doc.image.size(), state.viewport, kViewPolicy.fit_margin_px,
-                             kViewPolicy.max_scale);
+        request_fit(state);
         log::info("created image " + std::to_string(width) + "x" + std::to_string(height));
         return command_ok(image_json(state.doc.image, "new"));
     });
@@ -266,8 +290,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
             return fail("doc.open", error + " (" + path + ")");
         }
         state.doc.replace(std::move(loaded), path);
-        state.view = fit_view(state.doc.image.size(), state.viewport, kViewPolicy.fit_margin_px,
-                              kViewPolicy.max_scale);
+        request_fit(state);
         log::info("loaded " + path);
         return command_ok(image_json(state.doc.image, path));
     });
@@ -335,8 +358,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         if (!guard.ok) {
             return guard;
         }
-        state.view = fit_view(state.doc.image.size(), state.viewport, kViewPolicy.fit_margin_px,
-                              kViewPolicy.max_scale);
+        request_fit(state);
         return command_ok(view_json(state));
     });
 
