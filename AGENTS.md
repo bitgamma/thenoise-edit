@@ -16,6 +16,19 @@ right — in the pre-1.0 phase there is exactly one consumer of every interface 
   `manifest.json:format`, refuse to open older versions, and say which.
 - When a refactor is right but large, say so and do it in one pass. Do not do the small wrong
   thing because it is smaller.
+- **The deliverable is the architecture, not only the feature.** A working command bolted onto
+  the wrong seam is a regression with extra steps. Judge every change by whether the next
+  feature lands in the same place or has to route around it.
+- **At each milestone boundary, stop and re-read the whole design** (`docs/ARCHITECTURE.md`
+  against the tree, not against memory): what did the milestone assume, what has the next one
+  to touch, and where is the design now too narrow for it. Write the verdict into `docs/PLAN.md`.
+- **Refactoring is always in scope**, at any point, including mid-milestone, whenever the
+  design has become too narrow — the test suite is the safety for the bigger change, so use
+  it. "Minimal churn", "smallest possible change" and "don't touch what works" are not
+  arguments here and never close a design question.
+- Not overengineering: refactor the seam that the next feature needs, once, when it is needed;
+  no speculative hooks, extension points or abstractions with a single implementation. If a
+  generalisation is not forced by a real second case, it is the wrong kind of clean.
 
 ## 2. Tests must be worth their weight in gold
 
@@ -170,4 +183,5 @@ comprehensible, and honest about its state.
   build-breaking tree, and never commit generated files.
 - Definition of done: builds warning-free · tests added that would fail if the feature broke ·
   debug-wire command for any new observable state · docs still true · no new duplicated
-  constants or default arguments.
+  constants or default arguments · the design is no harder to extend than it was before, and
+  the architecture note in `docs/PLAN.md` says so.
