@@ -184,9 +184,16 @@ one composite rule (`(1-ab)·as·Cs + as·ab·B + (1-as)·ab·Cb`, PDF 1.4 / CSS
    real-GPU question and the probe says where the number comes from. Still open, in cost order:
    per-layer content rectangles (the repair at 4096^2 is 14 fps and is arithmetic), GPU stamp
    preview, per-layer GPU textures + the shader blend pair checked against `core/blend`.
-4. **The move tool** (`V`) - drag translates the active layer's pixels, one undo step per gesture,
-   with the ghost the overlay path draws while the button is down. Reachable through the existing
-   `tool.pointer` events, so it is testable the way the brush already is.
+4. ~~**The move tool** (`V`)~~ - the active layer slides under the cursor: whole document pixels (no
+   resampling, so nothing blurs), the button-down point as the anchor, one undo step per gesture, and
+   a tremor under half a pixel is not an edit. The layer is redrawn from a snapshot taken at press, so
+   a gesture fed event by event lands on the same bytes as one offset applied at once - which is what
+   let `test_app` check it against the *specification* of a translate (`after(x,y) == before(x-dx,y-dy)`,
+   transparent off-canvas) rather than against the implementation, over four offsets chosen because the
+   interesting cases are not symmetric: a rightward drag can never expose a vacated pixel that held
+   content, so the leftward ones are the only proof that what leaves is gone. There is no ghost overlay:
+   the provisional edit shows the real pixels live, which is better than a preview and needs no second
+   renderer. `V` and the drag are proven through injected events in `wire_input.py`.
 5. **Rect selection** (`M`) - the selection model itself: a document-level mask, tools honouring it,
    marching ants, `Ctrl+D`/`Ctrl+I`, and the composite/region paths keeping it in mind. This is the
    item the MVP's `selection.{h,cpp}` module exists for; it is a milestone slice, not a key.
@@ -204,6 +211,10 @@ requires every command to refuse it, which is 101 red checks if the rule is remo
 - Our own reader accepting our own writer proves nothing: the ZIP end-of-directory size was 12
   bytes wrong, `unzip` tolerated it, Python's `zipfile` refused it. `tools/container_probe.py`
   exists because of this. Any new format surface needs a second implementation reading it.
+- The host's event routing is a seam tests cannot see from the command side. Gating the mouse release
+  on `stroke.active` meant a wire-driven move gesture committed fine and a real drag never ended - the
+  probe that found it moves a real pointer (`wire_input.py`), which is the only harness that can. Every
+  gesture-shaped feature needs that check, not just a `tool.pointer` test.
 - A missing measurement is a result: `peak frame_ms 0.0` during a running stroke led to the wire
   slot leak.
 - The probe bound caught a 71 ms/event composite regression that looked fine in review. The one it

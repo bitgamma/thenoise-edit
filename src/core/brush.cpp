@@ -13,8 +13,9 @@
 namespace noise {
 
 const std::vector<ToolInfo> kTools{
-    {"brush", PaintMode::Over, "B"},
-    {"eraser", PaintMode::Erase, "E"},
+    {"brush", ToolAction::paint, PaintMode::Over, "B", "Paint with the brush tool"},
+    {"eraser", ToolAction::paint, PaintMode::Erase, "E", "Paint with the eraser tool"},
+    {"move", ToolAction::move, std::nullopt, "V", "Move the active layer with the pointer"},
 };
 
 std::string tool_names() {
@@ -41,7 +42,16 @@ double step_brush_fraction(double value, int direction, double low, double high)
 std::optional<PaintMode> tool_mode(const std::string& id) {
     for (const ToolInfo& tool : kTools) {
         if (id == tool.id) {
-            return tool.mode;
+            return tool.paint;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<ToolAction> tool_action(const std::string& id) {
+    for (const ToolInfo& tool : kTools) {
+        if (id == tool.id) {
+            return tool.action;
         }
     }
     return std::nullopt;

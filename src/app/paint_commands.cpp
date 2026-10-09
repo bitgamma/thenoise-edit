@@ -6,6 +6,7 @@
 
 #include "core/brush.h"
 #include "app/tools/brush.h"
+#include "app/tools/move.h"
 #include "core/log.h"
 
 #include <nlohmann/json.hpp>
@@ -180,14 +181,38 @@ void register_paint_commands(AppState& state, CommandTable& table) {
         if (phase != "release" && !arg_vec2(args, "at", point)) {
             return fail("tool.pointer", "'at' must be [x,y] in document pixels");
         }
-        if (phase == "press") {
-            brush_press(state, point);
-        } else if (phase == "drag") {
-            brush_drag(state, point);
-        } else if (phase == "release") {
-            brush_release(state);
-        } else {
-            return fail("tool.pointer", "unknown phase '" + phase + "' (press, drag, release)");
+        // Which function runs is the tool table's answer, not a name compared here: a tool that is
+        // in the table is reachable through this command, and one that is not has no command either.
+        const std::optional<ToolAction> action = tool_action(state.tool);
+        if (!action) {
+            return fail("tool.pointer", "tool '" + state.tool + "' is not in the tool table (" +
+                                            tool_names() + ")");
+        }
+        switch (*action) {
+            case ToolAction::paint:
+                if (phase == "press") {
+                    brush_press(state, point);
+                } else if (phase == "drag") {
+                    brush_drag(state, point);
+                } else if (phase == "release") {
+                    brush_release(state);
+                } else {
+                    return fail("tool.pointer", "unknown phase '" + phase +
+                                                    "' (press, drag, release)");
+                }
+                break;
+            case ToolAction::move:
+                if (phase == "press") {
+                    move_press(state, point);
+                } else if (phase == "drag") {
+                    move_drag(state, point);
+                } else if (phase == "release") {
+                    move_release(state);
+                } else {
+                    return fail("tool.pointer", "unknown phase '" + phase +
+                                                    "' (press, drag, release)");
+                }
+                break;
         }
         return command_ok(stroke_json(state));
     });
@@ -202,7 +227,7 @@ void register_paint_commands(AppState& state, CommandTable& table) {
                 return fail("tool.set", "'tool' must be a string");
             }
             next_tool = args.at("tool").get<std::string>();
-            if (!tool_mode(next_tool)) {
+            if (!tool_action(next_tool)) {
                 return fail("tool.set", "unknown tool '" + next_tool + "' (" + tool_names() + ")");
             }
         }
@@ -232,8 +257,7 @@ void register_paint_commands(AppState& state, CommandTable& table) {
     // command and its key here, and nothing in between has to be told.
     for (const ToolInfo& tool : kTools) {
         const std::string id = std::string("tool.") + tool.id;
-        std::string title = std::string("Paint with the ") + tool.id + " tool";
-        table.add(id, title, {tool.select_key}, {}, [&state, id](const json&) -> CommandResult {
+        table.add(id, tool.title, {tool.select_key}, {}, [&state, id](const json&) -> CommandResult {
             state.tool = id.substr(std::string("tool.").size());
             return command_ok(brush_json(state));
         });

@@ -36,6 +36,22 @@ struct PointerStroke {
     StrokeScratch scratch;
 };
 
+// The gesture the pointer is making with the move tool. The snapshot is the active layer as it was
+// when the button went down, and every event redraws from it rather than from what the last event
+// left behind: a gesture fed in point by point then lands on the same bytes as the same offset
+// applied once, which is what makes it testable the way a stroke is. `placed` is where the content
+// sat after the previous event, which is the half of the next dirty rectangle that has to be
+// vacated as well as the half that has to be filled.
+struct PointerMove {
+    bool active = false;
+    Vec2 origin{};
+    int dx = 0;
+    int dy = 0;
+    std::size_t steps = 0;
+    Image snapshot;
+    Rect content{};
+};
+
 struct AppState {
     Document doc;
     // The brush the next stroke uses, and the one the last stroke ran with: the status bar
@@ -44,6 +60,7 @@ struct AppState {
     Rgba8 color = kDefaultColor;
     std::string tool = kDefaultTool;
     PointerStroke stroke;
+    PointerMove move;
     ViewTransform view{{0, 0}, 1.0, {0.0, 0.0}};
     // Members of the .noise file that was opened which this build does not define, written
     // back unchanged on save so opening a newer file cannot delete what we cannot show.
@@ -74,6 +91,11 @@ struct AppState {
     // is missing pieces rather than broken.
     std::uint64_t ui_vertices = 0;
     std::uint64_t ui_vertex_limit = 0;
+
+    // True while the pointer is inside a gesture of any tool. The host ends the gesture on the
+    // button release through this, so a new tool has one place to be counted in and cannot leave
+    // the button held by being forgotten in a condition elsewhere.
+    bool gesturing() const { return stroke.active || move.active; }
 };
 
 }

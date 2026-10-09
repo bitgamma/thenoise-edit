@@ -210,8 +210,13 @@ json document_json(const AppState& state) {
 }
 
 json stroke_json(const AppState& state) {
-    return json{{"active", state.stroke.active},
+    return json{{"active", state.stroke.active || state.move.active},
                 {"dabs", state.stroke.dabs},
+                // Where a move gesture has got to. Zero for a paint gesture, so one reply shape
+                // serves both and a client reading `dabs` is unaffected.
+                {"dx", state.move.dx},
+                {"dy", state.move.dy},
+                {"move_steps", state.move.steps},
                 {"provisional_area",
                  json::array({state.doc.provisional_area().x, state.doc.provisional_area().y,
                               state.doc.provisional_area().w, state.doc.provisional_area().h})}};

@@ -198,8 +198,7 @@ const Image& Document::composite() const {
     if (!region.empty()) {
         // The region is rebuilt from transparent rather than patched, so it does not matter how
         // many layers came and went since it was last correct.
-        const std::uint8_t transparent[4] = {0, 0, 0, 0};
-        composite_.fill_rect(region, transparent);
+        composite_.fill_rect(region, kEmptyPixel);
         for (const Layer& layer : layers_) {
             if (!layer.visible) {
                 continue;

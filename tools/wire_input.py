@@ -218,12 +218,14 @@ KEY_J = 0x6A           # XK_j, bound to nothing today
 KEY_COMMA = 0x2C       # XK_comma
 KEY_PERIOD = 0x2E      # XK_period
 KEY_CTRL_L = 0xFFE3    # XK_Control_L
+KEY_V = 0x0076         # XK_v
 # One press of a step key, as `core/brush.h` defines it: the probe asserts a step happened rather
 # than recomputing the value, so this is the width of "one", not a copy of the arithmetic.
 BRUSH_STEP = 0.05
 KEY_SHIFT_L = 0xFFE1   # XK_Shift_L
 PAINT = (200, 120)     # screen pixels of the test left-drag
 PAINT_STEPS = 8
+MOVE = (40, 20)        # document pixels of the test move drag
 
 
 def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -> list[str]:
@@ -345,6 +347,72 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
     print(f"Ctrl+Z after the drag: {restored[:12]}")
     if restored != before:
         fails.append("Ctrl+Z did not undo the drag")
+
+    # `V` selects the move tool. Checked here rather than only in `test_app` because a tool row's
+    # key is registered from the table, and the table is only proven by an event that arrives as a
+    # real KeyPress.
+    tool_before = wire.call("app.state")["brush"]["tool"]
+    inj.key(KEY_V)
+    wd.settle(wire)
+    tool_after = wire.call("app.state")["brush"]["tool"]
+    print(f"V key: tool {tool_before} -> {tool_after}")
+    if tool_after != "move":
+        fails.append(f"V selected '{tool_after}', expected 'move'")
+
+    # The move tool with a real mouse: press, drag, release. The release is the point of the check -
+    # a gesture that never ends leaves the document provisional, the button held and no undo step -
+    # and it is only visible through an injected button, because a wire client calls `release`
+    # itself and never notices that the window dropped it.
+    #
+    # Something has to be there to move: the `doc.new` above (the pathless-save case) replaced the
+    # fixture, and a move over an empty layer is correctly a no-op that changes nothing.
+    wire.call("tool.stroke", {"points": [[10, 12], [40, 26]], "tool": "brush", "size": 16.0,
+                              "hardness": 1.0, "opacity": 1.0, "flow": 1.0, "spacing": 0.25,
+                              "color": [20, 120, 220, 255]})
+    # `tool.stroke` carries the tool it paints with and leaves it selected, so the move tool has to
+    # be chosen after the painting rather than before it.
+    wire.call("tool.set", {"tool": "move"})
+    state = wire.call("app.state")
+    if state["brush"]["tool"] != "move":
+        fails.append("the move drag ran with the wrong tool selected")
+    doc = wd.document_screen_rect(state)
+    scale = state["view"]["scale"]
+    before = wire.call("doc.get", {})["checksum"]
+    depth_before = wire.call("app.state")["document"]["history"]["undo_depth"]
+    inj.move(doc[0] + doc[2] * 0.35, doc[1] + doc[3] * 0.5)
+    inj.button(1, True)
+    wd.settle(wire)
+    for fraction in (0.25, 0.5, 1.0):
+        inj.move(doc[0] + doc[2] * 0.35 + MOVE[0] * scale * fraction,
+                 doc[1] + doc[3] * 0.5 + MOVE[1] * scale * fraction)
+        time.sleep(0.03)
+    wd.settle(wire)  # the last move is handled by a later frame than the one that read state
+    mid = wire.call("app.state")
+    inj.button(1, False)
+    wd.settle(wire)
+    after = wire.call("app.state")
+    moved = wire.call("doc.get", {})["checksum"]
+    print(f"move drag {MOVE[0]},{MOVE[1]} doc px: document {before[:12]} -> {moved[:12]}, "
+          f"during {mid['stroke']['dx']},{mid['stroke']['dy']} over {mid['stroke']['move_steps']} "
+          f"events, active {mid['stroke']['active']} -> {after['stroke']['active']}, "
+          f"undo steps {depth_before} -> {after['document']['history']['undo_depth']}")
+    if not mid["stroke"]["active"]:
+        fails.append("the move gesture was not live while the button was down")
+    if mid["stroke"]["dx"] < 1 or mid["stroke"]["dy"] < 1:
+        fails.append("the move gesture reported no offset after a drag")
+    if after["stroke"]["active"]:
+        fails.append("the move gesture never ended: the button release never reached it")
+    if moved == before:
+        fails.append("a move-tool drag over the painted document changed nothing")
+    if after["document"]["history"]["undo_depth"] != depth_before + 1:
+        fails.append(f"a move gesture must be one undo step, got "
+                     f"{after['document']['history']['undo_depth'] - depth_before}")
+    inj.modified_key(KEY_Z, KEY_CTRL_L)
+    wd.settle(wire)
+    undone = wire.call("doc.get", {})["checksum"]
+    print(f"Ctrl+Z after the move: {undone[:12]}")
+    if undone != before:
+        fails.append("Ctrl+Z did not undo the move")
 
     # The step keys, through the real key path. `,`/`.` move hardness by one step and Shift takes
     # the same two keys to opacity - which only a real modifier state can demonstrate, because the

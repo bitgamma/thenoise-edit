@@ -324,6 +324,16 @@ void test_one_stroke_is_one_step_that_puts_every_byte_back() {
     CHECK_NEAR(brush["hardness"].get<double>(), 0.6, 1e-12);
 }
 
+// A move gesture of an exact whole-pixel offset, fed through the pointer command the way the
+// window feeds it: press, a couple of drags through intermediate positions, release.
+void pointer_offset_gesture(Harness& h, int dx, int dy) {
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({10.0, 10.0})}});
+    h.value("tool.pointer",
+            json{{"phase", "drag"}, {"at", json::array({10.0 + dx * 0.5, 10.0 + dy * 0.5})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({10.0 + dx, 10.0 + dy})}});
+    h.value("tool.pointer", json{{"phase", "release"}});
+}
+
 void pointer_gesture(Harness& h, const json& points) {
     h.run("tool.pointer", json{{"phase", "press"}, {"at", points.front()}});
     for (std::size_t i = 1; i < points.size(); ++i) {
@@ -1059,6 +1069,134 @@ void test_a_project_round_trips_and_an_export_is_not_a_save() {
     std::filesystem::remove(flat);
 }
 
+// A whole-layer translate has an exact specification, so the move tool is tested against the
+// specification and not against itself: for every pixel, `after(x, y)` is `before(x - dx, y - dy)`
+// or transparent when that falls outside the canvas. Nothing about the brush, the dabs or the
+// gesture shape appears in the assertion, only what the tool claims to do.
+void test_the_move_tool_slides_the_layer_and_undoes_it_exactly() {
+    constexpr int kWidth = 64;
+    constexpr int kHeight = 48;
+    Harness h;
+    h.value("doc.new", json{{"width", kWidth},
+                            {"height", kHeight},
+                            {"fill", json::array({0, 0, 0, 0})}});
+    json stroke = full_stroke();
+    stroke["points"] = json::array({json::array({10.0, 10.0}), json::array({30.0, 14.0})});
+    stroke["size"] = 12.0;
+    h.value("tool.stroke", stroke);
+    const std::string painted_sum = checksum_of(h);
+    const int steps_before = undo_depth(h);  // the painting that made the content is a step too
+    CHECK_NE(painted_sum, Image::filled(Extent{kWidth, kHeight}, 0, 0, 0, 0).checksum_hex());
+
+    // Four offsets rather than one, because the interesting cases are not symmetric. A rightward
+    // drag leaves its vacated area at the left of the region; a leftward one leaves it at the right,
+    // and only if the content started near the right edge does that area fall inside the region at
+    // all - hence the journey right and then back. Every case is checked against the same rule, and
+    // a drag that clipped nothing on the way is worth as much as one that did.
+    const int offsets[][2] = {{11, 5}, {-7, -4}, {30, 2}, {-20, 0}};
+    Image before = h.state.doc.composite();
+    int gestures = 0;
+    for (const int* offset : offsets) {
+        const int dx = offset[0];
+        const int dy = offset[1];
+        h.value("tool.set", json{{"tool", "move"}});
+        h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({8.0, 8.0})}});
+        h.value("tool.pointer",
+                json{{"phase", "drag"}, {"at", json::array({8.0 + dx * 0.5, 8.0 + dy * 0.5})}});
+        const json mid = h.value("app.state", json::object());
+        CHECK(mid["stroke"]["active"].get<bool>());
+        CHECK_EQ(mid["stroke"]["dx"].get<int>(), static_cast<int>(std::lround(dx * 0.5)));
+        CHECK_EQ(mid["stroke"]["dy"].get<int>(), static_cast<int>(std::lround(dy * 0.5)));
+        // Live on the canvas but not yet a step: the gesture commits once, at release.
+        CHECK_EQ(undo_depth(h), steps_before + gestures);
+        CHECK_NE(checksum_of(h), painted_sum);
+
+        h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({8.0 + dx, 8.0 + dy})}});
+        h.value("tool.pointer", json{{"phase", "release"}});
+        const Image after = h.state.doc.composite();
+
+        std::size_t covered = 0;
+        for (int y = 0; y < kHeight; ++y) {
+            for (int x = 0; x < kWidth; ++x) {
+                const int source_x = x - dx;
+                const int source_y = y - dy;
+                const bool inside = source_x >= 0 && source_y >= 0 && source_x < kWidth &&
+                                    source_y < kHeight;
+                const std::uint8_t* want = inside ? before.at(source_x, source_y) : kEmptyPixel;
+                if (want[3] != 0) {
+                    ++covered;
+                }
+                const std::uint8_t* got = after.at(x, y);
+                for (int channel = 0; channel < 4; ++channel) {
+                    if (got[channel] != want[channel]) {
+                        noise::test::report("moved pixel equals its source", __FILE__, __LINE__,
+                                            std::to_string(dx) + "," + std::to_string(dy) + " at " +
+                                                std::to_string(x) + "," + std::to_string(y) +
+                                                " channel " + std::to_string(channel) + ": got " +
+                                                std::to_string(got[channel]) + " want " +
+                                                std::to_string(want[channel]));
+                    }
+                    ++noise::test::checks;
+                }
+            }
+        }
+        // Without this the loop above could be comparing an empty canvas with itself.
+        CHECK(covered > 200u);
+        before = after;
+        ++gestures;
+    }
+
+    // One step per gesture, and every one of them puts the whole document back.
+    CHECK_EQ(undo_depth(h), steps_before + 4);
+    for (int step = 0; step < 4; ++step) {
+        h.value("edit.undo", json::object());
+    }
+    CHECK_EQ(checksum_of(h), painted_sum);
+    CHECK_EQ(h.value("edit.redo", json::object())["redo_depth"].get<int>(), 3);
+}
+
+// Sub-pixel pointer motion is not an edit. Without this the app would record a step for a tremor
+// of the hand, dirty the document, and grow the undo buffer for pixels that never changed.
+void test_a_move_that_never_left_its_pixel_is_not_an_edit() {
+    Harness h;
+    h.value("doc.new", json{{"width", 32},
+                            {"height", 32},
+                            {"fill", json::array({0, 0, 0, 0})}});
+    h.value("tool.stroke", full_stroke());
+    const std::string before = checksum_of(h);
+    const int steps_before = undo_depth(h);
+    h.value("tool.set", json{{"tool", "move"}});
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({12.0, 9.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({12.4, 9.3})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({11.6, 9.4})}});
+    h.value("tool.pointer", json{{"phase", "release"}});
+    CHECK_EQ(checksum_of(h), before);
+    CHECK_EQ(undo_depth(h), steps_before);
+}
+
+// `V` moves one layer, not the stack: the layer that is not active keeps every byte, so a move is
+// not silently a merge.
+void test_a_move_slides_the_active_layer_and_no_other() {
+    Harness h;
+    h.value("doc.new", json{{"width", 40},
+                            {"height", 40},
+                            {"fill", json::array({0, 0, 0, 0})}});
+    h.value("tool.stroke", full_stroke());
+    h.value("layer.add", json{{"name", "upper"}});
+    json upper = full_stroke();
+    upper["points"] = json::array({json::array({6.0, 30.0}), json::array({34.0, 32.0})});
+    upper["color"] = json::array({0, 0, 255, 255});
+    h.value("tool.stroke", upper);
+    const std::string upper_sum = h.state.doc.layer(1).pixels.checksum_hex();
+    const std::string lower_sum = h.state.doc.layer(0).pixels.checksum_hex();
+
+    h.value("layer.select", json{{"index", 0}});
+    h.value("tool.set", json{{"tool", "move"}});
+    pointer_offset_gesture(h, 4, 3);
+    CHECK_EQ(h.state.doc.layer(1).pixels.checksum_hex(), upper_sum);
+    CHECK_NE(h.state.doc.layer(0).pixels.checksum_hex(), lower_sum);
+}
+
 void test_image_get_returns_the_documents_own_pixels() {
     Harness h;
     h.value("doc.new", json{{"width", 40}, {"height", 30}});
@@ -1273,6 +1411,9 @@ int main() {
     test_a_layer_mode_is_layer_state_and_reaches_the_composite();
     test_a_two_layer_project_round_trips_and_exports_its_composite();
     test_a_project_round_trips_and_an_export_is_not_a_save();
+    test_the_move_tool_slides_the_layer_and_undoes_it_exactly();
+    test_a_move_that_never_left_its_pixel_is_not_an_edit();
+    test_a_move_slides_the_active_layer_and_no_other();
     test_image_get_returns_the_documents_own_pixels();
     test_pixels_compare_finds_a_single_changed_byte();
     test_a_fit_waits_for_the_canvas_area_to_be_published();

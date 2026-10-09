@@ -104,7 +104,11 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
             commands.invoke("tool.pointer",
                             json{{"phase", "drag"}, {"at", json::array({at.x, at.y})}});
         }
-        if (state.stroke.active && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        // `gesturing()` rather than `stroke.active`: the release belongs to whichever tool has the
+        // button, and gating it on the paint gesture left a move gesture running with the button
+        // still held - invisible to a command-level test, because `tool.pointer` is driven directly
+        // there and reaches `move_release` either way.
+        if (state.gesturing() && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
             commands.invoke("tool.pointer", json{{"phase", "release"}});
         }
         if (hovered && ImGui::IsMouseDown(ImGuiMouseButton_Right)) {

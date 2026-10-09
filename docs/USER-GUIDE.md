@@ -71,12 +71,22 @@ is allowed for 48 px, so an edge is not a wall.
 
 ## Painting
 
-`B` brush, `E` eraser. `[` and `]` step the size by x1.25 — the same keystroke means the same
+`B` brush, `E` eraser, `V` move. `[` and `]` step the size by x1.25 — the same keystroke means the same
 thing at 4 px and at 400 px. `,` and `.` step **hardness** down and up, `Shift+,` and `Shift+.`
 step **opacity**: the MVP gave four actions to two keys, so the modifier takes the second pair. A
 step lands on the 5 % grid, so pressing `,` from a slider dragged to 0.73 gives 0.70 rather than
 0.68, and both ends stop dead rather than going past 0 or 1. Hover a slider to see its keys;
 `command.list` prints them all. The Brush panel holds the rest:
+
+### Moving a layer
+
+`V` picks up the **active layer** and drags it. Press somewhere, move, release: the layer slides
+under the cursor and the gesture is one undo step. Offsets are whole document pixels — a move never
+resamples, so nothing is blurred by dragging — and pixels pushed past the canvas edge are gone from
+the layer, which `Ctrl+Z` brings back. The button-down position is the anchor, so where you press
+does not matter, only how far you drag; a tremor smaller than half a pixel is not an edit at all, and
+costs neither a step nor the unsaved mark. The layer under the cursor is the one that moves: with a
+painting on the layer above, it stays where it is.
 
 | Field | Means |
 |---|---|
@@ -203,7 +213,7 @@ stroke and a capture, and the PNG turned up where it said.
 | app | `app.state` `app.quit` `command.list` `command.invoke` `log.tail` `log.level` `wire.info` |
 | document | `doc.new` `doc.open` `doc.save` `doc.export` `doc.get` `image.get` |
 | layers | `layer.list` `layer.add` `layer.remove` `layer.select` `layer.set` |
-| paint | `tool.brush` `tool.eraser` `tool.set` `tool.stroke` `tool.pointer` `brush.larger` `brush.smaller` |
+| paint | `tool.brush` `tool.eraser` `tool.move` (one per tool row) `tool.set` `tool.stroke` `tool.pointer` `brush.larger` `brush.smaller` |
 | view | `view.fit` `view.set` `view.pan` `view.zoom` |
 | edit | `edit.undo` `edit.redo` |
 | observe | `screenshot` `pixels.compare` |
@@ -240,8 +250,8 @@ problems and only one of them is a bug:
 - **No AI at all.** No server profile, no roles, no generate / remove / replace / upscale.
   That is milestones M3 and M4.
 - **No selections and no masks.** Nothing to select with, nothing to mask a layer with.
-- **No reorder, rename, duplicate or merge** in the Layers panel; no move tool.
-- **Only brush and eraser.** No fill, eyedropper, lasso or wand, no pen pressure.
+- **No reorder, rename, duplicate or merge** in the Layers panel.
+- **Three tools**: brush, eraser and move. No fill, eyedropper, lasso or wand, no pen pressure.
 - **No `.ora`/PSD at all**: OpenRaster is out of the design by decision, so a foreign layered file
   is refused naming its mimetype rather than guessed at.
 - **No autosave or crash recovery**, and the undo history lives and dies with the session.

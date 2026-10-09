@@ -78,7 +78,10 @@ src/
     document_commands.cpp doc.* image.get
     paint_commands.cpp tool.stroke/pointer/set, tool.<name>, the brush step commands, edit.undo/redo
     view_commands.cpp  view.*, and the fit that waits for a real canvas area
-    tools/             one file per tool; Tool = press/drag/release/overlay/commit state machine
+    tools/             one file per tool: brush.cpp (press/drag/release over the provisional edit),
+                       move.cpp (the same gesture, sliding the layer's pixels). Which file the
+                       pointer talks to is the `action` column of `core::kTools`, not a name
+                       compared in the caller
     shortcuts.{h,cpp}  platform key event -> canonical shortcut text (the only sokol-aware
                        part of the app layer)
     ui/                panels: layers, generate, journal, jobs, status, prefs
@@ -400,7 +403,9 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
   `Ctrl+S`, `Space`, `PageUp`), the table refuses a malformed one and refuses to bind a key
   twice, and the host translates a platform key event into the same text (`app/shortcuts.h`).
   `tools/wire_input.py` presses keys and moves the pointer for real, because a binding that
-  no event can produce would otherwise look fine on the wire.
+  no event can produce would otherwise look fine on the wire - and because the host's own routing
+  is invisible otherwise: gating the button release on the *paint* gesture made every wire-driven
+  move gesture work and every real drag hang, and no command-level test could see the difference.
 * Frame loop services the wire between input and draw, so requests are handled at frame
   boundaries and see consistent state; long commands return a job id rather than blocking.
 * Baseline command set, growing with the app:

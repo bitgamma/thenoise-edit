@@ -146,7 +146,8 @@ Shortcuts: `V` move `B` brush `E` eraser `M` rect-sel `L` lasso `W` wand `G` fil
 command palette and a user keymap file cost nothing later. Live today: `F` fit, `Ctrl+S`
 save, `Ctrl+Z`/`Ctrl+Y` undo and redo, `Escape`/`Ctrl+Q` quit, `B`/`E` brush and eraser,
 `[`/`]` brush size, `,`/`.` hardness and `Shift+,`/`Shift+.` opacity (the MVP's "`,`/`.` hardness
-/ opacity" pair, disambiguated by the modifier because four actions cannot share two keys),
+/ opacity" pair, disambiguated by the modifier because four actions cannot share two keys), `V` move
+(the whole active layer, whole pixels, one step per gesture),
 wheel zoom-to-cursor, right-drag pan and left-drag paint; every other key
 above arrives with the tool or command it belongs to (and
 `command.list` is the truth about what is bound). `Ctrl+S` writes the project and only the
