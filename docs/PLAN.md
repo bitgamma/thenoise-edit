@@ -78,16 +78,28 @@ Still open, when convenient:
 
 ## Next steps, in order
 
-1. **Run CI once for real.** The workflow has never executed (nothing pushed). Expect the
-   golden to be the thing that fails on Ubuntu's llvmpipe. If it does: read the reported
-   `differing_bytes` / `max_channel_delta`; if the diff is rasterization noise, either widen
-   the two constants in `tools/wire_drive.py` deliberately or re-record with
-   `python3 tools/wire_drive.py --bin build/noise-edit --golden tests/golden/view_pan_zoom.png --update-golden`
-   on the runner and commit that golden. Never widen the tolerance to hide a structural diff.
-2. **Keyboard shortcuts into the command table** (`AGENTS.md` §4 puts commands *and* shortcuts
-   in one home; there is no shortcut field yet). Add the field to `CommandTable::add`, dispatch
-   from `main.cpp`'s `event()` through the table, seed MVP.md's key list (`V B E M L W G I [ ] , . Space Enter Ctrl+D/I/J/E/Z/Y/S F`),
-   and expose the mapping on the wire via `command.list` so it is checkable.
+1. **CI, as far as it runs here.** There is no remote and nothing is pushed, so
+   `.github/workflows/ci.yml` has still never executed on a runner. Its steps are run locally
+   instead - `cmake -B build -G Ninja && cmake --build build && xvfb-run -a ctest
+   --output-on-failure` - and are green. When a runner exists, expect the golden to be the
+   thing that differs on Ubuntu's llvmpipe: read `differing_bytes` / `max_channel_delta` and
+   either widen the two constants in `tools/wire_drive.py` deliberately or re-record there
+   with `--update-golden`. Never widen a tolerance to hide a structural diff.
+2. **Keyboard shortcuts live in the command table.** `CommandTable::add` takes the bindings,
+   normalizes the text, refuses a malformed shortcut and refuses to bind a key twice;
+   `app::shortcut_of` turns a sokol key event into the same canonical text and `main.cpp`
+   dispatches through the table; `command.list` reports the keymap. Seeded: `F` fit,
+   `Ctrl+S` save, `Escape` and `Ctrl+Q` quit - the rest of MVP.md's keys arrive with their
+   tools. Two findings worth keeping:
+   * `simgui_handle_event()` returns `WantCaptureKeyboard || WantCaptureMouse`, and the
+     pointer is always over chrome, so the old `if (simgui_handle_event(ev)) return;` dropped
+     **every** key event - which is why the hardcoded `Escape` quit never worked either. ImGui
+     is now offered the event and only `WantCaptureKeyboard` gates the shortcut.
+   * Injecting keys needs focus: on a window-manager-less Xvfb display keys reach nobody
+     until `XSetInputFocus` picks the app window (mouse events do not need it).
+     `tools/wire_input.py` does both; `test_input_gestures` covers wheel zoom-to-cursor,
+     right-drag pan, `F`, a failing `Ctrl+S` reaching the log, an unbound key doing nothing,
+     and `Escape` quitting.
 3. **M1 paint core.** Acceptance (MVP.md): *5000-dab stroke at 2048² without dropped frames,
    20× undo*. Slices, each with its own wire command and test:
    a. **Blob store + undo**: content-addressed by the existing `sha256_hex`, undo/redo as pointer

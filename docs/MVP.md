@@ -137,7 +137,10 @@ Shortcuts: `V` move `B` brush `E` eraser `M` rect-sel `L` lasso `W` wand `G` fil
 `[`/`]` size `,`/`.` hardness/opacity `Space`-drag pan `Alt` pick `Enter` apply sel
 `Ctrl+D` deselect `Ctrl+I` invert `Ctrl+J` new-via-copy `Ctrl+E` merge down `Ctrl+Z/Y`
 `Ctrl+S` `Tab` panels `F` fit. Commands are string-keyed in one table from day one, so a
-command palette and a user keymap file cost nothing later.
+command palette and a user keymap file cost nothing later. Live today: `F` fit, `Ctrl+S`
+save, `Escape`/`Ctrl+Q` quit, wheel zoom-to-cursor and right-drag pan; every other key above
+is registered with the tool or command it belongs to (and `command.list` is the truth about
+what is bound).
 
 Design rules: nothing blocks the canvas, ever · every AI op shows *what it will send* ·
 model swaps are explicit and priced · destructive ops are labelled but never nag (undo is

@@ -172,7 +172,7 @@ void apply_pending_fit(AppState& state) {
 
 void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wire,
                        const HostHooks& hooks) {
-    table.add("app.state", "Report application, document and view state",
+    table.add("app.state", "Report application, document and view state", {},
               [&state, &wire](const json&) -> CommandResult {
         json doc = json::object();
         if (!state.doc.image.empty()) {
@@ -192,7 +192,8 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                {"wire_port", wire.port()}});
     });
 
-    table.add("app.quit", "Ask the application to exit cleanly", [hooks](const json&) -> CommandResult {
+    table.add("app.quit", "Ask the application to exit cleanly", {"Escape", "Ctrl+Q"},
+              [hooks](const json&) -> CommandResult {
         if (!hooks.quit) {
             return fail("app.quit", "no quit hook is attached");
         }
@@ -200,7 +201,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(json{{"quitting", true}});
     });
 
-    table.add("log.tail", "Return the most recent log lines", [](const json& args) -> CommandResult {
+    table.add("log.tail", "Return the most recent log lines", {}, [](const json& args) -> CommandResult {
         int count = 0;
         if (!want_int(args, "count", count) || count < 0) {
             return fail("log.tail", "expected non-negative integer 'count'");
@@ -208,7 +209,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(json{{"lines", log::tail(static_cast<std::size_t>(count))}});
     });
 
-    table.add("log.level", "Set the log level", [](const json& args) -> CommandResult {
+    table.add("log.level", "Set the log level", {}, [](const json& args) -> CommandResult {
         if (!args.contains("level") || !args.at("level").is_string()) {
             return fail("log.level", "expected string 'level' (debug|info|warn|error)");
         }
@@ -221,7 +222,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(json{{"level", level}});
     });
 
-    table.add("doc.get", "Report the document (path, size, checksum, revision)",
+    table.add("doc.get", "Report the document (path, size, checksum, revision)", {},
               [&state](const json&) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -230,16 +231,18 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(document_json(state));
     });
 
-    table.add("command.list", "List every invokable command id and its title",
+    table.add("command.list", "List every invokable command with its title and shortcuts", {},
               [&table](const json&) -> CommandResult {
         json entries = json::array();
-        for (const auto& [id, title] : table.list()) {
-            entries.push_back(json{{"id", id}, {"title", title}});
+        for (const CommandInfo& info : table.list()) {
+            entries.push_back(json{{"id", info.id},
+                                   {"title", info.title},
+                                   {"shortcuts", info.shortcuts}});
         }
         return command_ok(json{{"commands", entries}});
     });
 
-    table.add("command.invoke", "Run another command through the same table the UI uses",
+    table.add("command.invoke", "Run another command through the same table the UI uses", {},
               [&table](const json& args) -> CommandResult {
         if (!args.contains("name") || !args.at("name").is_string()) {
             return fail("command.invoke", "expected string 'name'");
@@ -259,7 +262,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(json{{"name", name}, {"result", inner.value}});
     });
 
-    table.add("doc.new", "Create an empty document", [&state](const json& args) -> CommandResult {
+    table.add("doc.new", "Create an empty document", {}, [&state](const json& args) -> CommandResult {
         int width = 0;
         int height = 0;
         if (!want_int(args, "width", width) || !want_int(args, "height", height)) {
@@ -279,7 +282,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(image_json(state.doc.image, "new"));
     });
 
-    table.add("doc.open", "Load a PNG into the document", [&state](const json& args) -> CommandResult {
+    table.add("doc.open", "Load a PNG into the document", {}, [&state](const json& args) -> CommandResult {
         if (!args.contains("path") || !args.at("path").is_string()) {
             return fail("doc.open", "expected string 'path'");
         }
@@ -295,7 +298,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(image_json(state.doc.image, path));
     });
 
-    table.add("doc.save", "Save the document (defaults to its current path)",
+    table.add("doc.save", "Save the document (defaults to its current path)", {"Ctrl+S"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -319,7 +322,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(image_json(state.doc.image, path));
     });
 
-    table.add("image.get", "Return document pixels (whole image or a region)",
+    table.add("image.get", "Return document pixels (whole image or a region)", {},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -353,7 +356,8 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(result);
     });
 
-    table.add("view.fit", "Fit the document into the viewport", [&state](const json&) -> CommandResult {
+    table.add("view.fit", "Fit the document into the viewport", {"F"},
+              [&state](const json&) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
             return guard;
@@ -362,7 +366,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(view_json(state));
     });
 
-    table.add("view.set", "Set scale and origin explicitly", [&state](const json& args) -> CommandResult {
+    table.add("view.set", "Set scale and origin explicitly", {}, [&state](const json& args) -> CommandResult {
         if (!args.contains("scale") || !args.at("scale").is_number()) {
             return fail("view.set", "expected number 'scale'");
         }
@@ -379,7 +383,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(view_json(state));
     });
 
-    table.add("view.pan", "Pan by a viewport-space delta", [&state](const json& args) -> CommandResult {
+    table.add("view.pan", "Pan by a viewport-space delta", {}, [&state](const json& args) -> CommandResult {
         double dx = 0.0;
         double dy = 0.0;
         if (!want_number(args, "dx", dx) || !want_number(args, "dy", dy)) {
@@ -391,7 +395,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(view_json(state));
     });
 
-    table.add("view.zoom", "Zoom by a factor around a viewport-space anchor",
+    table.add("view.zoom", "Zoom by a factor around a viewport-space anchor", {},
               [&state](const json& args) -> CommandResult {
         if (!args.contains("factor") || !args.at("factor").is_number()) {
             return fail("view.zoom", "expected number 'factor'");
@@ -408,7 +412,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(view_json(state));
     });
 
-    table.add("screenshot", "Capture framebuffer pixels to a PNG",
+    table.add("screenshot", "Capture framebuffer pixels to a PNG", {},
               [&state, capture = hooks.capture](const json& args) -> CommandResult {
         if (!capture) {
             return fail("screenshot", "no framebuffer capture is attached");
@@ -446,7 +450,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(result);
     });
 
-    table.add("pixels.compare", "Compare two PNGs byte for byte", [](const json& args) -> CommandResult {
+    table.add("pixels.compare", "Compare two PNGs byte for byte", {}, [](const json& args) -> CommandResult {
         if (!args.contains("a") || !args.at("a").is_string() || !args.contains("b") ||
             !args.at("b").is_string()) {
             return fail("pixels.compare", "expected string 'a' and 'b' PNG paths");
@@ -484,7 +488,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                {"max_channel_delta", max_delta}});
     });
 
-    table.add("wire.info", "Report debug wire status", [&wire](const json&) -> CommandResult {
+    table.add("wire.info", "Report debug wire status", {}, [&wire](const json&) -> CommandResult {
         return command_ok(json{{"port", wire.port()}, {"clients", wire.client_count()}});
     });
 }

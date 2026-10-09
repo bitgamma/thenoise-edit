@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/commands.h"
+#include "app/shortcuts.h"
 #include "app/state.h"
 #include "app/ui.h"
 #include "core/log.h"
@@ -200,14 +201,38 @@ void frame(void) {
     sg_commit();
 }
 
+// Commands run through the table here too, so a key that reaches a command which cannot
+// run - quit with no hook, save with no path - is a log line and not a silence.
+void invoke_command(const std::string& id, const json& args, const std::string& why) {
+    const CommandResult result = g.commands.invoke(id, args);
+    if (!result.ok) {
+        log::error(why + " (" + id + "): " + result.error);
+    }
+}
+
 void event(const sapp_event* ev) {
-    if (simgui_handle_event(ev)) {
+    // ImGui is offered every event, but its return value mixes keyboard and mouse capture
+    // and the pointer is always over UI chrome, so acting on it would drop every key
+    // before a shortcut could see it.
+    simgui_handle_event(ev);
+    if (ev->type == SAPP_EVENTTYPE_QUIT_REQUESTED) {
+        invoke_command("app.quit", json::object(), "quit request");
         return;
     }
-    if (ev->type == SAPP_EVENTTYPE_QUIT_REQUESTED ||
-        (ev->type == SAPP_EVENTTYPE_KEY_DOWN && ev->key_code == SAPP_KEYCODE_ESCAPE)) {
-        sapp_quit();
+    // A widget that owns the keyboard (text entry, later) keeps the key: a shortcut fired
+    // through it would move the canvas while the user types.
+    if (ImGui::GetIO().WantCaptureKeyboard) {
+        return;
     }
+    const std::optional<std::string> shortcut = app::shortcut_of(*ev);
+    if (!shortcut) {
+        return;
+    }
+    const std::string id = g.commands.command_for_shortcut(*shortcut);
+    if (id.empty()) {
+        return;
+    }
+    invoke_command(id, json::object(), "shortcut " + *shortcut);
 }
 
 void cleanup(void) {

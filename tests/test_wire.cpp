@@ -42,13 +42,13 @@ dbg::WireConfig config_for(std::string token) {
 }
 
 void build_table(CommandTable& table) {
-    table.add("test.echo", "echo args back", [](const json& args) {
+    table.add("test.echo", "echo args back", {}, [](const json& args) {
         return command_ok(json{{"echo", args}});
     });
-    table.add("test.fail", "always fails", [](const json&) {
+    table.add("test.fail", "always fails", {}, [](const json&) {
         return command_error("deliberate failure");
     });
-    table.add("test.throw", "always throws", [](const json&) -> CommandResult {
+    table.add("test.throw", "always throws", {}, [](const json&) -> CommandResult {
         throw std::runtime_error("handler exploded");
     });
 }

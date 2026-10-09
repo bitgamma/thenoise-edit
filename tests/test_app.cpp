@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -92,6 +93,24 @@ void test_m0_command_surface_is_registered() {
         CHECK(entry["title"].is_string());
         CHECK(!entry["title"].get<std::string>().empty());
     }
+}
+
+// The keymap is only usable if a driver can read it: `command.list` carries the bindings,
+// so a shortcut that exists only in a header comment cannot happen here.
+void test_the_keymap_is_reported_with_the_commands() {
+    Harness h;
+    const json listed = h.value("command.list", json::object());
+    std::map<std::string, std::string> bound;
+    for (const json& entry : listed["commands"]) {
+        std::string joined;
+        for (const std::string& shortcut : entry["shortcuts"].get<std::vector<std::string>>()) {
+            joined += shortcut + " ";
+        }
+        bound[entry["id"].get<std::string>()] = joined;
+    }
+    CHECK_EQ(bound["view.fit"], std::string("F "));
+    CHECK_EQ(bound["doc.save"], std::string("Ctrl+S "));
+    CHECK_EQ(bound["app.quit"], std::string("Escape Ctrl+Q "));
 }
 
 void test_app_quit_reaches_the_host() {
@@ -367,6 +386,7 @@ void test_view_navigation_keeps_the_image_reachable() {
 int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
+    test_the_keymap_is_reported_with_the_commands();
     test_app_quit_reaches_the_host();
     test_command_invoke_dispatches_and_names_failures();
     test_bad_arguments_name_the_command();

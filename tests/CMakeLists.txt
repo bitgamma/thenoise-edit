@@ -6,6 +6,7 @@ add_executable(test_image test_image.cpp)
 add_executable(test_command test_command.cpp)
 add_executable(test_wire test_wire.cpp)
 add_executable(test_app test_app.cpp)
+add_executable(test_shortcut test_shortcut.cpp)
 
 foreach(target test_hash test_geom test_image test_command test_wire)
     target_link_libraries(${target} PRIVATE noise_core noise_dbg)
@@ -21,11 +22,28 @@ target_include_directories(test_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(test_app PRIVATE -Wall -Wextra -Werror -Wshadow)
 add_test(NAME test_app COMMAND test_app)
 
+# Shortcut text, table bindings and the platform key translation: sokol headers are needed
+# to build a sapp_event, but nothing is initialized, so it stays a windowless test.
+target_link_libraries(test_shortcut PRIVATE noise_app noise_ui noise_core noise_dbg sokol imgui)
+target_include_directories(test_shortcut PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_shortcut PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_shortcut COMMAND test_shortcut)
+
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     # M0 acceptance: drive pan+zoom over the wire against the running app, capture the
     # canvas, diff against the golden. Skips loudly when it cannot render (no DISPLAY,
     # no xvfb-run) rather than going red on a headless box.
+    # Injected key and mouse events: the only way to check that a gesture reaches the
+    # command table. Skips when it can neither inject input nor make a display.
+    add_test(NAME test_input_gestures
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/wire_input.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_input_gestures PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 120
+                         DEPENDS noise-edit)
+
     add_test(NAME test_view_golden
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/wire_drive.py
                      --bin $<TARGET_FILE:noise-edit>

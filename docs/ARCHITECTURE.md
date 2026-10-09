@@ -46,6 +46,7 @@ src/
     maskops.{h,cpp}    rasterize shapes, flood fill, feather, morphology, bbox, colour-match
     heal.{h,cpp}       Telea / Chan fusion inpainting (local, offline)
     command.{h,cpp}    undoable command interface + pixel-delta commands
+    shortcut.{h,cpp}   canonical shortcut text: grammar, vocabulary, normalization
     blob.{h,cpp}       content-addressed store API (impl in io/)
   gfx/
     renderer.{h,cpp}   sg init, passes, resource lifetime
@@ -56,6 +57,8 @@ src/
   app/
     main.cpp           sokol entry, frame loop, mailbox drain
     tools/             one file per tool; Tool = press/drag/release/overlay/commit state machine
+    shortcuts.{h,cpp}  platform key event -> canonical shortcut text (the only sokol-aware
+                       part of the app layer)
     ui/                panels: layers, generate, journal, jobs, status, prefs
     selection.{h,cpp}  document-level floating selection + editing modes
   ai/
@@ -219,6 +222,13 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 * **It dispatches through the same string-keyed command table the UI and the keyboard use**
   (`command.list`, `command.invoke {name, args}`), so exercising the wire exercises the real
   path. The wire reads state and invokes commands; it never reimplements behaviour.
+* **Key bindings are part of a command's registration**, so `command.list` reports the whole
+  keymap and nothing can be bound in one place and documented in another. Shortcut text is
+  canonical (`core/shortcut.h`: modifiers Ctrl, Alt, Shift in that order, then a key - `F`,
+  `Ctrl+S`, `Space`, `PageUp`), the table refuses a malformed one and refuses to bind a key
+  twice, and the host translates a platform key event into the same text (`app/shortcuts.h`).
+  `tools/wire_input.py` presses keys and moves the pointer for real, because a binding that
+  no event can produce would otherwise look fine on the wire.
 * Frame loop services the wire between input and draw, so requests are handled at frame
   boundaries and see consistent state; long commands return a job id rather than blocking.
 * Baseline command set, growing with the app:

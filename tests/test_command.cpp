@@ -16,10 +16,10 @@ namespace {
 
 void test_dispatch_and_listing() {
     CommandTable table;
-    CHECK(table.add("alpha.one", "first", [](const json& args) {
+    CHECK(table.add("alpha.one", "first", {}, [](const json& args) {
         return command_ok(json{{"echo", args}});
     }));
-    CHECK(table.add("alpha.two", "second", [](const json&) {
+    CHECK(table.add("alpha.two", "second", {}, [](const json&) {
         return command_ok(json{{"n", 7}});
     }));
 
@@ -32,14 +32,15 @@ void test_dispatch_and_listing() {
 
     const auto entries = table.list();
     CHECK_EQ(entries.size(), std::size_t(2));
-    CHECK_EQ(entries[0].first, std::string("alpha.one"));
-    CHECK_EQ(entries[1].second, std::string("second"));
+    CHECK_EQ(entries[0].id, std::string("alpha.one"));
+    CHECK_EQ(entries[1].title, std::string("second"));
+    CHECK(entries[0].shortcuts.empty());
 }
 
 void test_unknown_command_names_itself_and_alternatives() {
     CommandTable table;
-    table.add("view.zoom", "zoom", [](const json&) { return command_ok(json::object()); });
-    table.add("view.pan", "pan", [](const json&) { return command_ok(json::object()); });
+    table.add("view.zoom", "zoom", {}, [](const json&) { return command_ok(json::object()); });
+    table.add("view.pan", "pan", {}, [](const json&) { return command_ok(json::object()); });
 
     const CommandResult result = table.invoke("view.zoomm", json::object());
     CHECK(!result.ok);
@@ -49,8 +50,8 @@ void test_unknown_command_names_itself_and_alternatives() {
 
 void test_duplicate_id_is_refused_and_first_wins() {
     CommandTable table;
-    CHECK(table.add("dup", "original", [](const json&) { return command_ok(json{{"who", "first"}}); }));
-    CHECK(!table.add("dup", "impostor", [](const json&) { return command_ok(json{{"who", "second"}}); }));
+    CHECK(table.add("dup", "original", {}, [](const json&) { return command_ok(json{{"who", "first"}}); }));
+    CHECK(!table.add("dup", "impostor", {}, [](const json&) { return command_ok(json{{"who", "second"}}); }));
     const CommandResult result = table.invoke("dup", json::object());
     CHECK(result.ok);
     CHECK_EQ(result.value["who"].get<std::string>(), std::string("first"));
@@ -59,7 +60,7 @@ void test_duplicate_id_is_refused_and_first_wins() {
 
 void test_handler_error_is_propagated_verbatim() {
     CommandTable table;
-    table.add("fails", "always fails", [](const json&) {
+    table.add("fails", "always fails", {}, [](const json&) {
         return command_error("missing field 'region'");
     });
     const CommandResult result = table.invoke("fails", json::object());
@@ -70,7 +71,7 @@ void test_handler_error_is_propagated_verbatim() {
 
 void test_contains() {
     CommandTable table;
-    table.add("known", "", [](const json&) { return command_ok(json::object()); });
+    table.add("known", "", {}, [](const json&) { return command_ok(json::object()); });
     CHECK(table.contains("known"));
     CHECK(!table.contains("unknown"));
 }

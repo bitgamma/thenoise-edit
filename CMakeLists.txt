@@ -74,7 +74,8 @@ add_library(noise_core STATIC
     src/core/base64.cpp
     src/core/command.cpp
     src/core/geom.cpp
-    src/core/image.cpp)
+    src/core/image.cpp
+    src/core/shortcut.cpp)
 target_include_directories(noise_core PUBLIC src)
 target_link_libraries(noise_core PUBLIC noise_platform nlohmann_json::nlohmann_json Threads::Threads)
 target_include_directories(noise_core PUBLIC ${LIBPNG_INCLUDE_DIRS})
@@ -99,7 +100,10 @@ add_library(noise_app STATIC
 target_include_directories(noise_app PUBLIC src)
 target_link_libraries(noise_app PUBLIC noise_dbg noise_core noise_platform)
 
+# The host side of the UI: it needs sokol's event and keycode types, so the key-event
+# translation builds with this target and not with the windowless command table.
 add_library(noise_ui STATIC
+    src/app/shortcuts.cpp
     src/app/ui.cpp)
 target_include_directories(noise_ui PUBLIC src)
 target_link_libraries(noise_ui PUBLIC noise_app noise_gfx imgui sokol)
