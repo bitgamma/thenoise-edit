@@ -48,6 +48,25 @@ inline void expect_near(double a, double b, double epsilon, const char* expressi
     }
 }
 
+// Both operands evaluated exactly once, so a side-effecting argument (a command call) is
+// safe here: a comparison that runs the code twice reports a difference that is not there and
+// changes state twice.
+template <typename A, typename B>
+inline void expect_eq(const A& a, const B& b, const char* expression, const char* file, int line) {
+    ++checks;
+    if (!(a == b)) {
+        report(expression, file, line, diff(a, b));
+    }
+}
+
+template <typename A, typename B>
+inline void expect_ne(const A& a, const B& b, const char* expression, const char* file, int line) {
+    ++checks;
+    if (a == b) {
+        report(expression, file, line, diff(a, b));
+    }
+}
+
 // Anything with `.ok` and `.error` (CommandResult): evaluated once, so the argument
 // may be a call.
 template <typename R>
@@ -65,12 +84,8 @@ inline int summary(const char* suite) {
 
 }
 
-// CHECK_EQ / CHECK_NE evaluate both arguments twice (once for the comparison, once
-// for the failure detail): pass plain values, not calls with side effects.
 #define CHECK(...) ::noise::test::expect((__VA_ARGS__), #__VA_ARGS__, __FILE__, __LINE__)
 #define CHECK_OK(expr) ::noise::test::expect_ok((expr), #expr " ok", __FILE__, __LINE__)
-#define CHECK_EQ(a, b) ::noise::test::expect((a) == (b), #a " == " #b, __FILE__, __LINE__, \
-                                             ::noise::test::diff((a), (b)))
-#define CHECK_NE(a, b) ::noise::test::expect((a) != (b), #a " != " #b, __FILE__, __LINE__, \
-                                             ::noise::test::diff((a), (b)))
+#define CHECK_EQ(a, b) ::noise::test::expect_eq((a), (b), #a " == " #b, __FILE__, __LINE__)
+#define CHECK_NE(a, b) ::noise::test::expect_ne((a), (b), #a " != " #b, __FILE__, __LINE__)
 #define CHECK_NEAR(a, b, eps) ::noise::test::expect_near((a), (b), (eps), #a " ~= " #b, __FILE__, __LINE__)
