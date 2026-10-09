@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+#pragma once
+
+#include "app/state.h"
+#include "core/command.h"
+
+namespace noise::app {
+
+// Each group registers its own commands and owns the argument parsing they need;
+// `register_commands` is the one place the whole surface is assembled.
+void register_document_commands(AppState& state, CommandTable& table);
+void register_paint_commands(AppState& state, CommandTable& table);
+void register_view_commands(AppState& state, CommandTable& table);
+
+}  // namespace noise::app

@@ -59,6 +59,11 @@ src/
     overlay.{h,cpp}    ants, guides, ghost regions, wipe slider
   app/
     main.cpp           sokol entry, frame loop, mailbox drain
+    commands.cpp       assembles the whole command table from the groups below
+    command_args.{h,cpp} shared argument readers and the JSON each command answers with
+    document_commands.cpp doc.* image.get
+    paint_commands.cpp tool.stroke, edit.undo/redo
+    view_commands.cpp  view.*, and the fit that waits for a real canvas area
     tools/             one file per tool; Tool = press/drag/release/overlay/commit state machine
     shortcuts.{h,cpp}  platform key event -> canonical shortcut text (the only sokol-aware
                        part of the app layer)
