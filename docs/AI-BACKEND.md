@@ -36,6 +36,22 @@ already in the data.
 5. else the role is **unresolved**: dependent commands render disabled with the reason and
    the exact `lemonade import` / `lemonade pull` that would fix it. Never fail at click time.
 
+What the dev box taught this list (`probes/2026-10-09-live-server.md`):
+
+* **The list is the box's, today.** Two runs on one URL returned 187 and 163 entries under
+  `show_all=true`, and the two Klein sizes swapped which one was downloaded between them. Nothing
+  may bake in a model id — resolution is `recipe + labels + downloaded` over what is answered now.
+  `GET /models` is the short list (the useful one); `?show_all=true` is the whole catalogue.
+* **`image_defaults` per entry is the authoritative source of role defaults** (`steps`,
+  `cfg_scale`, `width`, `height`) and they differ per model — Klein 4 steps, Krea 8. A recipe that
+  carries a step count is restating a fact it could read.
+* **An `image` label does not mean a distinct model.** `Krea-2-VAE` appears as a
+  `thenoise`+`image` entry with its own defaults; it is a VAE-swap alias. No field separates it
+  from a real candidate, so preference order names candidates rather than trusting labels.
+* **Discovery cannot veto a capability.** `/models` listed nothing labelled `upscaling` while
+  `POST /images/upscale` served `RealESRGAN-4xplus-TheNoise` fine (512²→2048², 7.4 s). For the
+  `upscale` role: discovery picks a preference, the endpoint decides.
+
 `roles.toml` (shipped, and the single source of truth) holds role ids, predicates, style
 class, tier ranks and preference order. **Model ids appear only in that file** — so adding,
 retiring or re-ranking a model is a data change, and the future candidate picker is a UI
@@ -89,6 +105,10 @@ leaves the client.
 Tiers exist so nothing accidental creeps in. The builder is the only place that can add a
 field, and it refuses tier-2 unless the model profile opts in.
 
+**The builder also validates its own values, because nobody downstream does.** `seed:
+"not-a-number"` is answered with `200` and a default (measured). A misspelt field name is
+therefore silent rather than loud, and the one place that can catch it is here.
+
 **Tier 1 — OpenAI-level, used in MVP**
 
 | Endpoint | Content type | Fields |
@@ -136,9 +156,11 @@ with `seed = base + i` against the normal endpoint.
 
 ## Server session & model switching (the constraint that shapes the UX)
 
-TheNoise **loads one model at a time**. Krea 2 (21–35 GB) and Qwen-Image-2.1 (17–30 GB) are
-the same size class as the machine's memory budget, so a swap is a real event: tens of
-seconds, sometimes minutes, on a LAN box. Therefore:
+TheNoise **loads one model at a time** — `/health` says so in the data:
+`max_models.image == 1`, and `model_loaded` is `None` until something is asked for. Krea 2
+(21–35 GB) and Qwen-Image-2.1 (17–30 GB) are the same size class as the machine's memory budget,
+so a swap is a real event: the first request that followed an unloaded model on the dev box cost
+32.0 s for a 512² image. Tens of seconds, sometimes minutes, on a LAN box. Therefore:
 
 * The app has a **session model** concept, shown persistently in the status bar:
   `server · model · loaded/pinned · ETA seed`.
@@ -153,7 +175,9 @@ seconds, sometimes minutes, on a LAN box. Therefore:
   isn't the one that pays model init.
 * **Queue concurrency 1 per server**, always.
 * `GET /v1/stats` is token-oriented, not image-oriented ⇒ we measure latency **client-side**
-  per `(model, w×h, steps)` and keep an EMA for ETA display.
+  per `(model, w×h, steps)` and keep an EMA for ETA display. **A request the server has already
+  answered is served from its own cache in ~0.1 s**, so a replay must not feed the EMA — an ETA
+  drifting toward the cache's latency would make every job look instant.
 
 ## Transport, auth, multi-server
 
@@ -162,7 +186,7 @@ Lemonade is usually remote (LAN), usually with `LEMONADE_API_KEY` set.
 ```
 ServerProfile (N of them, one active):
   name              "Studio"
-  base_url          https://192.168.1.20:13305/v1     (http:// allowed on a trusted LAN)
+  base_url          https://<server>:13305/v1         (http:// allowed on a trusted LAN)
   api_key           from $NOISE_EDIT_API_KEY, OS keyring, or 0600 config — never in a .noise file
   timeout_connect   5 s
   timeout_request   adaptive: max(60 s, predicted ETA × 4)   ← local diffusion is slow by design
@@ -189,9 +213,12 @@ Input: `(document composite, selection mask, recipe)` → one compiled request.
 1. BBOX      tight bbox of mask (canvas px)
 2. GROW      bbox += max(context_ratio × bbox_size, min_context)      // default 0.35 / 64 px
 3. CLAMP     clamp to canvas
-4. SNAP      W,H up to a multiple of size_policy.multiple (64: flow-matching latents are
-             16× and 64 suits every role default; example values throughout this section —
-             the numbers live in roles.toml / the recipe policy, nowhere else)
+4. SNAP      W,H up to a multiple of size_policy.multiple, which is **16**, measured — not 64.
+             The engine snaps a request to a multiple of 16 and never refuses an awkward one:
+             asking 500x300 answers 512x304. Send multiples of 16 so the crop you planned is the
+             crop you get, and expect returned dims != requested dims regardless (the resample
+             below already handles it). The number lives in roles.toml / the recipe policy,
+             nowhere else
 5. FIT       if area > region_budget (default 1024×1024 equivalent) → uniform scale down;
              record scale. Never upscale a region beyond the source resolution.
 6. CROP      flattened base = visible layers below ∪ active layer; alpha flattened over a
@@ -200,9 +227,10 @@ Input: `(document composite, selection mask, recipe)` → one compiled request.
              default blur: it destroys *what* the object is while preserving the colour,
              luminance gradient and light direction of what is behind it. Pure white is the
              worst option and is offered only for experiments.
-8. SIZE      always send explicit size = prepped region size. The engine's edit path lets
-             the first reference image set output size when width/height are omitted; we do
-             not rely on that — implicit sizes bite.
+8. SIZE      always send explicit size = prepped region size, measured twice now: an edit with
+             `size` returns it exactly, an edit without it returns the **model default** (1024²)
+             rather than the reference image's size, at 30.3 s against 7.4 s for the same 512²
+             edit. Omitting it is neither correct nor cheap.
 9. WRITE     PNG encode (these exact bytes are the cache key)
 ```
 
@@ -251,7 +279,8 @@ The expensive thing is not inference, it is **model switching**. Design around t
 Supporting machinery:
 
 * **Request cache** keyed `sha256(server|model|prompt|params|prep|inputBlobIds)` — instant
-  replay of anything ever generated, survives restarts.
+  replay of anything ever generated, survives restarts. The server keeps a cache of its own, so
+  a fast response proves neither our cache nor a model run; a job record says which one answered.
 * **Latency EMA** per `(model, w×h, steps)` from client-measured timings → ETA before you
   commit, and it drives `timeout_request`. The engine's published benchmarks are the
   starting point, not the runtime source: every box differs.
@@ -322,7 +351,7 @@ our own recipe-tuning workflow all depend on this panel existing early.
 | model not loaded/`downloaded:false` | discovery | greyed in picker + the `lemonade` command to pull it |
 | not edit-capable | engine `400` on `/edit` | should be impossible (role gating); if it happens, mark the profile `edit=false` and persist |
 | unsupported field | `400` | strip least-important field, retry once, persist deduction to profile |
-| size rejected | `400` naming size | clamp to profile `size_policy`, retry |
+| size rejected | `400` naming size | clamp to profile `size_policy`, retry. Measured: a non-multiple is *not* refused, it is snapped, so this row is for a size out of range rather than an odd one |
 | policy refusal | model-specific text | rephrase via the recipe's refusal-safe template variant |
 | timeout | adaptive per-profile | Retry at lower `size`/`steps` offered |
 | bad image | blank/flat/undecodable PNG | mark blob bad, retry once with a new seed |
@@ -330,20 +359,39 @@ our own recipe-tuning workflow all depend on this panel existing early.
 Every request/response (headers redacted, image bytes replaced by blob hash, plus timings
 and HTTP status) goes to a rolling `ai.log`. That log is how we tune recipes.
 
-## Probe harness (designed, deferred)
+The two refusal bodies that exist today, verbatim from the probe, because the client branches on
+their shape and not on their prose:
 
-`tools/tn_probe.py` exercises a real server and produces `docs/probes/*.md`: health+model/role
-dump, `generations`/`edits` timing grids per role default at several sizes, a drift pixel-diff
-report for edits, a prep ablation (`none|average|blur|pixelate|white`), upscale per model,
-plus `n` / multi-image / cancel / timeout behaviour.
+```
+404 {"error":{"code":"model_not_found","message":…, "param":"model","requested_model":…}}
+400 {"error":{"message":"Missing 'prompt' field in request","type":"invalid_request_error"}}
+```
 
-**Deferred: the Lemonade box is shared and usually busy.** The latencies in this document are
-the engine's own published numbers, so they are a sound baseline — but they are not per-box
-truth, which is why the runtime uses a measured EMA and why `timeout_request` is adaptive
-rather than derived from a table.
+Neither names a server address; the base URL the profile supplied is what the UI shows back.
 
-The dev server is available to tests on request: the human signals it by exporting
-`THENOISE_URL` and `THENOISE_API_KEY`. The default `ctest` run stays hermetic against
-recorded fixtures; the `live`-tier tests run only when that env is present (skip loudly
-otherwise) and assert contract and invariants — never model output — while recording timings
-back into `docs/probes/`. See `AGENTS.md` §2 and `ARCHITECTURE.md` §Testing.
+## Probe harness
+
+`tools/tn_probe.py` exercises a real server and its output becomes `docs/probes/*.md`. It resolves
+the `edit` role the way the registry will (capability predicate over what the box has downloaded,
+smallest first; `--model` overrides), then asserts only what the client branches on — discovery
+fields, that an explicit `size` comes back exact, that a snap lands on a multiple of 16, the shape
+of a 404 and a 400 — and prints timings instead of asserting them, because the box is shared and
+a resident model changes every number. Requests vary the seed, since an identical request is a
+server-cache hit rather than a run, and `--max-images` caps the spend (a full pass is 9).
+
+```sh
+cmake -B build -DNOISE_LIVE_TESTS=ON && ctest --test-dir build -L live   # or run the tool directly
+```
+
+It is registered as ctest `tn_probe_live` under label `live` and **only registered when
+configured on**, so a plain `ctest` never touches the network even in a shell that exports the
+credentials; the tool still skips with a `SKIP:` line (and `SKIP:` means skip, not pass) when
+`THENOISE_URL` / `THENOISE_API_KEY` are absent. A budget that runs out mid-probe reports a skip,
+never a pass over checks that were never made.
+
+The live tier asserts **contract and invariants, never model output**. What has been measured so
+far is in `probes/2026-10-09-live-server.md`; the latencies quoted elsewhere in this document are
+the engine's published numbers — a sound baseline, not per-box truth, which is why the runtime
+uses a measured EMA and an adaptive `timeout_request`. Not yet probed: the prep ablation
+(`none|average|blur|pixelate|white`), edit drift over a large region, cancel mid-request, and
+`n`/multi-image behaviour. See `AGENTS.md` §2 and `ARCHITECTURE.md` §Testing.
