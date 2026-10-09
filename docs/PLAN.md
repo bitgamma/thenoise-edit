@@ -76,99 +76,59 @@ Still open, when convenient:
   99.5 -> 64.3 ms median across the checker fix. Both are far from the 5.7 ms above, which
   was a different scene; re-measure when the compositor and texture cache land.
 
+* **Keyboard shortcuts are part of a command's registration.** `CommandTable::add` takes the
+  bindings and normalizes the text, refuses a malformed shortcut and refuses to bind a key
+  twice; `app::shortcut_of` turns a sokol key event into the same canonical text and
+  `main.cpp` dispatches through the table; `command.list` reports the keymap. Seeded: `F` fit,
+  `Ctrl+S` save, `Ctrl+Z`/`Ctrl+Y` undo and redo, `Escape`/`Ctrl+Q` quit - the rest arrive with
+  their tools. Two findings: `simgui_handle_event()` returns `WantCaptureKeyboard ||
+  WantCaptureMouse` and the pointer is always over chrome, so the old
+  `if (simgui_handle_event(ev)) return;` dropped **every** key event (which is why the
+  hardcoded Escape-quit never worked); and on a window-manager-less Xvfb display keys reach
+  nobody until `XSetInputFocus` picks the app window, while mouse events do not care.
+  `tools/wire_input.py` does both and `test_input_gestures` covers wheel zoom-to-cursor,
+  right-drag pan, `F`, a failing `Ctrl+S` reaching the log, injected `Ctrl+Z` undoing a real
+  stroke, an unbound key doing nothing, and `Escape` quitting.
+* **The paint path exists and undoes exactly.** `core/document.{h,cpp}` owns the document
+  model (it lived in `app/state.h`, where any command could poke it), `core/history.{h,cpp}`
+  undoes and redoes **rectangle deltas** budgeted by stored bytes, `core/brush.{h,cpp}` is the
+  CPU stamp path, and `tool.stroke` / `edit.undo` / `edit.redo` are on the wire with
+  `Ctrl+Z`/`Ctrl+Y` bound. Measured numbers and what they ruled in and out:
+  `docs/probes/2026-10-09-paint-core.md`. Two findings: a one-pixel brush painted *nothing*
+  while the antialiasing feather lived inside the circle, and a command that checksums the
+  pixels it just painted costs more than the paint did (166 ms -> 10.2 ms per 2048² stroke).
+
 ## Next steps, in order
 
-1. **CI waits until MVP** (decided 2026-10-09): the workflow is not going to run on a
-   runner before MVP, so nothing here should spend effort on remotes or runners. The local
-   gate stands in for it and is the thing to keep green -
-   `cmake -B build -G Ninja && cmake --build build && xvfb-run -a ctest --output-on-failure`.
-   `.github/workflows/ci.yml` stays as written and unverified; when it finally runs, expect
-   the golden to be what differs under Ubuntu's llvmpipe: read `differing_bytes` /
-   `max_channel_delta`, then either widen the two constants in `tools/wire_drive.py`
-   deliberately or re-record there with `--update-golden`. Never widen a tolerance to hide a
-   structural diff.
-
-2. **Keyboard shortcuts live in the command table.** `CommandTable::add` takes the bindings,
-   normalizes the text, refuses a malformed shortcut and refuses to bind a key twice;
-   `app::shortcut_of` turns a sokol key event into the same canonical text and `main.cpp`
-   dispatches through the table; `command.list` reports the keymap. Seeded: `F` fit,
-   `Ctrl+S` save, `Escape` and `Ctrl+Q` quit - the rest of MVP.md's keys arrive with their
-   tools. Two findings worth keeping:
-   * `simgui_handle_event()` returns `WantCaptureKeyboard || WantCaptureMouse`, and the
-     pointer is always over chrome, so the old `if (simgui_handle_event(ev)) return;` dropped
-     **every** key event - which is why the hardcoded `Escape` quit never worked either. ImGui
-     is now offered the event and only `WantCaptureKeyboard` gates the shortcut.
-   * Injecting keys needs focus: on a window-manager-less Xvfb display keys reach nobody
-     until `XSetInputFocus` picks the app window (mouse events do not need it).
-     `tools/wire_input.py` does both; `test_input_gestures` covers wheel zoom-to-cursor,
-     right-drag pan, `F`, a failing `Ctrl+S` reaching the log, an unbound key doing nothing,
-     and `Escape` quitting.
-3. **M1 paint core.** Acceptance (MVP.md): *5000-dab stroke at 2048² without dropped frames,
-   20× undo*. Landed so far:
-   * **Paint path**: `core/brush.{h,cpp}` (dabs at `spacing x size` along the path, round stamp
-     with a smoothstep falloff and a half-pixel rim band, dabs accumulated into a coverage
-     buffer so opacity is per stroke and flow per dab), `core/document.{h,cpp}` taking over
-     the document model from `app/state.h`, `core/history.{h,cpp}` undoing and redoing
-     **rectangle deltas** budgeted by stored bytes. `tool.stroke`, `edit.undo`, `edit.redo`
-     are on the wire, `Ctrl+Z`/`Ctrl+Y` are bound, `app.state` reports the brush and the
-     history depths, and the status bar shows tool, size and undo depth.
-     Tests: `test_brush` (dab placement across corners, coverage shape and monotonicity, the
-     blend reference arithmetic including two strokes at half flow landing on 0.75 alpha, the
-     eraser, and the invariant that `stroke_bounds` is exactly the painted rectangle - if the
-     two ever disagreed, undo would silently leave paint behind), `test_history` (undo after
-     12 mutations restores every byte; redo restores them forward; one undo touches only its
-     own rectangle, checked as a whole-image diff against a document that ran only the first
-     step; a mutation after an undo clears redo; the budget drops whole steps oldest-first),
-     and `test_app` (one stroke is one step whose undo returns the document checksum exactly;
-     a rejected stroke names the field and changes no pixels; a stroke that misses the
-     document is not a step). `tools/wire_input.py` presses `Ctrl+Z` for real: document
-     `f3cc10313642` -> stroke `eec9c191e58c` -> undo `f3cc10313642`.
-     Two findings: a brush of one pixel painted *nothing* while the rim feather lived inside
-     the circle - the band has to straddle the rim (`kRimBand`) - and `screenshot` hashes the
-     whole framebuffer, so the frame can never compare equal across a frame boundary (the
-     status bar reports a live `frame_ms`); compare document checksums, not screenshots, for
-     exactness.
-   Measured (docs/probes/2026-10-09-paint-core.md), because three different things looked
-   like the bottleneck until they were timed: 5237 dabs across a 2048² document take
-   **108 ms in the Debug build the app and CI use** (32 ms for the same stroke at `-O2`),
-   the rectangle delta costs 15 MiB, undo restores the document checksum exactly, and a
-   frame presents in ~4 ms afterwards. `tools/stroke_probe.py` (`test_stroke_probe`) re-runs
-   that and asserts only wide bounds - it is there to catch a paint path that becomes tens of
-   times slower or stops undoing exactly, not one that loses five percent. Two things it
-   turned up:
-   * `tool.stroke` used to answer with a checksum of the pixels it had just painted, and
-     `sha256` over 16 MB cost more than the stroke: 166 ms per call, 10 ms after the checksum
-     moved back to `doc.get`, which is the call a caller makes when it wants one.
-   * A full `sg_image` re-upload after a commit costs ~3 ms at 2048² under llvmpipe - cheap
-     **once per stroke**, which is why live pointer painting needs the GPU stamp preview and
-     not a per-mouse-move revision bump. It is not, at this size, the argument for
-     dirty-rect uploads; tiles remain the answer if rectangle deltas ever cost like images.
-   Next, in order:
-   a. **Paint from the pointer, not only from the wire**: the tool state machine
-      (press / drag / release) in `app/tools/`, GPU stamp quads previewed during the drag, one
-      `Document::paint` on release. The bound that matters is one pointer event per frame, and
-      the measurement above says a commit cannot be paid that often. `tool.stroke` stays the
-      test path and the recorded-session path.
-   b. **`.noise` v0 and the content-addressed blob store** (`ARCHITECTURE.md`'s file format:
-      single-file zip, `manifest.json:format`, blobs by hash): undo wants rectangles, layers
-      want `BlobRef` sources, and the container is what makes both worth persisting.
-      Round-trip test: save -> load -> identical checksums and identical history depth; older
-      `format` values refused with a message naming the version found.
-   c. **Layers** (`layer.*`), then the tool keys (`B`, `E`, `[`, `]`) that select and tune the
-      brush instead of naming it per stroke.
-   d. **Dirty-rect texture upload**, only when something measured needs it (see the note
-      above about what it is and is not).
-4. **Close the small honest gaps** left in M0, when convenient:
-   * `--headless` (`SG_BACKEND_NULL` + CPU composite) from the wire spec is not implemented; CI
-     uses Xvfb + llvmpipe instead. Until it exists, keep the `ARCHITECTURE.md` note honest.
-   * The wire token (`WireConfig::token`) is honoured by the server but the app never generates
-     one or writes the 0600 file. Loopback-only for now.
-   * `src/app/commands.cpp` is ~470 lines: split it by group (`doc.*`, `view.*`, pixels, app/log)
-     when `layer.*` lands, not before.
-5. **M0.5 probe harness** (`tools/tn_probe.py`, `docs/probes/`) — blocked on the dev server.
-   Ask the human to export `THENOISE_URL` / `THENOISE_API_KEY`; it feeds `size_policy`,
-   role default order, ETA seeds and recipe wording, so it should land before M3 designs
-   hard-code any of those.
+1. **CI waits until MVP** (decided 2026-10-09): the workflow is not going to run on a runner
+   before MVP, so nothing here should spend effort on remotes or runners. The local gate
+   stands in for it and is the thing to keep green - `cmake -B build -G Ninja && cmake --build
+   build && xvfb-run -a ctest --output-on-failure`. `.github/workflows/ci.yml` stays as
+   written and unverified; when it finally runs, expect the golden to be what differs under
+   Ubuntu's llvmpipe: read `differing_bytes` / `max_channel_delta`, then either widen the two
+   constants in `tools/wire_drive.py` deliberately or re-record there with `--update-golden`.
+   Never widen a tolerance to hide a structural diff.
+2. **Paint from the pointer, not only from the wire**: the tool state machine (press / drag /
+   release) in `app/tools/`, GPU stamp quads previewed during the drag, one `Document::paint`
+   on release. The bound that matters is one pointer event per frame, and
+   `docs/probes/2026-10-09-paint-core.md` says a commit cannot be paid that often: a full
+   texture re-upload is ~3 ms at 2048², fine once per stroke and not fine per mouse event.
+   `tool.stroke` stays the test path and the recorded-session path, and the wire command that
+   makes the interactive tool observable is `tool.state` (or the fields it adds to
+   `app.state`): active tool, in-progress stroke, dab count, pending commit.
+3. **`.noise` v0 and the content-addressed blob store** (`ARCHITECTURE.md`'s file format:
+   single-file zip, `manifest.json:format`, blobs by hash): undo wants rectangles, layers want
+   `BlobRef` sources, and the container is what makes both worth persisting. Round-trip test:
+   save -> load -> identical checksums and identical history depth; older `format` values
+   refused with a message naming the version found.
+4. **Layers** (`layer.*`), then the tool keys (`B`, `E`, `[`, `]`) that select and tune the
+   brush instead of naming it per stroke.
+5. **Dirty-rect texture upload**, only when something measured needs it - see the note above
+   about what it is and is not.
+6. **M0.5 probe harness** (`tools/tn_probe.py`, `docs/probes/`) — blocked on the dev server.
+   Ask the human to export `THENOISE_URL` / `THENOISE_API_KEY`; it feeds `size_policy`, role
+   default order, ETA seeds and recipe wording, so it should land before M3 designs hard-code
+   any of those.
 
 ## Environment notes for this machine
 
