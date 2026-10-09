@@ -58,13 +58,20 @@ void register_document_commands(AppState& state, CommandTable& table) {
         const std::string path = args.at("path").get<std::string>();
         std::string error;
         std::vector<Layer> loaded;
-        if (io::extension_of(path) == io::kProjectExtension) {
+        // The bytes decide, not the name. `.noise`, `.ora` and a dozen other formats are all ZIP
+        // containers, and routing an OpenRaster file by its extension sent it to the PNG decoder,
+        // which reported "Not a PNG file" about a file that is a perfectly good archive of
+        // something we do not read. A container that is not ours is refused with its own mimetype.
+        std::string sniff_error;
+        if (io::zip_container_at(path, sniff_error)) {
             io::Project project;
             if (!io::load_project(path, project, error)) {
                 return fail("doc.open", error);
             }
             loaded = std::move(project.layers);
             state.carried = std::move(project.carried);
+        } else if (!sniff_error.empty()) {
+            return fail("doc.open", sniff_error);
         } else {
             Image flat = io::load_png(path, error);
             if (flat.empty()) {

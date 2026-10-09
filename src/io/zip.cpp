@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "io/zip.h"
 
+#include "io/file.h"
+
 #include <zlib.h>
 
 #include <cstring>
@@ -241,6 +243,18 @@ std::vector<std::uint8_t> ZipWriter::bytes() const {
     put32(out, static_cast<std::uint32_t>(directory_start));
     put16(out, 0);  // comment length
     return out;
+}
+
+bool zip_container_at(const std::string& path, std::string& error) {
+    std::vector<std::uint8_t> head;
+    if (!read_head(path, head, 4, error)) {
+        return false;
+    }
+    if (head.size() < 4 || head[0] != 'P' || head[1] != 'K') {
+        return false;
+    }
+    // A stored local header, or the end record of an archive with nothing in it.
+    return (head[2] == 3 && head[3] == 4) || (head[2] == 5 && head[3] == 6);
 }
 
 std::optional<std::vector<ZipEntry>> read_zip(std::span<const std::uint8_t> bytes,

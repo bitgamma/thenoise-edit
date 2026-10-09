@@ -98,8 +98,7 @@ src/
     headless.{h,cpp}   run the same command surface without a window (SG_BACKEND_NULL)
   io/
     png.{h,cpp} webp.{h,cpp} jpeg.{h,cpp}
-    project.{h,cpp}    .noise read/write
-    ora.{h,cpp}        OpenRaster import/export
+    project.{h,cpp}    .noise read/write (the only layered format we read or write)
     psd_export.{h,cpp} (M5, optional)
     config.{h,cpp}     settings, keyring access
 tests/         core + ai/compiler unit tests (no GPU), golden-image tests
@@ -251,16 +250,18 @@ it's a first-class file-format feature.
 
 ## File format
 
-**Decision: our own container, laid out as a superset of OpenRaster.**
-`.noise` = ZIP, atomic save (`tmp` + rename), unknown entries preserved on load.
-MIME `application/x-noise+zip`, binary `noise-edit`.
+**Decision: our own container, and only ours.** `.noise` = ZIP, atomic save (`tmp` + rename),
+unknown entries preserved on load. MIME `application/x-noise+zip`, binary `noise-edit`.
+**No OpenRaster**: no `stack.xml`, no `.ora` import or export (MVP decision log). The layout below
+is not a compatibility projection of anyone else's format — nothing in it exists to be read by
+another application, which is what lets the members say exactly what the model means.
 
 ```
 mimetype                       "application/x-noise+zip"  (stored, first entry, no extra fields)
 manifest.json                  app doc: format version, doc size, dpi, layer tree (our richer model),
                                selection state, viewport, prefs snapshot
-stack.xml                      ORA-compatible layer stack (so Krita/MyPaint can open us *today*)
-mergedimage.png                flattened composite, regenerated on save (for other apps / thumbnails)
+mergedimage.png                flattened composite, regenerated on save: a thumbnail and a quick
+                               look without decoding the layer PNGs
 layers/<n>/layer.png           per-layer payload (or .webp when fully opaque and large)
 layers/<n>/mask.png            optional per-layer mask
 provenance/<op>.json           AI request/response metadata per generated layer (prompt, model, seed,
@@ -309,14 +310,14 @@ Two checks carry this section, because our own reader agreeing with our own writ
 not reach the end record is refused - `unzip` tolerates that error, Python's `zipfile` does not),
 and `tools/container_probe.py` has `zipfile` read a project the app saved and decode its layer PNG.
 
-`stack.xml`, `provenance/`, `blobs/`, `history.jsonl`, `variants/` and `Thumbnails/` are not
-written yet; nothing about them is invented ahead of the milestone that needs them.
+`provenance/`, `blobs/`, `history.jsonl`, `variants/` and `Thumbnails/` are not written yet; nothing
+about them is invented ahead of the milestone that needs them.
 
 ### Why not adopt an existing format wholesale
 
 | Format | Verdict | Reason |
 |---|---|---|
-| **OpenRaster (.ora)** | adopt layout, write on save, read on import | The only real *open* layered interchange (Krita, MyPaint, GIMP plugin, KAlcura…). ZIP + `stack.xml` + per-layer PNG + `mask.png` + offsets + `mode="multiply:0.5"` + groups via nested `<stack>`. But: XML, no adjustment/text/vector layers, **nowhere to put generation provenance**, and it forces lossless-relevant assumptions. Perfect as the *compatibility projection* of our model, not as the model. |
+| **OpenRaster (.ora)** | **rejected** (human decision, out of the MVP and of the design) | It was the only *open* layered interchange (Krita, MyPaint, GIMP…), and adopting its layout cost us nothing on day one because both formats are ZIP + per-layer PNG. What it bought was the ability to open someone else's file, and what it charged was a **second semantics for the same stack**: `stack.xml` attributes against `manifest.json` fields, `mode="multiply:0.5"` against `BlendMode` + per-layer `opacity`, masks at ORA offsets against our own — every layer feature then lands in two places that have to agree. Provenance, the one thing this project exists to keep, has nowhere to go in it. Flat PNG/WebP/JPEG carry everything the MVP needs to hand out. |
 | **Photoshop PSD/PSB** | export-only, M5 | Adobe published the official spec in 2024, so writing it is legitimate work rather than folklore — but blend-mode legacy pairs, channel packing and mask encoding are a week of pain. Interop value is real, fidelity of *our* features is not. |
 | **KRA / XCF** | reject | app-private, no stable spec for third parties, reference libs are GPL (licence gravity onto our binary) |
 | **Multi-page TIFF** | reject | pages ≠ layers: no blend modes, no masks, no stack semantics |
@@ -324,9 +325,11 @@ written yet; nothing about them is invented ahead of the milestone that needs th
 | **PNG / WebP / AVIF / JPEG-XL** | flat export only | single frame; no stack |
 | **SVG** | reject | not a raster layer model |
 
-Round-trip guarantee we *can* honestly make: `.noise → .ora → Krita` (layers, masks,
-opacity, blend, visibility) and `.ora → .noise` (same subset, provenance absent), and
-`.noise → flat PNG/WebP/JPEG` always exact.
+Round-trip guarantee we *can* honestly make: `.noise` written by this build and read back is
+byte-equal in every member it does not rewrite, a document saved and reopened keeps its layer
+state — visibility, opacity, blend mode — exactly, and `.noise → flat PNG/WebP/JPEG` is exact.
+A file that is not ours (an `.ora`, a ZIP without our `mimetype`, a `.noise` of another `format`)
+is **refused naming what met us**, not opened partially and not guessed at.
 
 ## Debug wire
 

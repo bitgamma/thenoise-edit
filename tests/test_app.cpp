@@ -4,7 +4,9 @@
 #include "app/commands.h"
 #include "app/state.h"
 #include "core/image.h"
+#include "io/file.h"
 #include "io/png.h"
+#include "io/zip.h"
 #include "core/log.h"
 #include "dbg/wire.h"
 #include "platform/platform.h"
@@ -178,6 +180,39 @@ void test_a_brush_field_on_the_command_that_takes_none_is_an_error() {
     }
     CHECK(saw_tool_set);
     CHECK(saw_tool_stroke);
+}
+
+// One layered format is read, and a container that is not ours says which one it turned out to be.
+// Routing by extension used to send an OpenRaster file to the PNG decoder and answer "Not a PNG
+// file" about a file that is a perfectly good archive of something this app does not read; a
+// directory threw from the standard library. Both are refused, naming the path.
+void test_a_container_that_is_not_ours_is_refused_naming_what_it_met() {
+    Harness h;
+    const std::filesystem::path dir = h.state.runtime_dir;
+    const auto bytes = [](const std::string& text) {
+        return std::span<const std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
+    };
+    io::ZipWriter zip;
+    zip.add("mimetype", bytes("application/openraster"));
+    zip.add("stack.xml", bytes("<image w=\"1\" h=\"1\"><stack/></image>"));
+    std::string write_error;
+    CHECK(io::write_file_atomic((dir / "foreign.ora").string(), zip.bytes(), write_error));
+    // The same bytes under our own extension: the content decides what a file is, so the answer is
+    // the same and the name buys nothing.
+    CHECK(io::write_file_atomic((dir / "claims-to-be.noise").string(), zip.bytes(), write_error));
+
+    for (const char* name : {"foreign.ora", "claims-to-be.noise"}) {
+        const CommandResult result = h.run("doc.open", json{{"path", (dir / name).string()}});
+        CHECK(!result.ok);
+        CHECK(result.error.find("application/openraster") != std::string::npos);
+        CHECK(result.error.find("png") == std::string::npos);  // nothing blamed a decoder it never ran
+    }
+
+    const CommandResult directory = h.run("doc.open", json{{"path", dir.string()}});
+    CHECK(!directory.ok);
+    CHECK(directory.error.find("not a regular file") != std::string::npos);
+    CHECK(directory.error.find(dir.string()) != std::string::npos);
 }
 
 json full_stroke() {
@@ -1004,6 +1039,7 @@ int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
     test_every_command_refuses_an_argument_it_does_not_declare();
+    test_a_container_that_is_not_ours_is_refused_naming_what_it_met();
     test_a_brush_field_on_the_command_that_takes_none_is_an_error();
     test_one_stroke_is_one_step_that_puts_every_byte_back();
     test_a_pointer_gesture_lands_where_the_same_path_painted_in_one_go_lands();

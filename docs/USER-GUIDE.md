@@ -213,5 +213,7 @@ problems and only one of them is a bug:
   (`multiply`, `screen`, …) is the next increment on the layer model.
 - **No reorder, rename, duplicate or merge** in the Layers panel; no move tool.
 - **Only brush and eraser.** No fill, eyedropper, lasso or wand, no pen pressure.
-- **PNG in, PNG out** — no JPEG/WebP import or export, no ORA/PSD.
+- **PNG in, PNG out** — no JPEG/WebP import or export yet, and no `.ora`/PSD at all:
+  OpenRaster is out of the design by decision, so a foreign layered file is refused rather than
+  guessed at.
 - **No autosave or crash recovery**, and the undo history lives and dies with the session.

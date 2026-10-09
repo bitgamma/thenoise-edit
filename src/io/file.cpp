@@ -8,11 +8,31 @@
 #include <system_error>
 
 namespace noise::io {
+namespace {
 
-bool read_file(const std::string& path, std::vector<std::uint8_t>& out, std::string& error) {
-    std::ifstream file(path, std::ios::binary);
+// Opening a directory with an ifstream succeeds on Linux and then throws from libstdc++'s
+// `basic_filebuf::underflow` on the first read, so what kind of path this is gets checked before
+// anything is streamed from it.
+bool open_regular(const std::string& path, std::ifstream& file, std::string& error) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) {
+        error = ec ? "cannot open file: " + path + " (" + ec.message() + ")"
+                   : "not a regular file: " + path;
+        return false;
+    }
+    file.open(path, std::ios::binary);
     if (!file) {
         error = "cannot open file: " + path;
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool read_file(const std::string& path, std::vector<std::uint8_t>& out, std::string& error) {
+    std::ifstream file;
+    if (!open_regular(path, file, error)) {
         return false;
     }
     out.assign((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -20,6 +40,19 @@ bool read_file(const std::string& path, std::vector<std::uint8_t>& out, std::str
         error = "cannot read file: " + path;
         return false;
     }
+    return true;
+}
+
+bool read_head(const std::string& path, std::vector<std::uint8_t>& out, std::size_t want,
+               std::string& error) {
+    std::ifstream file;
+    if (!open_regular(path, file, error)) {
+        return false;
+    }
+    out.resize(want);
+    file.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(want));
+    const std::streamsize got = file.gcount();
+    out.resize(static_cast<std::size_t>(got < 0 ? 0 : got));
     return true;
 }
 

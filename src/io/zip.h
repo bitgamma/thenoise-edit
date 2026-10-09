@@ -30,6 +30,11 @@ private:
     std::vector<ZipEntry> entries_;
 };
 
+// True when the file begins with a ZIP signature, whatever it is called: `.noise`, `.ora` and a
+// dozen other formats are all ZIP containers, and deciding from the bytes is what lets a refusal
+// name the format actually met instead of the one the extension suggested.
+bool zip_container_at(const std::string& path, std::string& error);
+
 // Reads the central directory and returns the members in archive order. Parsing is exact and
 // hostile-input safe: a member that lies about its size, fails its CRC, or cannot be inflated
 // is an error naming that member, not a truncated image.

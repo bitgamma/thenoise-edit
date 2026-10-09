@@ -22,6 +22,10 @@ observed, not assumed; the numbers are from one dev box and rotate with it.
 
 ### Decisions taken by the human this session
 
+0. **Drop `.ora` import/export from the MVP.** We do not need OpenRaster in. What that removes is
+   written into `docs/MVP.md` and `docs/ARCHITECTURE.md`; the container stays our own ZIP, and no
+   ORA-compatible layer stack, no import of foreign files, no second set of semantics to keep true.
+
 1. **`.noise` format: always bump.** Adding required or optional manifest fields bumps
    `manifest.json:format` and refuses older files naming the version. Do not add optional fields
    under an old version number. (Needed for layer `visible` / `opacity` / `mode` / mask refs.)
@@ -47,7 +51,8 @@ observed, not assumed; the numbers are from one dev box and rotate with it.
 | `c59d6bb` | `tn_probe.py` resolves the role instead of naming a model; reports a spent budget as SKIP |
 | `5b8bc33` | live-server probe report, `tn_probe_live` registered, `AI-BACKEND.md` corrected to the measurements |
 | `ade3067` | `docs/USER-GUIDE.md`: the panel, the keys that exist, `.noise` vs PNG, driving the wire |
-| _(this one)_ | `.noise` **format 2**, and what a pointer event and a panel click cost - see `probes/2026-10-09-paint-and-panel-cost.md` |
+| `e858b12` | `.noise` **format 2**, and what a pointer event and a panel click cost - see `probes/2026-10-09-paint-and-panel-cost.md` |
+| `0f87f93` | the probe measures the brush it claims: read settings back from `app.state`, and the corrected cost tables |
 
 ### What the last commit changed, and why it was one commit
 
@@ -77,16 +82,19 @@ with a broken one.
    `tests/test_blend` against the reference, the manifest name list (format bump), the panel's mode
    column becoming a chooser, `layer.set {mode}`.
 2. **The remaining tool keys** (`V`, `M`, `,`/`.`) and the panel rows they belong to.
-3. **Answer the open wire question**: should `CommandTable::invoke` reject arguments its command does
-   not declare, naming the command and its accepted keys? Human's call (wire contract), one function
-   to change, and `tool.brush {size}` is the argument for it.
-4. Later, gated by measurement, in the order the probe numbers say:
+3. Later, gated by measurement, in the order the probe numbers say:
    exact fast paths in `blend_layer` and per-layer content rectangles (a uniform layer change is
    75 ms at 3 x 2048^2 in Release - the pass the GPU is supposed to eat); dirty-rect texture upload
    (the floor under a pointer event); GPU stamp preview; per-layer GPU textures + the shader blend
    pair checked against `core/blend`.
-5. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
+4. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
    outlive the session).
+
+**Answered and implemented since:** the table now refuses an argument its command does not declare
+(`CommandTable::add` takes the accepted names, `invoke` rejects the rest naming the key, the command
+and what would have worked; `command.list` reports `args`). Asked of the human because it changes the
+wire contract; the answer was yes. `test_app` drives the whole registered surface with a bogus key and
+requires every command to refuse it, which is 101 red checks if the rule is removed.
 
 ### Things that bit me, so they don't bite twice
 
