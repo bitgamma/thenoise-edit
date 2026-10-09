@@ -10,6 +10,10 @@ shared and a loaded model changes everything.
 
     THENOISE_URL=... THENOISE_API_KEY=*** python3 tools/tn_probe.py
 
+The model is resolved the way the app will resolve a role - a capability predicate over what
+this box actually has downloaded - so a run does not go red because a box swapped its models.
+`--model` overrides that to measure one named model.
+
 Skips loudly (exit 0, "SKIP:" on stdout) without that environment, so the default ctest run
 stays hermetic. `--max-images` caps how many requests it will make: the point is to learn the
 contract, not to burn the box.
@@ -26,21 +30,25 @@ import time
 import urllib.error
 import urllib.request
 
-DEFAULT_MODEL = "Flux-2-Klein-4B-TheNoise"
 SNAP = 16  # the engine snaps a requested size to this multiple; measured, not assumed
+
+# The id the contract names for the `upscale` role, used only when discovery lists none.
+kDocsUpscaler = "RealESRGAN-4xplus-TheNoise"
 
 
 class Budget:
     def __init__(self, max_images: int) -> None:
         self.remaining = max_images
+        self.spent = 0
 
     def take(self, what: str) -> None:
         self.remaining -= 1
         if self.remaining < 0:
-            raise Skip(f"image budget exhausted before {what}")
+            raise BudgetExhausted(f"{self.spent} requests spent, stopped before {what}")
+        self.spent += 1
 
 
-class Skip(Exception):
+class BudgetExhausted(Exception):
     pass
 
 
@@ -114,7 +122,7 @@ def check(label: str, condition: bool, detail: str, fails: list[str]) -> None:
         fails.append(f"{label}: {detail}")
 
 
-def probe_discovery(client: Client, model: str, fails: list[str]) -> dict:
+def probe_discovery(client: Client, fails: list[str]) -> list[dict]:
     print("GET /health")
     status, health, took = client.get("/health")
     check("health answers", status == 200 and health.get("status") == "ok", f"status={status}", fails)
@@ -128,22 +136,40 @@ def probe_discovery(client: Client, model: str, fails: list[str]) -> dict:
     status, listing, took = client.get("/models")
     check("models answers", status == 200 and isinstance(listing.get("data"), list),
           f"status={status}", fails)
-    candidates = [m for m in listing.get("data", [])
+    entries = listing.get("data", []) if isinstance(listing, dict) else []
+    candidates = [m for m in entries
                   if "image" in m.get("labels", []) and m.get("recipe") == "thenoise"]
-    print(f"       {len(listing.get('data', []))} models, {len(candidates)} thenoise image models "
+    print(f"       {len(entries)} models, {len(candidates)} thenoise image models "
           f"({took * 1000:.0f} ms)")
     for entry in sorted(candidates, key=lambda m: m["id"]):
         print(f"         {entry['id']:30s} labels={','.join(entry['labels']):16s} "
               f"downloaded={str(entry['downloaded']):5s} size={entry.get('size', 0):5.1f} GB "
               f"defaults={entry.get('image_defaults')}")
-    chosen = next((m for m in listing.get("data", []) if m["id"] == model), None)
-    check(f"'{model}' is listed", chosen is not None, "not in /models", fails)
-    if chosen:
-        check("  it is a thenoise recipe", chosen.get("recipe") == "thenoise",
-              f"recipe={chosen.get('recipe')}", fails)
-        check("  it is downloaded", chosen.get("downloaded") is True, "downloaded=false", fails)
-        check("  labels carry a capability set", bool(chosen.get("labels")), "no labels", fails)
-    return chosen or {}
+    return entries
+
+
+def choose_model(entries: list[dict], requested: str, fails: list[str]) -> dict | None:
+    """The `edit` role, resolved against this box, exactly as the registry will do it.
+
+    Which models are downloaded is a property of the machine and changes between sessions, so
+    a model id baked into the probe would be a test that goes red for a reason that is not a
+    defect. Ties break to the smaller download, which is also the cheaper box."""
+    usable = [m for m in entries if m.get("recipe") == "thenoise" and m.get("downloaded")]
+    if requested != "auto":
+        chosen = next((m for m in usable if m["id"] == requested), None)
+        check(f"'{requested}' is a downloaded thenoise model", chosen is not None,
+              "not in /models as a downloaded thenoise recipe", fails)
+        return chosen
+    candidates = [m for m in usable if "edit" in m.get("labels", [])]
+    check("an edit-capable thenoise model is downloaded", bool(candidates),
+          "no downloaded thenoise model carries the 'edit' label", fails)
+    if not candidates:
+        return None
+    chosen = min(candidates, key=lambda m: m.get("size", 0.0))
+    others = [m["id"] for m in candidates if m is not chosen]
+    print(f"       role 'edit' -> {chosen['id']} ({chosen.get('size', 0):.1f} GB, smallest "
+          f"edit-capable{'; others: ' + ', '.join(others) if others else ''})")
+    return chosen
 
 
 def probe_generation(client: Client, model: str, defaults: dict, sizes: list[str],
@@ -251,20 +277,27 @@ def probe_failures(client: Client, model: str, budget: Budget, fails: list[str])
           f"({'accepted and ignored' if status == 200 else str(reply)[:120]})")
 
 
-def probe_upscale(client: Client, budget: Budget, fails: list[str], reference: bytes) -> None:
+def probe_upscale(client: Client, budget: Budget, fails: list[str], reference: bytes,
+                  entries: list[dict]) -> None:
     if not reference:
         print("POST /images/upscale skipped: no reference image")
         return
     print("POST /images/upscale")
+    # A model can be absent from the short list and still served (observed on the dev box), so
+    # discovery picks a candidate but never decides whether the endpoint gets tried.
+    scalers = [m for m in entries
+               if "upscaling" in m.get("labels", []) and m.get("recipe") == "thenoise"]
+    model = min(scalers, key=lambda m: m.get("size", 0.0))["id"] if scalers else kDocsUpscaler
+    if not scalers:
+        print(f"       nothing labelled 'upscaling' in /models; trying '{model}' anyway")
     budget.take("upscale")
     status, reply, took = client.post_json(
-        "/images/upscale", {"model": "RealESRGAN-4xplus-TheNoise",
-                            "image": base64.b64encode(reference).decode()})
+        "/images/upscale", {"model": model, "image": base64.b64encode(reference).decode()})
     if status != 200:
-        print(f"       http={status}: {str(reply)[:160]}")
+        print(f"       '{model}' -> http={status}: {str(reply)[:160]}")
         return
     width, height = png_dims(image_of(reply))
-    check("upscale returns a bigger image", (width, height) >= (512, 512),
+    check("upscale returns a bigger image", width >= 512 and height >= 512,
           f"512x512 in, {width}x{height} out", fails)
     print(f"       512x512 -> {width}x{height} in {took:.1f}s")
 
@@ -273,21 +306,43 @@ def run(args: argparse.Namespace) -> int:
     client = Client(os.environ["THENOISE_URL"], os.environ["THENOISE_API_KEY"], args.timeout)
     budget = Budget(args.max_images)
     fails: list[str] = []
-    print(f"server: {os.environ['THENOISE_URL']}")
-    defaults = probe_discovery(client, args.model, fails)
-    reference = probe_generation(client, args.model, defaults, args.sizes, budget, fails)
-    probe_edit(client, args.model, defaults, reference, budget, fails)
-    probe_failures(client, args.model, budget, fails)
-    if args.upscale:
-        probe_upscale(client, budget, fails, reference)
+    incomplete = ""
+    # The host is deliberately not echoed: this output is meant to be committed as a probe
+    # report, and the box's address is neither stable nor ours to publish.
+    print("server: the dev box, from $THENOISE_URL")
+    entries = probe_discovery(client, fails)
+    chosen = choose_model(entries, args.model, fails)
+    if chosen is None:
+        for failure in fails:
+            print("FAIL", failure)
+        return 1
+    model = chosen["id"]
+    defaults = chosen.get("image_defaults") or {}
+    try:
+        reference = probe_generation(client, model, defaults, args.sizes, budget, fails)
+        probe_edit(client, model, defaults, reference, budget, fails)
+        probe_failures(client, model, budget, fails)
+        if args.upscale:
+            probe_upscale(client, budget, fails, reference, entries)
+    except BudgetExhausted as exhausted:
+        incomplete = str(exhausted)
     for failure in fails:
         print("FAIL", failure)
-    return 1 if fails else 0
+    if fails:
+        return 1
+    if incomplete:
+        print(f"SKIP: image budget of {args.max_images} ran out ({incomplete}), so the "
+              f"contract was only partly probed")
+        return 0
+    print(f"contract: {budget.spent} requests against the edit role resolved to {model}")
+    return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--model", default="auto",
+                        help="model id to measure, or 'auto' to resolve the edit role "
+                             "against what the server has downloaded")
     parser.add_argument("--sizes", nargs="*", default=["512x512", "1024x1024"])
     parser.add_argument("--timeout", type=float, default=900.0)
     parser.add_argument("--max-images", type=int, default=10)
@@ -299,9 +354,6 @@ def main() -> int:
         return 0
     try:
         return run(args)
-    except Skip as skip:
-        print(f"SKIP: {skip}")
-        return 0
     except urllib.error.HTTPError as error:
         print(f"FAIL http={error.code}: {error.read().decode(errors='replace')[:400]}")
         return 1

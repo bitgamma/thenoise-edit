@@ -105,6 +105,21 @@ if(Python3_Interpreter_FOUND)
                          DEPENDS noise-edit)
 endif()
 
-# Live-tier tests (tagged `live`) run only when THENOISE_URL and THENOISE_API_KEY
-# are exported; see AGENTS.md §2. They are Python drivers over the app's debug
-# wire plus recorded fixtures, and land with M3.
+# Live-tier tests (label `live`) spend requests on the dev box, so they are registered only
+# when configured with -DNOISE_LIVE_TESTS=ON: `ctest --test-dir build` stays hermetic even in a
+# shell that happens to export the credentials. Run them with
+# `cmake -B build -DNOISE_LIVE_TESTS=ON && ctest --test-dir build -L live`. Each still skips
+# loudly without THENOISE_URL / THENOISE_API_KEY, so registering them is intent and the env is
+# permission (AGENTS.md §2).
+option(NOISE_LIVE_TESTS "Register tests that make requests against the dev server" OFF)
+if(NOISE_LIVE_TESTS AND Python3_Interpreter_FOUND)
+    # What the real server's contract actually is. Asserts discovery, explicit size, the shape
+    # of a refusal and the 16px snap; records timings. --max-images caps the spend.
+    add_test(NAME tn_probe_live
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/tn_probe.py
+                     --max-images 10 --upscale)
+    set_tests_properties(tn_probe_live PROPERTIES
+                         LABELS live
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 1800)
+endif()
