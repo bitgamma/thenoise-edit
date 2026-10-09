@@ -4,7 +4,9 @@
 #include "test.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace noise {
@@ -431,6 +433,159 @@ void test_opacity_scales_coverage_and_not_the_colour() {
     CHECK_EQ(static_cast<int>(onto.at(0, 0)[3]), 255);
 }
 
+// A wide region with a layer at partial strength is the case the per-alpha-pair table exists for,
+// and a table is only acceptable if it is the same number the doubles produce - not close to it,
+// the same. The fixture is 256x256 with four alpha bands (two backdrop x two source), so one call
+// builds up to four tables, and every pixel is then checked against the specification written at
+// the top of this file. `blend_layer` decides internally when a pair has earned a table, so the
+// test pins the outcome rather than the policy.
+// 512 so the dominant alpha pair (384x384 = 147 456 pixels) clears the threshold the
+// implementation uses to decide a table is worth building, while the smallest of the four pairs
+// (128x128) stays under it and is blended by arithmetic in the same call.
+constexpr int kWideSide = 512;
+
+struct WideFixture {
+    Image backdrop;
+    Image source;
+    Extent size{kWideSide, kWideSide};
+};
+
+WideFixture make_wide_fixture() {
+    std::vector<std::uint8_t> back(std::size_t(kWideSide) * std::size_t(kWideSide) * 4u);
+    std::vector<std::uint8_t> src = back;
+    for (int y = 0; y < kWideSide; ++y) {
+        for (int x = 0; x < kWideSide; ++x) {
+            const std::size_t at = (std::size_t(y) * std::size_t(kWideSide) + std::size_t(x)) * 4u;
+            back[at + 0] = static_cast<std::uint8_t>(x);
+            back[at + 1] = static_cast<std::uint8_t>(y);
+            back[at + 2] = static_cast<std::uint8_t>((x * 3 + y * 5) % 256);
+            back[at + 3] = y < kWideSide * 3 / 4 ? 255 : 120;
+            src[at + 0] = static_cast<std::uint8_t>(255 - x);
+            src[at + 1] = static_cast<std::uint8_t>((x + y) % 256);
+            src[at + 2] = static_cast<std::uint8_t>(y);
+            src[at + 3] = x < kWideSide * 3 / 4 ? 255 : 200;
+        }
+    }
+    WideFixture fixture;
+    fixture.backdrop = Image::from_rgba(fixture.size, std::move(back));
+    fixture.source = Image::from_rgba(fixture.size, std::move(src));
+    return fixture;
+}
+
+void test_a_wide_partial_strength_blend_matches_the_definition() {
+    const WideFixture fixture = make_wide_fixture();
+    const double strengths[]{1.0, 0.5, 0.13};
+    for (std::size_t row = 0; row < kModeCount; ++row) {
+        const BlendModeInfo& info = mode_at(row);
+        for (const double opacity : strengths) {
+            Image onto = fixture.backdrop;
+            blend_layer(onto, fixture.source, whole(fixture.size), info.mode, opacity);
+            for (int y = 0; y < kWideSide; ++y) {
+                const double backdrop_alpha = fixture.backdrop.at(0, y)[3] / 255.0;
+                for (int x = 0; x < kWideSide; ++x) {
+                    const double source_alpha = (fixture.source.at(x, 0)[3] / 255.0) * opacity;
+                    const std::uint8_t* got = onto.at(x, y);
+                    for (int channel = 0; channel < 3; ++channel) {
+                        const double backdrop = fixture.backdrop.at(x, y)[channel] / 255.0;
+                        const double source = fixture.source.at(x, y)[channel] / 255.0;
+                        const std::uint8_t want = spec_channel(
+                            fixture.backdrop.at(x, y)[channel], backdrop, source,
+                            spec_blend(info.mode, backdrop, source), source_alpha, backdrop_alpha);
+                        if (got[channel] != want) {
+                            noise::test::report(
+                                "wide blend matches the definition", __FILE__, __LINE__,
+                                std::string(info.name) + " at opacity " +
+                                    std::to_string(opacity) + " channel " +
+                                    std::to_string(channel) + " at " + std::to_string(x) + "," +
+                                    std::to_string(y) + ": got " + std::to_string(got[channel]) +
+                                    " want " + std::to_string(want));
+                        }
+                        ++noise::test::checks;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The same pixels blended in one wide call and in tiles too small for the machinery to engage: if
+// the table and the pixel loop ever stop agreeing - one updated, the other not - the two results
+// differ and this goes red without needing to know what the answer should have been.
+void test_the_table_and_the_arithmetic_are_the_same_pixels() {
+    const WideFixture fixture = make_wide_fixture();
+    constexpr int kTile = 32;  // 1024 pixels: below any threshold worth having
+    for (std::size_t row = 0; row < kModeCount; ++row) {
+        const BlendModeInfo& info = mode_at(row);
+        for (const double opacity : {0.62, 0.25}) {
+            Image wide = fixture.backdrop;
+            blend_layer(wide, fixture.source, whole(fixture.size), info.mode, opacity);
+            Image tiled = fixture.backdrop;
+            for (int y = 0; y < kWideSide; y += kTile) {
+                for (int x = 0; x < kWideSide; x += kTile) {
+                    blend_layer(tiled, fixture.source, Rect{x, y, kTile, kTile}, info.mode,
+                                opacity);
+                }
+            }
+            for (int y = 0; y < kWideSide; ++y) {
+                for (int x = 0; x < kWideSide; ++x) {
+                    const std::uint8_t* a = wide.at(x, y);
+                    const std::uint8_t* b = tiled.at(x, y);
+                    for (int channel = 0; channel < 4; ++channel) {
+                        if (a[channel] != b[channel]) {
+                            noise::test::report("table == arithmetic", __FILE__, __LINE__,
+                                                std::string(info.name) + " at opacity " +
+                                                    std::to_string(opacity) + " channel " +
+                                                    std::to_string(channel) + " at " +
+                                                    std::to_string(x) + "," + std::to_string(y) +
+                                                    ": table " + std::to_string(a[channel]) +
+                                                    " arithmetic " + std::to_string(b[channel]));
+                        }
+                        ++noise::test::checks;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A correctness test cannot see a fast path: remove one and every pixel stays exactly right, just
+// slower. So compare the same 2048^2 pixels blended in one call against the same pixels blended in
+// tiles small enough that the machinery stays off, and require the single call to be measurably
+// cheaper. Relative rather than absolute, so a slower machine is not a failure: measured on this
+// box the single call is 6x cheaper in Release and 1.35x in Debug, and exactly 1.0x with the pair
+// table switched off - which is the regression this catches. The clock is a parameter because a
+// test that reads wall-clock time should say where it got it.
+void test_a_wide_blend_beats_tiling_the_same_pixels(const std::function<double()>& now_ms) {
+    constexpr int kSide = 2048;
+    constexpr int kTile = 32;
+    constexpr Extent size{kSide, kSide};
+    const Image backdrop = Image::filled(size, 40, 90, 200, 255);
+    const Image source = Image::filled(size, 220, 60, 30, 255);
+
+    Image wide = backdrop;
+    double before = now_ms();
+    blend_layer(wide, source, whole(size), BlendMode::multiply, 0.55);
+    const double wide_ms = now_ms() - before;
+
+    Image tiled = backdrop;
+    before = now_ms();
+    for (int y = 0; y < kSide; y += kTile) {
+        for (int x = 0; x < kSide; x += kTile) {
+            blend_layer(tiled, source, Rect{x, y, kTile, kTile}, BlendMode::multiply, 0.55);
+        }
+    }
+    const double tiled_ms = now_ms() - before;
+
+    // The same pixels either way, so the comparison is about the work and not the result - and if
+    // the two ever disagree, the test above about table and arithmetic is the one that says so.
+    CHECK(wide_ms < tiled_ms * 0.95);
+    if (wide_ms >= tiled_ms * 0.95) {
+        noise::test::report("wide blend cheaper than tiling", __FILE__, __LINE__,
+                            "one call " + std::to_string(wide_ms) + " ms, tiled " +
+                                std::to_string(tiled_ms) + " ms");
+    }
+}
+
 }  // namespace
 
 }  // namespace noise
@@ -446,5 +601,12 @@ int main() {
     noise::test_channels_never_leak_into_each_other();
     noise::test_a_brush_dab_blends_normal_at_its_coverage();
     noise::test_opacity_scales_coverage_and_not_the_colour();
+    noise::test_a_wide_partial_strength_blend_matches_the_definition();
+    noise::test_the_table_and_the_arithmetic_are_the_same_pixels();
+    const auto epoch = std::chrono::steady_clock::now();
+    noise::test_a_wide_blend_beats_tiling_the_same_pixels([&epoch] {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - epoch)
+            .count();
+    });
     return noise::test::summary("blend");
 }

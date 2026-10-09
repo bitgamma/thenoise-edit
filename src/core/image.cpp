@@ -11,12 +11,6 @@
 
 namespace noise {
 
-namespace {
-
-constexpr int kChannels = 4;
-
-}
-
 std::size_t stride_of(Extent size) {
     return static_cast<std::size_t>(size.w) * kChannels;
 }

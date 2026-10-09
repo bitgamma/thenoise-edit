@@ -20,6 +20,9 @@ struct Rgba8 {
     std::uint8_t a;
 };
 
+// Bytes in one pixel, and the stride the whole store, every codec and every blend loop uses.
+inline constexpr int kChannels = 4;
+
 // Row length in bytes. The store is tightly packed, and codecs write with this stride.
 std::size_t stride_of(Extent size);
 

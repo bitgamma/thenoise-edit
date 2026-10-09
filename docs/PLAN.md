@@ -151,14 +151,15 @@ one composite rule (`(1-ab)·as·Cs + as·ab·B + (1-as)·ab·Cb`, PDF 1.4 / CSS
   same 1620 pixels of stroke footprint changed in every mode, which is the coverage invariant visible
   from outside. Panel screenshot shows the dropdown per row (`color-burn`, `normal`) and the canvas
   repainted from the mode change alone.
-- **Cost of the generalisation, measured** (one `blend_layer` pass over 2048², layer at 78 %
-  coverage, `-O2`): `multiply` / `screen` / `darken` / `lighten` 74-77 ms, `overlay` 77-78 ms,
+- **Cost of the generalisation, measured at the time** (one `blend_layer` pass over 2048², layer at
+  78 % coverage, `-O2`): `multiply` / `screen` / `darken` / `lighten` 74-77 ms, `overlay` 77-78 ms,
   `color-dodge` / `color-burn` 81-86 ms - the division and the corner tests cost about 10 % over
   `multiply`, and the first mode timed always measures ~100 ms whoever it is, which is cold pages,
-  not arithmetic. That sits on the pre-existing 75 ms baseline rather than above it, so replacing the
-  `normal`-only composite with the general rule cost nothing measurable: the loop is memory bound.
-  Debug (`-O0`) is 245-300 ms, same shape. Whatever happens to this number belongs to the fast-path
-  and content-rectangle item below, not to the mode table.
+  not arithmetic. Debug (`-O0`) was 245-300 ms, same shape. Two claims from that paragraph were wrong
+  and are corrected in `probes/2026-10-09-blend-cost.md`: the loop is **not** memory bound (16 ns per
+  pixel against 0.1 ns for a `memcpy` of the same buffer), and the "pre-existing 75 ms baseline" was
+  the general-path cost of one pass, not a floor - the same pass is now 2.5 ms whole-opaque and
+  8 ms at partial strength, with the arithmetic untouched and byte tables in front of it.
 
 ### To do, in order
 
@@ -169,11 +170,17 @@ one composite rule (`(1-ab)·as·Cs + as·ab·B + (1-as)·ab·Cb`, PDF 1.4 / CSS
    with a hover hint on the panel sliders. `V` and `M` are **not key work**: `V` is the move tool and
    `M` is rect selection, and a key bound to a tool that does not exist is a shortcut to nothing.
    Both became their own items below.
-3. Later, gated by measurement, in the order the probe numbers say:
-   exact fast paths in `blend_layer` and per-layer content rectangles (a uniform layer change is
-   75 ms at 3 x 2048^2 in Release - the pass the GPU is supposed to eat); dirty-rect texture upload
-   (the floor under a pointer event); GPU stamp preview; per-layer GPU textures + the shader blend
-   pair checked against `core/blend`.
+3. ~~Exact fast paths in `blend_layer`~~ - done, and it is what the opacity slider was waiting for:
+   a whole-canvas change at 3 x 2048^2 went 100 ms -> 22 ms on the running app (peak frame), dragging
+   the opacity went 200 ms -> 20.4 ms per frame counted, so 5 fps -> 49 fps, and the repair alone
+   82.5 ms -> 14.6 ms Release / 806 ms -> 269 ms Debug. Three exact paths in front of the
+   reference, tables built by calling the reference, checked against it byte for byte; the one case
+   that got slower (9 %) is a layer whose alpha differs every pixel, written up with the rest in
+   `probes/2026-10-09-blend-cost.md`. What that probe says is still open, in the order it says it:
+   dirty-rect texture upload (16 MB at 2048^2 whenever the composite revision moves - it hid behind
+   the repair in every number above, so it has never been measured on its own), per-layer content
+   rectangles, GPU stamp preview, per-layer GPU textures + the shader blend pair checked against
+   `core/blend`.
 4. **The move tool** (`V`) - drag translates the active layer's pixels, one undo step per gesture,
    with the ghost the overlay path draws while the button is down. Reachable through the existing
    `tool.pointer` events, so it is testable the way the brush already is.

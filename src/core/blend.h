@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -59,6 +61,8 @@ inline constexpr BlendModeInfo kBlendModes[]{
     {BlendMode::color_dodge, "color-dodge"},
     {BlendMode::color_burn, "color-burn"},
 };
+
+inline constexpr std::size_t kBlendModeCount = std::size(kBlendModes);
 
 // "normal" - the mode names as an error message wants them, from the same table.
 std::string blend_mode_names();

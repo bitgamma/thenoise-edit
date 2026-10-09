@@ -50,9 +50,13 @@ src/
     blend.{h,cpp}      the blend reference: source-over and erase on straight RGBA8, the layer
                        blend (mode + per-layer opacity) and `kBlendModes`, the one table of
                        modes and their manifest names, and the one place a blend result is
-                       quantised. A GPU pair has to be checked against it when the GPU starts
-                       blending; today the renderer uploads the flattened composite, so there is
-                       nothing second to match yet.
+                       quantised. Byte tables sit in front of the arithmetic for whole-opaque
+                       pixels and for a fixed (source alpha, backdrop alpha) pair; they are built
+                       by calling the reference, so they cannot disagree with it, and `test_blend`
+                       checks them against it rather than against themselves. A GPU pair has to be
+                       checked against the reference when the GPU starts blending; today the
+                       renderer uploads the flattened composite, so there is nothing second to
+                       match yet.
     maskops.{h,cpp}    rasterize shapes, flood fill, feather, morphology, bbox, colour-match
     heal.{h,cpp}       Telea / Chan fusion inpainting (local, offline)
     command.{h,cpp}    invokable command table: commands, titles and key bindings
@@ -212,6 +216,13 @@ keep it cheap and honest:
   why that test compares pixels rather than a checksum). One hidden layer, by contrast, is a
   transparent canvas and not that layer, so ignoring `visible` would be a wrong picture rather than
   a slow one - `test_a_lone_layer_is_shown_whole_only_at_full_strength` holds that line.
+* **A pixel with no coverage is absent, not black, and an opaque one at full strength needs no
+  arithmetic.** Those two facts, plus a table per alpha pair, are what a whole-canvas repair costs
+  14 ms instead of 82 ms at 3x2048² (`docs/probes/2026-10-09-blend-cost.md`). They are fast paths in
+  front of the reference rather than a second implementation of it, and the tests compare their
+  output byte for byte against the reference path - a fast path that quietly changed a colour by one
+  step would turn the pixel tests red before anybody saw it.
+
 * **A repair rebuilds its region from transparent** rather than patching it, so the number of
   layers that came and went since the region was last correct is irrelevant. A structural change
   widens the pending region to the whole canvas, because nothing is known correct.
