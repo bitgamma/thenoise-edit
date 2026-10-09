@@ -52,35 +52,64 @@ event. Three causes, all the same shape:
 * the held-aside snapshot had the same growth problem, and its row copies were per pixel; they are
   `memcpy` between two origins now.
 
-Isolating the first cause, same build with only the repaint scope widened back to the whole buffer
-(one layer, 40-event span strokes, run immediately after the post-fix sweep):
+Isolating that cause, same build with only the repaint scope widened back to the whole buffer,
+against the committed code — Debug, one layer, 40-event drags, 4 ms between events, and **the brush
+size read back out of `app.state` after every change** (see the measurement defect below):
 
 ```
-brush   scope=buffer med   scope=dabs' rect med
-    20            8.8 ms              1.4 ms
-    64            9.8 ms              1.3 ms
-   200            9.4 ms              1.3 ms
-   600           10.6 ms              1.2 ms
-  1500           10.1 ms              1.5 ms
+brush  drag |   before: med   p95  worst |    after: med   p95  worst
+    24  span |     8.9   24.6    33.8   |     1.0   13.1    15.5
+    64  span |    13.2   30.4    38.7   |     1.6   12.5    20.7
+   200  span |    21.8   45.6    48.1   |     3.6   12.7    18.4
+   600  span |     1.6   84.9   100.5   |     1.2   33.7    35.4
+  1500  span |     0.8  175.8   181.6   |     0.9  125.6   149.5
+    64 local |     0.7    1.6     1.8   |     0.7    1.5     1.9
+   600 local |     0.9   32.9    34.1   |     0.6   22.8    32.5
+  1500 local |     0.8  110.3   181.1   |     0.8  109.0   161.5
 ```
 
-Brush size was never the cause, only the accelerator — the full sweep after the fix, Debug:
+Read the p95 and worst, not the median, once the brush gets large: a 1500 px brush at spacing 0.25
+emits a dab every 375 px while these events advance 47 px, so most events stamp nothing and their
+median is the cost of an empty event. What the table says:
+
+* Up to a 200 px brush the repaint scope is the whole story — 24.6 → 13.1, 30.4 → 12.5, 45.6 → 12.7
+  at p95, and the median for a normal brush 8.9 → 1.0.
+* Above that a dab *is* the work: a 1500 px brush covers 1.7 M pixels, and 125 ms per stamping event
+  is Θ(dab area) on the CPU. The scope fix takes the edge off (175.8 → 125.6) and cannot remove it;
+  GPU stamping, still deferred, is what does.
+* A local circular drag never degraded before or after at small brushes (0.7 ms at 64 px), which is
+  what pointed at covered-area-proportional cost rather than brush size in the first place.
+
+## A measurement defect found on the way, worth more than the fix
+
+`tool.brush` **selects a tool and reads no fields**; brush fields belong to `tool.set`. The wire
+ignores an argument its command does not read, without a word. So `tool.brush {size: 48}` succeeded,
+did nothing, and the first version of the sweep above reported timings for brushes it was never
+running — the rows labelled 20 to 1500 were one default-24 px drag repeated five times. `stroke_probe`
+had the same hole: it printed "brush 40 px" for a gesture running at the default.
+
+Fixed in the probe: the brush is set through `tool.set` and **read back from `app.state`, which the
+probe now fails on if it disagrees** with what it means to measure.
 
 ```
-brush   drag  event med   p95   worst   frame med  frame max
-    20   span     1.4    10.6   15.0        3.0       18.0
-    64   span     1.3    10.1   20.1        3.3       20.3
-   200   span     1.3     9.6   16.8        3.2       18.7
-   600   span     1.2    11.7   16.4        3.1       17.3
-  1500   span     1.5     9.4   16.5        3.2       19.3
-   200  local     0.8     1.5    1.8        3.2        5.2
-   600  local     0.8     2.1    3.2        2.2        2.5
-  1500  local     1.1     4.6   10.7        2.4       12.2
+FAIL: the probe means a 40 px brush, the app is on {'size': 20.0, 'spacing': 0.25, ...}
 ```
 
-A local circle never degraded, which is what pointed at covered-area-proportional cost rather than
-brush size: before the fix it was 1.9 ms locally against 26 ms for a spanning stroke at the same
-brush.
+The protocol question is open and belongs to the human, because it changes the wire contract rather
+than a measurement: should the command table reject an argument its command does not declare, naming
+the command and the arguments it does? Every command declares its accepted keys already, so the check
+is central and small; the risk is a caller that today passes extra fields and gets away with it. Per
+`AGENTS.md`, "errors name the thing" argues for yes — silently ignoring `size` cost an hour and a
+published table of wrong numbers.
+
+With the brush genuinely at 40 px, the guard `stroke_probe` runs per gesture (120 events, first third
+against last third) measures:
+
+```
+640^2  x 1 layer   median 0.87 ms  worst  5.70 ms  commit 2.4 ms  x1.7
+2048^2 x 1 layer   median 1.13 ms  worst 21.70 ms  commit 4.4 ms  x1.2
+2048^2 x 3 layers  median 0.73 ms  worst 16.29 ms  commit 3.3 ms  x2.0
+```
 
 ## Frames
 

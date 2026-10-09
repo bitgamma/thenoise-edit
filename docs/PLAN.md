@@ -77,12 +77,15 @@ with a broken one.
    `tests/test_blend` against the reference, the manifest name list (format bump), the panel's mode
    column becoming a chooser, `layer.set {mode}`.
 2. **The remaining tool keys** (`V`, `M`, `,`/`.`) and the panel rows they belong to.
-3. Later, gated by measurement, in the order the probe numbers say:
+3. **Answer the open wire question**: should `CommandTable::invoke` reject arguments its command does
+   not declare, naming the command and its accepted keys? Human's call (wire contract), one function
+   to change, and `tool.brush {size}` is the argument for it.
+4. Later, gated by measurement, in the order the probe numbers say:
    exact fast paths in `blend_layer` and per-layer content rectangles (a uniform layer change is
    75 ms at 3 x 2048^2 in Release - the pass the GPU is supposed to eat); dirty-rect texture upload
    (the floor under a pointer event); GPU stamp preview; per-layer GPU textures + the shader blend
    pair checked against `core/blend`.
-4. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
+5. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
    outlive the session).
 
 ### Things that bit me, so they don't bite twice
@@ -100,6 +103,13 @@ with a broken one.
   Read the per-command wire timings for work, `frame_ms` for cadence.
 - A row builder that "always includes the interesting fields" puts a whole-document hash on every
   interactive command. Cost belongs in the caller's hands, not the formatter's.
+- **The wire ignores an argument its command does not read.** `tool.brush` selects a tool and takes
+  no fields at all, so `tool.brush {size: 48}` returns ok and changes nothing - which made a brush
+  sweep measure one default-sized brush five times under five labels, and made `stroke_probe` print
+  "brush 40 px" for a gesture at 24. Probes now read the setting back from `app.state` and fail on
+  disagreement, which is the only defence a harness has. Whether the command table itself should
+  reject undeclared arguments (it knows them) is an open question for the human: it changes the wire
+  contract. Brush fields belong to `tool.set`; `tool.stroke` takes them per call.
 - `CHECK_EQ` evaluates each operand once (fixed); `nlohmann::json::contains()` is always false for
   arrays; `StrokeScratch::grow_to` once copied coverage as if every rect started at the corner, and
   `held_aside` copied it again as if the snapshot were positioned at the origin.

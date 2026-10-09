@@ -98,6 +98,21 @@ def gesture_points(doc: int, events: int) -> list[list[float]]:
             for i in range(events)]
 
 
+def set_brush(wire: wd.Wire, size: float, fails: list[str]) -> None:
+    """Put the app on the brush the gesture is about to be run with, and refuse to report a size
+    the app did not take.
+
+    Brush fields belong to `tool.set`; `tool.brush` selects a tool and reads no fields at all, so a
+    probe that set the size through it measured the default brush and printed the size it wished
+    for. Reading the state back is what keeps that from being possible again.
+    """
+    wire.call("tool.set", {"tool": "brush", "size": size, "hardness": 0.8, "opacity": 0.8,
+                           "spacing": SPACING})
+    got = wire.call("app.state")["brush"]
+    if got.get("tool") != "brush" or abs(float(got.get("size", 0.0)) - size) > 1e-9:
+        fails.append(f"the probe means a {size:.0f} px brush, the app is on {got}")
+
+
 def measure_gesture(wire: wd.Wire, port: int, doc: int, layers: int,
                     fails: list[str]) -> None:
     """The same paint fed one pointer event at a time, and what each event costs.
@@ -112,6 +127,7 @@ def measure_gesture(wire: wd.Wire, port: int, doc: int, layers: int,
     for index in range(1, layers):
         wire.call("layer.add", {"name": f"L{index}"})
     wd.wait_for_fit(wire)
+    set_brush(wire, GESTURE_BRUSH, fails)
     # Let the rebuild that adding layers forces land before sampling: this measures a steady
     # drag, not the one frame after a structural change.
     wd.settle(wire)
@@ -153,8 +169,16 @@ def measure_gesture(wire: wd.Wire, port: int, doc: int, layers: int,
           f"history {history['stored_bytes'] >> 20} MiB in {steps} step")
     if painted == before:
         fails.append("the gesture painted nothing")
-    if int(during["dabs"]) < GESTURE_EVENTS:
-        fails.append(f"the gesture made {during['dabs']} dabs from {GESTURE_EVENTS} events")
+    # Not "one dab per event": dabs are spaced by the brush (`SPACING * size`), events by this
+    # harness dividing the polyline into GESTURE_EVENTS steps, and either may be the denser one - a
+    # 40 px brush fed 120 events along a 610 px path makes ~61 dabs and is painted correctly. What
+    # would mean the gesture was not a stroke is a handful of dabs, so the floor is loose and the
+    # checks above and below (something painted, one undo step, undo restoring every byte) carry the
+    # rest.
+    if int(during["dabs"]) < GESTURE_EVENTS // 4:
+        fails.append(
+            f"the gesture made {during['dabs']} dabs over {GESTURE_EVENTS} events and a "
+            f"{doc}^2 document, which is a dot, not a stroke")
     if steps != 1:
         fails.append(f"one gesture must be one undo step, got {steps}")
     if restored != before:
