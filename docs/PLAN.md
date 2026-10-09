@@ -98,6 +98,29 @@ Still open, when convenient:
   while the antialiasing feather lived inside the circle, and a command that checksums the
   pixels it just painted costs more than the paint did (166 ms -> 10.2 ms per 2048² stroke).
 
+* **The pointer paints, one drag is one step, and the tool table is the only list of tools.**
+  `app/tools/brush.{h,cpp}` is the press/drag/release state machine, the UI drives it through
+  `tool.pointer` (never around it), `Document` grew a provisional edit (hold pixels aside,
+  repaint from them, commit as one step) and `core::kTools` generates `tool.<name>` and its key
+  per row, so `B`/`E`/`[`/`]` and the Brush panel are front-ends for commands a wire client can
+  send too. `app.state.stroke` reports the gesture in progress. Numbers in
+  `docs/probes/2026-10-09-paint-core.md`. Four findings, all of them found by looking rather
+  than reasoning:
+  - `StrokeScratch::grow_to` copied the accumulated coverage iterating `0..w`/`0..h` as if the
+    scratch rect always started at the corner - out-of-bounds reads, and every repaint after a
+    growth kept only the newest dabs. A 640-canvas drag left **one dab** while the dab counter
+    said 23. Caught by `test_a_live_stroke_keeps_every_dab_it_ever_stamped` (samples columns
+    across the stroke) and `test_a_scratch_stamped_in_pieces_holds_the_same_coverage_as_one_stamp`.
+  - `CHECK_EQ` in `tests/test.h` evaluated both operands twice, so `CHECK_EQ(h.value("edit.undo",
+    ...)["undo_depth"], 0)` ran the command twice and reported a failure that was not there.
+    The macro now compares through a function, which evaluates once; a side-effecting argument
+    is safe by construction instead of by comment.
+  - `nlohmann::json::contains()` is key containment and is **always false for arrays**: three
+    keymap assertions passed as failures until `has_shortcut()` replaced them.
+  - The incremental-versus-one-call equivalence was vacuous at first: the test painted a
+    different polyline with the tool stroke than with the pointer, and both ends agreed on an
+    unpainted document. An equivalence test has to be read for whether it can fail.
+
 ## Next steps, in order
 
 1. **CI waits until MVP** (decided 2026-10-09): the workflow is not going to run on a runner
@@ -108,27 +131,56 @@ Still open, when convenient:
    Ubuntu's llvmpipe: read `differing_bytes` / `max_channel_delta`, then either widen the two
    constants in `tools/wire_drive.py` deliberately or re-record there with `--update-golden`.
    Never widen a tolerance to hide a structural diff.
-2. **Paint from the pointer, not only from the wire**: the tool state machine (press / drag /
-   release) in `app/tools/`, GPU stamp quads previewed during the drag, one `Document::paint`
-   on release. The bound that matters is one pointer event per frame, and
-   `docs/probes/2026-10-09-paint-core.md` says a commit cannot be paid that often: a full
-   texture re-upload is ~3 ms at 2048², fine once per stroke and not fine per mouse event.
-   `tool.stroke` stays the test path and the recorded-session path, and the wire command that
-   makes the interactive tool observable is `tool.state` (or the fields it adds to
-   `app.state`): active tool, in-progress stroke, dab count, pending commit.
-3. **`.noise` v0 and the content-addressed blob store** (`ARCHITECTURE.md`'s file format:
+2. **`.noise` v0 and the content-addressed blob store** (`ARCHITECTURE.md`'s file format:
    single-file zip, `manifest.json:format`, blobs by hash): undo wants rectangles, layers want
    `BlobRef` sources, and the container is what makes both worth persisting. Round-trip test:
    save -> load -> identical checksums and identical history depth; older `format` values
    refused with a message naming the version found.
-4. **Layers** (`layer.*`), then the tool keys (`B`, `E`, `[`, `]`) that select and tune the
-   brush instead of naming it per stroke.
-5. **Dirty-rect texture upload**, only when something measured needs it - see the note above
-   about what it is and is not.
+3. **Layers** (`layer.*`, `app/ui/layers`): the document currently holds one `Image`, and
+   `Document` is the seam that a `std::vector<Layer>` replaces - which is also where the
+   composite that the renderer uploads gets its one home. `paint`/provisional/history then
+   operate on the active layer, and the pixel-lock and equivalence tests move with them.
+4. **The rest of the tool keys** (`V` move, `M` rect select, `,`/`.` hardness and opacity) and
+   the panel rows they belong to. `B`/`E`/`[`/`]` landed with the brush.
+5. **Dirty-rect texture upload**, when the pointer-event numbers above say it is worth it. At
+   2048² under software rendering a live event costs 9 ms and the whole-texture upload is the
+   part that scales with the document, so a document that big with a big brush is the case that
+   will ask for it - not the 1280-canvas session that works today.
 6. **M0.5 probe harness** (`tools/tn_probe.py`, `docs/probes/`) — blocked on the dev server.
    Ask the human to export `THENOISE_URL` / `THENOISE_API_KEY`; it feeds `size_policy`, role
    default order, ETA seeds and recipe wording, so it should land before M3 designs hard-code
    any of those.
+
+## Architecture review, and what it said
+
+`AGENTS.md` §1 makes this mandatory at a milestone boundary and `AGENTS.md` §1 makes refactoring
+always in scope; recorded here so the next session can disagree with it instead of guessing.
+
+**Boundary: the M1 painting column (pointer stroke, undo as steps, tool table).** The design is
+no harder to extend than before it, and two places got cheaper:
+
+* `PaintMode`/`kTools` in `core/brush.h` is now the only place a tool is named: a row yields the
+  command id, the paint mode and the key. The `tool == "eraser"` comparisons that had grown in
+  two files are gone, so adding a tool (a clone stamp, a smudge) is one row plus its handler.
+* The stroke's coverage buffer and its dab walk are shared by the one-call and the event-fed
+  paths, which is what makes the layers work below cheap: a layer is another `Image` to
+  composite onto, not a second gesture implementation.
+
+Places that will have to move, and where:
+
+* `Document` holds one `Image`. Layers replace that field and take over compositing; nothing
+  outside `core/document` reads `pixels()` for editing, only for capture, which is the property
+  that makes the change local. Do it in one pass, not by bolting a second layer store alongside.
+* `provisional_` is per-document today. It belongs to the layer being painted once there is more
+  than one - keep it inside `Document`, keyed by nothing until a second layer exists.
+* `scratch_composite` and the over/erase arithmetic live in `core/brush.cpp`. `docs/` refers to
+  a `core/blend` reference paired with a shader and checked by a test; **that module does not
+  exist yet** - the arithmetic is only in the brush. It gets its own home when the compositor
+  needs the same maths for layer blending (layer work, step 3), not before.
+
+Deliberately not done: GPU stamp preview during the drag, tile cache, dirty-rect uploads, a
+`BlendMode` enum with nothing to blend between layers. Each is one measurement away from being
+the right call and none of them is forced by the next step.
 
 ## Environment notes for this machine
 

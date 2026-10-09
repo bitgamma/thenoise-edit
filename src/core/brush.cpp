@@ -4,8 +4,38 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <utility>
 
 namespace noise {
+
+const std::vector<ToolInfo> kTools{
+    {"brush", PaintMode::Over, "B"},
+    {"eraser", PaintMode::Erase, "E"},
+};
+
+std::string tool_names() {
+    std::string names;
+    for (const ToolInfo& tool : kTools) {
+        if (!names.empty()) {
+            names += ", ";
+        }
+        names += tool.id;
+    }
+    return names;
+}
+
+double clamp_brush_size(double size) {
+    return std::clamp(size, kMinBrushSize, kMaxBrushSize);
+}
+
+std::optional<PaintMode> tool_mode(const std::string& id) {
+    for (const ToolInfo& tool : kTools) {
+        if (id == tool.id) {
+            return tool.mode;
+        }
+    }
+    return std::nullopt;
+}
 
 namespace {
 
@@ -14,7 +44,7 @@ constexpr double kCoverageEpsilon = 1e-4;
 // Dabs closer than a pixel would sample the same pixels repeatedly.
 constexpr double kMinimumDabSpacing = 1.0;
 // The edge band, in document pixels: half inside the rim, half outside. Anything past it is
-// fully uncovered, and stroke_bounds leaves room for it.
+// fully uncovered, and the bounds below leave room for it.
 constexpr double kRimBand = 0.5;
 
 std::size_t area(Rect rect) {
@@ -30,16 +60,38 @@ std::uint8_t channel_from_unit(double unit) {
     return static_cast<std::uint8_t>(std::lround(std::clamp(unit, 0.0, 1.0) * 255.0));
 }
 
+// The rectangle a set of dabs can affect, unclipped.
+Rect dabs_bounds(const std::vector<Vec2>& dabs, double reach) {
+    if (dabs.empty()) {
+        return Rect{};
+    }
+    int left = INT_MAX;
+    int top = INT_MAX;
+    int right = INT_MIN;
+    int bottom = INT_MIN;
+    for (const Vec2& dab : dabs) {
+        left = std::min(left, static_cast<int>(std::floor(dab.x - reach)));
+        top = std::min(top, static_cast<int>(std::floor(dab.y - reach)));
+        right = std::max(right, static_cast<int>(std::ceil(dab.x + reach)));
+        bottom = std::max(bottom, static_cast<int>(std::ceil(dab.y + reach)));
+    }
+    return Rect{left, top, right - left, bottom - top};
+}
+
 }  // namespace
 
-std::vector<Vec2> stroke_dabs(const std::vector<Vec2>& path, const Brush& brush) {
+std::vector<Vec2> walk_dabs(const std::vector<Vec2>& path, const Brush& brush, DabWalk& walk) {
     std::vector<Vec2> dabs;
     if (path.empty()) {
         return dabs;
     }
     const double step = std::max(brush.spacing * brush.size, kMinimumDabSpacing);
-    dabs.push_back(path.front());
-    double to_next = step;
+    if (!walk.started) {
+        dabs.push_back(path.front());
+        walk.started = true;
+        walk.to_next = step;
+    }
+    double to_next = walk.to_next;
     for (std::size_t i = 1; i < path.size(); ++i) {
         const double dx = path[i].x - path[i - 1].x;
         const double dy = path[i].y - path[i - 1].y;
@@ -56,7 +108,13 @@ std::vector<Vec2> stroke_dabs(const std::vector<Vec2>& path, const Brush& brush)
         }
         to_next -= segment - travelled;
     }
+    walk.to_next = to_next;
     return dabs;
+}
+
+std::vector<Vec2> stroke_dabs(const std::vector<Vec2>& path, const Brush& brush) {
+    DabWalk walk{0.0, false};
+    return walk_dabs(path, brush, walk);
 }
 
 double stamp_coverage(double distance_px, double hardness, double radius) {
@@ -75,60 +133,64 @@ double stamp_coverage(double distance_px, double hardness, double radius) {
 }
 
 Rect stroke_bounds(const std::vector<Vec2>& path, const Brush& brush, Extent bounds) {
-    const std::vector<Vec2> dabs = stroke_dabs(path, brush);
-    if (dabs.empty()) {
-        return Rect{};
-    }
-    const double reach = brush.size * 0.5 + kRimBand;
-    int left = INT_MAX;
-    int top = INT_MAX;
-    int right = INT_MIN;
-    int bottom = INT_MIN;
-    for (const Vec2& dab : dabs) {
-        left = std::min(left, static_cast<int>(std::floor(dab.x - reach)));
-        top = std::min(top, static_cast<int>(std::floor(dab.y - reach)));
-        right = std::max(right, static_cast<int>(std::ceil(dab.x + reach)));
-        bottom = std::max(bottom, static_cast<int>(std::ceil(dab.y + reach)));
-    }
-    return intersect(Rect{left, top, right - left, bottom - top}, Rect{0, 0, bounds.w, bounds.h});
+    return intersect(dabs_bounds(stroke_dabs(path, brush), brush.size * 0.5 + kRimBand),
+                     Rect{0, 0, bounds.w, bounds.h});
 }
 
-std::optional<Rect> paint_stroke(Image& image,
-                                 const std::vector<Vec2>& path,
-                                 const Brush& brush,
-                                 Rgba8 color,
-                                 PaintMode mode) {
-    const std::vector<Vec2> dabs = stroke_dabs(path, brush);
-    const Rect touched = stroke_bounds(path, brush, image.size());
-    if (image.empty() || dabs.empty() || touched.empty()) {
-        return std::nullopt;
+void StrokeScratch::grow_to(Rect want, Extent bounds) {
+    // Union, not replacement: a later dab's bounds can easily be smaller than, or disjoint
+    // from, what is already accumulated, and the coverage of the earlier dabs has to survive.
+    const Rect grown = intersect(unite(rect, want), Rect{0, 0, bounds.w, bounds.h});
+    if (grown == rect) {
+        return;
+    }
+    std::vector<double> next(area(grown), 0.0);
+    // `rect` is positioned, not sized from the origin: iterating 0..w would index outside
+    // both buffers unless the rect happened to start at the corner.
+    for (int y = rect.y; y < rect.bottom(); ++y) {
+        for (int x = rect.x; x < rect.right(); ++x) {
+            if (grown.contains(x, y)) {
+                next[index(grown, x, y)] = coverage[index(rect, x, y)];
+            }
+        }
+    }
+    rect = grown;
+    coverage = std::move(next);
+}
+
+void scratch_stamp(StrokeScratch& scratch, const std::vector<Vec2>& dabs, const Brush& brush,
+                   Extent bounds) {
+    if (dabs.empty()) {
+        return;
     }
     const double radius = brush.size * 0.5;
     const double reach = radius + kRimBand;
-
-    std::vector<double> coverage(area(touched), 0.0);
-    const double dab_alpha_scale = brush.flow * (color.a / 255.0);
+    scratch.grow_to(dabs_bounds(dabs, reach), bounds);
     for (const Vec2& dab : dabs) {
-        const int x_from = std::max(touched.x, static_cast<int>(std::floor(dab.x - reach)));
-        const int y_from = std::max(touched.y, static_cast<int>(std::floor(dab.y - reach)));
-        const int x_to = std::min(touched.right(), static_cast<int>(std::ceil(dab.x + reach)));
-        const int y_to = std::min(touched.bottom(), static_cast<int>(std::ceil(dab.y + reach)));
+        const int x_from = std::max(scratch.rect.x, static_cast<int>(std::floor(dab.x - reach)));
+        const int y_from = std::max(scratch.rect.y, static_cast<int>(std::floor(dab.y - reach)));
+        const int x_to = std::min(scratch.rect.right(), static_cast<int>(std::ceil(dab.x + reach)));
+        const int y_to = std::min(scratch.rect.bottom(), static_cast<int>(std::ceil(dab.y + reach)));
         for (int y = y_from; y < y_to; ++y) {
             for (int x = x_from; x < x_to; ++x) {
                 const double distance = std::hypot(x + 0.5 - dab.x, y + 0.5 - dab.y);
-                const double alpha = stamp_coverage(distance, brush.hardness, radius) * dab_alpha_scale;
-                double& here = coverage[index(touched, x, y)];
+                const double alpha = stamp_coverage(distance, brush.hardness, radius) * brush.flow;
+                double& here = scratch.coverage[index(scratch.rect, x, y)];
                 // Dabs composite over each other, so a stroke saturates towards opaque
                 // instead of every pass adding to the last.
                 here = alpha + here * (1.0 - alpha);
             }
         }
     }
+}
 
-    const double opacity = brush.opacity;
+void scratch_composite(Image& image, const StrokeScratch& scratch, Rgba8 color,
+                       const Brush& brush, PaintMode mode) {
+    const Rect touched = intersect(scratch.rect, Rect{0, 0, image.size().w, image.size().h});
+    const double opacity = brush.opacity * (color.a / 255.0);
     for (int y = touched.y; y < touched.bottom(); ++y) {
         for (int x = touched.x; x < touched.right(); ++x) {
-            const double source = coverage[index(touched, x, y)] * opacity;
+            const double source = scratch.coverage[index(scratch.rect, x, y)] * opacity;
             if (source <= kCoverageEpsilon) {
                 continue;
             }
@@ -154,6 +216,21 @@ std::optional<Rect> paint_stroke(Image& image,
             pixel[3] = channel_from_unit(out_alpha);
         }
     }
+}
+
+std::optional<Rect> paint_stroke(Image& image,
+                                 const std::vector<Vec2>& path,
+                                 const Brush& brush,
+                                 Rgba8 color,
+                                 PaintMode mode) {
+    const std::vector<Vec2> dabs = stroke_dabs(path, brush);
+    const Rect touched = stroke_bounds(path, brush, image.size());
+    if (image.empty() || dabs.empty() || touched.empty()) {
+        return std::nullopt;
+    }
+    StrokeScratch scratch;
+    scratch_stamp(scratch, dabs, brush, image.size());
+    scratch_composite(image, scratch, color, brush, mode);
     return touched;
 }
 

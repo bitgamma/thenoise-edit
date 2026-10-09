@@ -39,6 +39,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                {"framebuffer", json::array({state.framebuffer.w, state.framebuffer.h})},
                                {"document", doc},
                                {"brush", brush_json(state)},
+                               {"stroke", stroke_json(state)},
                                {"view", view_json(state)},
                                {"wire_port", wire.port()}});
     });

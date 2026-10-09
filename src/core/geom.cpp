@@ -75,6 +75,20 @@ ViewTransform clamp_origin(ViewTransform view, Extent viewport, int overpan_px) 
     return view;
 }
 
+Rect unite(Rect a, Rect b) {
+    if (a.empty()) {
+        return b;
+    }
+    if (b.empty()) {
+        return a;
+    }
+    const int x = a.x < b.x ? a.x : b.x;
+    const int y = a.y < b.y ? a.y : b.y;
+    const int right = a.right() > b.right() ? a.right() : b.right();
+    const int bottom = a.bottom() > b.bottom() ? a.bottom() : b.bottom();
+    return Rect{x, y, right - x, bottom - y};
+}
+
 Rect intersect(Rect a, Rect b) {
     const int x0 = std::max(a.x, b.x);
     const int y0 = std::max(a.y, b.y);

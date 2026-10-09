@@ -72,6 +72,9 @@ ViewTransform clamp_origin(ViewTransform view, Extent viewport, int overpan_px);
 
 Rect intersect(Rect a, Rect b);
 
+// The smallest rectangle holding both; either one empty yields the other.
+Rect unite(Rect a, Rect b);
+
 // Intersection with [0, bounds). Empty when the rect lies wholly outside; the position of
 // an empty result is not meaningful, only `empty()` is.
 Rect clamp_rect(Rect r, Extent bounds);

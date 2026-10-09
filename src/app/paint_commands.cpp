@@ -4,6 +4,7 @@
 #include "app/command_args.h"
 
 #include "core/brush.h"
+#include "app/tools/brush.h"
 #include "core/log.h"
 
 #include <nlohmann/json.hpp>
@@ -11,6 +12,44 @@
 namespace noise::app {
 
 namespace {
+
+// A brush field, its legal range and where it lives. `tool.stroke` demands every one of
+// them and `tool.set` takes only the ones it is given, but both read this table, so a range
+// cannot be stated twice.
+struct BrushField {
+    const char* key;
+    double low;
+    double high;
+    double Brush::*member;
+};
+constexpr BrushField kBrushFields[]{
+    {"size", kMinBrushSize, kMaxBrushSize, &Brush::size},
+    {"hardness", 0.0, 1.0, &Brush::hardness},
+    {"opacity", 0.0, 1.0, &Brush::opacity},
+    {"flow", 0.0, 1.0, &Brush::flow},
+    {"spacing", 0.0, 1.0, &Brush::spacing},
+};
+
+// One field of `brush`, from `args`, range-checked. The message names the field.
+bool read_brush_field(const json& args,
+                      const BrushField& field,
+                      Brush& brush,
+                      const char* who,
+                      std::string& why) {
+    const json& value = args.at(field.key);
+    if (!value.is_number()) {
+        why = std::string("'") + field.key + "' must be a number, in " + who;
+        return false;
+    }
+    const double got = value.get<double>();
+    if (got < field.low || got > field.high) {
+        why = std::string("'") + field.key + "' must be between " + std::to_string(field.low) +
+              " and " + std::to_string(field.high) + ", in " + who;
+        return false;
+    }
+    brush.*(field.member) = got;
+    return true;
+}
 
 // A stroke is painted exactly as it is described: every brush field must be present, so one
 // recorded from the wire replays without consulting what the UI happens to have selected.
@@ -29,35 +68,18 @@ CommandResult read_stroke(const json& args,
             return fail(who, "'tool' must be a string");
         }
         tool = args.at("tool").get<std::string>();
-        if (tool != "brush" && tool != "eraser") {
-            return fail(who, "unknown tool '" + tool + "' (brush, eraser)");
+        if (!tool_mode(tool)) {
+            return fail(who, "unknown tool '" + tool + "' (" + tool_names() + ")");
         }
     }
-    struct Field {
-        const char* key;
-        double low;
-        double high;
-        double Brush::*member;
-    };
-    const Field fields[] = {{"size", kMinBrushSize, kMaxBrushSize, &Brush::size},
-                            {"hardness", 0.0, 1.0, &Brush::hardness},
-                            {"opacity", 0.0, 1.0, &Brush::opacity},
-                            {"flow", 0.0, 1.0, &Brush::flow},
-                            {"spacing", 0.0, 1.0, &Brush::spacing}};
     brush = {0.0, 0.0, 0.0, 0.0, 0.0};
-    for (const Field& field : fields) {
+    for (const BrushField& field : kBrushFields) {
         if (!args.contains(field.key)) {
             return fail(who, std::string("missing '") + field.key + "'");
         }
-        const json& value = args.at(field.key);
-        if (!value.is_number()) {
-            return fail(who, std::string("'") + field.key + "' must be a number");
-        }
-        double& target = brush.*(field.member);
-        target = value.get<double>();
-        if (target < field.low || target > field.high) {
-            return fail(who, std::string("'") + field.key + "' must be between " +
-                            std::to_string(field.low) + " and " + std::to_string(field.high));
+        std::string why;
+        if (!read_brush_field(args, field, brush, who, why)) {
+            return fail(who, why);
         }
     }
     if (!args.contains("color")) {
@@ -89,10 +111,11 @@ void register_paint_commands(AppState& state, CommandTable& table) {
         if (!parsed.ok) {
             return parsed;
         }
-        const PaintMode mode = tool == "eraser" ? PaintMode::Erase : PaintMode::Over;
+        const PaintMode mode = tool_mode(tool).value_or(PaintMode::Over);
         const std::size_t dabs = stroke_dabs(path, brush).size();
         const Rect bounds = stroke_bounds(path, brush, state.doc.size());
         state.brush = brush;
+        state.color = color;
         state.tool = tool;
         if (bounds.empty()) {
             return command_ok(json{{"tool", tool},
@@ -112,6 +135,88 @@ void register_paint_commands(AppState& state, CommandTable& table) {
                                {"touched",
                                 json::array({touched->x, touched->y, touched->w, touched->h})},
                                {"revision", state.doc.revision()}});
+    });
+
+    table.add("tool.pointer",
+              "Feed one pointer phase (press, drag, release) to the current tool", {},
+              [&state](const json& args) -> CommandResult {
+        if (!args.contains("phase") || !args.at("phase").is_string()) {
+            return fail("tool.pointer", "'phase' must be one of press, drag, release");
+        }
+        const std::string phase = args.at("phase").get<std::string>();
+        Vec2 point;
+        if (phase != "release" && !arg_vec2(args, "at", point)) {
+            return fail("tool.pointer", "'at' must be [x,y] in document pixels");
+        }
+        if (phase == "press") {
+            brush_press(state, point);
+        } else if (phase == "drag") {
+            brush_drag(state, point);
+        } else if (phase == "release") {
+            brush_release(state);
+        } else {
+            return fail("tool.pointer", "unknown phase '" + phase + "' (press, drag, release)");
+        }
+        return command_ok(stroke_json(state));
+    });
+
+    table.add("tool.set", "Set the tool, brush fields or colour the next stroke uses", {},
+              [&state](const json& args) -> CommandResult {
+        Brush next = state.brush;
+        std::string next_tool = state.tool;
+        Rgba8 next_color = state.color;
+        if (args.contains("tool")) {
+            if (!args.at("tool").is_string()) {
+                return fail("tool.set", "'tool' must be a string");
+            }
+            next_tool = args.at("tool").get<std::string>();
+            if (!tool_mode(next_tool)) {
+                return fail("tool.set", "unknown tool '" + next_tool + "' (" + tool_names() + ")");
+            }
+        }
+        for (const BrushField& field : kBrushFields) {
+            if (!args.contains(field.key)) {
+                continue;
+            }
+            std::string why;
+            if (!read_brush_field(args, field, next, "tool.set", why)) {
+                return fail("tool.set", why);
+            }
+        }
+        if (args.contains("color")) {
+            std::uint8_t channels[4] = {0, 0, 0, 255};
+            if (!arg_rgba(args, "color", channels)) {
+                return fail("tool.set", "'color' must be [r,g,b,a] with each channel 0..255");
+            }
+            next_color = Rgba8{channels[0], channels[1], channels[2], channels[3]};
+        }
+        state.brush = next;
+        state.tool = next_tool;
+        state.color = next_color;
+        return command_ok(brush_json(state));
+    });
+
+    // One select command per row of the tool table: adding a tool to kTools adds both its
+    // command and its key here, and nothing in between has to be told.
+    for (const ToolInfo& tool : kTools) {
+        const std::string id = std::string("tool.") + tool.id;
+        std::string title = std::string("Paint with the ") + tool.id + " tool";
+        table.add(id, title, {tool.select_key}, [&state, id](const json&) -> CommandResult {
+            state.tool = id.substr(std::string("tool.").size());
+            return command_ok(brush_json(state));
+        });
+    }
+
+    table.add("brush.larger", "Widen the brush one step", {"]"},
+              [&state](const json&) -> CommandResult {
+        state.brush.size = clamp_brush_size(state.brush.size * kBrushSizeStep);
+        return command_ok(brush_json(state));
+    });
+
+    table.add("brush.smaller", "Narrow the brush one step", {"["},
+              [&state](const json&) -> CommandResult {
+        state.brush.size = clamp_brush_size(state.brush.size / kBrushSizeStep);
+        return command_ok(brush_json(state));
     });
 
     table.add("edit.undo", "Undo the last change to the pixels", {"Ctrl+Z"},

@@ -47,16 +47,20 @@ private:
     struct Stacked {
         Rect rect;
         std::vector<std::uint8_t> rgba;
+        int step;  // entries sharing it are undone and redone together
     };
 
+    static void pop_step(std::vector<Stacked>& stack, std::vector<Stacked>& moved);
+    static int steps_in(const std::vector<Stacked>& stack);
+    std::optional<Rect> step_back(std::vector<Stacked>& from, std::vector<Stacked>& into,
+                                  Image& image);
     void drop_oldest_until_within_budget();
-    // Puts `entry` into the image and the pixels it displaces onto `keep`.
-    void swap_in(Image& image, Stacked entry, std::vector<Stacked>& keep);
 
     std::size_t budget_bytes_;
     std::vector<Stacked> undo_stack_;
     std::vector<Stacked> redo_stack_;
     std::size_t bytes_ = 0;
+    int next_step_ = 0;
 };
 
 }  // namespace noise

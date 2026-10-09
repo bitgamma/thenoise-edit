@@ -37,6 +37,12 @@ TARGET_DABS = 5000
 MAX_STROKE_SECONDS = 1.0
 MAX_FRAME_MS = 400.0
 SAMPLE_INTERVAL = 0.002
+# A pointer gesture fed to the app as fast as the wire allows, which is faster than any hand:
+# the provisional repaint runs on every event, so this is the pessimistic version of a drag.
+GESTURE_EVENTS = 120
+GESTURE_BRUSH = 40.0
+GESTURE_GAP = 0.004
+MAX_GESTURE_EVENT_MS = 60.0
 
 
 def serpentine(doc: int, dabs: int) -> list[list[float]]:
@@ -78,6 +84,64 @@ class FrameSampler(threading.Thread):
 
     def stop(self) -> None:
         self.stop_after = time.monotonic()
+
+
+def gesture_points(doc: int, events: int) -> list[list[float]]:
+    """Positions of a diagonal drag, most of the way across the document."""
+    margin = GESTURE_BRUSH
+    span = doc - 2.0 * margin
+    return [[margin + span * i / (events - 1), margin + span * 0.35 + span * 0.4 * i / (events - 1)]
+            for i in range(events)]
+
+
+def measure_gesture(wire: wd.Wire, port: int, doc: int, fails: list[str]) -> None:
+    """The same paint fed one pointer event at a time, and what each event costs.
+
+    Run over two document sizes on purpose: a pointer event repaints the stroke and uploads
+    whatever the canvas texture thinks changed, so the cost is read against the document area.
+    """
+    wire.call("doc.new", {"width": doc, "height": doc, "fill": [24, 32, 40, 255]})
+    wd.wait_for_fit(wire)
+    before = wire.call("doc.get", {})["checksum"]
+    sampler = FrameSampler(port)
+    sampler.start()
+    event_ms: list[float] = []
+    for index, at in enumerate(gesture_points(doc, GESTURE_EVENTS)):
+        phase = "press" if index == 0 else "drag"
+        started = time.monotonic()
+        wire.call("tool.pointer", {"phase": phase, "at": at})
+        event_ms.append((time.monotonic() - started) * 1000.0)
+        time.sleep(GESTURE_GAP)
+    during = wire.call("app.state")["stroke"]
+    started = time.monotonic()
+    wire.call("tool.pointer", {"phase": "release"})
+    commit_ms = (time.monotonic() - started) * 1000.0
+    wd.settle(wire)
+    sampler.stop()
+    sampler.join(timeout=5)
+
+    painted = wire.call("doc.get", {})["checksum"]
+    steps = int(wire.call("app.state", {})["document"]["history"]["undo_depth"])
+    history = wire.call("edit.undo", {})
+    restored = wire.call("doc.get", {})["checksum"]
+    peak = max(sampler.frame_ms, default=0.0)
+    event_ms.sort()
+    median = event_ms[len(event_ms) // 2]
+    worst = event_ms[-1]
+    print(f"live gesture {doc}^2: {during['dabs']} dabs over {GESTURE_EVENTS} pointer events, "
+          f"brush {GESTURE_BRUSH:.0f} px: event median {median:.2f} ms, "
+          f"worst {worst:.2f} ms, commit {commit_ms:.1f} ms, peak frame_ms {peak:.1f}, "
+          f"history {history['stored_bytes'] >> 20} MiB in {steps} step")
+    if painted == before:
+        fails.append("the gesture painted nothing")
+    if int(during["dabs"]) < GESTURE_EVENTS:
+        fails.append(f"the gesture made {during['dabs']} dabs from {GESTURE_EVENTS} events")
+    if steps != 1:
+        fails.append(f"one gesture must be one undo step, got {steps}")
+    if restored != before:
+        fails.append("undo did not restore every byte of the gesture")
+    if median > MAX_GESTURE_EVENT_MS:
+        fails.append(f"a pointer event took {median:.1f} ms, bound is {MAX_GESTURE_EVENT_MS} ms")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -134,6 +198,8 @@ def run(args: argparse.Namespace) -> int:
                     fails.append("the stroke changed nothing")
                 if restored != before:
                     fails.append("undo did not restore every byte of a 2048^2 document")
+                measure_gesture(wire, port, 640, fails)
+                measure_gesture(wire, port, DOC, fails)
             except wd.WireError as exc:
                 fails.append(str(exc))
             finally:

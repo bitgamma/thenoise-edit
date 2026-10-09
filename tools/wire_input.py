@@ -203,6 +203,8 @@ KEY_F = 0x66           # XK_f
 KEY_S = 0x73           # XK_s
 KEY_Z = 0x7A           # XK_z
 KEY_J = 0x6A           # XK_j, bound to nothing today
+PAINT = (200, 120)     # screen pixels of the test left-drag
+PAINT_STEPS = 8
 
 
 def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -> list[str]:
@@ -290,6 +292,40 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
         fails.append("tool.stroke changed nothing, so Ctrl+Z proved nothing")
     if restored != before:
         fails.append("Ctrl+Z did not undo the stroke")
+
+    # A left-drag paints. This is the whole pointer path at once: ImGui hover and capture,
+    # tool.pointer per event, one provisional stroke, one committed step, one undo.
+    state = wire.call("app.state")
+    doc = wd.document_screen_rect(state)
+    before = wire.call("doc.get", {})["checksum"]
+    if wire.call("app.state")["document"]["history"]["undo_depth"] != 0:
+        fails.append("the drag needs an empty history to count its own step")
+    inj.move(doc[0] + doc[2] * 0.3, doc[1] + doc[3] * 0.5)
+    inj.button(1, True)
+    wd.settle(wire)
+    for step in range(1, PAINT_STEPS + 1):
+        inj.move(doc[0] + doc[2] * 0.3 + PAINT[0] * step / PAINT_STEPS,
+                 doc[1] + doc[3] * 0.5 + PAINT[1] * step / PAINT_STEPS)
+        time.sleep(0.03)
+    inj.button(1, False)
+    wd.settle(wire)
+    painted = wire.call("doc.get", {})["checksum"]
+    stroke = wire.call("app.state")["stroke"]
+    depth = wire.call("app.state")["document"]["history"]["undo_depth"]
+    print(f"left-drag {PAINT[0]},{PAINT[1]}: document {before[:12]} -> {painted[:12]}, "
+          f"stroke active {stroke['active']}, undo steps {depth}")
+    if painted == before:
+        fails.append("a left-drag over the document painted nothing")
+    if stroke["active"]:
+        fails.append("the stroke stayed active after the button was released")
+    if depth != 1:
+        fails.append(f"one drag must be one undo step, got {depth}")
+    inj.control_key(KEY_Z)
+    wd.settle(wire)
+    restored = wire.call("doc.get", {})["checksum"]
+    print(f"Ctrl+Z after the drag: {restored[:12]}")
+    if restored != before:
+        fails.append("Ctrl+Z did not undo the drag")
 
     # And a key bound to nothing changes nothing.
     before = wire.call("app.state")["view"]

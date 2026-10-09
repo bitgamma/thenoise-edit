@@ -164,8 +164,18 @@ json document_json(const AppState& state) {
     return doc;
 }
 
+json stroke_json(const AppState& state) {
+    return json{{"active", state.stroke.active},
+                {"dabs", state.stroke.dabs},
+                {"provisional_area",
+                 json::array({state.doc.provisional_area().x, state.doc.provisional_area().y,
+                              state.doc.provisional_area().w, state.doc.provisional_area().h})}};
+}
+
 json brush_json(const AppState& state) {
     return json{{"tool", state.tool},
+                {"color", json::array({state.color.r, state.color.g, state.color.b,
+                                       state.color.a})},
                 {"size", state.brush.size},
                 {"hardness", state.brush.hardness},
                 {"opacity", state.brush.opacity},

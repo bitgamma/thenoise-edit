@@ -62,7 +62,7 @@ src/
     commands.cpp       assembles the whole command table from the groups below
     command_args.{h,cpp} shared argument readers and the JSON each command answers with
     document_commands.cpp doc.* image.get
-    paint_commands.cpp tool.stroke, edit.undo/redo
+    paint_commands.cpp tool.stroke/pointer/set, tool.<name>, brush.larger/smaller, edit.undo/redo
     view_commands.cpp  view.*, and the fit that waits for a real canvas area
     tools/             one file per tool; Tool = press/drag/release/overlay/commit state machine
     shortcuts.{h,cpp}  platform key event -> canonical shortcut text (the only sokol-aware
@@ -149,17 +149,34 @@ reload after a crash. Hard requirement, not a nicety.
 ## Painting path (real sokol constraint)
 
 `sg_update_texture` replaces a **whole** texture; there is no partial update on the GL
-backend, so a naive "upload after every brush dab" on a 4096² layer = 64 MB/frame. Design:
+backend, so a naive "upload after every brush dab" on a 4096² layer = 64 MB/frame. What runs:
 
 1. CPU backing store per layer (source of truth; also what save/export/AI read).
-2. During a stroke: stamp **GPU** preview quads over the canvas; no upload at all.
-3. On stroke end: commit stamping to the CPU store, single full `sg_update_texture`
-   (~6 ms at 4096² — one-time per stroke, invisible).
-4. `history` records the old pixels of the rectangle the stroke touched (see below), which
-   is why `core::Document::paint` is *given* the rectangle instead of diffing afterwards:
-   diffing the whole image per stroke would cost what the stroke was saved.
-5. `tool.stroke` runs this exact path, so a wire client paints with the same code the
-   pointer does.
+2. A stroke accumulates coverage in one `StrokeScratch` - a rectangle plus one `double` per
+   pixel - instead of painting into the document dab by dab. Dab spacing lives in a `DabWalk`,
+   which is carried between pointer events, so a polyline fed in event-by-event emits exactly
+   the dabs the same polyline handed over at once would.
+3. A live gesture holds its pixels aside: `Document::begin_provisional` snapshots the
+   rectangle the stroke has reached, `repaint_provisional` restores that snapshot and
+   composites the scratch once, and `commit_provisional` records the snapshot as one undo step.
+   That is what keeps opacity per stroke rather than per frame, and one gesture one step
+   rather than one step per frame. The snapshot follows the stroke's own bounds, not the
+   canvas: a 4 px dot must not cost a canvas-sized copy.
+4. On stroke end the pixels are already in place; the only upload is the one the revision bump
+   causes anyway. Cost per pointer event is snapshot-restore over the stroke bounds + one
+   whole-texture upload, which is why the measured cost grows with document area (2.0 ms median
+   at 640², 9.2 ms at 2048² - `probes/2026-10-09-paint-core.md`).
+5. `history` records the old pixels of the rectangle the stroke touched (see below), which is
+   why `core::Document::paint` is *given* the rectangle instead of diffing afterwards: diffing
+   the whole image per stroke would cost what the stroke was saved.
+6. `tool.stroke` (whole polyline) and `tool.pointer` (press/drag/release) share `walk_dabs`,
+   `scratch_stamp` and `scratch_composite`, so a wire client and the mouse land on identical
+   bytes - asserted, not assumed, in `test_app`.
+
+Two ways out if a document gets big enough for the whole-texture upload to dominate, cheapest
+first: a dirty-rect upload (needs a backend that can do partial updates, or the tile cache
+below), or the GPU stamp preview that was the original plan - stamp quads during the stroke,
+no upload until release. Neither is implemented; the measurements above decide.
 
 Upgrade path when we need it (not MVP): split each layer into 256×256 tiles, one
 `sg_image` per tile → cheap partial updates, bounded VRAM, and free large-canvas support.
@@ -254,7 +271,7 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | Group | Commands | Why |
 |---|---|---|
 | state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `selection.get`, `server.state`, `job.list`, `log.tail` | read what the app believes, cheaply |
-| drive | `command.invoke`, `app.quit`, `doc.new/open/save`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool, size, hardness, opacity, flow, spacing, color}`, `layer.add/set/delete`, `selection.set` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are all required, so a recorded stroke replays without knowing what the UI had selected |
+| drive | `command.invoke`, `app.quit`, `doc.new/open/save`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool, size, hardness, opacity, flow, spacing, color}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.add/set/delete`, `selection.set` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are all required, so a recorded stroke replays without knowing what the UI had selected. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable |
 | ai | `ai.preview {recipe, args}` (compiled request + prepped PNG, **no send**), `ai.run`, `job.wait {id}`, `cache.stats` | verify what we *would* send before spending minutes of someone's GPU |
 

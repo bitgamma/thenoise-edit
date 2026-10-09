@@ -208,6 +208,44 @@ void test_stroke_bounds_is_exactly_the_painted_rectangle() {
 
 }  // namespace
 
+// A live gesture stamps a few dabs per pointer event and repaints from its own buffer. If
+// growing that buffer lost what was already in it, the committed stroke would be shorter than
+// the one the user dragged - and shorter than the same path painted in one call. The scratch
+// has to start away from the image corner for this to bite: the bug it catches read the old
+// coverage as if the buffer always began at (0,0).
+void test_a_scratch_stamped_in_pieces_holds_the_same_coverage_as_one_stamp() {
+    const Extent size{640, 400};
+    const Brush brush{24.0, 0.8, 1.0, 1.0, 0.25};
+    const Rgba8 color{0, 0, 0, 255};
+    std::vector<Vec2> path;
+    for (int step = 0; step <= 8; ++step) {
+        path.push_back(Vec2{190.0 + 30.0 * step, 200.0 + 9.0 * step});
+    }
+
+    Image once = Image::filled(size, 200, 100, 50, 255);
+    CHECK(paint_stroke(once, path, brush, color, PaintMode::Over).has_value());
+
+    const Image base = Image::filled(size, 200, 100, 50, 255);
+    Image live = base;
+    StrokeScratch scratch;
+    DabWalk walk{0.0, false};
+    double previous_coverage = 0.0;
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        const std::vector<Vec2> segment =
+            i == 0 ? std::vector<Vec2>{path[0]} : std::vector<Vec2>{path[i - 1], path[i]};
+        scratch_stamp(scratch, walk_dabs(segment, brush, walk), brush, size);
+        double total = 0.0;
+        for (const double value : scratch.coverage) {
+            total += value;
+        }
+        CHECK(total > previous_coverage);  // growth adds, it never replaces
+        previous_coverage = total;
+        live = base;  // what a provisional repaint does before compositing the stroke
+        scratch_composite(live, scratch, color, brush, PaintMode::Over);
+    }
+    CHECK_EQ(live.checksum_hex(), once.checksum_hex());
+}
+
 int main() {
     test_dabs_are_spaced_from_the_brush_size();
     test_coverage_is_a_round_ramped_stamp();
@@ -215,5 +253,6 @@ int main() {
     test_the_blend_matches_the_reference_arithmetic();
     test_a_stroke_outside_the_document_changes_nothing();
     test_stroke_bounds_is_exactly_the_painted_rectangle();
+    test_a_scratch_stamped_in_pieces_holds_the_same_coverage_as_one_stamp();
     return noise::test::summary("brush");
 }

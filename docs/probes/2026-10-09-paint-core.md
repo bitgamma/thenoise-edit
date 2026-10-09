@@ -79,3 +79,36 @@ earns its keep. Two consequences:
 
 Undo returned the document checksum exactly at this size, and the vertex buffer stayed quiet
 throughout (`BUFFER_OVERFLOW` in the app's stderr fails the probe).
+
+## Live gesture, fed one pointer event at a time
+
+`tool.pointer` runs the same `walk_dabs` / `scratch_stamp` / `scratch_composite` path as
+`tool.stroke`, but at the rate a pointer delivers events - faster than any hand, since a wire
+client sends as fast as the socket allows. Each event restores the provisional snapshot and
+composites the stroke's coverage once; the frame then uploads the whole canvas texture, which
+is what makes the cost grow with the **document** rather than with the stroke. Same box, Debug
+build, `tools/stroke_probe.py`:
+
+```
+live gesture 640^2:  121 dabs over 120 pointer events, brush 40 px: event median 1.98 ms,
+       worst 6.28 ms, commit 1.5 ms, peak frame_ms 16.8, history 0 MiB in 1 step (MiB floored)
+live gesture 2048^2: 424 dabs over 120 pointer events, brush 40 px: event median 9.20 ms,
+       worst 35.60 ms, commit 2.2 ms, peak frame_ms 100.0, history 6 MiB in 1 step
+```
+
+What this decided:
+
+* **The provisional CPU repaint is enough for a live brush.** It was worth measuring because
+  `ARCHITECTURE.md` originally prescribed GPU stamp quads during the drag; at these numbers
+  the stamps would buy nothing that a dirty-rect upload would not buy more cheaply, and they
+  add a second paint path to keep honest. They stay documented as the escape hatch.
+* **The snapshot follows the stroke, not the canvas.** Holding the whole visible area aside at
+  press cost the same 9 ms per event and grew history from 6 MiB to 31 MiB for a stroke that
+  touches a diagonal band - the same figure for a 4 px dot. `brush_press` now lets the first
+  stamp decide the area.
+* The per-event median is a *command* cost, not a frame budget: a frame coalesces several
+  events, and `peak frame_ms` is what the user would feel. Both are printed because the first
+  is the regression guard (`MAX_GESTURE_EVENT_MS`) and the second is the experience.
+
+Undo restores the document checksum exactly at both sizes, and one gesture is one undo step at
+both - checked in `test_app` (`test_a_pointer_gesture_*`) and in the probe.

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "core/geom.h"
@@ -35,12 +36,68 @@ struct Rgba8 {
     std::uint8_t a;
 };
 
+// What a fresh session paints with, until the user says otherwise.
+inline constexpr Rgba8 kDefaultColor{0, 0, 0, 255};
+
 enum class PaintMode {
     Over,   // src-over
     Erase,  // src-out: takes alpha away, leaves the colour alone
 };
 
-// Dab centres: the first point, then one every `spacing * size` along the path.
+// One tool per row: the id a request carries, what it does to the pixels, and the bare key
+// that selects it. The command table, the pointer and the panels all read this, so a tool
+// that is not here does not exist.
+struct ToolInfo {
+    const char* id;
+    PaintMode mode;
+    const char* select_key;
+};
+extern const std::vector<ToolInfo> kTools;
+
+std::optional<PaintMode> tool_mode(const std::string& id);
+
+// "brush, eraser" - the tool list as an error message wants it, from the same table.
+std::string tool_names();
+
+// The size the brush actually takes, never the one a caller asked for past the ends of the
+// slider: kMinBrushSize is the smallest stamp that still paints its own edge.
+double clamp_brush_size(double size);
+
+// One step of the size keys: multiplicative, so the same keystroke means the same thing at
+// 4 px and at 400 px.
+inline constexpr double kBrushSizeStep = 1.25;
+
+// A stroke's accumulated coverage over one rectangle, kept between calls so a live gesture
+// composites once with the stroke's opacity - and with the same result as one stroke painted
+// in a single call - instead of compounding a little more each frame.
+struct StrokeScratch {
+    Rect rect;
+    std::vector<double> coverage;
+
+    // Takes in `want`, clipped to `bounds`, keeping the coverage already accumulated.
+    void grow_to(Rect want, Extent bounds);
+};
+
+// Adds these dabs to `scratch`, growing it over `bounds` when they fall outside it.
+void scratch_stamp(StrokeScratch& scratch, const std::vector<Vec2>& dabs, const Brush& brush,
+                   Extent bounds);
+
+// Composites the accumulated coverage onto `image`: the same arithmetic `paint_stroke` uses.
+void scratch_composite(Image& image, const StrokeScratch& scratch, Rgba8 color,
+                       const Brush& brush, PaintMode mode);
+
+// The distance still owed before the next dab, so a gesture fed in point by point emits the
+// same dabs as the same polyline handed over all at once.
+struct DabWalk {
+    double to_next;
+    bool started;
+};
+
+// Dab centres along `path`, continuing `walk`: the first point, then one every
+// `spacing * size`. Nothing is emitted for a repeat of the point the walk ended on.
+std::vector<Vec2> walk_dabs(const std::vector<Vec2>& path, const Brush& brush, DabWalk& walk);
+
+// The whole path in one call, from the start of its walk.
 std::vector<Vec2> stroke_dabs(const std::vector<Vec2>& path, const Brush& brush);
 
 // Distance is in document pixels from the dab centre, radius is the dab radius. Full

@@ -24,12 +24,25 @@ inline constexpr ViewPolicy kViewPolicy{0.05, 64.0, 1.10, 16, 48};
 inline constexpr const char* kAppVersion = "0.0.0-m0";
 inline constexpr const char* kWindowTitle = "noise-edit";
 
+// The gesture the pointer is making, if any. The walk carries the dab spacing across events
+// and the scratch holds the stroke's coverage, which is what lets a gesture painted frame by
+// frame land on the same bytes as the same path painted in one go.
+struct PointerStroke {
+    bool active = false;
+    Vec2 last{};
+    std::size_t dabs = 0;
+    DabWalk walk{0.0, false};
+    StrokeScratch scratch;
+};
+
 struct AppState {
     Document doc;
     // The brush the next stroke uses, and the one the last stroke ran with: the status bar
     // and the wire read this, so a screenshot can be reproduced from the state alone.
     Brush brush = kBrushDefaults;
+    Rgba8 color = kDefaultColor;
     std::string tool = kDefaultTool;
+    PointerStroke stroke;
     ViewTransform view{{0, 0}, 1.0, {0.0, 0.0}};
     // Where the app writes: captures, the wire endpoint file, the imgui layout. Set once
     // by the host so nothing in the command layer reaches for an ambient directory.

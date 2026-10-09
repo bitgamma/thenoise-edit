@@ -165,6 +165,294 @@ void test_one_stroke_is_one_step_that_puts_every_byte_back() {
     CHECK_NEAR(brush["hardness"].get<double>(), 0.6, 1e-12);
 }
 
+void pointer_gesture(Harness& h, const json& points) {
+    h.run("tool.pointer", json{{"phase", "press"}, {"at", points.front()}});
+    for (std::size_t i = 1; i < points.size(); ++i) {
+        h.run("tool.pointer", json{{"phase", "drag"}, {"at", points[i]}});
+    }
+    h.run("tool.pointer", json{{"phase", "release"}});
+}
+
+// The reason a live stroke keeps its own coverage buffer and its own dab walk: a gesture fed
+// in event by event must land on the same bytes as the same polyline painted in one call.
+// If this ever differs, what the user saw while dragging is not what got committed.
+void test_a_pointer_gesture_lands_where_the_same_path_painted_in_one_go_lands() {
+    Harness h;
+    h.value("doc.new", json{{"width", 64},
+                            {"height", 48},
+                            {"fill", json::array({20, 60, 90, 255})}});
+    const json points = json::array({json::array({6.0, 6.0}), json::array({40.0, 22.0}),
+                                     json::array({12.0, 40.0})});
+    json stroke_args = full_stroke();
+    stroke_args["points"] = points;
+    h.value("tool.stroke", stroke_args);
+    const std::string one_call = checksum_of(h);
+    const json back = h.value("edit.undo", json::object());
+    CHECK_EQ(back["undo_depth"].get<int>(), 0);
+    const std::string clean = checksum_of(h);
+    CHECK_NE(clean, one_call);
+
+    pointer_gesture(h, points);
+
+    // The same polyline, fed one pointer event at a time across frames, lands on the same
+    // bytes: nothing is double-composited and no dab was lost between events.
+    CHECK_EQ(checksum_of(h), one_call);
+
+    // And the whole drag was one step, not one step per pointer event.
+    const json undone = h.value("edit.undo", json::object());
+    CHECK_EQ(undone["undo_depth"].get<int>(), 0);
+    CHECK_EQ(checksum_of(h), clean);
+
+    const json again = h.value("edit.redo", json::object());
+    CHECK_EQ(again["redo_depth"].get<int>(), 0);
+    CHECK_EQ(checksum_of(h), one_call);
+}
+
+void test_a_pointer_gesture_is_one_step_and_reports_itself() {
+    Harness h;
+    h.value("doc.new", json{{"width", 48},
+                            {"height", 32},
+                            {"fill", json::array({0, 0, 0, 0})}});
+    const std::string empty = checksum_of(h);
+    const json points = json::array({json::array({4.0, 4.0}), json::array({44.0, 28.0})});
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", points.front()}});
+
+    const json mid = h.value("app.state", json::object());
+    CHECK(mid["stroke"]["active"].get<bool>());
+    CHECK(mid["stroke"]["dabs"].get<int>() > 0);
+    CHECK_EQ(mid["document"]["history"]["undo_depth"].get<int>(), 0);  // nothing committed yet
+    CHECK_NE(checksum_of(h), empty);                                    // but the canvas changed
+
+    for (std::size_t i = 1; i < points.size(); ++i) {
+        h.value("tool.pointer", json{{"phase", "drag"}, {"at", points[i]}});
+    }
+    h.value("tool.pointer", json{{"phase", "release"}});
+
+    const json after = h.value("app.state", json::object());
+    CHECK_EQ(after["document"]["history"]["undo_depth"].get<int>(), 1);
+    CHECK(!after["stroke"]["active"].get<bool>());
+    CHECK_EQ(after["stroke"]["dabs"].get<int>(), 0);
+
+    const json undone = h.value("edit.undo", json::object());
+    CHECK_EQ(undone["undo_depth"].get<int>(), 0);
+    CHECK_EQ(checksum_of(h), empty);
+}
+
+void test_a_gesture_that_leaves_the_canvas_still_undoes_completely() {
+    Harness h;
+    h.state.viewport = Extent{16, 16};  // a small canvas over a bigger document
+    h.value("doc.new", json{{"width", 64},
+                            {"height", 48},
+                            {"fill", json::array({5, 5, 5, 255})}});
+    const std::string before = checksum_of(h);
+    const json points = json::array({json::array({4.0, 4.0}), json::array({60.0, 44.0})});
+
+    pointer_gesture(h, points);
+    const std::string painted = checksum_of(h);
+    CHECK_NE(painted, before);
+
+    h.value("edit.undo", json::object());
+    CHECK_EQ(checksum_of(h), before);
+}
+
+// Everything outside the stroke's own rectangle has to be byte-identical: that is what
+// recording a stroke's bounds buys, and a pointer path that grew its scratch buffer the easy
+// way (replace instead of union) is exactly what it catches.
+void test_a_pointer_gesture_changes_no_pixel_outside_its_own_rectangle() {
+    Harness h;
+    h.value("doc.new", json{{"width", 64},
+                            {"height", 48},
+                            {"fill", json::array({200, 10, 10, 255})}});
+    h.value("tool.set", json{{"tool", "brush"},
+                             {"size", 12.0},
+                             {"hardness", 1.0},
+                             {"opacity", 1.0},
+                             {"flow", 1.0},
+                             {"spacing", 0.3},
+                             {"color", json::array({0, 0, 0, 255})}});
+    const Image before = h.state.doc.pixels();
+
+    pointer_gesture(h, json::array({json::array({16.0, 24.0}), json::array({40.0, 24.0})}));
+
+    const int reach = static_cast<int>(std::ceil(12.0 * 0.5 + 1.0));  // radius plus the rim band
+    const Rect area{16 - reach, 24 - reach, (40 - 16) + 2 * reach, 2 * reach};
+    int outside = 0;
+    int inside = 0;
+    for (int y = 0; y < 48; ++y) {
+        for (int x = 0; x < 64; ++x) {
+            const std::uint8_t* a = before.at(x, y);
+            const std::uint8_t* b = h.state.doc.pixels().at(x, y);
+            if (!std::equal(a, a + 4, b)) {
+                ++(area.contains(x, y) ? inside : outside);
+            }
+        }
+    }
+    CHECK_EQ(outside, 0);
+    CHECK(inside > 0);
+}
+
+// A long live drag must leave a continuous band: coverage stamped by an early pointer event
+// has to survive every later repaint. What the dab counter says and what the pixels hold are
+// different facts, and the screen only shows the second one.
+void test_a_live_stroke_keeps_every_dab_it_ever_stamped() {
+    Harness h;
+    h.value("doc.new", json{{"width", 640},
+                            {"height", 400},
+                            {"fill", json::array({200, 100, 50, 255})}});
+    h.value("tool.set", json{{"tool", "brush"},
+                             {"size", 24.0},
+                             {"hardness", 0.8},
+                             {"opacity", 1.0},
+                             {"flow", 1.0},
+                             {"spacing", 0.25},
+                             {"color", json::array({0, 0, 0, 255})}});
+
+    json points = json::array();
+    for (int step = 0; step <= 8; ++step) {
+        points.push_back(json::array({190.0 + 30.0 * step, 200.0 + 9.0 * step}));
+    }
+    pointer_gesture(h, points);
+
+    // Sampled across the whole 240 px run: a dab lost to a repaint shows up as a column of
+    // untouched pixels, which is what the pointer path did once on a 640x400 document.
+    int columns_painted = 0;
+    int columns = 0;
+    for (int x = 190; x <= 430; x += 10) {
+        ++columns;
+        for (int y = 180; y <= 290; ++y) {
+            const std::uint8_t* pixel = h.state.doc.pixels().at(x, y);
+            if (pixel[0] < 100 && pixel[1] < 100 && pixel[2] < 100) {
+                ++columns_painted;
+                break;
+            }
+        }
+    }
+    CHECK_EQ(columns_painted, columns);
+}
+
+void test_the_eraser_takes_alpha_and_keeps_the_colour_of_a_partly_erased_pixel() {
+    Harness h;
+    h.value("doc.new", json{{"width", 32},
+                            {"height", 24},
+                            {"fill", json::array({10, 20, 30, 200})}});
+    const Image before = h.state.doc.pixels();
+
+    const json selected = h.value("tool.eraser", json::object());
+    CHECK_EQ(selected["tool"].get<std::string>(), std::string("eraser"));
+    pointer_gesture(h, json::array({json::array({8.0, 12.0}), json::array({24.0, 12.0})}));
+
+    // src-out scales alpha and keeps the colour, so a half-erased pixel is the same hue
+    // thinned out. An empty pixel is the one exception: it carries no colour, and zeroing it
+    // keeps "nothing" a single set of bytes for codecs and goldens.
+    int erased = 0;
+    int partly = 0;
+    for (int y = 0; y < 24; ++y) {
+        for (int x = 0; x < 32; ++x) {
+            const std::uint8_t* a = before.at(x, y);
+            const std::uint8_t* b = h.state.doc.pixels().at(x, y);
+            if (b[3] >= a[3]) {
+                continue;
+            }
+            ++erased;
+            if (b[3] == 0) {
+                CHECK_EQ(static_cast<int>(b[0] + b[1] + b[2]), 0);
+                continue;
+            }
+            ++partly;
+            CHECK_EQ(static_cast<int>(b[0]), static_cast<int>(a[0]));
+            CHECK_EQ(static_cast<int>(b[1]), static_cast<int>(a[1]));
+            CHECK_EQ(static_cast<int>(b[2]), static_cast<int>(a[2]));
+        }
+    }
+    CHECK(erased > 0);
+    CHECK(partly > 0);
+}
+
+// `contains` is key containment, which an array never satisfies.
+bool has_shortcut(const json& command_row, const std::string& shortcut) {
+    const std::vector<std::string> shortcuts =
+        command_row.at("shortcuts").get<std::vector<std::string>>();
+    return std::find(shortcuts.begin(), shortcuts.end(), shortcut) != shortcuts.end();
+}
+
+// The tool table is the one list: a row gives the id, the pixels it paints and the key that
+// selects it, and an unknown tool is refused by naming the tools there really are.
+void test_a_tool_row_becomes_a_command_a_key_and_a_paint_mode() {
+    Harness h;
+    h.value("doc.new", json{{"width", 16}, {"height", 16}});
+    const json listed = h.value("command.list", json::object());
+    for (const ToolInfo& tool : kTools) {
+        const std::string id = std::string("tool.") + tool.id;
+        const json* entry = nullptr;
+        for (const json& row : listed["commands"]) {
+            if (row["id"].get<std::string>() == id) {
+                entry = &row;
+            }
+        }
+        CHECK(entry != nullptr);
+        if (entry == nullptr) {
+            continue;
+        }
+        CHECK(has_shortcut(*entry, tool.select_key));
+        CHECK_EQ(h.value(id, json::object())["tool"].get<std::string>(), std::string(tool.id));
+        CHECK_EQ(h.value("app.state", json::object())["brush"]["tool"].get<std::string>(),
+                 std::string(tool.id));
+    }
+
+    const CommandResult unknown = h.run("tool.set", json{{"tool", "chunky"}});
+    CHECK(!unknown.ok);
+    CHECK(unknown.error.find("chunky") != std::string::npos);
+    for (const ToolInfo& tool : kTools) {
+        CHECK(unknown.error.find(tool.id) != std::string::npos);
+    }
+}
+
+// Both ends of the brush range, walked by the keys rather than by setting a size: the
+// plausible bug is a step that forgets to clamp and lets the stamp grow past the image.
+void test_the_size_keys_stop_at_the_ends_of_the_brush_range() {
+    Harness h;
+    h.value("doc.new", json{{"width", 16}, {"height", 16}});
+    double size = kBrushDefaults.size;
+    for (int step = 0; step < 200; ++step) {
+        const json got = h.value("brush.larger", json::object());
+        size = clamp_brush_size(size * kBrushSizeStep);
+        CHECK_EQ(got["size"].get<double>(), size);
+    }
+    CHECK_EQ(size, kMaxBrushSize);
+    for (int step = 0; step < 400; ++step) {
+        const json got = h.value("brush.smaller", json::object());
+        size = clamp_brush_size(size / kBrushSizeStep);
+        CHECK_EQ(got["size"].get<double>(), size);
+    }
+    CHECK_EQ(size, kMinBrushSize);
+
+    const json listed = h.value("command.list", json::object());
+    for (const json& row : listed["commands"]) {
+        const std::string id = row["id"].get<std::string>();
+        if (id == "brush.larger") {
+            CHECK(has_shortcut(row, "]"));
+        }
+        if (id == "brush.smaller") {
+            CHECK(has_shortcut(row, "["));
+        }
+    }
+}
+
+void test_tool_pointer_rejects_a_phase_or_point_it_cannot_use() {
+    Harness h;
+    h.value("doc.new", json{{"width", 16}, {"height", 16}});
+    for (const char* phase : {"", "tap", "RELEASE"}) {
+        const CommandResult result =
+            h.run("tool.pointer", json{{"phase", phase}, {"at", json::array({1.0, 1.0})}});
+        CHECK(!result.ok);
+        CHECK(result.error.find("phase") != std::string::npos);
+    }
+    const CommandResult no_point = h.run("tool.pointer", json{{"phase", "press"}});
+    CHECK(!no_point.ok);
+    CHECK(no_point.error.find("at") != std::string::npos);
+    CHECK(!h.state.stroke.active);
+}
+
 void test_a_stroke_that_cannot_run_names_the_field_that_is_wrong() {
     Harness h;
     h.value("doc.new", json{{"width", 16}, {"height", 16}});
@@ -489,6 +777,15 @@ int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
     test_one_stroke_is_one_step_that_puts_every_byte_back();
+    test_a_pointer_gesture_lands_where_the_same_path_painted_in_one_go_lands();
+    test_a_pointer_gesture_is_one_step_and_reports_itself();
+    test_a_gesture_that_leaves_the_canvas_still_undoes_completely();
+    test_tool_pointer_rejects_a_phase_or_point_it_cannot_use();
+    test_a_pointer_gesture_changes_no_pixel_outside_its_own_rectangle();
+    test_the_eraser_takes_alpha_and_keeps_the_colour_of_a_partly_erased_pixel();
+    test_a_live_stroke_keeps_every_dab_it_ever_stamped();
+    test_a_tool_row_becomes_a_command_a_key_and_a_paint_mode();
+    test_the_size_keys_stop_at_the_ends_of_the_brush_range();
     test_a_stroke_that_cannot_run_names_the_field_that_is_wrong();
     test_a_stroke_that_misses_the_document_is_not_a_step();
     test_the_keymap_is_reported_with_the_commands();

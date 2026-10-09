@@ -35,5 +35,6 @@ json history_json(const Document& doc);
 json document_summary_json(const AppState& state);
 json document_json(const AppState& state);
 json brush_json(const AppState& state);
+json stroke_json(const AppState& state);
 
 }  // namespace noise::app
