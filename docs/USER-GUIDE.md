@@ -72,7 +72,11 @@ is allowed for 48 px, so an edge is not a wall.
 ## Painting
 
 `B` brush, `E` eraser. `[` and `]` step the size by x1.25 — the same keystroke means the same
-thing at 4 px and at 400 px. The Brush panel holds the rest:
+thing at 4 px and at 400 px. `,` and `.` step **hardness** down and up, `Shift+,` and `Shift+.`
+step **opacity**: the MVP gave four actions to two keys, so the modifier takes the second pair. A
+step lands on the 5 % grid, so pressing `,` from a slider dragged to 0.73 gives 0.70 rather than
+0.68, and both ends stop dead rather than going past 0 or 1. Hover a slider to see its keys;
+`command.list` prints them all. The Brush panel holds the rest:
 
 | Field | Means |
 |---|---|

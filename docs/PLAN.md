@@ -164,13 +164,22 @@ one composite rule (`(1-ab)·as·Cs + as·ab·B + (1-as)·ab·Cb`, PDF 1.4 / CSS
 1. ~~**Blend modes**~~ - done; see "Blend modes, as built" above for the arithmetic, the
    specification-restated test, the two order bugs the red-checks found, and why the `format` number
    did not move.
-2. **The remaining tool keys** (`V`, `M`, `,`/`.`) and the panel rows they belong to.
+2. ~~**The remaining tool keys**~~ - `,`/`.` and `Shift+,`/`Shift+.` are live (hardness, opacity)
+   with a hover hint on the panel sliders. `V` and `M` are **not key work**: `V` is the move tool and
+   `M` is rect selection, and a key bound to a tool that does not exist is a shortcut to nothing.
+   Both became their own items below.
 3. Later, gated by measurement, in the order the probe numbers say:
    exact fast paths in `blend_layer` and per-layer content rectangles (a uniform layer change is
    75 ms at 3 x 2048^2 in Release - the pass the GPU is supposed to eat); dirty-rect texture upload
    (the floor under a pointer event); GPU stamp preview; per-layer GPU textures + the shader blend
    pair checked against `core/blend`.
-4. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
+4. **The move tool** (`V`) - drag translates the active layer's pixels, one undo step per gesture,
+   with the ghost the overlay path draws while the button is down. Reachable through the existing
+   `tool.pointer` events, so it is testable the way the brush already is.
+5. **Rect selection** (`M`) - the selection model itself: a document-level mask, tools honouring it,
+   marching ants, `Ctrl+D`/`Ctrl+I`, and the composite/region paths keeping it in mind. This is the
+   item the MVP's `selection.{h,cpp}` module exists for; it is a milestone slice, not a key.
+6. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
    outlive the session).
 
 **Answered and implemented since:** the table now refuses an argument its command does not declare

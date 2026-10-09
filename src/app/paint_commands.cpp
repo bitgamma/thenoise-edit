@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/command_groups.h"
 
+#include "app/brush_steps.h"
 #include "app/command_args.h"
 
 #include "core/brush.h"
@@ -45,6 +46,17 @@ std::vector<std::string> stroke_arg_names() {
     std::vector<std::string> names = brush_arg_names();
     names.push_back("points");
     return names;
+}
+
+// The row of the brush table with this name, or null. A step command names the field it moves
+// instead of repeating its range, so there is exactly one place a range exists.
+const BrushField* brush_field(std::string_view name) {
+    for (const BrushField& field : kBrushFields) {
+        if (name == field.key) {
+            return &field;
+        }
+    }
+    return nullptr;
 }
 
 // One field of `brush`, from `args`, range-checked. The message names the field.
@@ -238,6 +250,27 @@ void register_paint_commands(AppState& state, CommandTable& table) {
         state.brush.size = clamp_brush_size(state.brush.size / kBrushSizeStep);
         return command_ok(brush_json(state));
     });
+
+    // The step keys, one row of `kBrushSteps` each. The range they clamp to is the brush field's
+    // own, so a step can never widen the range the slider and `tool.set` agree on.
+    for (const BrushStep& step : kBrushSteps) {
+        const BrushField* field = brush_field(step.field);
+        if (field == nullptr) {
+            log::error("brush step " + std::string(step.id) + " names no brush field: '" +
+                       step.field + "' is not in the brush table");
+            continue;
+        }
+        std::vector<std::string> bindings;
+        if (step.shortcut[0] != '\0') {
+            bindings.push_back(step.shortcut);
+        }
+        table.add(step.id, step.title, std::move(bindings), {},
+                  [&state, field, direction = step.direction](const json&) -> CommandResult {
+            double& target = state.brush.*(field->member);
+            target = step_brush_fraction(target, direction, field->low, field->high);
+            return command_ok(brush_json(state));
+        });
+    }
 
     table.add("edit.undo", "Undo the last change to the pixels", {"Ctrl+Z"}, {},
               [&state](const json&) -> CommandResult {

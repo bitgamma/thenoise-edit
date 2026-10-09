@@ -73,6 +73,15 @@ bool CommandTable::add(const std::string& id, const std::string& title,
     return true;
 }
 
+std::vector<std::string> CommandTable::shortcuts_for(std::string_view id) const {
+    for (const Registered& command : commands_) {
+        if (command.id == id) {
+            return command.shortcuts;
+        }
+    }
+    return {};
+}
+
 std::string CommandTable::command_for_shortcut(std::string_view shortcut) const {
     const std::optional<std::string> canonical = normalize_shortcut(shortcut);
     if (!canonical) {

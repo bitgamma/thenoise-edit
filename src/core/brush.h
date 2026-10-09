@@ -60,6 +60,17 @@ double clamp_brush_size(double size);
 // 4 px and at 400 px.
 inline constexpr double kBrushSizeStep = 1.25;
 
+// One step of the keys that nudge a 0..1 brush field (hardness, opacity): 5 % of the range, so the
+// same number of presses crosses any of them.
+inline constexpr double kBrushFractionStep = 0.05;
+
+// The field after one press of such a key, clamped to `low`..`high`.
+//
+// The result lands on the step grid rather than on `value + step`: from a slider dragged to 0.73,
+// "one step softer" means 0.70, and a value that accumulated a binary rounding error per press
+// would leave the app reporting a setting nobody typed.
+double step_brush_fraction(double value, int direction, double low, double high);
+
 // A stroke's accumulated coverage over one rectangle, kept between calls so a live gesture
 // composites once with the stroke's opacity - and with the same result as one stroke painted
 // in a single call - instead of compounding a little more each frame.

@@ -597,6 +597,80 @@ void test_the_size_keys_stop_at_the_ends_of_the_brush_range() {
     }
 }
 
+// The keys that nudge a 0..1 brush field: one row of `kBrushSteps` each, clamped to the range of
+// the field they name, landing on the step grid rather than accumulating a rounding error, and
+// moving only the field they name. The grid is the contract: a slider dragged to 0.73 and then
+// softened goes to 0.70, because "one step softer" cannot mean 0.68 on a control that reads 0.70.
+void test_the_hardness_and_opacity_keys_step_and_stop_at_the_ends() {
+    Harness h;
+    h.value("doc.new", json{{"width", 16}, {"height", 16}});
+
+    double hardness = kBrushDefaults.hardness;
+    for (int press = 1; press <= 40; ++press) {
+        const json got = h.value("brush.hardness_down", json::object());
+        hardness = kBrushFractionStep * (std::lround(kBrushDefaults.hardness / kBrushFractionStep) -
+                                        press);
+        if (hardness < 0.0) {
+            hardness = 0.0;
+        }
+        CHECK_NEAR(got["hardness"].get<double>(), hardness, 1e-9);
+        // The other fields are somebody else's business: a member pointer pointed at the wrong row
+        // shows up here and nowhere else.
+        CHECK_NEAR(got["opacity"].get<double>(), kBrushDefaults.opacity, 1e-9);
+        CHECK_NEAR(got["flow"].get<double>(), kBrushDefaults.flow, 1e-9);
+        CHECK_NEAR(got["size"].get<double>(), kBrushDefaults.size, 1e-9);
+    }
+    CHECK_EQ(h.value("brush.hardness_down", json::object())["hardness"].get<double>(), 0.0);
+
+    // Off-grid in, on-grid out.
+    h.value("tool.set", json{{"hardness", 0.73}});
+    CHECK_NEAR(h.value("brush.hardness_down", json::object())["hardness"].get<double>(), 0.70,
+               1e-9);
+    CHECK_NEAR(h.value("brush.hardness_up", json::object())["hardness"].get<double>(), 0.75, 1e-9);
+
+    double opacity = kBrushDefaults.opacity;
+    for (int press = 1; press <= 40; ++press) {
+        const json got = h.value("brush.opacity_down", json::object());
+        opacity = kBrushFractionStep * (std::lround(kBrushDefaults.opacity / kBrushFractionStep) -
+                                       press);
+        if (opacity < 0.0) {
+            opacity = 0.0;
+        }
+        CHECK_NEAR(got["opacity"].get<double>(), opacity, 1e-9);
+        CHECK_NEAR(got["hardness"].get<double>(), 0.75, 1e-9);
+    }
+    CHECK_EQ(h.value("brush.opacity_down", json::object())["opacity"].get<double>(), 0.0);
+    for (int press = 0; press < 40; ++press) {
+        h.value("brush.opacity_up", json::object());
+    }
+    CHECK_EQ(h.value("brush.opacity_up", json::object())["opacity"].get<double>(), 1.0);
+
+    // The bindings are reported where a driver can read them, and the pair for a field is on the
+    // keys the MVP named: `,` and `.`, with the modifier taking opacity.
+    const json listed = h.value("command.list", json::object());
+    int bound = 0;
+    for (const json& row : listed["commands"]) {
+        const std::string id = row["id"].get<std::string>();
+        if (id == "brush.hardness_down") {
+            CHECK(has_shortcut(row, ","));
+            ++bound;
+        }
+        if (id == "brush.hardness_up") {
+            CHECK(has_shortcut(row, "."));
+            ++bound;
+        }
+        if (id == "brush.opacity_down") {
+            CHECK(has_shortcut(row, "Shift+,"));
+            ++bound;
+        }
+        if (id == "brush.opacity_up") {
+            CHECK(has_shortcut(row, "Shift+."));
+            ++bound;
+        }
+    }
+    CHECK_EQ(bound, 4);
+}
+
 void test_tool_pointer_rejects_a_phase_or_point_it_cannot_use() {
     Harness h;
     h.value("doc.new", json{{"width", 16}, {"height", 16}});
@@ -1181,6 +1255,7 @@ int main() {
     test_a_pointer_gesture_lands_where_the_same_path_painted_in_one_go_lands();
     test_a_pointer_gesture_is_one_step_and_reports_itself();
     test_a_gesture_that_leaves_the_canvas_still_undoes_completely();
+    test_the_hardness_and_opacity_keys_step_and_stop_at_the_ends();
     test_tool_pointer_rejects_a_phase_or_point_it_cannot_use();
     test_a_pointer_gesture_changes_no_pixel_outside_its_own_rectangle();
     test_the_eraser_takes_alpha_and_keeps_the_colour_of_a_partly_erased_pixel();

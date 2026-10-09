@@ -32,6 +32,12 @@ double clamp_brush_size(double size) {
     return std::clamp(size, kMinBrushSize, kMaxBrushSize);
 }
 
+double step_brush_fraction(double value, int direction, double low, double high) {
+    const double steps = std::round((value - low) / kBrushFractionStep) +
+                         static_cast<double>(direction);
+    return std::clamp(low + steps * kBrushFractionStep, low, high);
+}
+
 std::optional<PaintMode> tool_mode(const std::string& id) {
     for (const ToolInfo& tool : kTools) {
         if (id == tool.id) {

@@ -45,6 +45,9 @@ public:
     std::vector<CommandInfo> list() const;
     // Id of the command bound to this shortcut, empty when nothing is.
     std::string command_for_shortcut(std::string_view shortcut) const;
+    // The bindings of one command in canonical text, empty if it has none or no such command. So a
+    // panel can print the key beside a control without restating a binding it could get wrong.
+    std::vector<std::string> shortcuts_for(std::string_view id) const;
     CommandResult invoke(const std::string& id, const nlohmann::json& args) const;
 
 private:

@@ -139,6 +139,38 @@ void test_key_events_become_canonical_text() {
     CHECK(!app::shortcut_of(key(SAPP_KEYCODE_WORLD_1)).has_value());
 }
 
+// The whole chain one key press takes: event -> canonical text -> the command bound to it. The scan
+// above only proves a binding is producible; it cannot see a binding that is producible but points
+// at the wrong command, and a comma/period pair with a modifier in the middle is where a shift
+// would quietly get dropped.
+void test_a_key_press_lands_on_the_command_bound_to_it() {
+    AppState state;
+    CommandTable table;
+    dbg::DebugWire wire{table};
+    const app::HostHooks hooks{nullptr, nullptr};
+    app::register_commands(state, table, wire, hooks);
+
+    const auto bound_to = [&table](sapp_keycode code, unsigned modifiers = 0) {
+        const std::optional<std::string> text = app::shortcut_of(key(code, modifiers));
+        return table.command_for_shortcut(text.value_or("<unproducible>"));
+    };
+    CHECK_EQ(bound_to(SAPP_KEYCODE_COMMA), std::string("brush.hardness_down"));
+    CHECK_EQ(bound_to(SAPP_KEYCODE_PERIOD), std::string("brush.hardness_up"));
+    CHECK_EQ(bound_to(SAPP_KEYCODE_COMMA, SAPP_MODIFIER_SHIFT), std::string("brush.opacity_down"));
+    CHECK_EQ(bound_to(SAPP_KEYCODE_PERIOD, SAPP_MODIFIER_SHIFT), std::string("brush.opacity_up"));
+    // The size keys keep their own bindings, shift included being a different command rather than
+    // the same one twice.
+    CHECK_EQ(bound_to(SAPP_KEYCODE_LEFT_BRACKET), std::string("brush.smaller"));
+    CHECK_EQ(bound_to(SAPP_KEYCODE_RIGHT_BRACKET), std::string("brush.larger"));
+    CHECK_EQ(bound_to(SAPP_KEYCODE_B), std::string("tool.brush"));
+    CHECK_EQ(bound_to(SAPP_KEYCODE_E), std::string("tool.eraser"));
+    CHECK_EQ(bound_to(SAPP_KEYCODE_F), std::string("view.fit"));
+    // Nothing is bound to a modified key that nobody registered, so a stray modifier fires no
+    // command rather than the unmodified one.
+    CHECK(bound_to(SAPP_KEYCODE_COMMA, SAPP_MODIFIER_CTRL).empty());
+    CHECK(bound_to(SAPP_KEYCODE_SLASH).empty());
+}
+
 // The binding table and the platform translation must agree, or a shortcut reads as bound
 // and never fires. This is the whole reason both live in one table.
 void test_every_registered_shortcut_is_reachable_by_a_key_press() {
@@ -168,6 +200,7 @@ int main() {
     test_canonical_text();
     test_the_table_owns_its_bindings();
     test_key_events_become_canonical_text();
+    test_a_key_press_lands_on_the_command_bound_to_it();
     test_every_registered_shortcut_is_reachable_by_a_key_press();
     return test::summary("shortcut");
 }

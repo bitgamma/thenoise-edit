@@ -68,8 +68,11 @@ src/
     main.cpp           sokol entry, frame loop, mailbox drain
     commands.cpp       assembles the whole command table from the groups below
     command_args.{h,cpp} shared argument readers and the JSON each command answers with
+    brush_steps.h    the rows behind the step keys: which field, which direction, which key —
+                     registered as commands by paint_commands and read back by the Brush panel
+                     for its hover hint, so a binding exists once
     document_commands.cpp doc.* image.get
-    paint_commands.cpp tool.stroke/pointer/set, tool.<name>, brush.larger/smaller, edit.undo/redo
+    paint_commands.cpp tool.stroke/pointer/set, tool.<name>, the brush step commands, edit.undo/redo
     view_commands.cpp  view.*, and the fit that waits for a real canvas area
     tools/             one file per tool; Tool = press/drag/release/overlay/commit state machine
     shortcuts.{h,cpp}  platform key event -> canonical shortcut text (the only sokol-aware

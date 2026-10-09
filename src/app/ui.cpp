@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/ui.h"
 
+#include "app/brush_steps.h"
+
 #include "core/log.h"
 #include "gfx/checker.h"
 
@@ -13,6 +15,7 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace noise::app {
@@ -155,9 +158,32 @@ void draw_tool_panel(AppState& state, CommandTable& commands) {
     };
     for (const Slider& slider : sliders) {
         float value = static_cast<float>(state.brush.*(slider.member));
+        // The keys that step this field, asked of the command table rather than typed here: a hint
+        // that drifted from the binding would teach the wrong key. Fields with no step rows - flow
+        // and spacing - get no hint.
+        std::string hint;
+        for (const BrushStep& step : kBrushSteps) {
+            if (std::string_view(step.field) != slider.label) {
+                continue;
+            }
+            for (const std::string& binding : commands.shortcuts_for(step.id)) {
+                // One binding per line: the panel is docked against the right edge, so a tooltip
+                // laid out horizontally runs off the screen whatever it says.
+                if (!hint.empty()) {
+                    hint += "\n";
+                }
+                hint += binding;
+            }
+        }
         if (ImGui::SliderFloat(slider.label, &value, 0.0f, 1.0f, "%.2f") &&
             static_cast<double>(value) != state.brush.*(slider.member)) {
             commands.invoke("tool.set", json{{slider.label, static_cast<double>(value)}});
+        }
+        // On hover rather than beside the slider, and on two lines: the binding list is wider than
+        // the slider in a panel a third of the window, and a tooltip that runs off the screen edge
+        // says nothing either. `command.list` is the machine-readable form of the same fact.
+        if (!hint.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("step keys\n%s", hint.c_str());
         }
     }
 

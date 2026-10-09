@@ -134,15 +134,27 @@ class Injector:
         self.xtst.XTestFakeKeyEvent(self.dpy, ctypes.c_uint(code), 0, 0)
         self._flush()
 
-    def control_key(self, keysym: int) -> None:
-        ctrl = self.x11.XKeysymToKeycode(self.dpy, 0xFFE3)  # Control_L  # Control_L
-        if not ctrl:
-            raise wd.WireError("no Control_L keycode on this display")
+    def modified_key(self, keysym: int, *modifiers: int) -> None:
+        """One press/release of `keysym` held with `modifiers`, in the order given.
+
+        Shift matters beyond the modifier flag: it selects which command a punctuation key
+        reaches, so it has to be a real modifier state and not a shifted keysym.
+        """
+        codes = []
+        for modifier in modifiers:
+            code = self.x11.XKeysymToKeycode(self.dpy, modifier)
+            if not code:
+                raise wd.WireError(f"no keycode for modifier {modifier:#x} on this display")
+            codes.append(code)
         code = self.x11.XKeysymToKeycode(self.dpy, keysym)
-        self.xtst.XTestFakeKeyEvent(self.dpy, ctypes.c_uint(ctrl), 1, 0)
+        if not code:
+            raise wd.WireError(f"no keycode for keysym {keysym:#x} on this display")
+        for modifier in codes:
+            self.xtst.XTestFakeKeyEvent(self.dpy, ctypes.c_uint(modifier), 1, 0)
         self.xtst.XTestFakeKeyEvent(self.dpy, ctypes.c_uint(code), 1, 0)
         self.xtst.XTestFakeKeyEvent(self.dpy, ctypes.c_uint(code), 0, 0)
-        self.xtst.XTestFakeKeyEvent(self.dpy, ctypes.c_uint(ctrl), 0, 0)
+        for modifier in reversed(codes):
+            self.xtst.XTestFakeKeyEvent(self.dpy, ctypes.c_uint(modifier), 0, 0)
         self._flush()
 
 
@@ -203,6 +215,13 @@ KEY_F = 0x66           # XK_f
 KEY_S = 0x73           # XK_s
 KEY_Z = 0x7A           # XK_z
 KEY_J = 0x6A           # XK_j, bound to nothing today
+KEY_COMMA = 0x2C       # XK_comma
+KEY_PERIOD = 0x2E      # XK_period
+KEY_CTRL_L = 0xFFE3    # XK_Control_L
+# One press of a step key, as `core/brush.h` defines it: the probe asserts a step happened rather
+# than recomputing the value, so this is the width of "one", not a copy of the arithmetic.
+BRUSH_STEP = 0.05
+KEY_SHIFT_L = 0xFFE1   # XK_Shift_L
 PAINT = (200, 120)     # screen pixels of the test left-drag
 PAINT_STEPS = 8
 
@@ -269,7 +288,7 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
     # with doc.new has no path, so Ctrl+S cannot do anything but say so.
     wire.call("doc.new", {"width": 64, "height": 48})
     wd.settle(wire)
-    inj.control_key(KEY_S)
+    inj.modified_key(KEY_S, KEY_CTRL_L)
     wd.settle(wire)
     lines = wire.call("log.tail", {"count": 40})["lines"]
     reported = [line for line in lines if "Ctrl+S" in line and "doc.save" in line]
@@ -284,7 +303,7 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
         "points": [[8.0, 8.0], [48.0, 32.0]], "tool": "brush", "size": 12.0, "hardness": 0.5,
         "opacity": 1.0, "flow": 0.8, "spacing": 0.3, "color": [10, 200, 60, 255]})
     painted = wire.call("doc.get", {})["checksum"]
-    inj.control_key(KEY_Z)
+    inj.modified_key(KEY_Z, KEY_CTRL_L)
     wd.settle(wire)
     restored = wire.call("doc.get", {})["checksum"]
     print(f"Ctrl+Z: document {before[:12]} -> stroke {painted[:12]} -> undo {restored[:12]}")
@@ -320,12 +339,44 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
         fails.append("the stroke stayed active after the button was released")
     if depth != 1:
         fails.append(f"one drag must be one undo step, got {depth}")
-    inj.control_key(KEY_Z)
+    inj.modified_key(KEY_Z, KEY_CTRL_L)
     wd.settle(wire)
     restored = wire.call("doc.get", {})["checksum"]
     print(f"Ctrl+Z after the drag: {restored[:12]}")
     if restored != before:
         fails.append("Ctrl+Z did not undo the drag")
+
+    # The step keys, through the real key path. `,`/`.` move hardness by one step and Shift takes
+    # the same two keys to opacity - which only a real modifier state can demonstrate, because the
+    # keysym is the same either way and a dropped Shift would look like a working key.
+    def brush_of() -> dict:
+        return wire.call("app.state")["brush"]
+
+    start = brush_of()
+    inj.key(KEY_COMMA)
+    wd.settle(wire)
+    softened = brush_of()
+    step = start["hardness"] - softened["hardness"]
+    print(f"`,`: hardness {start['hardness']:.3f} -> {softened['hardness']:.3f} "
+          f"(one step of {BRUSH_STEP}), opacity stayed {softened['opacity']:.3f}")
+    if not 0.5 * BRUSH_STEP <= step <= 1.5 * BRUSH_STEP:
+        fails.append(f"`,` moved hardness by {step:.4f}, not one step of {BRUSH_STEP}")
+    if abs(softened["opacity"] - start["opacity"]) > 1e-9:
+        fails.append("`,` moved opacity, which belongs to Shift+`,`")
+    inj.key(KEY_PERIOD)
+    wd.settle(wire)
+    back = brush_of()
+    if abs(back["hardness"] - start["hardness"]) > 1e-9:
+        fails.append(f"`.` did not undo `,`: {softened['hardness']:.3f} -> {back['hardness']:.3f}")
+    inj.modified_key(KEY_COMMA, KEY_SHIFT_L)
+    wd.settle(wire)
+    shifted = brush_of()
+    print(f"Shift+`,`: opacity {back['opacity']:.3f} -> {shifted['opacity']:.3f}, hardness stayed "
+          f"{shifted['hardness']:.3f}")
+    if abs(back["opacity"] - shifted["opacity"]) < 0.5 * BRUSH_STEP:
+        fails.append("Shift+`,` did not lower opacity by a step")
+    if abs(shifted["hardness"] - back["hardness"]) > 1e-9:
+        fails.append("Shift+`,` moved hardness: the modifier reached the wrong command")
 
     # And a key bound to nothing changes nothing.
     before = wire.call("app.state")["view"]
