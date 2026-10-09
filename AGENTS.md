@@ -160,6 +160,11 @@ comprehensible, and honest about its state.
   configured server.
 - Request, don't perm: needing the live server is a resource request ("export
   `THENOISE_URL`/`THENOISE_API_KEY`, I'll spend ~N images"), not a design approval question.
+- No server URL, hostname or key ever enters the repo — not in docs, probe reports, comments,
+  fixtures or commit messages. The dev box rotates by occupancy, so a committed address is both
+  a leak and, soon, a lie: write `$THENOISE_URL` / `$THENOISE_API_KEY` and say "the dev box".
+  Showing the configured URL to the user at runtime is fine and useful — the rule is about bytes
+  in git, and nothing may bake an address into code, defaults or tests.
 - Never ask about: formatting, naming within an established convention, adding tests, dead
   code removal, or anything the docs already decide.
 - Prefer a working, reversible, observable step over a large speculative one. Ship the slice,

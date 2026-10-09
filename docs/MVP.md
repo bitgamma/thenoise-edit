@@ -121,7 +121,7 @@ dev server is free.
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────────────┐
-│ menu bar              [ studio · 192.168.1.20 · Klein-9B-INT8 (edit, pinned) ▸ ]   │
+│ menu bar              [ studio · <server>     · Klein-9B-INT8 (edit, pinned) ▸ ]   │
 ├──┬──────────────────────────────────────────────────────────────┬─────────────────┤
 │T │                                                              │ ▸ Generate      │
 │o │            canvas (checkerboard, ants, ghost regions)        │ ▸ Layers        │
