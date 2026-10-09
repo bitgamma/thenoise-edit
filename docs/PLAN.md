@@ -60,6 +60,9 @@ observed, not assumed; the numbers are from one dev box and rotate with it.
 | `ade3067` | `docs/USER-GUIDE.md`: the panel, the keys that exist, `.noise` vs PNG, driving the wire |
 | `e858b12` | `.noise` **format 2**, and what a pointer event and a panel click cost - see `probes/2026-10-09-paint-and-panel-cost.md` |
 | `0f87f93` | the probe measures the brush it claims: read settings back from `app.state`, and the corrected cost tables |
+| `25aa0ad` | `CommandTable::add` declares the arguments a command reads, and the dispatcher refuses anything else; `command.list` reports the declaration | a measurement that silently ignored half its arguments is the worst kind, and the rule is enforced by one table rather than by prose: every registered command is driven with an unknown argument in `test_app` |
+| `a47a324` | files are classified by content before being refused: a directory, a foreign ZIP and a foreign mimetype now name themselves | the `.ora` decision made "we do not read that" load-bearing; the app had been answering `Not a PNG file` to an OpenRaster and `basic_filebuf::underflow` to a directory |
+| `2bbd35c` | PNG, JPEG and WebP read **and** written, as one table (`io/flat`); exports report `format`, `quality`, `discarded_alpha`; system libjpeg/libwebp via pkg-config; `tools/image_interop_probe.py` registered in ctest | the MVP's interchange claim became true rather than planned, and there is now a test for the failure no in-house codec test can catch: a header written wrong by us and read wrong by us, which any self-consistent pair of codec tests passes |
 
 ### What the last commit changed, and why it was one commit
 
