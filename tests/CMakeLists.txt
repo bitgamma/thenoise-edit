@@ -95,6 +95,17 @@ if(Python3_Interpreter_FOUND)
                          TIMEOUT 120
                          DEPENDS noise-edit)
 
+    # Our encoder agreeing with our decoder proves the pair is self-consistent, nothing more: a
+    # header wrong on both sides keeps every in-house test green. So the flat formats cross to
+    # Pillow and come back, both ways, through the running app.
+    add_test(NAME test_image_interop
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/image_interop_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_image_interop PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 180
+                         DEPENDS noise-edit)
+
     add_test(NAME test_view_golden
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/wire_drive.py
                      --bin $<TARGET_FILE:noise-edit>

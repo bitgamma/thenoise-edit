@@ -22,9 +22,16 @@ observed, not assumed; the numbers are from one dev box and rotate with it.
 
 ### Decisions taken by the human this session
 
-0. **Drop `.ora` import/export from the MVP.** We do not need OpenRaster in. What that removes is
-   written into `docs/MVP.md` and `docs/ARCHITECTURE.md`; the container stays our own ZIP, and no
-   ORA-compatible layer stack, no import of foreign files, no second set of semantics to keep true.
+0. **Drop `.ora` import/export from the MVP.** We do not need OpenRaster in: no `stack.xml`, no
+   `.ora` read or write, no second set of layer-stack semantics to keep true. Done - and it made a
+   behaviour load-bearing rather than academic, because "we do not read that" now has to be said
+   correctly (see `a47a324`).
+
+0b. **PNG, JPEG and WebP open and save are in the MVP** (human, same session): implemented
+   (`io/jpeg`, `io/webp`, `io/flat`). Codecs come from the system `libjpeg` (libjpeg-turbo 3.2) and
+   `libwebp` via pkg-config, the same way `libpng16` already arrives - a feature cannot exist without
+   a JPEG and a WebP decoder, and vendoring two more trees behind the build was the heavier option.
+   Flagged because `AGENTS.md` asks before a new dependency: **this one was implied by the request.**
 
 1. **`.noise` format: always bump.** Adding required or optional manifest fields bumps
    `manifest.json:format` and refuses older files naming the version. Do not add optional fields
@@ -75,6 +82,27 @@ Three facts, entangled in `document.cpp` and `command_args.cpp`, each verified o
 Splitting these into three commits would have meant hand-constructing intermediate versions of
 `document.cpp` that no test had ever seen green; one commit with a green tree beat a tidier history
 with a broken one.
+
+### Flat formats, as built (observed, not assumed)
+
+`io/flat.{h,cpp}` is the table: extension, whether the format holds alpha, whether `quality` means
+anything, and the writer. `doc.open` sniffs content (PNG magic, `FF D8 FF`, `RIFF....WEBP`) and
+`doc.export` writes by extension, defaulting quality to `io::kDefaultExportQuality`.
+
+- A JPEG has no alpha: the export composites against white and answers `discarded_alpha`, so nothing
+  goes missing quietly. `quality` on a PNG export is refused ("it is lossless") rather than ignored,
+  which is the same rule the command table now enforces on unknown arguments.
+- Decoders cap a side at `io::kMaxDecodedSide` (16384) so a hostile header cannot ask for gigabytes.
+- `tools/image_interop_probe.py` (ctest `test_image_interop`, 17/17 green) is the part worth
+  keeping: our exports read by Pillow, and Pillow's files read by us, both through the running app.
+  Measured here: PNG byte-exact both ways; our JPEG 0.91 per channel from the white-flattened
+  composite; a Pillow JPEG read back 3.28; WebP 0.00 where opaque, transparent pixels coming back at
+  0.0 alpha, which is the independent confirmation that alpha crosses **straight**, not premultiplied.
+- Two things the probe found about measuring, both now in its comments: computing the white flatten
+  in int16 overflows (`255 * 255`) and invents a black reference, and a lossy bound measured against
+  per-pixel noise is meaningless - the same encode is 0.5 per channel off a gradient and 110 off
+  noise, so the lossy assertions run against a smooth pattern and the alpha assertions against the
+  noisy one.
 
 ### To do, in order
 

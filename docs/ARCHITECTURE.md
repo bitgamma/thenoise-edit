@@ -97,7 +97,10 @@ src/
     capture.{h,cpp}    viewport/window/composite → PNG on disk + sha256
     headless.{h,cpp}   run the same command surface without a window (SG_BACKEND_NULL)
   io/
-    png.{h,cpp} webp.{h,cpp} jpeg.{h,cpp}
+    png.{h,cpp} jpeg.{h,cpp} webp.{h,cpp}
+                       the flat formats: decode to RGBA8, encode from it
+    flat.{h,cpp}       those formats as one table - extension, sniffed magic, whether it holds
+                       alpha, whether `quality` means anything - plus the default export quality
     project.{h,cpp}    .noise read/write (the only layered format we read or write)
     psd_export.{h,cpp} (M5, optional)
     config.{h,cpp}     settings, keyring access
@@ -322,12 +325,20 @@ about them is invented ahead of the milestone that needs them.
 | **KRA / XCF** | reject | app-private, no stable spec for third parties, reference libs are GPL (licence gravity onto our binary) |
 | **Multi-page TIFF** | reject | pages ≠ layers: no blend modes, no masks, no stack semantics |
 | **Layered EXR** | maybe, later | excellent for 16/32-bit float AOVs, useless for a blend-mode stack; keep as an export for a future linear-light pipeline |
-| **PNG / WebP / AVIF / JPEG-XL** | flat export only | single frame; no stack |
+| **PNG, JPEG, WebP** | **read and write, flat** (MVP) | One frame, no stack, so they are exchange formats and nothing more: `doc.open` reads them as a single layer and `doc.export` writes one. Read by content, written by extension. JPEG has no alpha and composites against white, which the export answers with. AVIF / JPEG-XL are not read or written: nothing in the MVP needs them. |
 | **SVG** | reject | not a raster layer model |
 
 Round-trip guarantee we *can* honestly make: `.noise` written by this build and read back is
-byte-equal in every member it does not rewrite, a document saved and reopened keeps its layer
-state — visibility, opacity, blend mode — exactly, and `.noise → flat PNG/WebP/JPEG` is exact.
+byte-equal in every member it does not rewrite, and a document saved and reopened keeps its layer
+state — visibility, opacity, blend mode — exactly.
+
+Flat exports are exact for PNG and lossy for JPEG and WebP, because that is what those formats are;
+what is guaranteed about them is that **another implementation reads what we wrote and we read what
+it wrote** — dimensions, colour within the codec's own error, and alpha straight rather than
+premultiplied. That is measured, not assumed: `tools/image_interop_probe.py` (ctest
+`test_image_interop`) sends every export to Pillow and opens files Pillow wrote, having found that
+measuring the difference in int16 overflows and invents a mostly-black reference.
+
 A file that is not ours (an `.ora`, a ZIP without our `mimetype`, a `.noise` of another `format`)
 is **refused naming what met us**, not opened partially and not guessed at.
 
@@ -369,8 +380,8 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | Group | Commands | Why |
 |---|---|---|
 | state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `selection.get`, `server.state`, `job.list`, `log.tail` | read what the app believes, cheaply |
-| drive | `command.invoke`, `app.quit`, `doc.new/open/save/export/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?}`, `screenshot`, `pixels.compare`, `wire.info` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are all optional and inherit what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
-| pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable |
+| drive | `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `screenshot`, `pixels.compare`, `wire.info` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
+| pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
 | ai | `ai.preview {recipe, args}` (compiled request + prepped PNG, **no send**), `ai.run`, `job.wait {id}`, `cache.stats` | verify what we *would* send before spending minutes of someone's GPU |
 
 Live now: the state/drive/pixels rows minus `layer.*`, `selection.*`, `server.state`,

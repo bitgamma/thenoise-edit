@@ -7,10 +7,14 @@
 #include "core/base64.h"
 #include "core/log.h"
 #include "io/file.h"
+#include "io/flat.h"
 #include "io/png.h"
 #include "io/project.h"
 
 #include <nlohmann/json.hpp>
+
+#include <cstddef>
+#include <span>
 
 
 namespace noise::app {
@@ -50,7 +54,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         return command_ok(document_json(state));
     });
 
-    table.add("doc.open", "Open a .noise project or a flat image", {}, {"path"},
+    table.add("doc.open", "Open a .noise project, or a flat PNG, JPEG or WebP", {}, {"path"},
               [&state](const json& args) -> CommandResult {
         if (!args.contains("path") || !args.at("path").is_string()) {
             return fail("doc.open", "expected string 'path'");
@@ -73,7 +77,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         } else if (!sniff_error.empty()) {
             return fail("doc.open", sniff_error);
         } else {
-            Image flat = io::load_png(path, error);
+            Image flat = io::load_flat_image(path, error);
             if (flat.empty()) {
                 return fail("doc.open", error + " (" + path + ")");
             }
@@ -124,7 +128,8 @@ void register_document_commands(AppState& state, CommandTable& table) {
 
     // A flat image is an export, not a save: it does not take the document's path or clear its
     // dirty flag, because the project on disk is still the thing the document is.
-    table.add("doc.export", "Write a flat PNG of the document", {}, {"path"},
+    table.add("doc.export", "Write a flat PNG, JPEG or WebP of the document", {},
+              {"path", "quality"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -134,16 +139,52 @@ void register_document_commands(AppState& state, CommandTable& table) {
             return fail("doc.export", "expected string 'path'");
         }
         const std::string path = args.at("path").get<std::string>();
-        if (io::extension_of(path) != "png") {
-            return fail("doc.export", "only '.png' exports exist today (got '" + path + "')");
+        const std::string extension = io::extension_of(path);
+        if (!io::flat_format_exists(extension)) {
+            return fail("doc.export", "'" + extension + "' is not a format this app writes; it writes " +
+                                          io::flat_export_extensions());
         }
+        int quality = io::kDefaultExportQuality;
+        if (args.contains("quality")) {
+            if (!want_int(args, "quality", quality)) {
+                return fail("doc.export", "'quality' must be an integer");
+            }
+            if (quality < io::kMinQuality || quality > io::kMaxQuality) {
+                return fail("doc.export",
+                            "'quality' must be between " + std::to_string(io::kMinQuality) +
+                                " and " + std::to_string(io::kMaxQuality) +
+                                " (got " + std::to_string(quality) + ")");
+            }
+            if (!io::flat_format_has_quality(extension)) {
+                return fail("doc.export",
+                            "'quality' means nothing for a '" + extension + "' export: it is lossless");
+            }
+        }
+        const Image& flat = state.doc.composite();
         std::string error;
-        if (!io::save_png(path, state.doc.composite(), error)) {
+        if (!io::save_flat_image(path, flat, quality, error)) {
             return fail("doc.export", error);
         }
-        log::info("exported " + path);
+        // A format with no alpha channel did not fail to write the transparency - it discarded it -
+        // and the caller is told rather than left to notice later. `screenshot` and `image.get` keep
+        // writing PNG, which loses nothing.
+        bool transparency = false;
+        const std::span<const std::uint8_t> pixels = flat.pixels();
+        for (std::size_t i = 3; i < pixels.size(); i += 4) {
+            if (pixels[i] != 255) {
+                transparency = true;
+                break;
+            }
+        }
+        const bool discarded_alpha = transparency && !io::flat_format_has_alpha(extension);
+        log::info("exported " + path + (discarded_alpha ? " (alpha flattened over white)" : ""));
         json result = document_json(state);
         result["exported"] = path;
+        result["format"] = extension;
+        result["discarded_alpha"] = discarded_alpha;
+        if (io::flat_format_has_quality(extension)) {
+            result["quality"] = io::clamp_quality(quality);
+        }
         return command_ok(result);
     });
 

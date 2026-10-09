@@ -36,7 +36,9 @@ Constraints that shape everything (see `AI-BACKEND.md`):
 - pan, zoom-to-cursor, fit/100%, checkerboard transparency
 - brush (size/hardness/opacity/flow, no pressure — D1), smooth stroke interpolation,
   eraser, fill (fg/bg), eyedropper (layer | composite)
-- import PNG/WebP/JPEG; export PNG/WebP/JPEG + `.noise`; document ceiling 8192²
+- import PNG/WebP/JPEG; export PNG/WebP/JPEG + `.noise`; document ceiling 8192² —
+  **implemented**: `doc.open` reads all three by their bytes, `doc.export` writes all three by
+  extension, and a format with no alpha channel says it flattened (`discarded_alpha`)
 - `Upscale document` (ESRGAN via `/v1/images/upscale`)
 
 **Layers** (raster only)
@@ -143,7 +145,7 @@ save, `Ctrl+Z`/`Ctrl+Y` undo and redo, `Escape`/`Ctrl+Q` quit, `B`/`E` brush and
 `[`/`]` brush size, wheel zoom-to-cursor, right-drag pan and left-drag paint; every other key
 above arrives with the tool or command it belongs to (and
 `command.list` is the truth about what is bound). `Ctrl+S` writes the project and only the
-project (`.noise`); a flat PNG is `doc.export`, which takes neither the document's path nor its
+project (`.noise`); a flat PNG/JPEG/WebP is `doc.export`, which takes neither the document's path nor its
 unsaved mark. The Layers panel is live too - `layer.list` / `add` / `remove` / `select` on the
 wire, click-to-select and the two buttons in the UI, and strokes land on the selected layer while
 each step stays bound to the layer it was made on. Visibility and opacity are live with it: an eye
@@ -193,6 +195,7 @@ real) · disabled AI commands always explain why and what to pull.
 | Canvas | 8192×8192 ceiling, ~512 MB budget |
 | Recipes | pre-shipped, read-only; TOML (JSON also fine) |
 | Naming | extension **`.noise`**, binary `noise-edit`, MIME `application/x-noise+zip` |
+| Flat formats | **PNG, JPEG and WebP in and out**; read by content, written by extension. A format with no alpha channel composites the export against **white** and reports `discarded_alpha` — it does not refuse, and it does not pretend the transparency survived |
 | Interchange | **no `.ora`/OpenRaster import or export, in the MVP or later.** `.noise` is ours; what leaves the app is a flat PNG/WebP/JPEG. A second layer-stack semantics kept true for another application's file costs more than the interop buys, and provenance has nowhere to go in it |
 | Mask | never sent to the server; applied locally, always |
 | Variations | endpoint not used (unsupported) |

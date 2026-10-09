@@ -6,6 +6,7 @@
 
 #include "core/base64.h"
 #include "core/log.h"
+#include "io/flat.h"
 #include "io/png.h"
 #include "platform/platform.h"
 
@@ -149,19 +150,22 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(result);
     });
 
-    table.add("pixels.compare", "Compare two PNGs byte for byte", {}, {"a", "b"}, [](const json& args) -> CommandResult {
+    table.add("pixels.compare", "Compare the pixels of two images", {}, {"a", "b"},
+              [](const json& args) -> CommandResult {
         if (!args.contains("a") || !args.at("a").is_string() || !args.contains("b") ||
             !args.at("b").is_string()) {
-            return fail("pixels.compare", "expected string 'a' and 'b' PNG paths");
+            return fail("pixels.compare", "expected string 'a' and 'b' image paths");
         }
         const std::string path_a = args.at("a").get<std::string>();
         const std::string path_b = args.at("b").get<std::string>();
         std::string error;
-        const Image a = io::load_png(path_a, error);
+        // Any flat format, decoded: what is compared is pixels, and a probe should not have to
+        // convert a golden it was handed just to be allowed to compare it.
+        const Image a = io::load_flat_image(path_a, error);
         if (a.empty()) {
             return fail("pixels.compare", error + " (" + path_a + ")");
         }
-        const Image b = io::load_png(path_b, error);
+        const Image b = io::load_flat_image(path_b, error);
         if (b.empty()) {
             return fail("pixels.compare", error + " (" + path_b + ")");
         }

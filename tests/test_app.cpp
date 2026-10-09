@@ -5,6 +5,7 @@
 #include "app/state.h"
 #include "core/image.h"
 #include "io/file.h"
+#include "io/jpeg.h"
 #include "io/png.h"
 #include "io/zip.h"
 #include "core/log.h"
@@ -213,6 +214,64 @@ void test_a_container_that_is_not_ours_is_refused_naming_what_it_met() {
     CHECK(!directory.ok);
     CHECK(directory.error.find("not a regular file") != std::string::npos);
     CHECK(directory.error.find(dir.string()) != std::string::npos);
+}
+
+// The export names its format by extension and reports what that format could not carry: a JPEG
+// has no alpha channel, so the answer says the transparency was flattened instead of leaving the
+// caller to notice after the file is closed.
+void test_exporting_to_a_flat_format_reports_what_the_format_could_hold() {
+    Harness h;
+    for (const char* extension : {"png", "jpg", "jpeg", "webp"}) {
+        h.value("doc.new",
+                json{{"width", 24}, {"height", 16}, {"fill", json::array({10, 120, 200, 128})}});
+        const std::string path = h.temp(std::string("export-") + extension + "." + extension);
+        const json result = h.value("doc.export", json{{"path", path}});
+        CHECK_EQ(result["exported"].get<std::string>(), path);
+        CHECK_EQ(result["format"].get<std::string>(), std::string(extension));
+        const bool no_alpha = std::string(extension) == "jpg" || std::string(extension) == "jpeg";
+        CHECK_EQ(result["discarded_alpha"].get<bool>(), no_alpha);
+        // Only a format with a knob reports one, and PNG is the one format here without it.
+        CHECK_EQ(result.contains("quality"), std::string(extension) != "png");
+        CHECK(std::filesystem::exists(path));
+
+        // What was written reads back as an image of the size that went out.
+        const json opened = h.value("doc.open", json{{"path", path}});
+        CHECK_EQ(opened["width"].get<int>(), 24);
+        CHECK_EQ(opened["height"].get<int>(), 16);
+    }
+}
+
+// Nothing is written by a call that was refused, and `quality` is checked against the format that
+// was asked for: sending it to a PNG is a field with nothing to do, which is an error, not a no-op.
+void test_export_arguments_are_checked_and_nothing_is_written_on_refusal() {
+    Harness h;
+    h.value("doc.new", json{{"width", 32}, {"height", 32}, {"fill", json::array({1, 2, 3, 255})}});
+
+    const CommandResult tiff = h.run("doc.export", json{{"path", h.temp("refused.tiff")}});
+    CHECK(!tiff.ok);
+    CHECK(tiff.error.find("tiff") != std::string::npos);
+    CHECK(tiff.error.find("webp") != std::string::npos);  // says what it does write
+    const CommandResult lossless_quality =
+        h.run("doc.export", json{{"path", h.temp("refused.png")}, {"quality", 30}});
+    CHECK(!lossless_quality.ok);
+    CHECK(lossless_quality.error.find("lossless") != std::string::npos);
+    const CommandResult out_of_range =
+        h.run("doc.export", json{{"path", h.temp("refused.jpg")}, {"quality", 101}});
+    CHECK(!out_of_range.ok);
+    CHECK(out_of_range.error.find("101") != std::string::npos);
+    const CommandResult wrong_type =
+        h.run("doc.export", json{{"path", h.temp("refused.jpg")}, {"quality", "high"}});
+    CHECK(!wrong_type.ok);
+    CHECK(wrong_type.error.find("quality") != std::string::npos);
+    for (const char* name : {"refused.tiff", "refused.png", "refused.jpg"}) {
+        CHECK(!std::filesystem::exists(h.temp(name)));
+    }
+
+    // Where it does mean something, it does something.
+    h.value("doc.export", json{{"path", h.temp("small.jpg")}, {"quality", 20}});
+    h.value("doc.export", json{{"path", h.temp("large.jpg")}, {"quality", 95}});
+    CHECK(std::filesystem::file_size(h.temp("small.jpg")) <
+          std::filesystem::file_size(h.temp("large.jpg")));
 }
 
 json full_stroke() {
@@ -911,6 +970,19 @@ void test_pixels_compare_finds_a_single_changed_byte() {
     CHECK_EQ(diff["differing_bytes"].get<std::size_t>(), std::size_t(1));
     CHECK_EQ(diff["max_channel_delta"].get<int>(), 1);
 
+    // Either side may be any flat format: what is compared is pixels, not a container.
+    const std::string path_jpg = h.temp("compare.jpg");
+    CHECK(io::save_jpeg(path_jpg, a, 92, error));
+    const json jpeg_itself = h.value("pixels.compare", json{{"a", path_jpg}, {"b", path_jpg}});
+    CHECK_EQ(jpeg_itself["equal"].get<bool>(), true);
+    // That it decoded rather than errored: the lossy JPEG of those pixels differs from the PNG.
+    // How far it differs is not asserted here - ringing on a hard 2x2 edge measures 79 per channel
+    // at q92, which no bound distinguishes from a wrong colour space without being so loose it
+    // catches nothing. Colour accuracy is tools/image_interop_probe.py's job, against Pillow.
+    const json against_png = h.value("pixels.compare", json{{"a", path_a}, {"b", path_jpg}});
+    CHECK_EQ(against_png["equal"].get<bool>(), false);
+    CHECK(against_png["differing_bytes"].get<std::size_t>() > 0);
+
     const CommandResult absent = h.run("pixels.compare", json{{"a", path_a},
                                                               {"b", h.temp("absent.png")}});
     CHECK(!absent.ok);
@@ -1040,6 +1112,8 @@ int main() {
     test_m0_command_surface_is_registered();
     test_every_command_refuses_an_argument_it_does_not_declare();
     test_a_container_that_is_not_ours_is_refused_naming_what_it_met();
+    test_exporting_to_a_flat_format_reports_what_the_format_could_hold();
+    test_export_arguments_are_checked_and_nothing_is_written_on_refusal();
     test_a_brush_field_on_the_command_that_takes_none_is_an_error();
     test_one_stroke_is_one_step_that_puts_every_byte_back();
     test_a_pointer_gesture_lands_where_the_same_path_painted_in_one_go_lands();

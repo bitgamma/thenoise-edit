@@ -213,7 +213,13 @@ problems and only one of them is a bug:
   (`multiply`, `screen`, …) is the next increment on the layer model.
 - **No reorder, rename, duplicate or merge** in the Layers panel; no move tool.
 - **Only brush and eraser.** No fill, eyedropper, lasso or wand, no pen pressure.
-- **PNG in, PNG out** — no JPEG/WebP import or export yet, and no `.ora`/PSD at all:
-  OpenRaster is out of the design by decision, so a foreign layered file is refused rather than
-  guessed at.
+- **PNG, JPEG and WebP in and out.** Reading decides by the bytes, not the name — a PNG renamed
+  `.bin` opens, and a file that is none of them is refused naming the formats and the first bytes it
+  found instead. Writing decides by the extension, and an extension we do not write is refused with
+  the list.
+- **A JPEG has no alpha channel.** Exporting a document with any transparency to JPEG composites it
+  against white and answers `discarded_alpha: true`, so nothing is lost quietly. WebP and PNG keep
+  alpha; `quality` applies to JPEG and WebP and is refused on a PNG, which is lossless.
+- **No `.ora`/PSD at all**: OpenRaster is out of the design by decision, so a foreign layered file
+  is refused naming its mimetype rather than guessed at.
 - **No autosave or crash recovery**, and the undo history lives and dies with the session.
