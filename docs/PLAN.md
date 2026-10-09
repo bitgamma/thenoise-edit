@@ -78,13 +78,16 @@ Still open, when convenient:
 
 ## Next steps, in order
 
-1. **CI, as far as it runs here.** There is no remote and nothing is pushed, so
-   `.github/workflows/ci.yml` has still never executed on a runner. Its steps are run locally
-   instead - `cmake -B build -G Ninja && cmake --build build && xvfb-run -a ctest
-   --output-on-failure` - and are green. When a runner exists, expect the golden to be the
-   thing that differs on Ubuntu's llvmpipe: read `differing_bytes` / `max_channel_delta` and
-   either widen the two constants in `tools/wire_drive.py` deliberately or re-record there
-   with `--update-golden`. Never widen a tolerance to hide a structural diff.
+1. **CI waits until MVP** (decided 2026-10-09): the workflow is not going to run on a
+   runner before MVP, so nothing here should spend effort on remotes or runners. The local
+   gate stands in for it and is the thing to keep green -
+   `cmake -B build -G Ninja && cmake --build build && xvfb-run -a ctest --output-on-failure`.
+   `.github/workflows/ci.yml` stays as written and unverified; when it finally runs, expect
+   the golden to be what differs under Ubuntu's llvmpipe: read `differing_bytes` /
+   `max_channel_delta`, then either widen the two constants in `tools/wire_drive.py`
+   deliberately or re-record there with `--update-golden`. Never widen a tolerance to hide a
+   structural diff.
+
 2. **Keyboard shortcuts live in the command table.** `CommandTable::add` takes the bindings,
    normalizes the text, refuses a malformed shortcut and refuses to bind a key twice;
    `app::shortcut_of` turns a sokol key event into the same canonical text and `main.cpp`
