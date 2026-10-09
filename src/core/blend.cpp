@@ -10,6 +10,17 @@ std::uint8_t channel_from_unit(double unit) {
     return static_cast<std::uint8_t>(std::lround(std::clamp(unit, 0.0, 1.0) * 255.0));
 }
 
+std::string blend_mode_names() {
+    std::string names;
+    for (const BlendModeInfo& info : kBlendModes) {
+        if (!names.empty()) {
+            names += ", ";
+        }
+        names += info.name;
+    }
+    return names;
+}
+
 void blend_over(std::uint8_t* dst, const std::uint8_t* src_rgb, double src_alpha) {
     if (src_alpha <= 0.0) {
         return;
@@ -25,20 +36,21 @@ void blend_over(std::uint8_t* dst, const std::uint8_t* src_rgb, double src_alpha
     dst[3] = channel_from_unit(out_alpha);
 }
 
-void blend_over(Image& dst, const Image& src, Rect region) {
-    for (int y = region.y; y < region.bottom(); ++y) {
-        for (int x = region.x; x < region.right(); ++x) {
-            const std::uint8_t* here = src.at(x, y);
-            if (here[3] == 0) {
-                continue;
+void blend_layer(Image& dst, const Image& src, Rect region, BlendMode mode, double opacity) {
+    switch (mode) {
+        case BlendMode::normal:
+            for (int y = region.y; y < region.bottom(); ++y) {
+                for (int x = region.x; x < region.right(); ++x) {
+                    const std::uint8_t* here = src.at(x, y);
+                    const double alpha = (here[3] / 255.0) * opacity;
+                    if (alpha <= 0.0) {
+                        continue;
+                    }
+                    blend_over(dst.at(x, y), here, alpha);
+                }
             }
-            blend_over(dst.at(x, y), here, here[3] / 255.0);
-        }
+            return;
     }
-}
-
-void blend_over(Image& dst, const Image& src) {
-    blend_over(dst, src, Rect{0, 0, src.size().w, src.size().h});
 }
 
 void blend_erase(std::uint8_t* dst, double amount) {

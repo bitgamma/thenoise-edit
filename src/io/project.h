@@ -18,7 +18,12 @@ namespace noise::io {
 // than opened with a layer silently cropped or padded.
 inline constexpr const char* kMimetype = "application/x-noise+zip";
 inline constexpr const char* kProjectExtension = "noise";
-inline constexpr int kFormatVersion = 1;
+
+// Format 2 added `visible`, `opacity` and `mode` to every layer row and made them required, so
+// a file cannot half-state how a layer looks. The version is bumped for optional fields too, and
+// a file of any other version is refused by number: there is one writer, it is us, and silently
+// guessing a default for a field the format stopped writing is how a document opens wrong.
+inline constexpr int kFormatVersion = 2;
 
 struct Project {
     int format = kFormatVersion;

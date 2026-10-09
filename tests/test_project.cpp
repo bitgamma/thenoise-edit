@@ -81,31 +81,44 @@ void write_archive(const std::string& path, const std::vector<io::ZipEntry>& ent
     CHECK(io::write_file_atomic(path, zip.bytes(), error));
 }
 
-std::vector<io::ZipEntry> minimal_members(const Image& image, int format,
-                                          std::size_t layers_declared,
-                                          const std::string& mimetype = io::kMimetype,
-                                          const json& claimed_size = json()) {
-    json layer_array = json::array();
-    for (std::size_t index = 0; index < layers_declared; ++index) {
-        layer_array.push_back(json{{"name", "Layer " + std::to_string(index + 1)},
-                                   {"src", "layers/" + std::to_string(index) + "/layer.png"}});
+// A format-2 layer row with every field this reader requires. A hand-built file that leaves one
+// out is a hostile file, not a convenient one, so the tests that mean to write a valid project
+// start here and the ones that mean to write a broken one take a field away.
+json layer_rows(std::size_t count) {
+    json rows = json::array();
+    for (std::size_t index = 0; index < count; ++index) {
+        rows.push_back(json{{"mode", "normal"},
+                            {"name", "Layer " + std::to_string(index + 1)},
+                            {"opacity", 1.0},
+                            {"src", "layers/" + std::to_string(index) + "/layer.png"},
+                            {"visible", true}});
     }
-    json manifest{{"format", format}, {"layers", layer_array}};
-    if (!claimed_size.is_null()) {
-        manifest["size"] = claimed_size;
-    } else {
-        manifest["size"] = json::array({image.size().w, image.size().h});
-    }
+    return rows;
+}
+
+std::vector<io::ZipEntry> members_with_rows(const Image& image, const json& rows, int format,
+                                            const std::string& mimetype = io::kMimetype,
+                                            const json& claimed_size = json()) {
+    json manifest{{"format", format}, {"layers", rows}};
+    manifest["size"] =
+        claimed_size.is_null() ? json::array({image.size().w, image.size().h}) : claimed_size;
 
     std::vector<io::ZipEntry> members{
         io::ZipEntry{"mimetype", bytes_of(mimetype)},
         io::ZipEntry{"manifest.json", bytes_of(manifest.dump())},
         io::ZipEntry{"layers/0/layer.png", io::encode_png(image)},
     };
-    if (layers_declared > 1) {
+    if (rows.size() > 1) {
         members.push_back(io::ZipEntry{"layers/1/layer.png", io::encode_png(image)});
     }
     return members;
+}
+
+std::vector<io::ZipEntry> minimal_members(const Image& image, int format,
+                                          std::size_t layers_declared,
+                                          const std::string& mimetype = io::kMimetype,
+                                          const json& claimed_size = json()) {
+    return members_with_rows(image, layer_rows(layers_declared), format, mimetype, claimed_size);
 }
 
 void test_pixels_and_layer_name_come_back_unchanged() {
@@ -152,6 +165,109 @@ void test_pixels_and_layer_name_come_back_unchanged() {
     std::filesystem::remove(path);
 }
 
+// What a layer looks like is file content: a save that dropped `visible`, or an open that
+// defaulted a missing field instead of refusing, loses the difference between a document the
+// user arranged and one the reader invented.
+void test_layer_state_round_trips() {
+    const Image image = checker(Extent{7, 5});
+    std::vector<Layer> stack;
+    stack.push_back(Layer{0, "Paper", image, true, 1.0, BlendMode::normal});
+    stack.push_back(Layer{0, "Wash", image, false, 0.25, BlendMode::normal});
+
+    const std::string path = temp("state.noise");
+    std::string error;
+    CHECK(io::save_project(path, stack, image, {}, error));
+
+    io::Project loaded;
+    CHECK(io::load_project(path, loaded, error));
+    CHECK_EQ(loaded.layers.size(), 2u);
+    if (loaded.layers.size() != 2) {
+        return;
+    }
+    CHECK_EQ(loaded.layers[0].visible, true);
+    CHECK_EQ(loaded.layers[0].opacity, 1.0);
+    CHECK_EQ(loaded.layers[1].visible, false);
+    CHECK_EQ(loaded.layers[1].opacity, 0.25);
+    CHECK(loaded.layers[1].mode == BlendMode::normal);
+
+    // And the same through the bytes, not just the structs: a field the writer never emitted
+    // cannot be read back, however the in-memory test looks.
+    std::vector<std::uint8_t> raw;
+    CHECK(io::read_file(path, raw, error));
+    const auto entries = io::read_zip(std::span<const std::uint8_t>(raw), error);
+    CHECK(entries.has_value());
+    if (!entries) {
+        return;
+    }
+    const json manifest = json::parse(text_of((*entries)[1].data));
+    const json row = manifest["layers"][1];
+    CHECK_EQ(row["visible"].get<bool>(), false);
+    CHECK_EQ(row["opacity"].get<double>(), 0.25);
+    CHECK_EQ(row["mode"].get<std::string>(), std::string("normal"));
+    std::filesystem::remove(path);
+}
+
+// One format is read, and it is named: opening a file by guessing at a layout this build does
+// not have is how a document comes back subtly wrong.
+void test_another_format_is_refused_by_name() {
+    const Image image = checker(Extent{6, 6});
+    for (const int format : {1, io::kFormatVersion + 6}) {
+        const std::string path = temp("format-" + std::to_string(format) + ".noise");
+        write_archive(path, minimal_members(image, format, 1));
+        io::Project loaded;
+        std::string error;
+        CHECK(!io::load_project(path, loaded, error));
+        CHECK(error.find(std::to_string(format)) != std::string::npos);
+        CHECK(error.find(std::to_string(io::kFormatVersion)) != std::string::npos);
+        CHECK(error.find("format-" + std::to_string(format) + ".noise") != std::string::npos);
+        std::filesystem::remove(path);
+    }
+}
+
+void test_a_layer_that_omits_its_state_is_refused() {
+    const Image image = checker(Extent{6, 6});
+    for (const char* field : {"visible", "opacity", "mode"}) {
+        json rows = layer_rows(1);
+        rows[0].erase(field);
+        const std::string path = temp(std::string("missing-") + field + ".noise");
+        write_archive(path, members_with_rows(image, rows, io::kFormatVersion));
+        io::Project loaded;
+        std::string error;
+        CHECK(!io::load_project(path, loaded, error));
+        CHECK(error.find(field) != std::string::npos);
+        // Which layer, not just which field: a two-layer file that says "no 'mode'" is a puzzle.
+        CHECK(error.find("layer 0") != std::string::npos);
+        std::filesystem::remove(path);
+    }
+}
+
+// Values out of range or out of the mode table are refused with the offending text, because the
+// alternative is a layer that opens as something the file never asked for.
+void test_an_impossible_layer_state_is_refused() {
+    const Image image = checker(Extent{6, 6});
+
+    json high = layer_rows(1);
+    high[0]["opacity"] = 1.5;
+    const std::string high_path = temp("opaque.noise");
+    write_archive(high_path, members_with_rows(image, high, io::kFormatVersion));
+    io::Project loaded;
+    std::string error;
+    CHECK(!io::load_project(high_path, loaded, error));
+    CHECK(error.find("1.5") != std::string::npos);
+    CHECK(error.find("0..1") != std::string::npos);
+    std::filesystem::remove(high_path);
+
+    json odd_mode = layer_rows(1);
+    odd_mode[0]["mode"] = "not-a-mode";
+    const std::string mode_path = temp("mode.noise");
+    write_archive(mode_path, members_with_rows(image, odd_mode, io::kFormatVersion));
+    CHECK(!io::load_project(mode_path, loaded, error));
+    CHECK(error.find("not-a-mode") != std::string::npos);
+    // The names that would have been accepted, so the reader can be fixed without a guess.
+    CHECK(error.find("normal") != std::string::npos);
+    std::filesystem::remove(mode_path);
+}
+
 // Members this build does not define are kept and written back: opening a file from a newer
 // build must not delete what the app cannot show.
 void test_unknown_members_are_carried_through_a_save() {
@@ -180,19 +296,6 @@ void test_unknown_members_are_carried_through_a_save() {
     io::Project again;
     CHECK(io::load_project(path, again, error));
     CHECK_EQ(again.carried.size(), 2u);
-    std::filesystem::remove(path);
-}
-
-void test_a_newer_format_is_refused_by_name() {
-    const Image image = checker(Extent{6, 6});
-    const std::string path = temp("future.noise");
-    write_archive(path, minimal_members(image, io::kFormatVersion + 6, 1));
-    io::Project loaded;
-    std::string error;
-    CHECK(!io::load_project(path, loaded, error));
-    CHECK(error.find(std::to_string(io::kFormatVersion + 6)) != std::string::npos);
-    CHECK(error.find(std::to_string(io::kFormatVersion)) != std::string::npos);
-    CHECK(error.find("future.noise") != std::string::npos);
     std::filesystem::remove(path);
 }
 
@@ -311,8 +414,11 @@ void test_a_failed_save_leaves_no_file_and_keeps_the_old_one() {
 
 int main() {
     test_pixels_and_layer_name_come_back_unchanged();
+    test_layer_state_round_trips();
+    test_another_format_is_refused_by_name();
+    test_a_layer_that_omits_its_state_is_refused();
+    test_an_impossible_layer_state_is_refused();
     test_unknown_members_are_carried_through_a_save();
-    test_a_newer_format_is_refused_by_name();
     test_layers_keep_their_order_and_names_through_a_save();
     test_a_layer_of_another_size_is_refused();
     test_a_manifest_that_lies_about_the_size_is_refused();

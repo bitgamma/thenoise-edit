@@ -90,19 +90,78 @@ bool Document::select_layer(int index) {
     return true;
 }
 
+bool Document::set_layer_visible(int index, bool visible) {
+    if (index < 0 || static_cast<std::size_t>(index) >= layers_.size()) {
+        return false;
+    }
+    Layer& layer = layers_[static_cast<std::size_t>(index)];
+    if (layer.visible == visible) {
+        return true;
+    }
+    layer.visible = visible;
+    // Whole canvas, not a rectangle: what is correct elsewhere depends on whether the composite
+    // was even built while this layer was hidden.
+    pending_ = Rect{0, 0, width(), height()};
+    dirty_ = true;
+    ++revision_;
+    return true;
+}
+
+bool Document::set_layer_opacity(int index, double opacity) {
+    if (index < 0 || static_cast<std::size_t>(index) >= layers_.size()) {
+        return false;
+    }
+    if (!(opacity >= 0.0 && opacity <= 1.0)) {
+        return false;
+    }
+    Layer& layer = layers_[static_cast<std::size_t>(index)];
+    if (layer.opacity == opacity) {
+        return true;
+    }
+    layer.opacity = opacity;
+    pending_ = Rect{0, 0, width(), height()};
+    dirty_ = true;
+    ++revision_;
+    return true;
+}
+
 std::string Document::checksum() const {
     std::string seed = std::to_string(layers_.size());
     for (const Layer& layer : layers_) {
+        // The layer's state as well as its pixels: two documents that show different things are
+        // different documents, whatever their flattened pixels happen to look like, and a
+        // round-trip check that could not see a lost `visible` flag would pass on data loss.
+        seed += layer.visible ? 'v' : 'h';
+        const char* raw = reinterpret_cast<const char*>(&layer.opacity);
+        seed.append(raw, sizeof(layer.opacity));  // the bytes, so two opacities never collide
+        seed += blend_mode_name(layer.mode);
         seed += layer.pixels.checksum_hex();
     }
     return sha256_hex(seed);
 }
 
+namespace {
+
+// The canvas rectangle of an image that covers the canvas whole.
+Rect whole(const Image& image) {
+    return Rect{0, 0, image.size().w, image.size().h};
+}
+
+// The one stack whose composite *is* a layer: one visible layer at full strength over nothing
+// has no second operand, and taking the blend path anyway puts a canvas-sized pass on every
+// frame of the cheapest document there is.
+bool blends_to_itself(const std::vector<Layer>& layers) {
+    if (layers.size() != 1) {
+        return false;
+    }
+    const Layer& only = layers.front();
+    return only.visible && only.opacity == kLayerOpacityDefault && only.mode == BlendMode::normal;
+}
+
+}  // namespace
+
 const Image& Document::composite() const {
-    if (layers_.size() == 1) {
-        // One layer over nothing is that layer. This is not a shortcut: blending a stack of
-        // one has no second operand, and taking the blend path anyway would put a full-image
-        // pass on every frame of a single-layer document.
+    if (blends_to_itself(layers_)) {
         return layers_.front().pixels;
     }
     if (empty()) {
@@ -122,7 +181,10 @@ const Image& Document::composite() const {
         const std::uint8_t transparent[4] = {0, 0, 0, 0};
         composite_.fill_rect(region, transparent);
         for (const Layer& layer : layers_) {
-            blend_over(composite_, layer.pixels, region);
+            if (!layer.visible) {
+                continue;
+            }
+            blend_layer(composite_, layer.pixels, region, layer.mode, layer.opacity);
         }
     }
     pending_ = Rect{};
@@ -160,21 +222,25 @@ void Document::begin_provisional(Rect area) {
         return;
     }
     const std::uint64_t id = layers_[static_cast<std::size_t>(active_)].id;
-    if (provisional_) {
-        const Rect grown = unite(provisional_->rect, want);
-        if (grown == provisional_->rect) {
-            return;
-        }
-        paste(*layer_pixels(provisional_->layer), provisional_->rect, provisional_->pixels);
-        provisional_ = Provisional{id, grown, target.region(grown)};
-        pending_ = unite(pending_, grown);
-        ++revision_;
+    if (!provisional_) {
+        provisional_ = Provisional{id, want, target.region(want)};
+        painted_ = Rect{};
         return;
     }
-    provisional_ = Provisional{id, want, target.region(want)};
+    const Rect grown = grown_rect(provisional_->rect, want, target.size(), kBufferGrowthFactor);
+    if (grown == provisional_->rect) {
+        return;
+    }
+    // No restore-and-resnapshot: everything outside what is already held aside has never been
+    // written by this gesture, so the layer still holds its pristine bytes there. Widen from the
+    // layer, then copy the held-aside part back over the overlap.
+    Image wider = target.region(grown);
+    copy_rows(wider, grown, provisional_->pixels, provisional_->rect, provisional_->rect);
+    provisional_->pixels = std::move(wider);
+    provisional_->rect = grown;
 }
 
-void Document::repaint_provisional(const std::function<void(Image&)>& paint) {
+void Document::repaint_provisional(Rect dirty, const std::function<void(Image&, Rect)>& paint) {
     if (!provisional_) {
         return;
     }
@@ -183,9 +249,14 @@ void Document::repaint_provisional(const std::function<void(Image&)>& paint) {
         provisional_.reset();
         return;
     }
-    paste(*target, provisional_->rect, provisional_->pixels);
-    paint(*target);
-    pending_ = unite(pending_, provisional_->rect);
+    const Rect area = intersect(dirty, provisional_->rect);
+    if (area.empty()) {
+        return;
+    }
+    copy_rows(*target, whole(*target), provisional_->pixels, provisional_->rect, area);
+    paint(*target, area);
+    painted_ = unite(painted_, area);
+    pending_ = unite(pending_, area);
     ++revision_;
 }
 
@@ -193,10 +264,16 @@ void Document::commit_provisional() {
     if (!provisional_) {
         return;
     }
-    const std::span<const std::uint8_t> bytes = provisional_->pixels.pixels();
-    history_.record(provisional_->layer, provisional_->rect, {bytes.begin(), bytes.end()});
-    dirty_ = true;
+    if (!painted_.empty()) {
+        // The step covers what was painted, not the buffer that grew around it: the bytes
+        // history stores are paid for by the user's undo budget.
+        const Image before = held_aside(painted_);
+        const std::span<const std::uint8_t> bytes = before.pixels();
+        history_.record(provisional_->layer, painted_, {bytes.begin(), bytes.end()});
+        dirty_ = true;
+    }
     provisional_.reset();
+    painted_ = Rect{};
 }
 
 void Document::discard_provisional() {
@@ -204,11 +281,12 @@ void Document::discard_provisional() {
         return;
     }
     if (Image* target = layer_pixels(provisional_->layer)) {
-        paste(*target, provisional_->rect, provisional_->pixels);
-        pending_ = unite(pending_, provisional_->rect);
+        copy_rows(*target, whole(*target), provisional_->pixels, provisional_->rect, painted_);
+        pending_ = unite(pending_, painted_);
+        ++revision_;
     }
     provisional_.reset();
-    ++revision_;
+    painted_ = Rect{};
 }
 
 bool Document::in_provisional() const { return provisional_.has_value(); }
@@ -224,11 +302,27 @@ Image* Document::layer_pixels(std::uint64_t id) {
     return nullptr;
 }
 
-void Document::paste(Image& into, Rect rect, const Image& snapshot) {
-    const std::size_t row = static_cast<std::size_t>(rect.w) * 4;
-    for (int y = 0; y < rect.h; ++y) {
-        std::memcpy(into.at(rect.x, rect.y + y), snapshot.at(0, y), row);
+// A row copy between images that each index from their own corner: `dst_at` and `src_at` say
+// where each image sits in document coordinates, `area` is the rectangle to move. The held-aside
+// snapshot is sized to the stroke and the layer to the canvas, and the snapshot grows during a
+// gesture, which is what makes an origin on each side the only honest signature.
+void Document::copy_rows(Image& dst, Rect dst_at, const Image& src, Rect src_at,
+                         Rect area) const {
+    if (area.empty()) {
+        return;
     }
+    const std::size_t row = static_cast<std::size_t>(area.w) * 4;
+    for (int y = 0; y < area.h; ++y) {
+        std::memcpy(dst.at(area.x - dst_at.x, area.y + y - dst_at.y),
+                    src.at(area.x - src_at.x, area.y + y - src_at.y), row);
+    }
+}
+
+Image Document::held_aside(Rect absolute) const {
+    Image out = Image::filled(Extent{absolute.w, absolute.h}, 0, 0, 0, 0);
+    // `out` sits at `absolute` in document coordinates, which is what makes it index from zero.
+    copy_rows(out, absolute, provisional_->pixels, provisional_->rect, absolute);
+    return out;
 }
 
 bool Document::undo() {

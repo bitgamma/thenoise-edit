@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wire_drive as wd  # noqa: E402
 
 MIMETYPE = b"application/x-noise+zip"
+FORMAT = 2
 FILL = (7, 14, 21, 255)
 WIDTH = 40
 HEIGHT = 24
@@ -40,7 +41,8 @@ LAYERS = 3
 MAX_SAVE_SECONDS = 20.0
 
 
-def check_archive(path: Path, fails: list[str]) -> None:
+def check_archive(path: Path, fails: list[str], expect_visible: bool = True,
+                  expect_opacity: float = 1.0) -> None:
     try:
         archive = zipfile.ZipFile(path)
     except zipfile.BadZipFile as exc:
@@ -66,16 +68,21 @@ def check_archive(path: Path, fails: list[str]) -> None:
         manifest = archive.read("manifest.json")
         layer = archive.read("layers/0/layer.png")
         merged = archive.read("mergedimage.png")
-        if merged != layer:
-            fails.append("mergedimage.png and layers/0/layer.png differ with one layer present")
+        # One layer at full strength flattens to itself; faded or hidden, it must not, which is
+        # the same identity the compositor promises.
+        if expect_visible and expect_opacity == 1.0 and merged != layer:
+            fails.append("mergedimage.png and layers/0/layer.png differ with one full-strength layer")
+        if (not expect_visible or expect_opacity != 1.0) and merged == layer:
+            fails.append(f"mergedimage.png equals the layer although the manifest says "
+                         f"visible={expect_visible} opacity={expect_opacity}")
 
     try:
         doc = json.loads(manifest)
     except ValueError as exc:
         fails.append(f"manifest.json is not JSON: {exc}")
         return
-    if doc.get("format") != 1:
-        fails.append(f"manifest format is {doc.get('format')!r}, expected 1")
+    if doc.get("format") != FORMAT:
+        fails.append(f"manifest format is {doc.get('format')!r}, expected {FORMAT}")
     if doc.get("size") != [WIDTH, HEIGHT]:
         fails.append(f"manifest size is {doc.get('size')!r}, expected [{WIDTH}, {HEIGHT}]")
     layers = doc.get("layers")
@@ -86,6 +93,15 @@ def check_archive(path: Path, fails: list[str]) -> None:
         fails.append(f"layer src is {layers[0].get('src')!r}, expected 'layers/0/layer.png'")
     if not layers[0].get("name"):
         fails.append("layer has no name")
+    # Format 2 requires the layer's own state, so a reader that only looks at the PNGs still
+    # learns what the file says the layer looks like.
+    if layers[0].get("visible") is not expect_visible:
+        fails.append(f"layer 'visible' is {layers[0].get('visible')!r}, "
+                     f"expected {str(expect_visible).lower()}")
+    if layers[0].get("opacity") != expect_opacity:
+        fails.append(f"layer 'opacity' is {layers[0].get('opacity')!r}, expected {expect_opacity}")
+    if layers[0].get("mode") != "normal":
+        fails.append(f"layer 'mode' is {layers[0].get('mode')!r}, expected 'normal'")
 
     from PIL import Image
 
@@ -108,9 +124,12 @@ def write_foreign(path: Path, compression: int, layer_name: str) -> None:
     Image.new("RGBA", (WIDTH, HEIGHT), FILL).save(buffer, format="PNG")
     layer = buffer.getvalue()
     manifest = json.dumps({
-        "format": 1,
+        "format": FORMAT,
         "size": [WIDTH, HEIGHT],
-        "layers": [{"name": layer_name, "src": "layers/0/layer.png"}],
+        # A non-default opacity on purpose: a file from elsewhere that disagrees with the app's
+        # defaults has to open as it says, not as what a new layer would be.
+        "layers": [{"name": layer_name, "src": "layers/0/layer.png",
+                    "visible": True, "opacity": 0.5, "mode": "normal"}],
     }, indent=2).encode()
     with zipfile.ZipFile(path, "w") as archive:
         # Sniffable first member, then the rest, however the writer likes it.
@@ -141,9 +160,69 @@ def check_foreign_project(work: Path, wire: wd.Wire, fails: list[str]) -> None:
         fails.append("stored and deflated members of one payload opened differently")
 
     # An archive that came from elsewhere must also be writable again without our help: this
-    # rewrites it with our writer, which `zipfile` then reads.
+    # rewrites it with our writer, which `zipfile` then reads. Its one layer is at half strength,
+    # which is the point of writing it by hand.
     wire.call("doc.save", {"path": str(work / "from_foreign.noise")})
-    check_archive(work / "from_foreign.noise", fails)
+    check_archive(work / "from_foreign.noise", fails, True, 0.5)
+
+
+def check_hidden_layer(work: Path, wire: wd.Wire, fails: list[str]) -> None:
+    """What the manifest says and what the flattened image shows must agree.
+
+    `mergedimage.png` is read by things that never read the stack, so a `visible: false` that
+    still contributes pixels is invisible here and obvious there. The opacity bounds are exact
+    identities rather than a blend recomputed in Python: 0 is the same image as hiding the
+    layer, and 1 is exactly the image it was before anything was hidden."""
+    project = work / "hidden.noise"
+    wire.call("doc.new", {"width": WIDTH, "height": HEIGHT, "fill": list(FILL)})
+    wd.wait_for_fit(wire)
+    wire.call("layer.add", {"name": "Top"})
+    wire.call("tool.stroke", {"points": [[8.0, 8.0], [WIDTH - 8.0, HEIGHT - 8.0]], "size": 10.0,
+                             "hardness": 0.5, "opacity": 1.0, "flow": 1.0, "spacing": 0.3,
+                             "color": [240, 30, 30, 255]})
+    if len(wire.call("layer.list")["layers"]) != 2:
+        fails.append("expected two layers to hide one of")
+        return
+    shown = wire.call("layer.list", {})["composite_checksum"]
+    wire.call("layer.set", {"index": 1, "visible": False})
+    hidden = wire.call("layer.list", {})["composite_checksum"]
+    if hidden == shown:
+        fails.append("hiding the top layer left the composite byte-identical")
+    wire.call("doc.save", {"path": str(project)})
+
+    with zipfile.ZipFile(project) as archive:
+        doc = json.loads(archive.read("manifest.json"))
+        rows = doc.get("layers", [])
+        marks = [row.get("visible") for row in rows]
+        if marks != [True, False]:
+            fails.append(f"manifest visibility is {marks}, expected [True, False]")
+        merged = archive.read("mergedimage.png")
+        if merged != archive.read("layers/0/layer.png"):
+            fails.append("the flattened image still holds the layer the manifest marks hidden")
+        if merged == archive.read("layers/1/layer.png"):
+            fails.append("the base layer is the one that went missing instead")
+
+    # Back through the same path the panel uses: the two ends of the slider are the two images
+    # we can name exactly.
+    wire.call("layer.set", {"index": 1, "visible": True, "opacity": 0.0})
+    if wire.call("layer.list", {})["composite_checksum"] != hidden:
+        fails.append("a layer at opacity 0 is not the image of a hidden layer")
+    wire.call("layer.set", {"index": 1, "opacity": 1.0})
+    if wire.call("layer.list", {})["composite_checksum"] != shown:
+        fails.append("a layer at opacity 1 is not the image it was before it was faded")
+
+    # And the state survives a save and an open, since a panel that lies after a reload is the
+    # same bug with more steps.
+    wire.call("layer.set", {"index": 1, "visible": False, "opacity": 0.25})
+    saved_state = wire.call("doc.get", {})["checksum"]
+    wire.call("doc.save", {})
+    wire.call("doc.new", {"width": 2, "height": 2})
+    reopened = wire.call("doc.open", {"path": str(project)})
+    if reopened["checksum"] != saved_state:
+        fails.append("visibility and opacity did not survive a save and an open")
+    rows = [(row["visible"], row["opacity"]) for row in reopened["layers"]]
+    if rows != [(True, 1.0), (False, 0.25)]:
+        fails.append(f"reopened layer state is {rows}, expected [(True, 1.0), (False, 0.25)]")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -195,6 +274,7 @@ def run(args: argparse.Namespace) -> int:
                 if flat.stat().st_size == 0:
                     fails.append("doc.export wrote an empty file")
                 check_foreign_project(work, wire, fails)
+                check_hidden_layer(work, wire, fails)
 
                 # Recorded, not asserted narrowly: what a save of a full-size document costs.
                 big = work / "big.noise"

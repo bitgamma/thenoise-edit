@@ -15,8 +15,8 @@ observed, not assumed; the numbers are from one dev box and rotate with it.
 - Commits need `--no-gpg-sign` (`commit.gpgsign=true`, no signing key here).
 - **Never write a server URL, hostname or key into the repo** - not in docs, probes, comments or
   commit messages. The dev pool rotates by occupancy, so reference `$THENOISE_URL` /
-  `$THENOISE_API_KEY` and say "the dev box". Two example LAN addresses are still in the docs and
-  need genericising (see To do #1).
+  `$THENOISE_API_KEY` and say "the dev box". The two example LAN addresses that were in the docs are
+  gone; nothing to genericise left.
 - Live tier runs only with those env vars set; `tools/tn_probe.py` skips loudly otherwise, and it
   caps requests with `--max-images`. Ask before spending more than ~10 images.
 
@@ -25,10 +25,12 @@ observed, not assumed; the numbers are from one dev box and rotate with it.
 1. **`.noise` format: always bump.** Adding required or optional manifest fields bumps
    `manifest.json:format` and refuses older files naming the version. Do not add optional fields
    under an old version number. (Needed for layer `visible` / `opacity` / `mode` / mask refs.)
-2. **Live server is available**; use the **`Flux-2-Klein-4B-TheNoise`** recipe for now (lightest).
-   "If you have ANY doubt on how to use the API or if something doesn't work, ping me."
-   The box had a huge LLM resident during probing, so first-request load costs measured today are
-   outliers, not the normal case.
+2. **Live server is available**; ask when a change needs it, and say how many images it will spend.
+   "If you have ANY doubt on how to use the API or if something doesn't work, ping me." The box had a
+   huge LLM resident during probing, so first-request load costs measured that day are outliers.
+   Which model answers the `edit` role **rotates with what the box has downloaded** - the probe
+   resolved Klein-4B early in the session and Klein-9B later - so nothing names one: `edit` resolves
+   by recipe + labels + downloaded, smallest download first, `--model` to override.
 3. **Write a short user guide** - explicit request: "even I don't know how to use it. I saw the
    layers and the brushes." Nobody has asked for anything else in the UI yet.
 
@@ -41,86 +43,46 @@ observed, not assumed; the numbers are from one dev box and rotate with it.
 | `da2de36` | debug wire: closed clients release their slot (`recv` 0 == EOF, not "idle") |
 | `ff828ad` | `core/blend.{h,cpp}` - the blend reference; `Rgba8` moved to `core/image.h` |
 | `0fee97d` | the document is a layer stack: `Layer{id,name,pixels}`, per-layer history, `composite()`, `layer.*` commands, container N layers, `core/blend` region blend |
+| `a735462` | LAN addresses out of the docs; the no-secrets rule into `AGENTS.md` |
+| `c59d6bb` | `tn_probe.py` resolves the role instead of naming a model; reports a spent budget as SKIP |
+| `5b8bc33` | live-server probe report, `tn_probe_live` registered, `AI-BACKEND.md` corrected to the measurements |
+| `ade3067` | `docs/USER-GUIDE.md`: the panel, the keys that exist, `.noise` vs PNG, driving the wire |
+| _(this one)_ | `.noise` **format 2**, and what a pointer event and a panel click cost - see `probes/2026-10-09-paint-and-panel-cost.md` |
 
-### Uncommitted right now
+### What the last commit changed, and why it was one commit
 
-- `tools/tn_probe.py` - the live-tier probe harness, **works, all checks green**, but is not yet:
-  registered in `tests/CMakeLists.txt` (want `LABELS live`, `SKIP_REGULAR_EXPRESSION "SKIP:"`,
-  timeout ~1800 s), nor documented. It reads only `$THENOISE_URL` / `$THENOISE_API_KEY`, prints no
-  secret, and takes `--model --sizes --max-images --upscale --timeout`.
-- Nothing else is dirty. Probe findings below are not yet written into `docs/probes/` (do that,
-  without a hostname).
+Three facts, entangled in `document.cpp` and `command_args.cpp`, each verified on its own:
 
-### Live server findings (2026-10-09, one box, Klein-4B) - do not re-spend images to learn these
+1. **`.noise` format 2.** `Layer` gained `visible`, `opacity`, `mode`; `core::kBlendModes` is the one
+   table of modes and manifest names (`normal` only, until there is arithmetic to add); the
+   compositor applies them, so a layer shown at 30 % is still painted on at full strength; the eye and
+   the slider are in the panel; `format` is 2 and any other version is refused by number. Visibility
+   and opacity enter no undo step, like adding and removing a layer.
+2. **An interactive command no longer hashes the document.** `layer.select` and `layer.set` answered
+   with `layer.list`'s row builder, which SHA-256s every layer: ~500 ms per click and per slider step.
+   Rows come from `layers_json`, checksums only from `layers_json_with_checksums` (`layer.list`).
+3. **A pointer event costs its own dabs, not the stroke's history.** Repaint scope, geometric buffer
+   growth, row `memcpy`. Before: 2.9 ms rising to 108 ms inside one 40-event drag at brush 24; after:
+   0.7-1.6 ms flat, and brush size stopped being the variable (spanning strokes 26 ms -> 1.3 ms median
+   at every size measured). `stroke_probe` now fails if a drag's last third costs more than 4x its
+   first.
 
-- Discovery: `GET /health` (status/version/`model_loaded` string/`all_models_models[]` with
-  `model_name`,`checkpoint`,`device`,`pinned`; `max_models.image == 1` ⇒ one image model at a
-  time). `GET /models` returns the box's short list; `GET /models?show_all=true` returns 187
-  entries. Model entries carry `recipe`, `labels` (`image`, `edit`, `upscaling`, `chat`,
-  `vision`, `custom`), `downloaded`, `size` (GB) and `image_defaults` (`steps`, `cfg_scale`,
-  `width`, `height`) - **`image_defaults` is the authoritative source for role defaults**, and the
-  list differs per box, so `roles.toml` must resolve against what is actually downloaded.
-  Note `Flux-2-Klein-4B` is `recipe: sd-cpp` (excluded by policy) while
-  `Flux-2-Klein-4B-TheNoise` is `thenoise` ✓. `Anima-VAE` / `Krea-2-VAE` also show as
-  `thenoise`+`image` with their own defaults - they are VAE-swap aliases, not separate roles;
-  no clean machine-readable flag distinguishes them, so preference order has to name candidates.
-- Timing (warm model, 4 steps): 64² 0.7 s · 512² 1.6 s · 768×512 2.1 s · 1024² 5.2 s ·
-  1536×2048 20.3 s · edit 512² 2.6 s · upscale 512²→2048² 5.0 s. Cold start with a big LLM
-  resident: 113 s (outlier, per the human).
-- **Sizes snap to a multiple of 16, silently**: asking 500×300 returns 512×304. `size_policy` is
-  16 in practice, not 64, and a request is never refused for a bad multiple - so the region
-  compiler must expect output dims ≠ requested dims (the resample already handles it) and should
-  send multiples of 16 itself.
-- **`size` is honoured on edits; omitting it does NOT follow the reference image** - it returns
-  the model default (1024²). The old claim in `AI-BACKEND.md` ("the first reference image sets
-  output size") is wrong for this server; explicit size stays mandatory. Omitting it also costs
-  10.8 s vs 2.6 s at 512², so it is not a free mistake.
-- **The server answers an identical request in 0.1 s** - there is a response cache keyed on the
-  request. Two consequences: (a) a timing probe must vary the seed or it measures a cache hit,
-  and (b) the client-side request cache is still worth having but must not be believed as
-  "reproduction of a model run". Whether that cache is intended/configurable is an open question
-  for the human.
-- Reproducibility: same prompt+params+seed **warm** ⇒ byte-identical ✓ (a cold first request after
-  a load did differ once - do not conclude non-determinism from a cold run).
-- Failure shapes to branch on: 404 `{"error":{"code":"model_not_found","message":…,"param":"model",
-  "requested_model":…}}`; 400 `{"error":{"message":"Missing 'prompt' field in request","type":
-  "invalid_request_error"}}`.
-- **Bad field values are accepted, not rejected**: `seed: "abc"` returned 200. So the request
-  builder must validate its own fields; a typo'd field name will silently mean "default".
-- Upscale works via `POST /images/upscale {model, image(b64 PNG)}` with
-  `RealESRGAN-4xplus-TheNoise` (0.1 GB, `labels: upscaling,image`) - it was absent from the
-  default `/models` list early in the session and present later, so do not gate a role on
-  discovery alone: try the endpoint and map the refusal.
+Splitting these into three commits would have meant hand-constructing intermediate versions of
+`document.cpp` that no test had ever seen green; one commit with a green tree beat a tidier history
+with a broken one.
 
 ### To do, in order
 
-1. Scrub the example LAN address from `docs/AI-BACKEND.md` (~line 165) and the mockup line in
-   `docs/MVP.md` (~line 124); replace with `http://<server>:13305/api/v1` style placeholders.
-2. Write `docs/probes/2026-10-09-live-server.md` from the findings above (no hostname, no key),
-   register `tn_probe.py` as ctest `tn_probe_live` with `LABELS live` + skip regex, and correct
-   `docs/AI-BACKEND.md` where the measurements contradict it: size multiple 16 and silent
-   snapping, omitted-size behaviour, the response cache and its effect on ETA/EMA, discovery
-   being per-box and `show_all=true`, upscaler gating, "bad fields are ignored ⇒ validate our own".
-   Record in `AGENTS.md` that server URLs/keys never enter the repo.
-3. **User guide** (`docs/USER-GUIDE.md`, linked from `docs/README.md`): how to start it, the
-   window layout, mouse/keys that exist today (`F`, wheel zoom-to-cursor, right-drag pan,
-   left-drag paint, `B`/`E`, `[`/`]`, `Ctrl+Z`/`Ctrl+Y`, `Ctrl+S`, `Escape`/`Ctrl+Q`), the Brush
-   panel, Layers panel (add/select/delete, what "active layer" means, what the composite is),
-   `.noise` vs PNG (`doc.save` vs `doc.export`), and the debug wire section for people driving it
-   from a terminal (`--debug-wire`, `command.list`, `doc.get`, `layer.list`, `tool.pointer`,
-   `screenshot`). State plainly what does not exist yet: no AI commands, no masks, no blend
-   modes, no move tool, no reorder in the panel.
-4. `.noise` **format 2** (decision 1): `manifest.json:format = 2`, refuse 1 naming the version,
-   layer entries gain `visible`, `opacity`, `mode` (and later `mask`). Then implement visibility
-   and opacity in the composite (`core/blend` scales source alpha by layer opacity for `normal`),
-   the Layers panel eye/opacity row, and tests (round-trip keeps them; hidden layer contributes
-   nothing; composite-with-opacity equals a reference; `test_document`'s incremental-vs-scratch
-   equivalence must cover them). Keep `mode` to `normal` until the blend-mode set is designed -
-   a field with one value is honest, one with five unimplemented is not.
-5. Then the remaining tool keys (`V`, `M`, `,`/`.`) and the panel rows they belong to.
-6. Later, gated by measurement: dirty-rect texture upload; GPU stamp preview; per-layer GPU
-   textures + the shader blend pair checked against `core/blend`.
-7. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
+1. **Blend modes**, the increment `kBlendModes` was shaped for: arithmetic in `core/blend` +
+   `tests/test_blend` against the reference, the manifest name list (format bump), the panel's mode
+   column becoming a chooser, `layer.set {mode}`.
+2. **The remaining tool keys** (`V`, `M`, `,`/`.`) and the panel rows they belong to.
+3. Later, gated by measurement, in the order the probe numbers say:
+   exact fast paths in `blend_layer` and per-layer content rectangles (a uniform layer change is
+   75 ms at 3 x 2048^2 in Release - the pass the GPU is supposed to eat); dirty-rect texture upload
+   (the floor under a pointer event); GPU stamp preview; per-layer GPU textures + the shader blend
+   pair checked against `core/blend`.
+4. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
    outlive the session).
 
 ### Things that bit me, so they don't bite twice
@@ -130,11 +92,21 @@ observed, not assumed; the numbers are from one dev box and rotate with it.
   exists because of this. Any new format surface needs a second implementation reading it.
 - A missing measurement is a result: `peak frame_ms 0.0` during a running stroke led to the wire
   slot leak.
-- The probe bound caught a 71 ms/event composite regression that looked fine in review.
+- The probe bound caught a 71 ms/event composite regression that looked fine in review. The one it
+  did not catch is worse-shape-same-level: an event costing what the stroke had covered looked fine
+  at 1 ms and took 108 ms by the end of a long drag. Bounds on medians are not bounds on a drag.
+- `app.state.frame_ms` is `sapp_frame_duration()`, which includes the swap wait: a whole-document
+  command in the sampled frame reads ~100 ms on this box whether the paint path is slow or not.
+  Read the per-command wire timings for work, `frame_ms` for cadence.
+- A row builder that "always includes the interesting fields" puts a whole-document hash on every
+  interactive command. Cost belongs in the caller's hands, not the formatter's.
 - `CHECK_EQ` evaluates each operand once (fixed); `nlohmann::json::contains()` is always false for
-  arrays; `StrokeScratch::grow_to` once copied coverage as if every rect started at the corner.
+  arrays; `StrokeScratch::grow_to` once copied coverage as if every rect started at the corner, and
+  `held_aside` copied it again as if the snapshot were positioned at the origin.
 - Live pointer strokes must equal the same polyline sent as one `tool.stroke` call; provisional
-  edits exist so a drag is one undo step and does not compound opacity per frame.
+  edits exist so a drag is one undo step and does not compound opacity per frame. That equivalence
+  is what made the repaint-scope change safe to make at all.
+
 ## State at the M0 handoff
 
 `cmake -B build -G Ninja && cmake --build build && ctest --test-dir build` → 7/7 green,
@@ -370,10 +342,12 @@ invalidation path (the pending rectangle), which is what `AGENTS.md` §4 allows 
 `History` now knows about `Layer`, which is the one place the model grew a dependency for
 convenience - it is core-to-core, and the alternative was a callback per step for no gain.
 
-Deliberately not done: GPU stamp preview during the drag, tile cache, dirty-rect uploads, a
-`BlendMode` enum with nothing to blend between layers, and layer visibility/opacity (a manifest
-field, so a question before it is code). Each is one measurement away from being
-the right call and none of them is forced by the next step.
+Deliberately not done then: GPU stamp preview during the drag, tile cache, dirty-rect uploads.
+`BlendMode` and layer visibility/opacity have been done since - `kBlendModes` with one entry, the
+eye and the slider, and format 2 to carry them - and the measurement that now argues for the rest is
+`probes/2026-10-09-paint-and-panel-cost.md`: a uniform layer change still costs a whole-canvas CPU
+re-blend (75 ms at 3 x 2048^2 in Release), which is the pass the GPU composite was always meant to
+take.
 
 ## Environment notes for this machine
 

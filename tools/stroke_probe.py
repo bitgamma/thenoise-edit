@@ -43,6 +43,10 @@ GESTURE_EVENTS = 120
 GESTURE_BRUSH = 40.0
 GESTURE_GAP = 0.004
 MAX_GESTURE_EVENT_MS = 60.0
+# How much worse the end of a drag may be than its start. 1.0 would be the truth of a per-event
+# cost that depends only on the dab; the slack is the buffer growth that a stroke still pays for,
+# amortised, plus whatever else the machine was doing.
+MAX_GESTURE_DEGRADATION = 4.0
 
 
 def serpentine(doc: int, dabs: int) -> list[list[float]]:
@@ -134,6 +138,11 @@ def measure_gesture(wire: wd.Wire, port: int, doc: int, layers: int,
     history = wire.call("edit.undo", {})
     restored = wire.call("doc.get", {})["checksum"]
     peak = max(sampler.frame_ms, default=0.0)
+    # Temporal order first: the degradation check below compares the start of the drag with its
+    # end, which a sorted list cannot tell anything about.
+    third = max(1, len(event_ms) // 3)
+    first = statistics.median(event_ms[:third])
+    last = statistics.median(event_ms[-third:])
     event_ms.sort()
     median = event_ms[len(event_ms) // 2]
     worst = event_ms[-1]
@@ -154,6 +163,17 @@ def measure_gesture(wire: wd.Wire, port: int, doc: int, layers: int,
         fails.append(
             f"a pointer event on a {layers}-layer {doc}^2 document took {median:.1f} ms, "
             f"bound is {MAX_GESTURE_EVENT_MS} ms")
+    # The shape, not just the level. An event that costs what the whole stroke has covered makes
+    # a drag slower with every event - measured at 2.9 ms to 108 ms over one 40-event stroke - and
+    # a median alone can look fine while the end of every stroke is a stall. Ratios survive a
+    # slower machine where a fixed bound would not.
+    print(f"   first {third} events median {first:.2f} ms, last {third} median {last:.2f} ms "
+          f"(x{last / max(first, 0.01):.1f})")
+    if last > first * MAX_GESTURE_DEGRADATION:
+        fails.append(
+            f"a drag got {last / max(first, 0.01):.1f}x more expensive as it grew "
+            f"({first:.1f} ms -> {last:.1f} ms per event); an event must cost what its own "
+            f"dabs touched, not what the stroke has already covered")
 
 
 def run(args: argparse.Namespace) -> int:

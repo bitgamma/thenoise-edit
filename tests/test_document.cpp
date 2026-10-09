@@ -43,6 +43,9 @@ void test_the_incremental_composite_equals_one_built_from_scratch() {
             Layer clone;
             clone.name = layer.name;
             clone.pixels = layer.pixels;
+            clone.visible = layer.visible;
+            clone.opacity = layer.opacity;
+            clone.mode = layer.mode;
             copy.push_back(std::move(clone));
         }
         Document fresh;
@@ -79,6 +82,126 @@ void test_the_incremental_composite_equals_one_built_from_scratch() {
     live.remove_layer(1);
     check_against_scratch("after removing a middle layer");
     CHECK_EQ(live.layers().size(), 2u);
+    // Visibility and opacity widen the pending region to the whole canvas, and a repair that
+    // blended a layer it should have skipped - or skipped one it should have faded - only shows
+    // up against a stack built from nothing.
+    live.set_layer_visible(live.active(), false);
+    check_against_scratch("with the top layer hidden");
+    live.set_layer_opacity(0, 0.4);
+    check_against_scratch("with the bottom layer faded");
+    live.set_layer_visible(live.active(), true);
+    check_against_scratch("with both visible and one faded");
+    paint_on(live, Rect{2, 2, 3, 3}, 250);
+    check_against_scratch("a stroke over a faded stack");
+}
+
+// A hidden layer is not in the picture at all: the composite is the image the stack makes
+// without it, byte for byte, and the layer itself is untouched - hiding is not erasing.
+void test_a_hidden_layer_contributes_nothing() {
+    const Extent size{8, 6};
+    const Image bottom = Image::filled(size, 10, 20, 30, 255);
+    const Image top = Image::filled(size, 200, 0, 0, 255);
+
+    Document doc;
+    doc.reset(stack({{"Bottom", bottom}, {"Top", top}}), "x.noise");
+    const std::string with_top = doc.composite().checksum_hex();
+
+    CHECK(doc.set_layer_visible(1, false));
+    Document without;
+    without.reset(stack({{"Bottom", bottom}}), "x.noise");
+    CHECK_EQ(doc.composite().checksum_hex(), without.composite().checksum_hex());
+    CHECK_NE(with_top, doc.composite().checksum_hex());
+    CHECK_EQ(doc.layer(1).pixels.checksum_hex(), top.checksum_hex());
+
+    // The single-layer shortcut has to respect it too: one hidden layer is a transparent canvas,
+    // not that layer handed straight to the renderer.
+    Document single;
+    single.reset(stack({{"Only", top}}), "x.noise");
+    CHECK(single.set_layer_visible(0, false));
+    CHECK(!single.composite().empty());
+    CHECK_EQ(single.composite().checksum_hex(), Image::filled(size, 0, 0, 0, 0).checksum_hex());
+}
+
+// A layer's opacity scales the layer's own alpha where the stack is flattened, and nothing else:
+// the numbers are worked out here rather than read back out of the code.
+void test_layer_opacity_scales_the_blend() {
+    const Extent size{4, 4};
+    const std::uint8_t transparent[4] = {0, 0, 0, 0};
+
+    Image on_red = Image::filled(size, 255, 0, 0, 255);
+    Image green = Image::filled(size, 0, 255, 0, 255);
+    blend_layer(on_red, green, Rect{0, 0, 4, 4}, BlendMode::normal, 0.5);
+    // Half of an opaque green over opaque red: both alpha terms are 0.5, so the result is opaque
+    // and each channel is 127.5, which rounds to 128.
+    CHECK_EQ(static_cast<int>(on_red.at(0, 0)[0]), 128);
+    CHECK_EQ(static_cast<int>(on_red.at(0, 0)[1]), 128);
+    CHECK_EQ(static_cast<int>(on_red.at(0, 0)[3]), 255);
+
+    // Over nothing, the colour survives whole and only the alpha carries the layer's 50 %.
+    Image on_empty = Image::filled(size, 0, 0, 0, 0);
+    blend_layer(on_empty, green, Rect{0, 0, 4, 4}, BlendMode::normal, 0.5);
+    CHECK_EQ(static_cast<int>(on_empty.at(0, 0)[1]), 255);
+    CHECK_EQ(static_cast<int>(on_empty.at(0, 0)[3]), 128);
+
+    // A pixel the layer does not paint stays exactly as it was, whatever the layer's opacity.
+    Image hole = Image::filled(size, 0, 255, 0, 255);
+    hole.fill_rect(Rect{1, 1, 2, 2}, transparent);
+    Image base = Image::filled(size, 9, 9, 9, 255);
+    blend_layer(base, hole, Rect{0, 0, 4, 4}, BlendMode::normal, 0.25);
+    CHECK_EQ(static_cast<int>(base.at(1, 1)[0]), 9);
+    CHECK_EQ(static_cast<int>(base.at(1, 1)[3]), 255);
+
+    // Through the document, the same two ends of the slider are the two images that can be named
+    // without recomputing a blend: 0 is the bottom layer, 1 is the stack as it was.
+    Document doc;
+    doc.reset(stack({{"Bottom", Image::filled(size, 255, 0, 0, 255)},
+                     {"Top", Image::filled(size, 0, 255, 0, 255)}}),
+              "x.noise");
+    const std::string shown = doc.composite().checksum_hex();
+    CHECK(doc.set_layer_opacity(1, 0.0));
+    Document only_bottom;
+    only_bottom.reset(stack({{"Bottom", Image::filled(size, 255, 0, 0, 255)}}), "x.noise");
+    CHECK_EQ(doc.composite().checksum_hex(), only_bottom.composite().checksum_hex());
+    CHECK(doc.set_layer_opacity(1, 1.0));
+    CHECK_EQ(doc.composite().checksum_hex(), shown);
+}
+
+// The renderer uploads on the revision, so a change that alters what the canvas shows without
+// altering a pixel has to bump it - or a hidden layer stays on screen until something else moves.
+void test_layer_state_changes_reach_the_renderer() {
+    Document doc;
+    doc.reset(stack({{"Bottom", Image::filled(Extent{4, 4}, 1, 1, 1, 255)},
+                     {"Top", Image::filled(Extent{4, 4}, 2, 2, 2, 255)}}),
+              "x.noise");
+    doc.composite();
+    const std::uint64_t before = doc.revision();
+    CHECK(doc.set_layer_visible(1, false));
+    CHECK(doc.revision() > before);
+    CHECK(doc.set_layer_opacity(1, 0.5));
+    CHECK(doc.revision() > before + 1);
+    CHECK(doc.dirty());
+
+    // Setting what it already is changes nothing, and claiming so is the point: a panel that
+    // dragged a revision per frame would re-upload a canvas-sized texture per frame.
+    const std::uint64_t settled = doc.revision();
+    CHECK(doc.set_layer_visible(1, false));
+    CHECK(doc.set_layer_opacity(1, 0.5));
+    CHECK_EQ(doc.revision(), settled);
+}
+
+// Out of range is a refusal that leaves the layer alone, not a clamped value.
+void test_layer_state_refuses_what_was_asked_for() {
+    Document doc;
+    doc.reset(stack({{"Only", Image::filled(Extent{4, 4}, 1, 1, 1, 255)}}), "x.noise");
+    CHECK(!doc.set_layer_opacity(0, 1.5));
+    CHECK(!doc.set_layer_opacity(0, -0.5));
+    CHECK(!doc.set_layer_opacity(-1, 0.5));
+    CHECK(!doc.set_layer_opacity(1, 0.5));
+    CHECK_EQ(doc.layer(0).opacity, 1.0);
+    CHECK(!doc.set_layer_visible(3, false));
+    CHECK(doc.layer(0).visible);
+    CHECK(doc.set_layer_opacity(0, 0.0));
+    CHECK(doc.set_layer_opacity(0, 1.0));
 }
 
 // Two layers of the same size and shape, one over the other: what lands on the canvas is the
@@ -185,6 +308,10 @@ void test_the_document_checksum_follows_the_stack() {
 int main() {
     test_the_incremental_composite_equals_one_built_from_scratch();
     test_the_stack_blends_bottom_first();
+    test_a_hidden_layer_contributes_nothing();
+    test_layer_opacity_scales_the_blend();
+    test_layer_state_changes_reach_the_renderer();
+    test_layer_state_refuses_what_was_asked_for();
     test_repairing_a_rectangle_leaves_the_rest_of_the_canvas_alone();
     test_the_stack_keeps_a_usable_selection();
     test_names_are_generated_from_the_stack_size();

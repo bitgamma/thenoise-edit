@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <cstddef>
+
 namespace noise {
 
 // Pixel extent: an image size or a viewport size, distinguished by parameter name.
@@ -31,6 +33,10 @@ struct Rect {
         return x >= 0 && y >= 0 && right() <= bounds.w && bottom() <= bounds.h;
     }
 };
+
+inline std::size_t area(Rect rect) {
+    return rect.empty() ? 0u : static_cast<std::size_t>(rect.w) * static_cast<std::size_t>(rect.h);
+}
 
 inline bool operator==(Extent a, Extent b) { return a.w == b.w && a.h == b.h; }
 inline bool operator==(const Rect& a, const Rect& b) {
@@ -78,5 +84,18 @@ Rect unite(Rect a, Rect b);
 // Intersection with [0, bounds). Empty when the rect lies wholly outside; the position of
 // an empty result is not meaningful, only `empty()` is.
 Rect clamp_rect(Rect r, Extent bounds);
+
+// How much a growing buffer's area at least doubles when it has to grow at all.
+inline constexpr double kBufferGrowthFactor = 2.0;
+
+// The rectangle a buffer takes on to hold `want` inside `bounds` while keeping `current`: the
+// union, expanded about its centre until it is `factor` times `current`'s area. Returning `want`
+// exactly would make every extension a reallocation and a copy of everything accumulated so far,
+// which is how a pointer stroke came to cost what the whole stroke had already covered; growing
+// by a factor makes the copy work amortised instead. `current` when it already covers `want`,
+// and `want` clamped when there is nothing to grow from. The canvas caps the expansion, so the
+// factor is best-effort near an edge; the result always contains `current` and `want`, given a
+// `current` inside `bounds`.
+Rect grown_rect(Rect current, Rect want, Extent bounds, double factor);
 
 }

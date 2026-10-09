@@ -43,13 +43,16 @@ src/
     image.{h,cpp}      ImageBuffer (RGBA8 straight alpha, stride-aware, tiles later)
     document.{h,cpp}   Document: a stack of layers, path, revision, the composite over them
                        and the history under it
-    layer.{h,cpp}      Layer (id, name, pixels) and generated names; a stack is bottom-first
+    layer.{h,cpp}      Layer (id, name, pixels, visible, opacity, mode) and generated names;
+                       a stack is bottom-first
     history.{h,cpp}    undo/redo as stacked (layer, rectangle) deltas, budgeted by stored bytes
     brush.{h,cpp}      dabs, stamp coverage, stroke compositing (the CPU paint path)
-    blend.{h,cpp}      the blend reference: source-over and erase on straight RGBA8, and the
-                       one place a blend result is quantised. A GPU pair has to be checked
-                       against it when the GPU starts blending; today the renderer uploads the
-                       flattened composite, so there is nothing second to match yet.
+    blend.{h,cpp}      the blend reference: source-over and erase on straight RGBA8, the layer
+                       blend (mode + per-layer opacity) and `kBlendModes`, the one table of
+                       modes and their manifest names, and the one place a blend result is
+                       quantised. A GPU pair has to be checked against it when the GPU starts
+                       blending; today the renderer uploads the flattened composite, so there is
+                       nothing second to match yet.
     maskops.{h,cpp}    rasterize shapes, flood fill, feather, morphology, bbox, colour-match
     heal.{h,cpp}       Telea / Chan fusion inpainting (local, offline)
     command.{h,cpp}    invokable command table: commands, titles and key bindings
@@ -160,18 +163,22 @@ backend, so a naive "upload after every brush dab" on a 4096² layer = 64 MB/fra
    pixel - instead of painting into the document dab by dab. Dab spacing lives in a `DabWalk`,
    which is carried between pointer events, so a polyline fed in event-by-event emits exactly
    the dabs the same polyline handed over at once would.
-3. A live gesture holds its pixels aside: `Document::begin_provisional` snapshots the
-   rectangle the stroke has reached, `repaint_provisional` restores that snapshot and
-   composites the scratch once, and `commit_provisional` records the snapshot as one undo step.
-   That is what keeps opacity per stroke rather than per frame, and one gesture one step
-   rather than one step per frame. The snapshot follows the stroke's own bounds, not the
-   canvas: a 4 px dot must not cost a canvas-sized copy.
-4. On stroke end the pixels are already in place; the only upload is the one the revision bump
-   causes anyway. Cost per pointer event is snapshot-restore over the stroke bounds, the
-   composite repair over the same bounds, and one whole-texture upload - which is why the cost
-   grows with the area a stroke has reached (2.0 ms median at 640², 10.9 ms at 2048², and
-   33.7 ms there with three layers; `probes/2026-10-09-paint-core.md` and
-   `probes/2026-10-09-layers-composite.md`).
+3. A live gesture holds its pixels aside: `Document::begin_provisional` snapshots a rectangle,
+   `repaint_provisional` restores it and composites the scratch, `commit_provisional` records the
+   snapshot as one undo step. That is what keeps opacity per stroke rather than per frame, and one
+   gesture one step rather than one step per frame. Snapshot and coverage buffer both follow the
+   stroke and grow by `kBufferGrowthFactor` rather than to fit: growing to fit copies every
+   accumulated pixel on every event, and a 4 px dot must not cost a canvas-sized copy either.
+4. **An event repaints the rectangle its own dabs touched, not the area the stroke has covered.**
+   A pixel's composited value depends only on its own coverage, and the scratch already holds
+   every earlier dab that reached it, so restoring and re-blending just the new rectangle is exact
+   rather than approximate - `test_brush` pins piecewise == whole-scratch byte for byte. It is also
+   the difference between an event costing what it added and costing the stroke's history: the same
+   40-event diagonal drag at brush 24 on a 2048² document went from 2.9 ms at its first event to
+   108 ms at its 40th, and is now 0.6-1.6 ms throughout
+   (`probes/2026-10-09-paint-and-panel-cost.md`). The floor left under an event is the one
+   whole-texture upload sokol allows, which is the dirty-rect upload item - and in Release the
+   whole frame during such a gesture measures 2.4 ms, so what is left is the upload, not the blend.
 5. `history` records the old pixels of the rectangle the stroke touched (see below), which is
    why `core::Document::paint` is *given* the rectangle instead of diffing afterwards: diffing
    the whole image per stroke would cost what the stroke was saved.
@@ -183,20 +190,26 @@ backend, so a naive "upload after every brush dab" on a 4096² layer = 64 MB/fra
 
 `Document::composite()` is the one flattened image: what the renderer uploads, what a flat
 export writes, what `mergedimage.png` holds. It is derived, owned by the document, and repaired
-only over the rectangles the layers changed since it was last asked for (`blend_over` takes a
-region for exactly this). Two rules keep it cheap and honest:
+only over the rectangles the layers changed since it was last asked for (`blend_layer` takes a
+region for exactly this, and applies the layer's own `opacity` there rather than baking it into
+the layer's pixels, so a layer shown at 30 % is still painted on at full strength). Two rules
+keep it cheap and honest:
 
-* **A stack of one is that layer**, returned by reference with no blend at all. Blending a
-  single layer has no second operand, and doing it anyway puts a canvas-sized pass on every
-  frame - which is what the first version of this did, at 71 ms per pointer event on a
-  three-layer 2048² document.
+* **A stack of one visible layer at full strength is that layer**, returned by reference with no
+  blend at all. Blending a single layer has no second operand, and doing it anyway puts a
+  canvas-sized pass on every frame - which is what the first version of this did, at 71 ms per
+  pointer event on a three-layer 2048² document. The condition is `visible && opacity == 1 &&
+  mode == normal`, because one hidden layer is a transparent canvas and not that layer, and a
+  shortcut that ignored either would be a wrong picture rather than a slow one.
 * **A repair rebuilds its region from transparent** rather than patching it, so the number of
   layers that came and went since the region was last correct is irrelevant. A structural change
   widens the pending region to the whole canvas, because nothing is known correct.
 
 `tests/test_document.cpp` holds the property that makes partial repair safe: after strokes,
-layer additions, selection moves, undo, redo and a deletion, the incrementally repaired composite
-equals one built from scratch, byte for byte.
+layer additions, selection moves, undo, redo, a deletion, a hidden layer and a faded one, the
+incrementally repaired composite equals one built from scratch, byte for byte. Hiding and fading
+are in that list because they change what the composite is made of without changing a pixel, and
+they are not in history: like adding and removing a layer, they enter no undo step.
 
 Two ways out if a document gets big enough for the whole-texture upload to dominate, cheapest
 first: a dirty-rect upload (the composite already knows which rectangles changed; the backend
@@ -224,8 +237,9 @@ Content-addressed storage makes destructive editing *and* cheap undo coexist:
   storage granularity when partial texture uploads need them. Deleting a layer drops the entries
   naming it from both stacks: a change to a layer that is gone cannot be put back, and the
   unrelated steps around it are worth more than the half-restored one that would remain.
-  Structural commands (add/reorder/opacity/mask) are planned to store the inverse command;
-  today they are **not** undoable, and adding or deleting a layer does not enter the timeline.
+  Structural commands (add/reorder/visibility/opacity/mask) are planned to store the inverse
+  command; today they are **not** undoable, and adding or deleting a layer, hiding one or fading
+  one does not enter the timeline.
 * Undo and redo are commands like any other (`edit.undo`, `edit.redo`, bound to `Ctrl+Z` and
   `Ctrl+Y`), so a driver can put the pixels back and compare checksums without a keyboard.
 * `history.jsonl` — append-only *journal*: every op with timestamp, params, prompt, model,
@@ -257,20 +271,26 @@ variants/<op>/<i>.png          kept AI variants not committed to a layer
 Thumbnails/thumbnail.png
 ```
 
-### What is written today: `format` 1
+### What is written today: `format` 2
 
-Measured in `docs/probes/2026-10-09-container-v0.md`.
+The subset the app can represent, read and written by `io/project.{h,cpp}`, which refuses what it
+would have to guess about. Costs of the v0 layout are in
+`docs/probes/2026-10-09-container-v0.md`.
 
-`io/project.{h,cpp}` reads and writes the subset the app can represent, and refuses what it would
-have to guess about. The manifest already describes a layer array, so adding layers needs no
-version bump; `format` moves when a field becomes required.
+**Version policy: always bump, always refuse.** A new field bumps `format` even when it is
+optional, and a file of any other version is refused naming the number it met and the number
+this build speaks. There is one writer, it is us, and the alternative — defaulting a field the
+layout stopped writing — is how a document opens subtly wrong. `format` 2 added `visible`,
+`opacity` and `mode` to every layer row, which is what the Layers panel and the compositor act
+on; a row that omits one is refused with the field and the layer named, and a `mode` outside
+`core::kBlendModes` is refused naming both the value and the names that would have worked.
 
 | member | written | read |
 |---|---|---|
 | `mimetype` | stored, first member, no extra fields | must match exactly or the file is not ours |
-| `manifest.json` | `format`, `size: [w,h]`, `layers: [{name, src}]` | `format` must be 1; `size` must agree with the PNG, and both numbers are named if they do not |
-| `layers/<n>/layer.png` | `layers/0/layer.png` for the one layer | exactly one layer accepted: a file declaring more is refused by count, because opening it as one throws a layer away |
-| `mergedimage.png` | the composite, which with one layer is the layer | optional |
+| `manifest.json` | `format`, `size: [w,h]`, `layers: [{name, src, visible, opacity, mode}]` | `format` must be 2; `size` must agree with the PNG, and both numbers are named if they do not; `src`/`visible`/`opacity`/`mode` are required, `name` is not, because a file from elsewhere may not have named its layers |
+| `layers/<n>/layer.png` | one per layer, bottom-first | one PNG per declared row, each covering the whole canvas: a layer of another size is refused naming both sizes, because cropping or padding it silently is data loss |
+| `mergedimage.png` | the composite — which is the layer only when there is one layer and it is visible at full strength | optional |
 | anything else | — | carried through and rewritten byte-identical, so opening a file written by a newer build cannot delete what this one cannot show |
 
 Save is `<path>.noise-tmp` + rename: a write that fails leaves the previous file intact and
@@ -279,6 +299,10 @@ equal bytes and a container can be diffed; the reader accepts stored *and* defla
 validates bounds, CRC, declared sizes, compression method, encryption, zip64 and multi-disk limits
 against a file it treats as hostile. `doc.save` writes only `.noise`; a flat image is
 `doc.export`, which does not take the document's path nor clear its unsaved mark.
+
+The layer's *state* is file content, so the two checks below also assert that a `visible: false`
+the manifest declares is a `mergedimage.png` that actually dropped the layer: the flattened image
+is read by things that never read the stack.
 
 Two checks carry this section, because our own reader agreeing with our own writer proves nothing:
 `tests/test_zip.cpp` parses the end-of-directory record by hand (a central-directory size that does
@@ -332,7 +356,7 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | Group | Commands | Why |
 |---|---|---|
 | state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `selection.get`, `server.state`, `job.list`, `log.tail` | read what the app believes, cheaply |
-| drive | `command.invoke`, `app.quit`, `doc.new/open/save`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool, size, hardness, opacity, flow, spacing, color}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.add/set/delete`, `selection.set` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are all required, so a recorded stroke replays without knowing what the UI had selected. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
+| drive | `command.invoke`, `app.quit`, `doc.new/open/save/export/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?}`, `screenshot`, `pixels.compare`, `wire.info` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are all required, so a recorded stroke replays without knowing what the UI had selected. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable |
 | ai | `ai.preview {recipe, args}` (compiled request + prepped PNG, **no send**), `ai.run`, `job.wait {id}`, `cache.stats` | verify what we *would* send before spending minutes of someone's GPU |
 

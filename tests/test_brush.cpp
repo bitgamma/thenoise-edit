@@ -241,9 +241,43 @@ void test_a_scratch_stamped_in_pieces_holds_the_same_coverage_as_one_stamp() {
         CHECK(total > previous_coverage);  // growth adds, it never replaces
         previous_coverage = total;
         live = base;  // what a provisional repaint does before compositing the stroke
-        scratch_composite(live, scratch, color, brush, PaintMode::Over);
+        scratch_composite(live, scratch, color, brush, PaintMode::Over, scratch.rect);
     }
     CHECK_EQ(live.checksum_hex(), once.checksum_hex());
+}
+
+// A live gesture restores and composites only the rectangle its new dabs reached. That is exact,
+// not an approximation, because a pixel's coverage already holds every earlier dab that touched
+// it - and this is where that is pinned: the piecewise gesture and the whole buffer must land on
+// the same bytes, or the optimisation has quietly changed what a brush paints.
+void test_repainting_only_what_changed_equals_repainting_the_whole_scratch() {
+    const Extent size{640, 400};
+    const Brush brush{24.0, 0.8, 0.7, 1.0, 0.25};
+    const Rgba8 color{10, 20, 30, 255};
+    std::vector<Vec2> path;
+    for (int step = 0; step <= 12; ++step) {
+        path.push_back(Vec2{150.0 + 32.0 * step, 190.0 + 11.0 * step});
+    }
+
+    const Image base = Image::filled(size, 200, 100, 50, 255);
+
+    StrokeScratch whole;
+    scratch_stamp(whole, stroke_dabs(path, brush), brush, size);
+    Image flattened = base;
+    scratch_composite(flattened, whole, color, brush, PaintMode::Over, whole.rect);
+
+    Image stepwise = base;
+    StrokeScratch scratch;
+    DabWalk walk{0.0, false};
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        const std::vector<Vec2> segment =
+            i == 0 ? std::vector<Vec2>{path[0]} : std::vector<Vec2>{path[i - 1], path[i]};
+        const Rect touched = scratch_stamp(scratch, walk_dabs(segment, brush, walk), brush, size);
+        stepwise.blit(base.region(touched), touched.x, touched.y);  // what the document restores
+        scratch_composite(stepwise, scratch, color, brush, PaintMode::Over, touched);
+    }
+    CHECK_EQ(stepwise.checksum_hex(), flattened.checksum_hex());
+    CHECK_NE(stepwise.checksum_hex(), base.checksum_hex());
 }
 
 int main() {
@@ -254,5 +288,6 @@ int main() {
     test_a_stroke_outside_the_document_changes_nothing();
     test_stroke_bounds_is_exactly_the_painted_rectangle();
     test_a_scratch_stamped_in_pieces_holds_the_same_coverage_as_one_stamp();
+    test_repainting_only_what_changed_equals_repainting_the_whole_scratch();
     return noise::test::summary("brush");
 }

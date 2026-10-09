@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstddef>
+#include <iterator>
 #include <utility>
 
 namespace noise {
@@ -48,10 +50,6 @@ constexpr double kMinimumDabSpacing = 1.0;
 // The edge band, in document pixels: half inside the rim, half outside. Anything past it is
 // fully uncovered, and the bounds below leave room for it.
 constexpr double kRimBand = 0.5;
-
-std::size_t area(Rect rect) {
-    return static_cast<std::size_t>(rect.w) * static_cast<std::size_t>(rect.h);
-}
 
 std::size_t index(Rect rect, int x, int y) {
     return static_cast<std::size_t>(y - rect.y) * static_cast<std::size_t>(rect.w) +
@@ -138,37 +136,42 @@ Rect stroke_bounds(const std::vector<Vec2>& path, const Brush& brush, Extent bou
 void StrokeScratch::grow_to(Rect want, Extent bounds) {
     // Union, not replacement: a later dab's bounds can easily be smaller than, or disjoint
     // from, what is already accumulated, and the coverage of the earlier dabs has to survive.
-    const Rect grown = intersect(unite(rect, want), Rect{0, 0, bounds.w, bounds.h});
+    // Growing by a factor is what makes that survival cheap - growing to fit copies every
+    // accumulated pixel on every event of a drag.
+    const Rect grown = grown_rect(rect, want, bounds, kBufferGrowthFactor);
     if (grown == rect) {
         return;
     }
     std::vector<double> next(area(grown), 0.0);
     // `rect` is positioned, not sized from the origin: iterating 0..w would index outside
     // both buffers unless the rect happened to start at the corner.
-    for (int y = rect.y; y < rect.bottom(); ++y) {
-        for (int x = rect.x; x < rect.right(); ++x) {
-            if (grown.contains(x, y)) {
-                next[index(grown, x, y)] = coverage[index(rect, x, y)];
-            }
-        }
+    const Rect keep = intersect(grown, rect);
+    for (int y = keep.y; y < keep.bottom(); ++y) {
+        std::copy_n(coverage.begin() + static_cast<std::ptrdiff_t>(index(rect, keep.x, y)),
+                    static_cast<std::size_t>(keep.w),
+                    next.begin() + static_cast<std::ptrdiff_t>(index(grown, keep.x, y)));
     }
     rect = grown;
     coverage = std::move(next);
 }
 
-void scratch_stamp(StrokeScratch& scratch, const std::vector<Vec2>& dabs, const Brush& brush,
+Rect scratch_stamp(StrokeScratch& scratch, const std::vector<Vec2>& dabs, const Brush& brush,
                    Extent bounds) {
     if (dabs.empty()) {
-        return;
+        return Rect{};
     }
     const double radius = brush.size * 0.5;
     const double reach = radius + kRimBand;
-    scratch.grow_to(dabs_bounds(dabs, reach), bounds);
+    const Rect footprint = intersect(dabs_bounds(dabs, reach), Rect{0, 0, bounds.w, bounds.h});
+    scratch.grow_to(footprint, bounds);
+    // What the dabs reached, not what the buffer now covers: the buffer is deliberately bigger,
+    // and a caller that repainted the buffer would pay for the growth on every event.
+    const Rect touched = intersect(footprint, scratch.rect);
     for (const Vec2& dab : dabs) {
-        const int x_from = std::max(scratch.rect.x, static_cast<int>(std::floor(dab.x - reach)));
-        const int y_from = std::max(scratch.rect.y, static_cast<int>(std::floor(dab.y - reach)));
-        const int x_to = std::min(scratch.rect.right(), static_cast<int>(std::ceil(dab.x + reach)));
-        const int y_to = std::min(scratch.rect.bottom(), static_cast<int>(std::ceil(dab.y + reach)));
+        const int x_from = std::max(touched.x, static_cast<int>(std::floor(dab.x - reach)));
+        const int y_from = std::max(touched.y, static_cast<int>(std::floor(dab.y - reach)));
+        const int x_to = std::min(touched.right(), static_cast<int>(std::ceil(dab.x + reach)));
+        const int y_to = std::min(touched.bottom(), static_cast<int>(std::ceil(dab.y + reach)));
         for (int y = y_from; y < y_to; ++y) {
             for (int x = x_from; x < x_to; ++x) {
                 const double distance = std::hypot(x + 0.5 - dab.x, y + 0.5 - dab.y);
@@ -180,11 +183,13 @@ void scratch_stamp(StrokeScratch& scratch, const std::vector<Vec2>& dabs, const 
             }
         }
     }
+    return touched;
 }
 
 void scratch_composite(Image& image, const StrokeScratch& scratch, Rgba8 color,
-                       const Brush& brush, PaintMode mode) {
-    const Rect touched = intersect(scratch.rect, Rect{0, 0, image.size().w, image.size().h});
+                       const Brush& brush, PaintMode mode, Rect limit) {
+    const Rect touched =
+        intersect(intersect(scratch.rect, limit), Rect{0, 0, image.size().w, image.size().h});
     const double opacity = brush.opacity * (color.a / 255.0);
     const std::uint8_t source_rgb[4] = {color.r, color.g, color.b, 0};
     for (int y = touched.y; y < touched.bottom(); ++y) {
@@ -214,8 +219,8 @@ std::optional<Rect> paint_stroke(Image& image,
         return std::nullopt;
     }
     StrokeScratch scratch;
-    scratch_stamp(scratch, dabs, brush, image.size());
-    scratch_composite(image, scratch, color, brush, mode);
+    const Rect stamped = scratch_stamp(scratch, dabs, brush, image.size());
+    scratch_composite(image, scratch, color, brush, mode, stamped);
     return touched;
 }
 

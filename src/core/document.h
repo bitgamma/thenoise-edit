@@ -62,14 +62,23 @@ public:
     // False when `index` is out of range. Selecting changes no pixels, so it bumps no revision.
     bool select_layer(int index);
 
+    // What the composite is made of, changed without touching a pixel. Both bump the revision -
+    // the canvas shows the composite, so a renderer that re-uploads on it would otherwise keep
+    // showing a layer that is meant to be gone - and both mark the document dirty. Neither enters
+    // history, nor does adding or removing a layer. `opacity` is 0..1, and out of range is false
+    // rather than a clamped value.
+    bool set_layer_visible(int index, bool visible);
+    bool set_layer_opacity(int index, double opacity);
+
     // Every layer's pixels, bottom-first, with the layer count in front: two documents with
     // different stacks differ here even when the flattened result happens to match.
     std::string checksum() const;
 
     // The flattened stack: what the renderer uploads, what a flat export writes, and what the
-    // container stores as `mergedimage.png`. Built on demand and repaired only over the
-    // rectangles the layers changed since it was last asked for, because a stack that is
-    // re-blended whole puts a canvas-sized pass on every frame of a live stroke.
+    // container stores as `mergedimage.png`. An invisible layer is not in it, and a layer at
+    // 50 % contributes half its own alpha. Built on demand and repaired only over the rectangles
+    // the layers changed since it was last asked for, because a stack that is re-blended whole
+    // puts a canvas-sized pass on every frame of a live stroke.
     const Image& composite() const;
 
     // Bumped by anything a step could undo and by anything that changes what the canvas shows;
@@ -85,10 +94,14 @@ public:
     // the layer that was active when it began. The pixels under `area` are held aside, every
     // repaint starts from them, and `commit` records them as one undo step. Without this a live
     // stroke would either compound its own opacity once per frame or push an undo step per
-    // frame. Calling `begin_provisional` again widens the held-aside area, restoring the current
-    // one first so the new snapshot is of pristine pixels.
+    // frame. Calling `begin_provisional` again widens the held-aside area, which costs nothing
+    // per event: the buffer grows by a factor, and pixels outside what is already held aside
+    // have not been written, so the layer still shows what the gesture found there.
     void begin_provisional(Rect area);
-    void repaint_provisional(const std::function<void(Image&)>& paint);
+    // Restores `dirty` from the held-aside pixels and calls `paint` for that rectangle only. The
+    // rectangle is an argument because repainting the whole held-aside area per event is what
+    // made a drag cost more with every event: 2.9 ms to 108 ms over one 40-event stroke at 2048².
+    void repaint_provisional(Rect dirty, const std::function<void(Image&, Rect)>& paint);
     void commit_provisional();
     void discard_provisional();
     bool in_provisional() const;
@@ -108,7 +121,11 @@ private:
     };
 
     Image* layer_pixels(std::uint64_t id);
-    void paste(Image& into, Rect rect, const Image& snapshot);
+    // `dst_at` and `src_at` say where each image sits in document coordinates.
+    void copy_rows(Image& dst, Rect dst_at, const Image& src, Rect src_at, Rect area) const;
+    // The pristine bytes the gesture found inside `absolute`, taken out of the held-aside
+    // snapshot, as an image of `absolute`'s own size.
+    Image held_aside(Rect absolute) const;
 
     // What the layers changed since `composite_` was last repaired. Accumulated by every pixel
     // change, emptied by the repair; structural changes widen it to the whole canvas.
@@ -118,6 +135,9 @@ private:
     std::vector<Layer> layers_;
     int active_ = 0;
     std::optional<Provisional> provisional_;
+    // What the gesture has actually painted, which is smaller than the held-aside rectangle: the
+    // undo step records this, and discarding restores this.
+    Rect painted_;
     std::string path_;
     bool dirty_ = false;
     std::uint64_t revision_ = 0;

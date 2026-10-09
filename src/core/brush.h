@@ -63,21 +63,29 @@ inline constexpr double kBrushSizeStep = 1.25;
 // A stroke's accumulated coverage over one rectangle, kept between calls so a live gesture
 // composites once with the stroke's opacity - and with the same result as one stroke painted
 // in a single call - instead of compounding a little more each frame.
+//
+// Coverage is per pixel, and a pixel's composited value depends only on its own coverage, which
+// is what lets a live gesture repaint just the rectangle its new dabs reached: whatever the
+// earlier dabs contributed to a pixel is already in here.
 struct StrokeScratch {
     Rect rect;
     std::vector<double> coverage;
 
-    // Takes in `want`, clipped to `bounds`, keeping the coverage already accumulated.
+    // Takes in `want`, clipped to `bounds`, keeping the coverage already accumulated. The buffer
+    // grows by `kBufferGrowthFactor` rather than to fit, because growing to fit copies every
+    // accumulated pixel on every event of a drag.
     void grow_to(Rect want, Extent bounds);
 };
 
-// Adds these dabs to `scratch`, growing it over `bounds` when they fall outside it.
-void scratch_stamp(StrokeScratch& scratch, const std::vector<Vec2>& dabs, const Brush& brush,
+// Adds these dabs to `scratch`, growing over `bounds` when they fall outside it, and returns the
+// rectangle they touched: what a caller has to repaint, which is not the whole scratch.
+Rect scratch_stamp(StrokeScratch& scratch, const std::vector<Vec2>& dabs, const Brush& brush,
                    Extent bounds);
 
-// Composites the accumulated coverage onto `image`: the same arithmetic `paint_stroke` uses.
+// Composites the accumulated coverage onto `image`, limited to `limit` - the same arithmetic
+// `paint_stroke` uses, which passes the rectangle the dabs reached.
 void scratch_composite(Image& image, const StrokeScratch& scratch, Rgba8 color,
-                       const Brush& brush, PaintMode mode);
+                       const Brush& brush, PaintMode mode, Rect limit);
 
 // The distance still owed before the next dab, so a gesture fed in point by point emits the
 // same dabs as the same polyline handed over all at once.

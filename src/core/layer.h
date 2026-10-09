@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "core/blend.h"
 #include "core/image.h"
 
 namespace noise {
@@ -19,6 +20,12 @@ std::string default_layer_name(std::size_t index);
 // "add a layer" means.
 inline constexpr Rgba8 kNewLayerFill{0, 0, 0, 0};
 
+// What a layer that has never been told otherwise looks like. Format 2 of the container writes
+// all three and requires all three, so these are the state of a new layer rather than a guess
+// made about a file that omitted them.
+inline constexpr bool kLayerVisibleDefault = true;
+inline constexpr double kLayerOpacityDefault = 1.0;
+
 // One layer of a document. Layers are the same size as the document, and a stack is ordered
 // bottom-first: index 0 is the layer nothing is painted under.
 //
@@ -29,6 +36,13 @@ struct Layer {
     std::uint64_t id = 0;
     std::string name;
     Image pixels;
+
+    // Neither changes a pixel, so neither enters history: they change what the composite is made
+    // of. `opacity` is applied there and never baked into `pixels`, so a layer shown at 30 % is
+    // still painted on and edited at full strength.
+    bool visible = kLayerVisibleDefault;
+    double opacity = kLayerOpacityDefault;  // 0..1
+    BlendMode mode = BlendMode::normal;
 };
 
 }  // namespace noise

@@ -145,8 +145,13 @@ above arrives with the tool or command it belongs to (and
 project (`.noise`); a flat PNG is `doc.export`, which takes neither the document's path nor its
 unsaved mark. The Layers panel is live too - `layer.list` / `add` / `remove` / `select` on the
 wire, click-to-select and the two buttons in the UI, and strokes land on the selected layer while
-each step stays bound to the layer it was made on. Visibility, opacity and blend modes are the
-next layer increment and need a manifest decision first (`docs/PLAN.md`).
+each step stays bound to the layer it was made on. Visibility and opacity are live with it: an eye
+and an opacity slider per row, applied where the stack is flattened rather than baked into a
+layer's pixels, so a layer shown at 30 % still paints at full strength - and, like adding and
+deleting, neither enters an undo step. That is `.noise` **format 2**, which made `visible` /
+`opacity` / `mode` required on every layer row and refuses any other version by number. Blend
+modes are the next layer increment: `BlendMode` has one value, `normal`, and `core::kBlendModes`
+is where the rest arrive together with their arithmetic and their manifest names.
 
 Design rules: nothing blocks the canvas, ever · every AI op shows *what it will send* ·
 model swaps are explicit and priced · destructive ops are labelled but never nag (undo is

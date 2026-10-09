@@ -145,6 +145,35 @@ void test_clamp_origin_keeps_image_reachable() {
     CHECK_NEAR(centred.origin.y, (100.0 - 600.0) * 0.5, 1e-9);
 }
 
+// The buffer a growing stroke grows into is what keeps a pointer event from paying for the whole
+// stroke so far. Three things have to hold for that: it still covers what was asked for, it never
+// falls outside what it already held, and it does not grow on every request.
+void test_a_grown_buffer_covers_and_stops_being_recopied() {
+    const Extent bounds{1000, 800};
+    Rect buffer{};
+    int growths = 0;
+    std::size_t moved = 0;
+    for (int step = 1; step <= 60; ++step) {
+        const Rect want{200 + step * 4, 200, 20, 20};
+        const Rect grown = grown_rect(buffer, want, bounds, kBufferGrowthFactor);
+        CHECK(grown.contains(want.x, want.y));
+        CHECK(grown.contains(want.right() - 1, want.bottom() - 1));
+        CHECK(grown.inside(bounds));
+        if (grown == buffer) {
+            continue;
+        }
+        if (!buffer.empty()) {
+            CHECK(grown.contains(buffer.x, buffer.y));
+            CHECK(grown.contains(buffer.right() - 1, buffer.bottom() - 1));
+            moved += area(buffer);
+        }
+        ++growths;
+        buffer = grown;
+    }
+    CHECK(growths < 12);                 // 60 requests into a doubling buffer
+    CHECK(moved <= 4 * area(buffer));    // amortised, not 60 x the final copy
+}
+
 void test_rect_helpers() {
     const Rect a{10, 10, 100, 100};
     CHECK_EQ(a.right(), 110);
@@ -185,5 +214,6 @@ int main() {
     test_fit_view_contains_and_centres();
     test_clamp_origin_keeps_image_reachable();
     test_rect_helpers();
+    test_a_grown_buffer_covers_and_stops_being_recopied();
     return test::summary("geom");
 }

@@ -26,6 +26,11 @@ constexpr ImU32 kCanvasBorder = IM_COL32(90, 90, 100, 255);
 constexpr float kRightPanelFraction = 0.30f;
 constexpr float kStatusBarHeightPx = 40.0f;
 constexpr float kToolPanelFraction = 0.36f;
+// A layer row is eye + name + opacity on one line. The slider gets a fixed slice so a long name
+// clips instead of pushing the control off the panel, and the name keeps a slice of its own so
+// a narrow panel still shows which layer is which.
+constexpr float kLayerOpacitySliderPx = 88.0f;
+constexpr float kLayerNameMinPx = 40.0f;
 
 // Docked by name below and opened by the same constants here.
 constexpr const char* kWindowCanvas = "Canvas";
@@ -178,11 +183,36 @@ void draw_layers_panel(AppState& state, CommandTable& commands) {
         // Top layer first, which is how every layer list shows them; the document is
         // bottom-first, so the rows run against the indices.
         const std::span<const Layer> layers = state.doc.layers();
+        const float row_px = ImGui::GetContentRegionAvail().x;
+        const float name_px = std::max(
+            kLayerNameMinPx,
+            row_px - (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x * 2.0f +
+                      kLayerOpacitySliderPx));
         for (std::size_t row = layers.size(); row-- > 0;) {
-            const std::string label = layers[row].name + "###layer" + std::to_string(row);
-            if (ImGui::Selectable(label.c_str(), static_cast<int>(row) == state.doc.active())) {
+            const Layer& layer = layers[row];
+            ImGui::PushID(static_cast<int>(row));
+            bool visible = layer.visible;
+            if (ImGui::Checkbox("##visible", &visible)) {
+                commands.invoke("layer.set",
+                                json{{"index", static_cast<int>(row)}, {"visible", visible}});
+            }
+            ImGui::SameLine();
+            // Sized, because a Selectable spans the row and would leave no room for the slider.
+            if (ImGui::Selectable(layer.name.c_str(), static_cast<int>(row) == state.doc.active(),
+                                  0, ImVec2(name_px, 0.0f))) {
                 commands.invoke("layer.select", json{{"index", static_cast<int>(row)}});
             }
+            ImGui::SameLine();
+            float opacity = static_cast<float>(layer.opacity);
+            ImGui::PushItemWidth(kLayerOpacitySliderPx);
+            if (ImGui::SliderFloat("##opacity", &opacity, 0.0f, 1.0f, "%.2f") &&
+                static_cast<double>(opacity) != layer.opacity) {
+                commands.invoke("layer.set",
+                                json{{"index", static_cast<int>(row)},
+                                     {"opacity", static_cast<double>(opacity)}});
+            }
+            ImGui::PopItemWidth();
+            ImGui::PopID();
         }
         if (ImGui::Button("Add layer")) {
             commands.invoke("layer.add", json::object());

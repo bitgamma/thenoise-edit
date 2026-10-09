@@ -104,4 +104,31 @@ Rect clamp_rect(Rect r, Extent bounds) {
     return intersect(r, Rect{0, 0, bounds.w, bounds.h});
 }
 
+Rect grown_rect(Rect current, Rect want, Extent bounds, double factor) {
+    const Rect legal = clamp_rect(want, bounds);
+    if (legal.empty()) {
+        return current;
+    }
+    const Rect both = unite(current, legal);
+    if (both == current) {
+        return current;
+    }
+    if (current.empty()) {
+        return legal;
+    }
+    const double have = static_cast<double>(area(both));
+    const double needed = factor * static_cast<double>(area(current));
+    if (have >= needed) {
+        return both;
+    }
+    // Expand both about its centre by the scale that reaches `needed`; expanding only right and
+    // down would push the buffer off the canvas on the first growth of a stroke that started in a
+    // corner, and the clamp would then hand back something no bigger than the union.
+    const double scale = std::sqrt(needed / have);
+    const int w = static_cast<int>(std::ceil(both.w * scale));
+    const int h = static_cast<int>(std::ceil(both.h * scale));
+    const Rect grown{both.x - (w - both.w) / 2, both.y - (h - both.h) / 2, w, h};
+    return clamp_rect(grown, bounds);
+}
+
 }

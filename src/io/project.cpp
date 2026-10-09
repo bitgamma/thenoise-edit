@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -81,13 +82,11 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
         return false;
     }
     const int format = manifest.at("format").get<int>();
-    if (format > kFormatVersion) {
-        error = "project format " + std::to_string(format) + " is newer than this build reads (" +
+    if (format != kFormatVersion) {
+        // One version is read: this one. Files from earlier sessions are disposable, and the
+        // alternative is guessing at fields a newer or older layout did not have to write.
+        error = "project format " + std::to_string(format) + " is not the format this build reads (" +
                 std::to_string(kFormatVersion) + "): " + path;
-        return false;
-    }
-    if (format < 1) {
-        error = "project format " + std::to_string(format) + " is not understood: " + path;
         return false;
     }
 
@@ -139,11 +138,46 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
                     std::to_string(claimed.w) + "x" + std::to_string(claimed.h) + " in " + path;
             return false;
         }
+        // What a layer looks like is as much a part of the file as what it holds, so these are
+        // required and a row that omits or misspells one is refused with the field named. A
+        // `name` is the exception: a file from elsewhere may simply not have named its layers.
+        if (!layer.contains("visible") || !layer.at("visible").is_boolean()) {
+            error = "layer " + std::to_string(index) + " has no boolean 'visible' in " + path;
+            return false;
+        }
+        const bool visible = layer.at("visible").get<bool>();
+
+        if (!layer.contains("opacity") || !layer.at("opacity").is_number()) {
+            error = "layer " + std::to_string(index) + " has no numeric 'opacity' in " + path;
+            return false;
+        }
+        const double opacity = layer.at("opacity").get<double>();
+        if (!(opacity >= 0.0 && opacity <= 1.0)) {
+            error = "layer " + std::to_string(index) + " has opacity " + std::to_string(opacity) +
+                    ", which is not in 0..1, in " + path;
+            return false;
+        }
+
+        if (!layer.contains("mode") || !layer.at("mode").is_string()) {
+            error = "layer " + std::to_string(index) + " has no string 'mode' in " + path;
+            return false;
+        }
+        const std::string mode_name = layer.at("mode").get<std::string>();
+        const std::optional<BlendMode> mode = blend_mode_from_name(mode_name);
+        if (!mode) {
+            error = "layer " + std::to_string(index) + " has mode '" + mode_name +
+                    "', this build knows: " + blend_mode_names() + " in " + path;
+            return false;
+        }
+
         loaded.push_back(Layer{0,
                                layer.contains("name") && layer.at("name").is_string()
                                    ? layer.at("name").get<std::string>()
                                    : default_layer_name(index),
-                               std::move(pixels)});
+                               std::move(pixels),
+                               visible,
+                               opacity,
+                               *mode});
         sources.push_back(source);
     }
 
@@ -176,7 +210,11 @@ bool save_project(const std::string& path, std::span<const Layer> layers, const 
 
     json declared = json::array();
     for (std::size_t index = 0; index < layers.size(); ++index) {
-        declared.push_back(json{{"name", layers[index].name}, {"src", layer_source(index)}});
+        declared.push_back(json{{"mode", std::string(blend_mode_name(layers[index].mode))},
+                                {"name", layers[index].name},
+                                {"opacity", layers[index].opacity},
+                                {"src", layer_source(index)},
+                                {"visible", layers[index].visible}});
     }
     const json manifest{
         {"format", kFormatVersion},

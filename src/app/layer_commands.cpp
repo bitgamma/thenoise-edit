@@ -29,7 +29,7 @@ void register_layer_commands(AppState& state, CommandTable& table) {
             return guard;
         }
         return command_ok(json{{"active", state.doc.active()},
-                               {"layers", layers_json(state, true)},
+                               {"layers", layers_json_with_checksums(state)},
                                {"composite_checksum", state.doc.composite().checksum_hex()}});
     });
 
@@ -57,7 +57,7 @@ void register_layer_commands(AppState& state, CommandTable& table) {
         }
         log::info("added " + state.doc.layer(static_cast<std::size_t>(index)).name);
         return command_ok(json{{"active", state.doc.active()},
-                               {"layers", layers_json(state, true)},
+                               {"layers", layers_json(state)},
                                {"revision", state.doc.revision()}});
     });
 
@@ -84,7 +84,52 @@ void register_layer_commands(AppState& state, CommandTable& table) {
         }
         log::info("removed " + removed);
         return command_ok(json{{"active", state.doc.active()},
-                               {"layers", layers_json(state, true)},
+                               {"layers", layers_json(state)},
+                               {"revision", state.doc.revision()}});
+    });
+
+    // One command for the layer's non-pixel state, taking only the fields it is given, because
+    // that is how `tool.set` works and a panel row should not have to know a verb per field.
+    table.add("layer.set", "Change a layer's visibility or opacity", {},
+              [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        int index = state.doc.active();
+        if (args.contains("index") && !want_int(args, "index", index)) {
+            return fail("layer.set", "'index' must be an integer");
+        }
+        const std::size_t count = state.doc.layers().size();
+        if (index < 0 || static_cast<std::size_t>(index) >= count) {
+            return fail("layer.set", range_error("layer.set", index, count));
+        }
+        bool changed = false;
+        if (args.contains("visible")) {
+            if (!args.at("visible").is_boolean()) {
+                return fail("layer.set", "'visible' must be a boolean");
+            }
+            state.doc.set_layer_visible(index, args.at("visible").get<bool>());
+            changed = true;
+        }
+        if (args.contains("opacity")) {
+            double opacity = 0.0;
+            if (!want_number(args, "opacity", opacity)) {
+                return fail("layer.set", "'opacity' must be a number between 0.0 and 1.0");
+            }
+            if (!state.doc.set_layer_opacity(index, opacity)) {
+                return fail("layer.set", "'opacity' must be between 0.0 and 1.0 (got " +
+                                    std::to_string(opacity) + ")");
+            }
+            changed = true;
+        }
+        if (!changed) {
+            return fail("layer.set",
+                        "nothing to change: 'visible' and/or 'opacity' (mode has one value "
+                        "today, so there is nothing to set it to)");
+        }
+        return command_ok(json{{"active", state.doc.active()},
+                               {"layers", layers_json(state)},
                                {"revision", state.doc.revision()}});
     });
 
@@ -102,7 +147,7 @@ void register_layer_commands(AppState& state, CommandTable& table) {
             return fail("layer.select",
                         range_error("layer.select", index, state.doc.layers().size()));
         }
-        return command_ok(json{{"active", state.doc.active()}, {"layers", layers_json(state, true)}});
+        return command_ok(json{{"active", state.doc.active()}, {"layers", layers_json(state)}});
     });
 }
 

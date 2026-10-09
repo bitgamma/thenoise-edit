@@ -87,21 +87,30 @@ One drag is one undo step, and while it is held down what you see is the stroke'
 result, not a preview: the gesture accumulates coverage, and every frame repaints from the
 pixels it found. `Ctrl+Z` / `Ctrl+Y` undo and redo.
 
-**Undo covers pixels only.** Adding or deleting a layer is not undoable, and deleting a layer
-discards the steps made on it — a change to a layer that is gone cannot be put back.
+**Undo covers pixels only.** Hiding or fading a layer, adding one, and deleting one are not
+undoable — and deleting a layer discards the steps made on it, because a change to a layer that
+is gone cannot be put back.
 
 ## Layers
 
-The Layers panel lists them top-first, like every other editor. Clicking a row selects it; the
-selected layer is the one strokes land on, marked `active` in `layer.list`. **The canvas never
-shows a single layer**: it shows the *composite*, the stack flattened, which is also what a PNG
-export writes and what `mergedimage.png` holds inside a project.
+The Layers panel lists them top-first, like every other editor. Each row is **an eye, the name,
+an opacity slider**; clicking the name selects the layer, and the selected layer is the one
+strokes land on, marked `active` in `layer.list`. **The canvas never shows a single layer**: it
+shows the *composite*, the stack flattened, which is also what a PNG export writes and what
+`mergedimage.png` holds inside a project.
 
+- The **eye** takes the layer out of the composite. Its pixels are untouched — hiding is not
+  erasing — and it is still the layer a stroke lands on if it is the selected one, which is a
+  good way to make invisible marks, so select what you mean to paint on.
+- **Opacity** scales the whole layer where the stack is flattened. It is never baked into the
+  layer, so a layer shown at 30 % is still painted on, edited and hidden at full strength, and
+  dragging it back to 100 % gives you exactly the image you had.
 - `Add layer` inserts an empty layer directly above the active one and selects it. Empty, not
   white — an opaque new layer would hide everything under it.
 - `Delete layer` removes the active one. The last layer standing is refused: it *is* the canvas.
 
-Names come from `layer.add {name}`; there is no rename field in the panel yet.
+Names come from `layer.add {name}`; there is no rename field in the panel yet, and blend modes do
+not exist yet either — every layer composites `normal`.
 
 ## Files
 
@@ -120,7 +129,7 @@ unchanged so a newer file cannot lose what an older app cannot show.
 
 ```
 mimetype              "application/x-noise+zip", stored, first member
-manifest.json         format, size, layers[{name, src}]
+manifest.json         format, size, layers[{name, src, visible, opacity, mode}]
 layers/0/layer.png    one PNG per layer, bottom-first
 mergedimage.png       the flattened composite
 ```
@@ -197,8 +206,8 @@ problems and only one of them is a bug:
 - **No AI at all.** No server profile, no roles, no generate / remove / replace / upscale.
   That is milestones M3 and M4.
 - **No selections and no masks.** Nothing to select with, nothing to mask a layer with.
-- **Layers have no visibility toggle, opacity or blend mode.** The composite is plain
-  source-over of everything, and the manifest has no field for those yet.
+- **No blend modes.** Every layer composites `normal` over what is under it; the mode set
+  (`multiply`, `screen`, …) is the next increment on the layer model.
 - **No reorder, rename, duplicate or merge** in the Layers panel; no move tool.
 - **Only brush and eraser.** No fill, eyedropper, lasso or wand, no pen pressure.
 - **PNG in, PNG out** — no JPEG/WebP import or export, no ORA/PSD.

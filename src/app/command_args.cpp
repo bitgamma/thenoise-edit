@@ -162,20 +162,31 @@ const char* document_kind(const std::string& path) {
     return io::extension_of(path) == io::kProjectExtension ? "noise" : "image";
 }
 
-// `with_checksum` is a parameter and not a default: `app.state` is polled every frame and must
-// not hash a stack to answer it, while `layer.list` is asked on purpose and reports what each
-// layer holds. The row shape is the same either way, so nothing can drift between the two.
-json layers_json(const AppState& state, bool with_checksum) {
+// The rows, hashing nothing. `app.state` is polled every frame and the layer commands answer
+// clicks and slider drags.
+json layers_json(const AppState& state) {
     json rows = json::array();
     const std::span<const Layer> layers = state.doc.layers();
     for (std::size_t index = 0; index < layers.size(); ++index) {
-        json row{{"index", static_cast<int>(index)},
-                 {"name", layers[index].name},
-                 {"active", static_cast<int>(index) == state.doc.active()}};
-        if (with_checksum) {
-            row["checksum"] = layers[index].pixels.checksum_hex();
-        }
-        rows.push_back(std::move(row));
+        rows.push_back(json{{"index", static_cast<int>(index)},
+                            {"name", layers[index].name},
+                            {"active", static_cast<int>(index) == state.doc.active()},
+                            {"visible", layers[index].visible},
+                            {"opacity", layers[index].opacity},
+                            {"mode", std::string(blend_mode_name(layers[index].mode))}});
+    }
+    return rows;
+}
+
+// The same rows plus what each layer holds, for the one command that asks on purpose. Measured
+// here at 2048² with three layers: ~480 ms of SHA-256, which is what made switching layers and
+// dragging an opacity slider feel stuck - they are interactive, and a document-sized hash is not
+// something a click may cost.
+json layers_json_with_checksums(const AppState& state) {
+    json rows = layers_json(state);
+    const std::span<const Layer> layers = state.doc.layers();
+    for (std::size_t index = 0; index < rows.size(); ++index) {
+        rows[index]["checksum"] = layers[index].pixels.checksum_hex();
     }
     return rows;
 }
@@ -185,7 +196,7 @@ json document_summary_json(const AppState& state) {
                 {"kind", document_kind(state.doc.path())},
                 {"dirty", state.doc.dirty()},
                 {"active", state.doc.active()},
-                {"layers", layers_json(state, false)},
+                {"layers", layers_json(state)},
                 {"width", state.doc.width()},
                 {"height", state.doc.height()},
                 {"revision", state.doc.revision()},

@@ -26,11 +26,15 @@ void add_dabs(AppState& state, const std::vector<Vec2>& path) {
     if (dabs.empty()) {
         return;
     }
-    scratch_stamp(state.stroke.scratch, dabs, state.brush, state.doc.size());
-    state.doc.begin_provisional(state.stroke.scratch.rect);
+    // The rectangle these dabs reached is the unit of work for the rest of the event: the buffer
+    // the coverage lives in is deliberately larger than what changed, and painting the buffer
+    // rather than the dabs is what made each event cost the whole stroke so far.
+    const Rect touched = scratch_stamp(state.stroke.scratch, dabs, state.brush, state.doc.size());
+    state.doc.begin_provisional(touched);
     state.stroke.dabs += dabs.size();
-    state.doc.repaint_provisional([&state](Image& image) {
-        scratch_composite(image, state.stroke.scratch, state.color, state.brush, mode_of(state));
+    state.doc.repaint_provisional(touched, [&state](Image& image, Rect region) {
+        scratch_composite(image, state.stroke.scratch, state.color, state.brush, mode_of(state),
+                          region);
     });
 }
 
