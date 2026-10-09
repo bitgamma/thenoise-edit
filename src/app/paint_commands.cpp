@@ -51,10 +51,12 @@ bool read_brush_field(const json& args,
     return true;
 }
 
-// A stroke is painted exactly as it is described: every brush field must be present, so one
-// recorded from the wire replays without consulting what the UI happens to have selected.
+// A stroke paints with the tool settings the app is on, and any field the call carries
+// overrides one of them: the pointer has no fields to send, and a recorded stroke that does
+// send them replays independently of session state.
 CommandResult read_stroke(const json& args,
                           const char* who,
+                          const AppState& current,
                           std::vector<Vec2>& path,
                           Brush& brush,
                           Rgba8& color,
@@ -62,7 +64,7 @@ CommandResult read_stroke(const json& args,
     if (!arg_points(args, "points", path) || path.empty()) {
         return fail(who, "'points' must be a non-empty array of [x,y] in document pixels");
     }
-    tool = kDefaultTool;
+    tool = current.tool;
     if (args.contains("tool")) {
         if (!args.at("tool").is_string()) {
             return fail(who, "'tool' must be a string");
@@ -72,24 +74,24 @@ CommandResult read_stroke(const json& args,
             return fail(who, "unknown tool '" + tool + "' (" + tool_names() + ")");
         }
     }
-    brush = {0.0, 0.0, 0.0, 0.0, 0.0};
+    brush = current.brush;
     for (const BrushField& field : kBrushFields) {
         if (!args.contains(field.key)) {
-            return fail(who, std::string("missing '") + field.key + "'");
+            continue;
         }
         std::string why;
         if (!read_brush_field(args, field, brush, who, why)) {
             return fail(who, why);
         }
     }
-    if (!args.contains("color")) {
-        return fail(who, "missing 'color'");
+    color = current.color;
+    if (args.contains("color")) {
+        std::uint8_t channels[4] = {0, 0, 0, 255};
+        if (!arg_rgba(args, "color", channels)) {
+            return fail(who, "'color' must be [r,g,b,a] with each channel 0..255");
+        }
+        color = Rgba8{channels[0], channels[1], channels[2], channels[3]};
     }
-    std::uint8_t channels[4] = {0, 0, 0, 255};
-    if (!arg_rgba(args, "color", channels)) {
-        return fail(who, "'color' must be [r,g,b,a] with each channel 0..255");
-    }
-    color = Rgba8{channels[0], channels[1], channels[2], channels[3]};
     return command_ok(json::object());
 }
 
@@ -97,7 +99,8 @@ CommandResult read_stroke(const json& args,
 
 void register_paint_commands(AppState& state, CommandTable& table) {
     table.add("tool.stroke",
-              "Paint a stroke along document-space points with an explicit brush", {},
+              "Paint a stroke along document-space points, overriding the current tool as given",
+              {},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -107,7 +110,7 @@ void register_paint_commands(AppState& state, CommandTable& table) {
         Brush brush;
         Rgba8 color;
         std::string tool;
-        CommandResult parsed = read_stroke(args, "tool.stroke", path, brush, color, tool);
+        CommandResult parsed = read_stroke(args, "tool.stroke", state, path, brush, color, tool);
         if (!parsed.ok) {
             return parsed;
         }

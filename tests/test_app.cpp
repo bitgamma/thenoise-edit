@@ -460,12 +460,20 @@ void test_a_stroke_that_cannot_run_names_the_field_that_is_wrong() {
     const std::string before = checksum_of(h);
     const json valid = full_stroke();
 
-    for (const char* missing : {"size", "hardness", "opacity", "flow", "spacing", "color"}) {
+    // A stroke paints with the tool settings the app is on, so any field may be left out.
+    for (const char* absent : {"size", "hardness", "opacity", "flow", "spacing", "color"}) {
         json args = valid;
-        args.erase(missing);
-        const CommandResult result = h.run("tool.stroke", args);
+        args.erase(absent);
+        CHECK_OK(h.run("tool.stroke", args));
+        h.value("edit.undo", json::object());
+    }
+
+    for (const char* field : {"size", "hardness", "opacity", "flow", "spacing", "color"}) {
+        json wrong_type = valid;
+        wrong_type[field] = "wide";
+        const CommandResult result = h.run("tool.stroke", wrong_type);
         CHECK(!result.ok);
-        CHECK(result.error.find(missing) != std::string::npos);
+        CHECK(result.error.find(field) != std::string::npos);
     }
 
     json bad_tool = valid;
@@ -487,7 +495,9 @@ void test_a_stroke_that_cannot_run_names_the_field_that_is_wrong() {
     const CommandResult nothing = h.run("edit.undo", json::object());
     CHECK(!nothing.ok);
     CHECK(nothing.error.find("nothing to undo") != std::string::npos);
-    CHECK(!h.run("edit.redo", json::object()).ok);
+    // The last undone stroke is still offered by redo; the five before it were invalidated by
+    // the strokes that followed, which is what "a new change after undo clears redo" means.
+    CHECK_EQ(h.value("doc.get", json::object())["history"]["redo_depth"].get<int>(), 1);
 }
 
 void test_a_stroke_that_misses_the_document_is_not_a_step() {
