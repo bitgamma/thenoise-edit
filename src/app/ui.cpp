@@ -26,9 +26,10 @@ constexpr ImU32 kCanvasBorder = IM_COL32(90, 90, 100, 255);
 constexpr float kRightPanelFraction = 0.30f;
 constexpr float kStatusBarHeightPx = 40.0f;
 constexpr float kToolPanelFraction = 0.36f;
-// A layer row is eye + name + opacity on one line. The slider gets a fixed slice so a long name
-// clips instead of pushing the control off the panel, and the name keeps a slice of its own so
-// a narrow panel still shows which layer is which.
+// A layer row is eye + name + opacity on one line and a blend-mode dropdown on the next. The
+// slider gets a fixed slice so a long name clips instead of pushing the control off the panel, and
+// the name keeps a slice of its own so a narrow panel still shows which layer is which. The mode
+// dropdown is the width of the name slice, so the two lines read as one record.
 constexpr float kLayerOpacitySliderPx = 88.0f;
 constexpr float kLayerNameMinPx = 40.0f;
 
@@ -210,6 +211,28 @@ void draw_layers_panel(AppState& state, CommandTable& commands) {
                 commands.invoke("layer.set",
                                 json{{"index", static_cast<int>(row)},
                                      {"opacity", static_cast<double>(opacity)}});
+            }
+            ImGui::PopItemWidth();
+            // The blend mode on a line of its own: eight names will not share a row with a name
+            // field and a slider in a panel a third of the window wide, and a dropdown clipped to
+            // three characters is not a control. The items are `kBlendModes` in table order, so a
+            // mode added in core/blend appears here without this file being told about it.
+            const std::string_view mode_name = blend_mode_name(layer.mode);
+            ImGui::PushItemWidth(std::max(64.0f, name_px));
+            if (ImGui::BeginCombo("##mode",
+                                  mode_name.empty() ? "no such mode" : mode_name.data(), 0)) {
+                for (const BlendModeInfo& info : kBlendModes) {
+                    const bool chosen = info.mode == layer.mode;
+                    if (ImGui::Selectable(info.name, chosen)) {
+                        commands.invoke(
+                            "layer.set",
+                            json{{"index", static_cast<int>(row)}, {"mode", info.name}});
+                    }
+                    if (chosen) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
             }
             ImGui::PopItemWidth();
             ImGui::PopID();

@@ -107,6 +107,21 @@ bool Document::set_layer_visible(int index, bool visible) {
     return true;
 }
 
+bool Document::set_layer_mode(int index, BlendMode mode) {
+    if (index < 0 || static_cast<std::size_t>(index) >= layers_.size()) {
+        return false;
+    }
+    Layer& layer = layers_[static_cast<std::size_t>(index)];
+    if (layer.mode == mode) {
+        return true;
+    }
+    layer.mode = mode;
+    pending_ = Rect{0, 0, width(), height()};
+    dirty_ = true;
+    ++revision_;
+    return true;
+}
+
 bool Document::set_layer_opacity(int index, double opacity) {
     if (index < 0 || static_cast<std::size_t>(index) >= layers_.size()) {
         return false;
@@ -147,15 +162,20 @@ Rect whole(const Image& image) {
     return Rect{0, 0, image.size().w, image.size().h};
 }
 
-// The one stack whose composite *is* a layer: one visible layer at full strength over nothing
-// has no second operand, and taking the blend path anyway puts a canvas-sized pass on every
-// frame of the cheapest document there is.
+// The one stack whose composite *is* a layer: one visible layer at full strength over nothing has
+// no second operand, and taking the blend path anyway puts a canvas-sized pass on every frame of
+// the cheapest document there is.
+//
+// Any mode, not just `normal`: with an empty backdrop the composite reduces to the source itself
+// whatever the separable arithmetic said, because there is nothing to blend with. Pinned by
+// `test_document`, since a mode that broke this shortcut would be wrong in a way the shortcut
+// hides.
 bool blends_to_itself(const std::vector<Layer>& layers) {
     if (layers.size() != 1) {
         return false;
     }
     const Layer& only = layers.front();
-    return only.visible && only.opacity == kLayerOpacityDefault && only.mode == BlendMode::normal;
+    return only.visible && only.opacity == kLayerOpacityDefault;
 }
 
 }  // namespace

@@ -44,7 +44,10 @@ Constraints that shape everything (see `AI-BACKEND.md`):
 **Layers** (raster only)
 - add/delete/duplicate/reorder (drag), visibility, inline rename, opacity, blend modes
   (normal, multiply, screen, overlay, darken, lighten, color-dodge, color-burn for MVP;
-  soft/hard-light, difference, exclusion, add in M5)
+  soft/hard-light, difference, exclusion, add in M5) —
+  **visibility, opacity and the eight modes are implemented**: `kBlendModes` is the one table, the
+  panel has a dropdown per layer, `layer.set {mode}` sets one, and the composite applies it. Rename,
+  duplicate, drag-reorder and the M5 modes are not
 - merge down, flatten, crop-to-selection, new-layer-via-copy/clone
 - layer masks: add from selection / from layer, hide-all/show-all, enable/disable, apply
   (destructive), alt-click to view mask

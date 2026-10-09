@@ -200,9 +200,15 @@ keep it cheap and honest:
 * **A stack of one visible layer at full strength is that layer**, returned by reference with no
   blend at all. Blending a single layer has no second operand, and doing it anyway puts a
   canvas-sized pass on every frame - which is what the first version of this did, at 71 ms per
-  pointer event on a three-layer 2048² document. The condition is `visible && opacity == 1 &&
-  mode == normal`, because one hidden layer is a transparent canvas and not that layer, and a
-  shortcut that ignored either would be a wrong picture rather than a slow one.
+  pointer event on a three-layer 2048² document. The condition is `visible && opacity == 1`, and
+  deliberately *not* `&& mode == normal`: with an empty backdrop the composite formula collapses to
+  the source whatever the separable arithmetic said, so a lone `multiply` layer is still itself and
+  the shortcut stays legal as modes are added. `test_document` pins this per mode - the shortcut is
+  compared with the blend path's answer, coverage everywhere and colour wherever there is coverage
+  (bytes under zero alpha may differ between the two paths and no renderer can show them, which is
+  why that test compares pixels rather than a checksum). One hidden layer, by contrast, is a
+  transparent canvas and not that layer, so ignoring `visible` would be a wrong picture rather than
+  a slow one - `test_a_lone_layer_is_shown_whole_only_at_full_strength` holds that line.
 * **A repair rebuilds its region from transparent** rather than patching it, so the number of
   layers that came and went since the region was last correct is irrelevant. A structural change
   widens the pending region to the whole canvas, because nothing is known correct.
@@ -288,6 +294,14 @@ layout stopped writing — is how a document opens subtly wrong. `format` 2 adde
 `opacity` and `mode` to every layer row, which is what the Layers panel and the compositor act
 on; a row that omits one is refused with the field and the layer named, and a `mode` outside
 `core::kBlendModes` is refused naming both the value and the names that would have worked.
+
+`mode` grew from one name to the MVP eight (`normal`, `multiply`, `screen`, `overlay`, `darken`,
+`lighten`, `color-dodge`, `color-burn`, spelled as PDF 1.4 and CSS spell them) **without a `format`
+bump**, and that is deliberate rather than an oversight: a wider vocabulary does not change the
+meaning of any field, and a build too old to know `color-burn` refuses the file by naming the mode
+and the list - a loud refusal, which is exactly what `format` exists to guarantee. Bumping on every
+added enum value would make the number mean "the day someone edited a table" and stop meaning
+"this layout is a different layout".
 
 | member | written | read |
 |---|---|---|

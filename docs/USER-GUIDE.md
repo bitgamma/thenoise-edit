@@ -93,9 +93,10 @@ is gone cannot be put back.
 
 ## Layers
 
-The Layers panel lists them top-first, like every other editor. Each row is **an eye, the name,
-an opacity slider**; clicking the name selects the layer, and the selected layer is the one
-strokes land on, marked `active` in `layer.list`. **The canvas never shows a single layer**: it
+The Layers panel lists them top-first, like every other editor. Each row is **an eye, the name and
+an opacity slider**, with a **blend-mode dropdown** on the line under the name; clicking the name
+selects the layer, and the selected layer is the one strokes land on, marked `active` in
+`layer.list`. **The canvas never shows a single layer**: it
 shows the *composite*, the stack flattened, which is also what a PNG export writes and what
 `mergedimage.png` holds inside a project.
 
@@ -105,23 +106,48 @@ shows the *composite*, the stack flattened, which is also what a PNG export writ
 - **Opacity** scales the whole layer where the stack is flattened. It is never baked into the
   layer, so a layer shown at 30 % is still painted on, edited and hidden at full strength, and
   dragging it back to 100 % gives you exactly the image you had.
+- **The mode** says how the layer combines with what is *under* it: `normal` (the default) paints
+  over, `multiply` and `color-burn` darken, `screen`, `lighten` and `color-dodge` lighten, `overlay`
+  does both depending on the backdrop, and `darken`/`lighten` take the darker or lighter of the two
+  per channel. A mode is a property of the layer, not of the brush: a stroke on a `multiply` layer
+  still paints normally into that layer, and it is the layer as a whole that multiplies the stack.
+  Two consequences are worth knowing before you reach for it: a layer with nothing under it looks
+  the same in every mode, because there is nothing to blend with; and a mode is not an undo step, so
+  `Ctrl+Z` after changing one takes back your last stroke and leaves the mode where you put it.
+  Modes change colour and never coverage - a `multiply` layer hides what is under it exactly as
+  often as a `normal` one does.
 - `Add layer` inserts an empty layer directly above the active one and selects it. Empty, not
   white — an opaque new layer would hide everything under it.
 - `Delete layer` removes the active one. The last layer standing is refused: it *is* the canvas.
 
-Names come from `layer.add {name}`; there is no rename field in the panel yet, and blend modes do
-not exist yet either — every layer composites `normal`.
+Names come from `layer.add {name}`; there is no rename field in the panel yet. Modes are set the
+same way visibility and opacity are: `layer.set {"index": 1, "mode": "multiply"}`, with the name
+spelled as the specs spell it (`color-dodge`, hyphen) and refused, list attached, if it is not one
+of the eight. The dropdown in the panel dispatches that same command, so a panel row and a script
+cannot disagree about what a layer's mode is.
 
 ## Files
 
 | Command | Key | Writes | Notes |
 |---|---|---|---|
 | `doc.save` | `Ctrl+S` | `.noise` only | to the document's path, or `{"path": …}`. Clears the unsaved mark |
-| `doc.export` | — | one flat `.png` | of the composite. Takes neither the document's path nor its unsaved mark, because the project on disk is still the thing the document is |
+| `doc.export` | — | one flat `.png` / `.jpg` / `.jpeg` / `.webp` | of the composite, extension deciding the format, with an optional `{"quality": 1..100}` for the lossy two. Takes neither the document's path nor its unsaved mark, because the project on disk is still the thing the document is |
 
 `doc.save` to a non-`.noise` path is refused with a message that points at `doc.export`. A save
 goes to `<path>.noise-tmp` and is renamed over the target, so a save that fails leaves the
-previous file readable. Opening a PNG gives you a one-layer document; opening a `.noise` gives
+previous file readable. Reading a flat image decides by its **bytes**, so a PNG renamed `.bin`
+opens and a JPEG renamed `.png` opens as the JPEG it is; a file that is none of them is refused
+naming the formats and the first bytes found. Writing decides by the extension, since a new file has
+no bytes yet, and `quality` is refused on a PNG because PNG is lossless and the number would do
+nothing.
+
+A JPEG has no alpha channel, so exporting anything translucent to one composites it against white;
+the answer says so (`discarded_alpha: true`) rather than losing the transparency quietly. WebP and
+PNG keep alpha. All three are checked against Pillow rather than only against ourselves, in
+`tools/image_interop_probe.py`: our encoder agreeing with our decoder would prove only that the two
+agree.
+
+Opening a flat image gives you a one-layer document; opening a `.noise` gives
 you the stack, plus any members this build does not understand, which are written back
 unchanged so a newer file cannot lose what an older app cannot show.
 
@@ -191,15 +217,16 @@ Things worth knowing when writing a driver:
   the ones you omit come from what the app is on.
 - `screenshot` captures the framebuffer, `image.get` returns document pixels; both write a PNG
   into `<runtime>/captures` (or return base64 with `{"base64": true}`) and report the path and
-  sha256. `pixels.compare {a, b}` diffs two PNGs byte for byte and reports
+  sha256. `pixels.compare {a, b}` decodes two images of any flat format and diffs their pixels, reporting
   `differing_bytes` / `max_channel_delta`.
 - `Escape` and `Ctrl+Q` both quit, and nothing asks about unsaved changes.
 
 The scripts in `tools/` are the same wire, already wired into `ctest`:
 `wire_drive.py` (pan+zoom, capture, golden diff), `wire_input.py` (injected mouse and keyboard
 gestures), `stroke_probe.py` (a 5000-dab stroke with the app still drivable),
-`container_probe.py` (a project read back by Python's `zipfile`), `tn_probe.py` (the live AI
-server; see `AI-BACKEND.md`).
+`container_probe.py` (a project read back by Python's `zipfile`),
+`image_interop_probe.py` (our PNG/JPEG/WebP read by Pillow and Pillow's read by us), `tn_probe.py`
+(the live AI server; see `AI-BACKEND.md`).
 
 ## What does not exist yet
 
@@ -209,17 +236,8 @@ problems and only one of them is a bug:
 - **No AI at all.** No server profile, no roles, no generate / remove / replace / upscale.
   That is milestones M3 and M4.
 - **No selections and no masks.** Nothing to select with, nothing to mask a layer with.
-- **No blend modes.** Every layer composites `normal` over what is under it; the mode set
-  (`multiply`, `screen`, …) is the next increment on the layer model.
 - **No reorder, rename, duplicate or merge** in the Layers panel; no move tool.
 - **Only brush and eraser.** No fill, eyedropper, lasso or wand, no pen pressure.
-- **PNG, JPEG and WebP in and out.** Reading decides by the bytes, not the name — a PNG renamed
-  `.bin` opens, and a file that is none of them is refused naming the formats and the first bytes it
-  found instead. Writing decides by the extension, and an extension we do not write is refused with
-  the list.
-- **A JPEG has no alpha channel.** Exporting a document with any transparency to JPEG composites it
-  against white and answers `discarded_alpha: true`, so nothing is lost quietly. WebP and PNG keep
-  alpha; `quality` applies to JPEG and WebP and is refused on a PNG, which is lossless.
 - **No `.ora`/PSD at all**: OpenRaster is out of the design by decision, so a foreign layered file
   is refused naming its mimetype rather than guessed at.
 - **No autosave or crash recovery**, and the undo history lives and dies with the session.

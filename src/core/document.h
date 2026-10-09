@@ -62,13 +62,14 @@ public:
     // False when `index` is out of range. Selecting changes no pixels, so it bumps no revision.
     bool select_layer(int index);
 
-    // What the composite is made of, changed without touching a pixel. Both bump the revision -
-    // the canvas shows the composite, so a renderer that re-uploads on it would otherwise keep
-    // showing a layer that is meant to be gone - and both mark the document dirty. Neither enters
-    // history, nor does adding or removing a layer. `opacity` is 0..1, and out of range is false
-    // rather than a clamped value.
+    // What the composite is made of, changed without touching a pixel. All three bump the
+    // revision - the canvas shows the composite, so a renderer that re-uploads on it would
+    // otherwise keep showing a layer that is meant to be gone - and all three mark the document
+    // dirty. None enters history, nor does adding or removing a layer. `opacity` is 0..1, and out
+    // of range is false rather than a clamped value.
     bool set_layer_visible(int index, bool visible);
     bool set_layer_opacity(int index, double opacity);
+    bool set_layer_mode(int index, BlendMode mode);
 
     // Every layer's pixels, bottom-first, with the layer count in front: two documents with
     // different stacks differ here even when the flattened result happens to match.

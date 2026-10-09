@@ -107,11 +107,62 @@ anything, and the writer. `doc.open` sniffs content (PNG magic, `FF D8 FF`, `RIF
   noise, so the lossy assertions run against a smooth pattern and the alpha assertions against the
   noisy one.
 
+### Blend modes, as built (observed, not assumed)
+
+`core/blend` was a `normal` compositor with a table that had one row. It is now the eight the MVP
+names - `normal`, `multiply`, `screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn` -
+in that one table, with `blend_separable(mode, backdrop, source)` as the per-channel definition and
+one composite rule (`(1-ab)·as·Cs + as·ab·B + (1-as)·ab·Cb`, PDF 1.4 / CSS Compositing) around it.
+`blend_over`, the brush's path, stays `normal`: a mode belongs to a layer, not to a dab.
+
+- **No `format` bump.** The version guards the *layout*; a wider vocabulary changes no field's
+  meaning, and a build too old for `color-burn` refuses the file naming the mode and the list. The
+  reasoning is in `ARCHITECTURE.md` so the next person does not bump on instinct.
+- **`tests/test_blend.cpp` is the specification restated**, not the implementation reused: the
+  published formulas are written out again in the test and compared byte for byte against
+  `blend_layer` over a 20x15 fixture - five backdrop levels x three backdrop alphas x five source
+  levels x four source alphas, asymmetric hues so a channel reading its neighbour cannot pass. 22 992
+  checks. Order properties (multiply can only darken, dodge cannot darken, `overlay` is `hard-light`
+  with the operands swapped), the ends of the range, region bounds, per-channel independence and the
+  brush dab's fractional coverage all hold.
+- **The red-checks found two real bugs, and the mirror-image test that hid them.** Swapping the
+  order of the two end-of-range conditions in `color-dodge` and `color-burn` survived the first
+  version of the suite, because the test had copied the order from the code. The specifications
+  evaluate the conditions in order and the corners disagree: `dodge(0, 1)` is black and `burn(1, 0)`
+  is white, so black stays black under a dodge and white stays white under a burn. Both orders are
+  now pinned by name as well as by the fixture. A third finding: `Document`'s lone-layer shortcut
+  had no test on its `opacity` condition at all - "ignores opacity" survived everything - so
+  `test_a_lone_layer_is_shown_whole_only_at_full_strength` exists now and turns red for it.
+- **The shortcut now covers every mode.** A layer over an empty canvas has no second operand, so the
+  composite collapses to the source whatever the arithmetic said; `blends_to_itself` dropped its
+  `mode == normal` condition and `test_document` pins the shortcut against the blend path's answer
+  per mode. Coverage everywhere, colour wherever covered - the two paths may hold different bytes
+  under zero alpha and no renderer can show them, which is why that test compares pixels and not a
+  checksum, and why "is the shortcut taken at all" is left to measurement rather than asserted.
+- **No GPU blend exists to check against, and nothing was invented to have one.** The renderer
+  uploads the flattened composite; `test_blend` is the reference a shader pair will be checked
+  against if and when the compositor moves to the GPU (a measurement-gated item below). `AGENTS.md`
+  §4 said "the shader pair, checked by a test"; that claim was ahead of the tree and is corrected.
+- On the wire and in the panel, the same numbers as in the app: 3072 px document, one painted layer,
+  mean RGB of the composite by mode - `multiply` 111.7, `darken` 114.3, `normal` 134.2, `lighten`
+  166.5, `screen` 169.2, `overlay` 143.0, `color-dodge` 178.0, `color-burn` 102.5, and exactly the
+  same 1620 pixels of stroke footprint changed in every mode, which is the coverage invariant visible
+  from outside. Panel screenshot shows the dropdown per row (`color-burn`, `normal`) and the canvas
+  repainted from the mode change alone.
+- **Cost of the generalisation, measured** (one `blend_layer` pass over 2048², layer at 78 %
+  coverage, `-O2`): `multiply` / `screen` / `darken` / `lighten` 74-77 ms, `overlay` 77-78 ms,
+  `color-dodge` / `color-burn` 81-86 ms - the division and the corner tests cost about 10 % over
+  `multiply`, and the first mode timed always measures ~100 ms whoever it is, which is cold pages,
+  not arithmetic. That sits on the pre-existing 75 ms baseline rather than above it, so replacing the
+  `normal`-only composite with the general rule cost nothing measurable: the loop is memory bound.
+  Debug (`-O0`) is 245-300 ms, same shape. Whatever happens to this number belongs to the fast-path
+  and content-rectangle item below, not to the mode table.
+
 ### To do, in order
 
-1. **Blend modes**, the increment `kBlendModes` was shaped for: arithmetic in `core/blend` +
-   `tests/test_blend` against the reference, the manifest name list (format bump), the panel's mode
-   column becoming a chooser, `layer.set {mode}`.
+1. ~~**Blend modes**~~ - done; see "Blend modes, as built" above for the arithmetic, the
+   specification-restated test, the two order bugs the red-checks found, and why the `format` number
+   did not move.
 2. **The remaining tool keys** (`V`, `M`, `,`/`.`) and the panel rows they belong to.
 3. Later, gated by measurement, in the order the probe numbers say:
    exact fast paths in `blend_layer` and per-layer content rectangles (a uniform layer change is

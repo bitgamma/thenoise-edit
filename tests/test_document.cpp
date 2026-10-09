@@ -93,6 +93,158 @@ void test_the_incremental_composite_equals_one_built_from_scratch() {
     check_against_scratch("with both visible and one faded");
     paint_on(live, Rect{2, 2, 3, 3}, 250);
     check_against_scratch("a stroke over a faded stack");
+    // A mode change widens the pending region the same way, and a repair that blended a layer with
+    // the wrong arithmetic - or with the arithmetic of the mode it used to have - only shows up
+    // against a stack built from nothing.
+    live.set_layer_mode(1, BlendMode::multiply);
+    check_against_scratch("with a layer multiplying what is under it");
+    live.set_layer_mode(1, BlendMode::color_dodge);
+    check_against_scratch("with a layer dodging what is under it");
+    live.set_layer_mode(0, BlendMode::screen);
+    check_against_scratch("with the bottom layer screening too");
+    live.set_layer_mode(1, BlendMode::normal);
+    check_against_scratch("back to normal, one mode still changed");
+}
+
+// `Document::composite` hands back a lone layer's own pixels instead of blending it. That is legal
+// for a mode that is not `normal` only because a layer over nothing has no second operand, and the
+// picture it makes has to be the same one the blend path makes - alpha identical everywhere, colour
+// identical wherever there is coverage. Where there is no coverage the two paths may hold different
+// colour bytes, and no renderer can tell.
+void test_a_lone_layers_composite_is_the_blend_paths_answer_for_every_mode() {
+    const Extent size{6, 5};
+    Image pixels = Image::filled(size, 0, 0, 0, 0);
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            std::uint8_t* here = pixels.at(x, y);
+            here[0] = static_cast<std::uint8_t>(30 + x * 30);
+            here[1] = static_cast<std::uint8_t>(200 - y * 20);
+            here[2] = 90;
+            // Coverage including none at all, and colour under the none, which is the only place
+            // the two paths are allowed to disagree.
+            here[3] = static_cast<std::uint8_t>((x + y) % 3 == 0 ? 0 : 40 + 100 * ((x + y) % 3));
+        }
+    }
+    for (const BlendModeInfo& info : kBlendModes) {
+        Layer lone;
+        lone.name = "Lone";
+        lone.pixels = pixels;
+        lone.mode = info.mode;
+        Document one;
+        std::vector<Layer> stack;
+        stack.push_back(lone);
+        one.reset(std::move(stack), "x.noise");
+
+        Image blended = Image::filled(size, 0, 0, 0, 0);
+        blend_layer(blended, pixels, Rect{0, 0, size.w, size.h}, info.mode, 1.0);
+
+        const Image& got = one.composite();
+        for (int y = 0; y < size.h; ++y) {
+            for (int x = 0; x < size.w; ++x) {
+                const std::uint8_t* here = got.at(x, y);
+                const std::uint8_t* want = blended.at(x, y);
+                CHECK_EQ(static_cast<int>(here[3]), static_cast<int>(want[3]));
+                if (want[3] > 0) {
+                    for (int channel = 0; channel < 3; ++channel) {
+                        CHECK_EQ(static_cast<int>(here[channel]),
+                                 static_cast<int>(want[channel]));
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The shortcut that hands a lone layer's own pixels straight back is only correct at full
+// strength, and the failure if it is not is a canvas that ignores the opacity slider whenever the
+// document happens to have one layer - which is most of them, most of the time.
+void test_a_lone_layer_is_shown_whole_only_at_full_strength() {
+    const Extent size{5, 4};
+    Image pixels = Image::filled(size, 0, 0, 0, 0);
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            std::uint8_t* here = pixels.at(x, y);
+            here[0] = static_cast<std::uint8_t>(20 + x * 40);
+            here[1] = 60;
+            here[2] = static_cast<std::uint8_t>(250 - y * 30);
+            here[3] = static_cast<std::uint8_t>((x + y) % 2 == 0 ? 0 : 90 + 50 * ((x + y) % 3));
+        }
+    }
+    Document doc;
+    doc.reset(stack({{"Lone", pixels}}), "x.noise");
+    CHECK(doc.set_layer_mode(0, BlendMode::overlay));
+    // Whole: same coverage everywhere, same colour wherever there is any. Not "the same bytes",
+    // because a pixel with no coverage keeps whatever colour its destination held and the shortcut
+    // and the blend path hold different ones there - which no renderer can show. That the shortcut
+    // is taken at all is a cost question for the probe to answer, not a property to assert.
+    const Image& whole = doc.composite();
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const std::uint8_t* want = pixels.at(x, y);
+            const std::uint8_t* got = whole.at(x, y);
+            CHECK_EQ(static_cast<int>(got[3]), static_cast<int>(want[3]));
+            if (want[3] > 0) {
+                for (int channel = 0; channel < 3; ++channel) {
+                    CHECK_EQ(static_cast<int>(got[channel]), static_cast<int>(want[channel]));
+                }
+            }
+        }
+    }
+
+    // Half: every covered pixel keeps its colour and loses half its coverage, and a pixel with no
+    // coverage stays a pixel with no coverage. Only the covered ones are compared, because the
+    // colour under zero alpha is not on screen in either path.
+    CHECK(doc.set_layer_opacity(0, 0.5));
+    const Image& faded = doc.composite();
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const std::uint8_t* want = pixels.at(x, y);
+            const std::uint8_t* got = faded.at(x, y);
+            if (want[3] == 0) {
+                CHECK_EQ(static_cast<int>(got[3]), 0);
+                continue;
+            }
+            CHECK_EQ(static_cast<int>(got[3]), (static_cast<int>(want[3]) + 1) / 2);
+            for (int channel = 0; channel < 3; ++channel) {
+                CHECK_EQ(static_cast<int>(got[channel]), static_cast<int>(want[channel]));
+            }
+        }
+    }
+}
+
+// Setting a mode is layer state, so it has to do exactly what visibility does and nothing more:
+// move the picture, mark the document dirty, bump the revision the renderer uploads on, and leave
+// both the pixels and the undo stack alone.
+void test_setting_a_mode_moves_the_picture_and_touches_nothing_else() {
+    Document doc;
+    doc.reset(stack({{"Paper", Image::filled(Extent{8, 6}, 200, 100, 50, 255)},
+                     {"Ink", Image::filled(Extent{8, 6}, 128, 128, 128, 255)}}),
+              "x.noise");
+    const std::string normal = doc.composite().checksum_hex();
+    const std::string ink_before = doc.layers()[1].pixels.checksum_hex();
+    const int undos_before = doc.history().undo_depth;
+    const std::uint64_t revision = doc.revision();
+
+    CHECK(doc.set_layer_mode(1, BlendMode::multiply));
+    CHECK_NE(doc.composite().checksum_hex(), normal);
+    // Red under a 50 % grey, multiplied: the arithmetic of `test_blend` at the document level, so
+    // a mode wired to the wrong layer order or the wrong operand shows here.
+    CHECK_EQ(static_cast<int>(doc.composite().at(0, 0)[0]), 100);
+    CHECK_EQ(static_cast<int>(doc.composite().at(0, 0)[1]), 50);
+    CHECK_EQ(static_cast<int>(doc.composite().at(0, 0)[2]), 25);
+    CHECK_EQ(static_cast<int>(doc.composite().at(0, 0)[3]), 255);
+    CHECK(doc.dirty());
+    CHECK(doc.revision() > revision);
+    CHECK_EQ(doc.layers()[1].pixels.checksum_hex(), ink_before);
+    CHECK_EQ(doc.history().undo_depth, undos_before);
+
+    // The same mode again is not a change, and an index outside the stack is a false rather than a
+    // clamp onto somebody else's layer.
+    const std::uint64_t after = doc.revision();
+    CHECK(doc.set_layer_mode(1, BlendMode::multiply));
+    CHECK_EQ(doc.revision(), after);
+    CHECK(!doc.set_layer_mode(2, BlendMode::screen));
+    CHECK(!doc.set_layer_mode(-1, BlendMode::screen));
 }
 
 // A hidden layer is not in the picture at all: the composite is the image the stack makes
@@ -310,6 +462,9 @@ int main() {
     test_the_stack_blends_bottom_first();
     test_a_hidden_layer_contributes_nothing();
     test_layer_opacity_scales_the_blend();
+    test_a_lone_layers_composite_is_the_blend_paths_answer_for_every_mode();
+    test_a_lone_layer_is_shown_whole_only_at_full_strength();
+    test_setting_a_mode_moves_the_picture_and_touches_nothing_else();
     test_layer_state_changes_reach_the_renderer();
     test_layer_state_refuses_what_was_asked_for();
     test_repairing_a_rectangle_leaves_the_rest_of_the_canvas_alone();

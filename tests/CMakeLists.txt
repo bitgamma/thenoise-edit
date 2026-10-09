@@ -12,6 +12,7 @@ add_executable(test_history test_history.cpp)
 add_executable(test_zip test_zip.cpp)
 add_executable(test_project test_project.cpp)
 add_executable(test_document test_document.cpp)
+add_executable(test_blend test_blend.cpp)
 
 foreach(target test_hash test_geom test_command test_wire test_brush test_history)
     target_link_libraries(${target} PRIVATE noise_core noise_dbg)
@@ -25,6 +26,13 @@ target_link_libraries(test_document PRIVATE noise_core noise_dbg)
 target_include_directories(test_document PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(test_document PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
 add_test(NAME test_document COMMAND test_document)
+
+# The blend arithmetic, checked against the definitions written out again in the test rather than
+# against the implementation: a mode that agrees with a shared helper agrees with nothing.
+target_link_libraries(test_blend PRIVATE noise_core noise_dbg)
+target_include_directories(test_blend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_blend PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_blend COMMAND test_blend)
 
 # The container reader is a parser for files from elsewhere, so it gets the hostile-input
 # tests: crc, truncation, and a directory that lies.

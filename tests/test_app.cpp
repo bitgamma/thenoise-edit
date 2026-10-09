@@ -813,6 +813,68 @@ void test_the_layer_stack_is_edited_through_the_command_table() {
     CHECK_EQ(h.value("layer.list", json::object())["layers"].size(), 1u);
 }
 
+// A blend mode is layer state, so it travels the same route visibility does: `layer.set` in,
+// `layer.list` out, the composite is what the mode says, and a name the table has no row for is
+// refused with the list attached. One exact composite number is checked (red under a 50 % grey
+// multiply is (128, 0, 0)) because the arithmetic itself belongs to `test_blend`; what is being
+// pinned here is that the command reaches the pixels.
+void test_a_layer_mode_is_layer_state_and_reaches_the_composite() {
+    Harness h;
+    h.value("doc.new", json{{"width", 4}, {"height", 4}, {"fill", json::array({255, 0, 0, 255})}});
+    h.value("layer.add", json{{"fill", json::array({128, 128, 128, 255})}});
+
+    const std::uint64_t revision = h.value("doc.get", json::object())["revision"].get<std::uint64_t>();
+    CHECK_OK(h.run("layer.set", json{{"index", 1}, {"mode", "multiply"}}));
+    CHECK_EQ(h.value("layer.list", json::object())["layers"][1]["mode"].get<std::string>(),
+             std::string("multiply"));
+    // The canvas shows the composite, so a mode change has to bump the revision or a renderer that
+    // re-uploads on it keeps showing the old blend.
+    CHECK(h.value("doc.get", json::object())["revision"].get<std::uint64_t>() > revision);
+
+    std::string error;
+    const std::string multiplied = h.temp("mode-multiply.png");
+    CHECK_OK(h.run("doc.export", json{{"path", multiplied}}));
+    Image want = Image::filled(Extent{4, 4}, 128, 0, 0, 255);
+    const std::string want_path = h.temp("mode-multiply-want.png");
+    CHECK(io::save_png(want_path, want, error));
+    CHECK_EQ(h.value("pixels.compare", json{{"a", multiplied}, {"b", want_path}})["equal"]
+                 .get<bool>(),
+             true);
+
+    // A mode is not a pixel step: taking the last edit back must not take the mode with it, or
+    // undoing a stroke would silently change how the layer sits in the stack.
+    h.value("tool.stroke", full_stroke());
+    CHECK_OK(h.run("edit.undo", json::object()));
+    CHECK_EQ(h.value("layer.list", json::object())["layers"][1]["mode"].get<std::string>(),
+             std::string("multiply"));
+
+    // Every name the table has is accepted, and each is reported back as the name it was given -
+    // `color_dodge` in C++, `color-dodge` on the wire and in a file.
+    for (const BlendModeInfo& info : kBlendModes) {
+        CHECK_OK(h.run("layer.set", json{{"index", 0}, {"mode", info.name}}));
+        CHECK_EQ(h.value("layer.list", json::object())["layers"][0]["mode"].get<std::string>(),
+                 std::string(info.name));
+    }
+
+    const CommandResult unknown = h.run("layer.set", json{{"index", 0}, {"mode", "hard-light"}});
+    CHECK(!unknown.ok);
+    CHECK(unknown.error.find("hard-light") != std::string::npos);
+    CHECK(unknown.error.find("color-dodge") != std::string::npos);
+    CHECK(unknown.error.find("overlay") != std::string::npos);
+    // The refusal changed nothing.
+    CHECK_EQ(h.value("layer.list", json::object())["layers"][0]["mode"].get<std::string>(),
+             std::string(kBlendModes[std::size(kBlendModes) - 1].name));
+
+    const CommandResult wrong_type = h.run("layer.set", json{{"index", 0}, {"mode", 3}});
+    CHECK(!wrong_type.ok);
+    CHECK(wrong_type.error.find("mode") != std::string::npos);
+
+    // And with nothing to change, the error names the fields that would do it, mode included.
+    const CommandResult nothing = h.run("layer.set", json{{"index", 0}});
+    CHECK(!nothing.ok);
+    CHECK(nothing.error.find("mode") != std::string::npos);
+}
+
 // The container holds a stack, so a save and reopen has to bring back both layers and the
 // thing the user sees, which is neither of them on its own.
 void test_a_two_layer_project_round_trips_and_exports_its_composite() {
@@ -1133,6 +1195,7 @@ int main() {
     test_bad_arguments_name_the_command();
     test_malformed_fields_name_their_field();
     test_the_layer_stack_is_edited_through_the_command_table();
+    test_a_layer_mode_is_layer_state_and_reaches_the_composite();
     test_a_two_layer_project_round_trips_and_exports_its_composite();
     test_a_project_round_trips_and_an_export_is_not_a_save();
     test_image_get_returns_the_documents_own_pixels();

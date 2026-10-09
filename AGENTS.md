@@ -105,7 +105,7 @@ Duplicating values and defaults is the fastest way to make an LLM-maintained cod
   | AI request fields allowed | `ai/provider` field policy (the only place a field can be added) |
   | prompt templates & region/prep/composite policy | `recipes/*.toml` |
   | document model & defaults | `core/document` |
-  | blend mode maths | `core/blend` reference + the shader pair, checked by a test |
+  | blend mode maths | `core/blend` reference (`blend_separable` per channel, one composite rule), checked against the definitions restated in `tests/test_blend`; the GPU pair, when the compositor moves to the GPU, is checked against the same numbers |
   | UI prefs / session state | `io/config`, `manifest.json` |
 - Derived values are computed, never cached in two places. If a cache is needed, one owner
   and an explicit invalidation path.

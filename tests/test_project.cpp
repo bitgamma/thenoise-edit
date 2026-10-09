@@ -207,6 +207,44 @@ void test_layer_state_round_trips() {
     std::filesystem::remove(path);
 }
 
+// Every mode the table has comes back as the mode that went in, under the name the table gives it.
+// A mode that quietly became `normal` on disk is a changed picture with nothing said about it, and
+// an invented name (`color_dodge` with an underscore) is a file a later build cannot read.
+void test_every_mode_round_trips_under_its_own_name() {
+    const Image image = checker(Extent{5, 4});
+    std::vector<Layer> stack;
+    for (const BlendModeInfo& info : kBlendModes) {
+        stack.push_back(Layer{0, std::string("L-") + info.name, image, true, 1.0, info.mode});
+    }
+    const std::string path = temp("modes.noise");
+    std::string error;
+    CHECK(io::save_project(path, stack, image, {}, error));
+
+    io::Project loaded;
+    CHECK(io::load_project(path, loaded, error));
+    CHECK_EQ(loaded.layers.size(), std::size(kBlendModes));
+    if (loaded.layers.size() != std::size(kBlendModes)) {
+        return;
+    }
+    for (std::size_t index = 0; index < loaded.layers.size(); ++index) {
+        CHECK(loaded.layers[index].mode == kBlendModes[index].mode);
+    }
+
+    std::vector<std::uint8_t> raw;
+    CHECK(io::read_file(path, raw, error));
+    const auto entries = io::read_zip(std::span<const std::uint8_t>(raw), error);
+    CHECK(entries.has_value());
+    if (!entries) {
+        return;
+    }
+    const json manifest = json::parse(text_of((*entries)[1].data));
+    for (std::size_t index = 0; index < manifest["layers"].size(); ++index) {
+        CHECK_EQ(manifest["layers"][index]["mode"].get<std::string>(),
+                 std::string(kBlendModes[index].name));
+    }
+    std::filesystem::remove(path);
+}
+
 // One format is read, and it is named: opening a file by guessing at a layout this build does
 // not have is how a document comes back subtly wrong.
 void test_another_format_is_refused_by_name() {
@@ -263,6 +301,9 @@ void test_an_impossible_layer_state_is_refused() {
     write_archive(mode_path, members_with_rows(image, odd_mode, io::kFormatVersion));
     CHECK(!io::load_project(mode_path, loaded, error));
     CHECK(error.find("not-a-mode") != std::string::npos);
+    // The refusal says what this build does have, because the reader is a person who believes
+    // they wrote a valid mode: "hyphen, not underscore" is the whole of their problem.
+    CHECK(error.find("color-dodge") != std::string::npos);
     // The names that would have been accepted, so the reader can be fixed without a guess.
     CHECK(error.find("normal") != std::string::npos);
     std::filesystem::remove(mode_path);
@@ -415,6 +456,7 @@ void test_a_failed_save_leaves_no_file_and_keeps_the_old_one() {
 int main() {
     test_pixels_and_layer_name_come_back_unchanged();
     test_layer_state_round_trips();
+    test_every_mode_round_trips_under_its_own_name();
     test_another_format_is_refused_by_name();
     test_a_layer_that_omits_its_state_is_refused();
     test_an_impossible_layer_state_is_refused();

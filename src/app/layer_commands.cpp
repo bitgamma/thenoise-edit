@@ -90,7 +90,8 @@ void register_layer_commands(AppState& state, CommandTable& table) {
 
     // One command for the layer's non-pixel state, taking only the fields it is given, because
     // that is how `tool.set` works and a panel row should not have to know a verb per field.
-    table.add("layer.set", "Change a layer's visibility or opacity", {}, {"index", "visible", "opacity"},
+    table.add("layer.set", "Change a layer's visibility, opacity or blend mode",
+              {}, {"index", "visible", "opacity", "mode"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -123,10 +124,23 @@ void register_layer_commands(AppState& state, CommandTable& table) {
             }
             changed = true;
         }
+        if (args.contains("mode")) {
+            if (!args.at("mode").is_string()) {
+                return fail("layer.set", "'mode' must be a mode name, one of: " +
+                                    blend_mode_names());
+            }
+            const std::string wanted = args.at("mode").get<std::string>();
+            const std::optional<BlendMode> mode = blend_mode_from_name(wanted);
+            if (!mode) {
+                return fail("layer.set", "no blend mode named '" + wanted + "', this build has: " +
+                                    blend_mode_names());
+            }
+            state.doc.set_layer_mode(index, *mode);
+            changed = true;
+        }
         if (!changed) {
             return fail("layer.set",
-                        "nothing to change: 'visible' and/or 'opacity' (mode has one value "
-                        "today, so there is nothing to set it to)");
+                        "nothing to change: 'visible', 'opacity' and/or 'mode'");
         }
         return command_ok(json{{"active", state.doc.active()},
                                {"layers", layers_json(state)},
