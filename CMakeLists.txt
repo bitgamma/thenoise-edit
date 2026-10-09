@@ -16,6 +16,7 @@ option(NOISE_BUILD_TESTS "Build tests" ON)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBPNG REQUIRED libpng16)
+find_package(ZLIB REQUIRED)  # crc32 and inflate for the .noise container (libpng already needs it)
 
 include(FetchContent)
 
@@ -85,11 +86,14 @@ target_link_libraries(noise_core PUBLIC noise_platform nlohmann_json::nlohmann_j
 # File formats live here, not in core: core is pixels and maths with no IO, which is what
 # keeps it testable headless and the codecs swappable.
 add_library(noise_io STATIC
-    src/io/png.cpp)
+    src/io/file.cpp
+    src/io/png.cpp
+    src/io/project.cpp
+    src/io/zip.cpp)
 target_include_directories(noise_io PUBLIC src)
 target_link_libraries(noise_io PUBLIC noise_core)
 target_include_directories(noise_io PUBLIC ${LIBPNG_INCLUDE_DIRS})
-target_link_libraries(noise_io PUBLIC ${LIBPNG_LIBRARIES})
+target_link_libraries(noise_io PUBLIC ${LIBPNG_LIBRARIES} ZLIB::ZLIB)
 target_compile_options(noise_io PUBLIC ${LIBPNG_CFLAGS_OTHER})
 
 add_library(noise_gfx STATIC

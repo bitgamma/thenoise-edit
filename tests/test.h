@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <iterator>
 #include <string>
 #include <type_traits>
 
@@ -14,6 +15,23 @@ inline std::string describe(const T& value) {
         return std::string(value);
     } else if constexpr (std::is_same_v<T, bool>) {
         return value ? "true" : "false";
+    } else if constexpr (requires(const T& v) { v.size(); }) {
+        // Byte buffers and spans are what this project compares most often, and they have no
+        // useful `to_string`. Length plus the head of the data is enough to see which side is
+        // the odd one out; elements that are not numbers just get the length.
+        std::string described = "size=" + std::to_string(value.size());
+        using element = std::decay_t<decltype(*std::begin(value))>;
+        if constexpr (std::is_arithmetic_v<element>) {
+            int shown = 0;
+            for (const element& item : value) {
+                if (shown++ == 8) {
+                    described += " ...";
+                    break;
+                }
+                described += " " + std::to_string(static_cast<long long>(item));
+            }
+        }
+        return described;
     } else {
         return std::to_string(value);
     }

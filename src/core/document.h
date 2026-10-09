@@ -15,6 +15,9 @@ namespace noise {
 // is worth a great many dabs, and dropping whole steps is what keeps the budget predictable.
 inline constexpr std::size_t kHistoryBudgetBytes = 128 * 1024 * 1024;
 
+// What the one v0 layer is called until there is a layer list to name (M2).
+inline constexpr const char* kDefaultLayerName = "Layer 1";
+
 // The open document: one RGBA layer plus the history of what changed in it. Pixels are only
 // changed through `paint`, so every visible change can be put back exactly.
 class Document {
@@ -27,6 +30,15 @@ public:
 
     const std::string& path() const;
     void set_path(std::string path);
+
+    // The v0 layer's name, as the container holds it.
+    const std::string& layer_name() const;
+    void set_layer_name(std::string name);
+
+    // Unsaved changes, conservative: undo does not clear it, because "back to what is on disk"
+    // would mean holding the saved checksum as a second fact about the file.
+    bool dirty() const;
+    void mark_saved();
 
     bool empty() const;
     int width() const;
@@ -71,6 +83,8 @@ private:
     void paste(Rect rect, const Image& snapshot);
 
     std::string path_;
+    std::string layer_name_ = kDefaultLayerName;
+    bool dirty_ = false;
     Image image_;
     std::uint64_t revision_ = 0;
     History history_;

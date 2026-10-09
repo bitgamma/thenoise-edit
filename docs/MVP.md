@@ -141,7 +141,9 @@ command palette and a user keymap file cost nothing later. Live today: `F` fit, 
 save, `Ctrl+Z`/`Ctrl+Y` undo and redo, `Escape`/`Ctrl+Q` quit, `B`/`E` brush and eraser,
 `[`/`]` brush size, wheel zoom-to-cursor, right-drag pan and left-drag paint; every other key
 above arrives with the tool or command it belongs to (and
-`command.list` is the truth about what is bound).
+`command.list` is the truth about what is bound). `Ctrl+S` writes the project and only the
+project (`.noise`); a flat PNG is `doc.export`, which takes neither the document's path nor its
+unsaved mark.
 
 Design rules: nothing blocks the canvas, ever · every AI op shows *what it will send* ·
 model swaps are explicit and priced · destructive ops are labelled but never nag (undo is

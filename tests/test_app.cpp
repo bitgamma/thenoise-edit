@@ -574,33 +574,68 @@ void test_malformed_fields_name_their_field() {
     CHECK_EQ(h.value("doc.get", json::object())["width"].get<int>(), 8);
 }
 
-void test_document_round_trip_through_disk() {
+void test_a_project_round_trips_and_an_export_is_not_a_save() {
     Harness h;
-    const std::string path = h.temp("roundtrip.png");
+    const std::string path = h.temp("roundtrip.noise");
+    const std::string flat = h.temp("flat.png");
     // Nothing to save yet, and no path to save it to: both are named in the error.
     CHECK(h.run("doc.save", json{{"path", path}}).error.find("no document") != std::string::npos);
     h.value("doc.new", json{{"width", 37},
                             {"height", 19},
                             {"fill", json::array({10, 200, 30, 255})}});
     CHECK(h.run("doc.save", json::object()).error.find("no path") != std::string::npos);
-    const std::string created = h.value("doc.get", json::object())["checksum"].get<std::string>();
+    const std::string created = checksum_of(h);
+    CHECK(h.value("doc.get", json::object())["dirty"].get<bool>());  // nothing on disk yet
+    CHECK_EQ(h.value("doc.get", json::object())["kind"].get<std::string>(), std::string("none"));
+
+    // A flat image is not the app's file, and the rejection says which command is.
+    const CommandResult wrong_kind = h.run("doc.save", json{{"path", flat}});
+    CHECK(!wrong_kind.ok);
+    CHECK(wrong_kind.error.find("doc.export") != std::string::npos);
 
     CHECK_OK(h.run("doc.save", json{{"path", path}}));
-    h.value("doc.new", json{{"width", 3}, {"height", 3}});
-    CHECK(h.value("doc.get", json::object())["checksum"] != created);
+    json saved = h.value("doc.get", json::object());
+    CHECK_EQ(saved["kind"].get<std::string>(), std::string("noise"));
+    CHECK(!saved["dirty"].get<bool>());
 
+    // Painting marks the document unsaved; undo does not clear the flag, because what is on
+    // disk is the unpainted version either way.
+    h.value("tool.stroke", full_stroke());
+    CHECK(h.value("doc.get", json::object())["dirty"].get<bool>());
+    h.value("edit.undo", json::object());
+    CHECK(h.value("doc.get", json::object())["dirty"].get<bool>());
+    CHECK_OK(h.run("doc.save", json::object()));
+
+    h.value("doc.new", json{{"width", 3}, {"height", 3}});
     CHECK_OK(h.run("doc.open", json{{"path", path}}));
     const json reopened = h.value("doc.get", json::object());
     CHECK_EQ(reopened["checksum"].get<std::string>(), created);
     CHECK_EQ(reopened["path"].get<std::string>(), path);
     CHECK_EQ(reopened["width"].get<int>(), 37);
+    CHECK_EQ(reopened["kind"].get<std::string>(), std::string("noise"));
+    CHECK(!reopened["dirty"].get<bool>());
+    CHECK_EQ(reopened["layer"].get<std::string>(), std::string("Layer 1"));
     // replace() must bump the revision, or the GPU texture keeps showing the old pixels.
     CHECK(reopened["revision"].get<std::uint64_t>() > 1u);
+
+    // An export writes pixels and takes nothing about the document's own file: no new path,
+    // no cleared flag, and a PNG that decodes to exactly what the document holds.
+    CHECK_OK(h.run("doc.export", json{{"path", flat}}));
+    const json after_export = h.value("doc.get", json::object());
+    CHECK_EQ(after_export["path"].get<std::string>(), path);
+    CHECK(!after_export["dirty"].get<bool>());
+    std::string error;
+    const Image exported = io::load_png(flat, error);
+    CHECK_EQ(exported.checksum_hex(), created);
 
     const CommandResult missing = h.run("doc.open", json{{"path", h.temp("absent.png")}});
     CHECK(!missing.ok);
     CHECK(missing.error.find("absent.png") != std::string::npos);
+    const CommandResult missing_project = h.run("doc.open", json{{"path", h.temp("absent.noise")}});
+    CHECK(!missing_project.ok);
+    CHECK(missing_project.error.find("absent.noise") != std::string::npos);
     std::filesystem::remove(path);
+    std::filesystem::remove(flat);
 }
 
 void test_image_get_returns_the_documents_own_pixels() {
@@ -794,7 +829,7 @@ int main() {
     test_command_invoke_dispatches_and_names_failures();
     test_bad_arguments_name_the_command();
     test_malformed_fields_name_their_field();
-    test_document_round_trip_through_disk();
+    test_a_project_round_trips_and_an_export_is_not_a_save();
     test_image_get_returns_the_documents_own_pixels();
     test_pixels_compare_finds_a_single_changed_byte();
     test_a_fit_waits_for_the_canvas_area_to_be_published();

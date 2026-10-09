@@ -3,6 +3,7 @@
 
 #include "core/brush.h"
 #include "core/document.h"
+#include "io/zip.h"
 #include "core/geom.h"
 #include "core/image.h"
 
@@ -44,6 +45,9 @@ struct AppState {
     std::string tool = kDefaultTool;
     PointerStroke stroke;
     ViewTransform view{{0, 0}, 1.0, {0.0, 0.0}};
+    // Members of the .noise file that was opened which this build does not define, written
+    // back unchanged on save so opening a newer file cannot delete what we cannot show.
+    std::vector<io::ZipEntry> carried;
     // Where the app writes: captures, the wire endpoint file, the imgui layout. Set once
     // by the host so nothing in the command layer reaches for an ambient directory.
     std::string runtime_dir;

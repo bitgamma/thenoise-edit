@@ -9,6 +9,8 @@ add_executable(test_app test_app.cpp)
 add_executable(test_shortcut test_shortcut.cpp)
 add_executable(test_brush test_brush.cpp)
 add_executable(test_history test_history.cpp)
+add_executable(test_zip test_zip.cpp)
+add_executable(test_project test_project.cpp)
 
 foreach(target test_hash test_geom test_command test_wire test_brush test_history)
     target_link_libraries(${target} PRIVATE noise_core noise_dbg)
@@ -16,6 +18,20 @@ foreach(target test_hash test_geom test_command test_wire test_brush test_histor
     target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -Wshadow)
     add_test(NAME ${target} COMMAND ${target})
 endforeach()
+
+# The container reader is a parser for files from elsewhere, so it gets the hostile-input
+# tests: crc, truncation, and a directory that lies.
+target_link_libraries(test_zip PRIVATE noise_core noise_io ZLIB::ZLIB)
+target_include_directories(test_zip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_zip PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_zip COMMAND test_zip)
+
+# The container: what a .noise file must guarantee, checked against files this app writes and
+# files it would never write.
+target_link_libraries(test_project PRIVATE noise_core noise_io noise_platform)
+target_include_directories(test_project PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_project PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_project COMMAND test_project)
 
 # Pixels plus the codec that reads and writes them.
 target_link_libraries(test_image PRIVATE noise_core noise_io noise_dbg)
@@ -60,6 +76,16 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(test_stroke_probe PROPERTIES
                          SKIP_REGULAR_EXPRESSION "SKIP:"
                          TIMEOUT 180
+                         DEPENDS noise-edit)
+
+    # The container read by an implementation that knows nothing about us: our reader agreeing
+    # with our own writer proves almost nothing about the bytes on disk.
+    add_test(NAME test_container_interop
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/container_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_container_interop PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 120
                          DEPENDS noise-edit)
 
     add_test(NAME test_view_golden

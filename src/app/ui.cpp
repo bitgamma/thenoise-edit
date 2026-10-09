@@ -175,7 +175,7 @@ void draw_layers_panel(const AppState& state) {
     if (state.doc.empty()) {
         ImGui::TextUnformatted("no document");
     } else {
-        ImGui::TextUnformatted("Layer 1");
+        ImGui::TextUnformatted(state.doc.layer_name().c_str());
         ImGui::SameLine();
         ImGui::TextDisabled("%d x %d  %.1f%%", state.doc.width(), state.doc.height(),
                             state.view.scale * 100.0);

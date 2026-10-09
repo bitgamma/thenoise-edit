@@ -12,6 +12,8 @@ Document::Document() : history_(kHistoryBudgetBytes) {}
 void Document::reset(Image contents, std::string path) {
     image_ = std::move(contents);
     path_ = std::move(path);
+    layer_name_ = kDefaultLayerName;
+    dirty_ = path_.empty();  // nothing on disk holds this document yet
     history_.clear();
     ++revision_;
 }
@@ -19,6 +21,14 @@ void Document::reset(Image contents, std::string path) {
 const std::string& Document::path() const { return path_; }
 
 void Document::set_path(std::string path) { path_ = std::move(path); }
+
+const std::string& Document::layer_name() const { return layer_name_; }
+
+void Document::set_layer_name(std::string name) { layer_name_ = std::move(name); }
+
+bool Document::dirty() const { return dirty_; }
+
+void Document::mark_saved() { dirty_ = false; }
 
 bool Document::empty() const { return image_.empty(); }
 int Document::width() const { return image_.size().w; }
@@ -40,6 +50,7 @@ void Document::paint(Rect bounds, const std::function<void(Image&)>& edit) {
     edit(image_);
     const std::span<const std::uint8_t> bytes = before.pixels();
     history_.record(touched, {bytes.begin(), bytes.end()});
+    dirty_ = true;
     ++revision_;
 }
 
@@ -76,6 +87,7 @@ void Document::commit_provisional() {
     }
     const std::span<const std::uint8_t> bytes = provisional_->pixels.pixels();
     history_.record(provisional_->rect, {bytes.begin(), bytes.end()});
+    dirty_ = true;
     provisional_.reset();
 }
 

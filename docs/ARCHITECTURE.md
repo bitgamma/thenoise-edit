@@ -227,6 +227,37 @@ variants/<op>/<i>.png          kept AI variants not committed to a layer
 Thumbnails/thumbnail.png
 ```
 
+### What is written today: `format` 1
+
+Measured in `docs/probes/2026-10-09-container-v0.md`.
+
+`io/project.{h,cpp}` reads and writes the subset the app can represent, and refuses what it would
+have to guess about. The manifest already describes a layer array, so adding layers needs no
+version bump; `format` moves when a field becomes required.
+
+| member | written | read |
+|---|---|---|
+| `mimetype` | stored, first member, no extra fields | must match exactly or the file is not ours |
+| `manifest.json` | `format`, `size: [w,h]`, `layers: [{name, src}]` | `format` must be 1; `size` must agree with the PNG, and both numbers are named if they do not |
+| `layers/<n>/layer.png` | `layers/0/layer.png` for the one layer | exactly one layer accepted: a file declaring more is refused by count, because opening it as one throws a layer away |
+| `mergedimage.png` | the composite, which with one layer is the layer | optional |
+| anything else | — | carried through and rewritten byte-identical, so opening a file written by a newer build cannot delete what this one cannot show |
+
+Save is `<path>.noise-tmp` + rename: a write that fails leaves the previous file intact and
+readable. ZIP members are stored (not deflated) with fixed DOS timestamps, so equal content gives
+equal bytes and a container can be diffed; the reader accepts stored *and* deflated members, and
+validates bounds, CRC, declared sizes, compression method, encryption, zip64 and multi-disk limits
+against a file it treats as hostile. `doc.save` writes only `.noise`; a flat image is
+`doc.export`, which does not take the document's path nor clear its unsaved mark.
+
+Two checks carry this section, because our own reader agreeing with our own writer proves nothing:
+`tests/test_zip.cpp` parses the end-of-directory record by hand (a central-directory size that does
+not reach the end record is refused - `unzip` tolerates that error, Python's `zipfile` does not),
+and `tools/container_probe.py` has `zipfile` read a project the app saved and decode its layer PNG.
+
+`stack.xml`, `provenance/`, `blobs/`, `history.jsonl`, `variants/` and `Thumbnails/` are not
+written yet; nothing about them is invented ahead of the milestone that needs them.
+
 ### Why not adopt an existing format wholesale
 
 | Format | Verdict | Reason |

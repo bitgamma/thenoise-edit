@@ -6,7 +6,9 @@
 #include "app/commands.h"
 #include "core/base64.h"
 #include "core/log.h"
+#include "io/file.h"
 #include "io/png.h"
+#include "io/project.h"
 
 #include <nlohmann/json.hpp>
 
@@ -38,28 +40,46 @@ void register_document_commands(AppState& state, CommandTable& table) {
         }
         state.doc.reset(Image::filled(Extent{width, height}, fill[0], fill[1], fill[2], fill[3]),
                           std::string());
+        state.carried.clear();  // a new document is not tied to the file that was open
         request_fit(state);
         log::info("created image " + std::to_string(width) + "x" + std::to_string(height));
         return command_ok(document_json(state));
     });
 
-    table.add("doc.open", "Load a PNG into the document", {}, [&state](const json& args) -> CommandResult {
+    table.add("doc.open", "Open a .noise project or a flat image", {},
+              [&state](const json& args) -> CommandResult {
         if (!args.contains("path") || !args.at("path").is_string()) {
             return fail("doc.open", "expected string 'path'");
         }
         const std::string path = args.at("path").get<std::string>();
         std::string error;
-        Image loaded = io::load_png(path, error);
-        if (loaded.empty()) {
-            return fail("doc.open", error + " (" + path + ")");
+        Image loaded;
+        std::string layer;
+        if (io::extension_of(path) == io::kProjectExtension) {
+            io::Project project;
+            if (!io::load_project(path, project, error)) {
+                return fail("doc.open", error);
+            }
+            loaded = std::move(project.layers.front().pixels);
+            layer = project.layers.front().name;
+            state.carried = std::move(project.carried);
+        } else {
+            loaded = io::load_png(path, error);
+            if (loaded.empty()) {
+                return fail("doc.open", error + " (" + path + ")");
+            }
+            state.carried.clear();
         }
         state.doc.reset(std::move(loaded), path);
+        if (!layer.empty()) {
+            state.doc.set_layer_name(std::move(layer));
+        }
         request_fit(state);
         log::info("loaded " + path);
         return command_ok(document_json(state));
     });
 
-    table.add("doc.save", "Save the document (defaults to its current path)", {"Ctrl+S"},
+    table.add("doc.save", "Save the project (defaults to its current path)", {"Ctrl+S"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -75,12 +95,45 @@ void register_document_commands(AppState& state, CommandTable& table) {
         if (path.empty()) {
             return fail("doc.save", "document has no path and none was given");
         }
+        if (io::extension_of(path) != io::kProjectExtension) {
+            return fail("doc.save",
+                        "doc.save writes ." + std::string(io::kProjectExtension) +
+                            "; use doc.export for a flat image (got '" + path + "')");
+        }
         std::string error;
-        if (!io::save_png(path, state.doc.pixels(), error)) {
+        if (!io::save_project(path, state.doc.layer_name(), state.doc.pixels(), state.carried,
+                              error)) {
             return fail("doc.save", error);
         }
         state.doc.set_path(path);
+        state.doc.mark_saved();
+        log::info("saved " + path);
         return command_ok(document_json(state));
+    });
+
+    // A flat image is an export, not a save: it does not take the document's path or clear its
+    // dirty flag, because the project on disk is still the thing the document is.
+    table.add("doc.export", "Write a flat PNG of the document", {},
+              [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        if (!args.contains("path") || !args.at("path").is_string()) {
+            return fail("doc.export", "expected string 'path'");
+        }
+        const std::string path = args.at("path").get<std::string>();
+        if (io::extension_of(path) != "png") {
+            return fail("doc.export", "only '.png' exports exist today (got '" + path + "')");
+        }
+        std::string error;
+        if (!io::save_png(path, state.doc.pixels(), error)) {
+            return fail("doc.export", error);
+        }
+        log::info("exported " + path);
+        json result = document_json(state);
+        result["exported"] = path;
+        return command_ok(result);
     });
 
     table.add("image.get", "Return document pixels (whole image or a region)", {},

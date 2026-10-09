@@ -121,6 +121,28 @@ Still open, when convenient:
     different polyline with the tool stroke than with the pointer, and both ends agreed on an
     unpainted document. An equivalence test has to be read for whether it can fail.
 
+* **`.noise` v0 is a file, and a stranger can read it.** `io/zip.{h,cpp}` writes and reads ZIP -
+  stored members with fixed DOS timestamps, so the same content gives byte-identical archives -
+  `io/project.{h,cpp}` lays out `mimetype`, `manifest.json`, `layers/0/layer.png`,
+  `mergedimage.png` and carries every other member through unchanged, and `io/file.{h,cpp}`
+  writes atomically (`<path>.noise-tmp` then rename). `doc.open` reads `.noise` and PNG,
+  `doc.save` writes only `.noise`, and `doc.export` writes a flat PNG without taking the
+  document's path or clearing its dirty flag. `doc.get` reports `kind` and `dirty`, derived from
+  the path and the pixel history rather than stored alongside them. Costs and what they ruled out:
+  `docs/probes/2026-10-09-container-v0.md`. Findings:
+  - The writer overstated the central-directory size in the end record by the 12 bytes of the end
+    record itself. `unzip` reads such a file; Python's `zipfile` refuses it. Our own reader read
+    it happily, because it never compared the directory's extent to where the end record sits -
+    which is the general trap: our reader agreeing with our own writer proves nothing about the
+    bytes. `test_zip` now parses the end record by hand, and `tools/container_probe.py` has
+    `zipfile` read a project the app just saved and decode its layer PNG.
+  - Refusals are by version and by count, and both name the thing found: `format` newer than this
+    build says which version it met, a manifest declaring two layers is refused rather than opened
+    as one (opening it as one throws a layer away), and a `size` that disagrees with the PNG names
+    both.
+  - `zlib` was already in the build through `libpng`; the ZIP reader uses its `crc32` and raw
+    inflate rather than vendoring a ZIP library.
+
 ## Next steps, in order
 
 1. **CI waits until MVP** (decided 2026-10-09): the workflow is not going to run on a runner
@@ -131,22 +153,21 @@ Still open, when convenient:
    Ubuntu's llvmpipe: read `differing_bytes` / `max_channel_delta`, then either widen the two
    constants in `tools/wire_drive.py` deliberately or re-record there with `--update-golden`.
    Never widen a tolerance to hide a structural diff.
-2. **`.noise` v0 and the content-addressed blob store** (`ARCHITECTURE.md`'s file format:
-   single-file zip, `manifest.json:format`, blobs by hash): undo wants rectangles, layers want
-   `BlobRef` sources, and the container is what makes both worth persisting. Round-trip test:
-   save -> load -> identical checksums and identical history depth; older `format` values
-   refused with a message naming the version found.
-3. **Layers** (`layer.*`, `app/ui/layers`): the document currently holds one `Image`, and
+2. **Layers** (`layer.*`, `app/ui/layers`): the document currently holds one `Image`, and
    `Document` is the seam that a `std::vector<Layer>` replaces - which is also where the
    composite that the renderer uploads gets its one home. `paint`/provisional/history then
-   operate on the active layer, and the pixel-lock and equivalence tests move with them.
-4. **The rest of the tool keys** (`V` move, `M` rect select, `,`/`.` hardness and opacity) and
+   operate on the active layer, and the pixel-lock and equivalence tests move with them. The
+   container is ready: `manifest.json` already describes a `layers[]` array and v0 writes one
+   entry of it, so this needs no format change, and `format` stays 1 until a required field
+   appears. The content-addressed blob store waits until something has to outlive the session
+   (variants, undo depth on disk); history rectangles are memory-only and budgeted for now.
+3. **The rest of the tool keys** (`V` move, `M` rect select, `,`/`.` hardness and opacity) and
    the panel rows they belong to. `B`/`E`/`[`/`]` landed with the brush.
-5. **Dirty-rect texture upload**, when the pointer-event numbers above say it is worth it. At
-   2048² under software rendering a live event costs 9 ms and the whole-texture upload is the
-   part that scales with the document, so a document that big with a big brush is the case that
-   will ask for it - not the 1280-canvas session that works today.
-6. **M0.5 probe harness** (`tools/tn_probe.py`, `docs/probes/`) — blocked on the dev server.
+4. **Dirty-rect texture upload**, when the pointer-event numbers say it is worth it. At 2048²
+   under software rendering a live event costs 9 ms and the whole-texture upload is the part that
+   scales with the document, so a document that big with a big brush is the case that will ask
+   for it - not the 1280-canvas session that works today.
+5. **M0.5 probe harness** (`tools/tn_probe.py`, `docs/probes/`) — blocked on the dev server.
    Ask the human to export `THENOISE_URL` / `THENOISE_API_KEY`; it feeds `size_policy`, role
    default order, ETA seeds and recipe wording, so it should land before M3 designs hard-code
    any of those.

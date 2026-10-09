@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/command_args.h"
 
+#include "io/file.h"
+#include "io/project.h"
+
 
 namespace noise::app {
 
@@ -150,8 +153,20 @@ json history_json(const Document& doc) {
 
 // app.state is polled every frame by the driver, so it reports the document without hashing
 // its pixels; `doc.get` is the call that pays for a checksum.
+// Derived from the path, so there is no second fact about the file to keep in step: the app's
+// own container, a flat image, or nothing yet.
+const char* document_kind(const std::string& path) {
+    if (path.empty()) {
+        return "none";
+    }
+    return io::extension_of(path) == io::kProjectExtension ? "noise" : "image";
+}
+
 json document_summary_json(const AppState& state) {
     return json{{"path", state.doc.path()},
+                {"kind", document_kind(state.doc.path())},
+                {"dirty", state.doc.dirty()},
+                {"layer", state.doc.layer_name()},
                 {"width", state.doc.width()},
                 {"height", state.doc.height()},
                 {"revision", state.doc.revision()},
