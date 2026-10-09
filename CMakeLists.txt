@@ -80,6 +80,7 @@ add_library(noise_core STATIC
     src/core/geom.cpp
     src/core/history.cpp
     src/core/image.cpp
+    src/core/layer.cpp
     src/core/shortcut.cpp)
 target_include_directories(noise_core PUBLIC src)
 target_link_libraries(noise_core PUBLIC noise_platform nlohmann_json::nlohmann_json Threads::Threads)
@@ -114,6 +115,7 @@ add_library(noise_app STATIC
     src/app/command_args.cpp
     src/app/commands.cpp
     src/app/document_commands.cpp
+    src/app/layer_commands.cpp
     src/app/paint_commands.cpp
     src/app/tools/brush.cpp
     src/app/view_commands.cpp)

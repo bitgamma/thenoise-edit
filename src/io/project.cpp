@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "io/project.h"
 
-#include "core/document.h"
+#include "core/layer.h"
 #include "io/file.h"
 #include "io/png.h"
 
@@ -96,30 +96,8 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
         error = std::string(kManifestName) + " lists no layers in " + path;
         return false;
     }
-    const json& layers = manifest.at("layers");
-    if (layers.size() != 1) {
-        error = "this build opens single-layer projects; " + path + " has " +
-                std::to_string(layers.size()) + " layers";
-        return false;
-    }
-    const json& layer = layers.front();
-    if (!layer.contains("src") || !layer.at("src").is_string()) {
-        error = "layer 0 has no 'src' in " + path;
-        return false;
-    }
-    const std::string source = layer.at("src").get<std::string>();
-    const ZipEntry* layer_entry = find(*entries, source);
-    if (layer_entry == nullptr) {
-        error = "layer 0 names '" + source + "', which the archive does not hold: " + path;
-        return false;
-    }
 
-    std::string decode_error;
-    Image pixels = decode_png(std::span<const std::uint8_t>(layer_entry->data), decode_error);
-    if (pixels.empty()) {
-        error = "'" + source + "' in " + path + ": " + decode_error;
-        return false;
-    }
+    Extent claimed{0, 0};
     if (manifest.contains("size")) {
         const json& size = manifest.at("size");
         if (!size.is_array() || size.size() != 2 || !size[0].is_number_integer() ||
@@ -127,26 +105,55 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
             error = std::string(kManifestName) + " has a malformed 'size' in " + path;
             return false;
         }
-        const Extent claimed{size[0].get<int>(), size[1].get<int>()};
-        if (claimed != pixels.size()) {
+        claimed = Extent{size[0].get<int>(), size[1].get<int>()};
+    }
+
+    std::vector<Layer> loaded;
+    std::vector<std::string> sources;
+    const json& declared = manifest.at("layers");
+    for (std::size_t index = 0; index < declared.size(); ++index) {
+        const json& layer = declared[index];
+        if (!layer.contains("src") || !layer.at("src").is_string()) {
+            error = "layer " + std::to_string(index) + " has no 'src' in " + path;
+            return false;
+        }
+        const std::string source = layer.at("src").get<std::string>();
+        const ZipEntry* layer_entry = find(*entries, source);
+        if (layer_entry == nullptr) {
+            error = "layer " + std::to_string(index) + " names '" + source +
+                    "', which the archive does not hold: " + path;
+            return false;
+        }
+        std::string decode_error;
+        Image pixels = decode_png(std::span<const std::uint8_t>(layer_entry->data), decode_error);
+        if (pixels.empty()) {
+            error = "'" + source + "' in " + path + ": " + decode_error;
+            return false;
+        }
+        if (!claimed.w && !claimed.h) {
+            claimed = pixels.size();
+        }
+        if (pixels.size() != claimed) {
             error = "'" + source + "' is " + std::to_string(pixels.size().w) + "x" +
-                    std::to_string(pixels.size().h) + " but the manifest says " +
+                    std::to_string(pixels.size().h) + " but the document is " +
                     std::to_string(claimed.w) + "x" + std::to_string(claimed.h) + " in " + path;
             return false;
         }
+        loaded.push_back(Layer{0,
+                               layer.contains("name") && layer.at("name").is_string()
+                                   ? layer.at("name").get<std::string>()
+                                   : default_layer_name(index),
+                               std::move(pixels)});
+        sources.push_back(source);
     }
 
     out = Project{};
     out.format = format;
-    out.layers.push_back(ProjectLayer{
-        layer.contains("name") && layer.at("name").is_string()
-            ? layer.at("name").get<std::string>()
-            : std::string(kDefaultLayerName),
-        std::move(pixels)});
+    out.layers = std::move(loaded);
 
     for (const ZipEntry& entry : *entries) {
-        if (entry.name == "mimetype" || entry.name == kManifestName ||
-            entry.name == kMergedName || entry.name == source) {
+        if (entry.name == "mimetype" || entry.name == kManifestName || entry.name == kMergedName ||
+            std::find(sources.begin(), sources.end(), entry.name) != sources.end()) {
             continue;
         }
         out.carried.push_back(entry);
@@ -156,29 +163,36 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
     return true;
 }
 
-bool save_project(const std::string& path, const std::string& layer_name, const Image& pixels,
+bool save_project(const std::string& path, std::span<const Layer> layers, const Image& merged,
                   std::span<const ZipEntry> carried, std::string& error) {
-    if (pixels.empty()) {
-        error = "layer 0 has no pixels to save";
+    if (layers.empty()) {
+        error = "a project needs at least one layer to save: " + path;
+        return false;
+    }
+    if (merged.empty()) {
+        error = "the composite has no pixels to write as " + std::string(kMergedName) + ": " + path;
         return false;
     }
 
+    json declared = json::array();
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        declared.push_back(json{{"name", layers[index].name}, {"src", layer_source(index)}});
+    }
     const json manifest{
         {"format", kFormatVersion},
-        {"size", json::array({pixels.size().w, pixels.size().h})},
-        {"layers", json::array({json{
-                       {"name", layer_name},
-                       {"src", layer_source(0)},
-                   }})},
+        {"size", json::array({merged.size().w, merged.size().h})},
+        {"layers", declared},
     };
 
     ZipWriter zip;
     // The order is the format: sniffable mimetype first, then the app's own manifest, then the
-    // payload, then anything this build carried through untouched.
+    // layers bottom-first, then the composite, then anything this build carried through.
     zip.add("mimetype", bytes_of(kMimetype));
     zip.add(kManifestName, bytes_of(manifest.dump(2) + "\n"));
-    zip.add(layer_source(0), std::span<const std::uint8_t>(encode_png(pixels)));
-    zip.add(kMergedName, std::span<const std::uint8_t>(encode_png(pixels)));
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        zip.add(layer_source(index), std::span<const std::uint8_t>(encode_png(layers[index].pixels)));
+    }
+    zip.add(kMergedName, std::span<const std::uint8_t>(encode_png(merged)));
     for (const ZipEntry& entry : carried) {
         zip.add(entry.name, std::span<const std::uint8_t>(entry.data));
     }

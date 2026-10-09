@@ -94,14 +94,23 @@ def gesture_points(doc: int, events: int) -> list[list[float]]:
             for i in range(events)]
 
 
-def measure_gesture(wire: wd.Wire, port: int, doc: int, fails: list[str]) -> None:
+def measure_gesture(wire: wd.Wire, port: int, doc: int, layers: int,
+                    fails: list[str]) -> None:
     """The same paint fed one pointer event at a time, and what each event costs.
 
-    Run over two document sizes on purpose: a pointer event repaints the stroke and uploads
-    whatever the canvas texture thinks changed, so the cost is read against the document area.
+    Run over two document sizes and a layered stack on purpose: a pointer event repaints the
+    stroke, repairs the composite over what changed and uploads the canvas texture, so the cost
+    is read against the document area and the depth of the stack. A stack that is re-blended
+    whole costs tens of milliseconds per event at this size, which is what the layered run below
+    holds the line on.
     """
     wire.call("doc.new", {"width": doc, "height": doc, "fill": [24, 32, 40, 255]})
+    for index in range(1, layers):
+        wire.call("layer.add", {"name": f"L{index}"})
     wd.wait_for_fit(wire)
+    # Let the rebuild that adding layers forces land before sampling: this measures a steady
+    # drag, not the one frame after a structural change.
+    wd.settle(wire)
     before = wire.call("doc.get", {})["checksum"]
     sampler = FrameSampler(port)
     sampler.start()
@@ -128,7 +137,8 @@ def measure_gesture(wire: wd.Wire, port: int, doc: int, fails: list[str]) -> Non
     event_ms.sort()
     median = event_ms[len(event_ms) // 2]
     worst = event_ms[-1]
-    print(f"live gesture {doc}^2: {during['dabs']} dabs over {GESTURE_EVENTS} pointer events, "
+    print(f"live gesture {doc}^2 x {layers} layers: {during['dabs']} dabs over "
+          f"{GESTURE_EVENTS} pointer events, "
           f"brush {GESTURE_BRUSH:.0f} px: event median {median:.2f} ms, "
           f"worst {worst:.2f} ms, commit {commit_ms:.1f} ms, peak frame_ms {peak:.1f}, "
           f"history {history['stored_bytes'] >> 20} MiB in {steps} step")
@@ -141,7 +151,9 @@ def measure_gesture(wire: wd.Wire, port: int, doc: int, fails: list[str]) -> Non
     if restored != before:
         fails.append("undo did not restore every byte of the gesture")
     if median > MAX_GESTURE_EVENT_MS:
-        fails.append(f"a pointer event took {median:.1f} ms, bound is {MAX_GESTURE_EVENT_MS} ms")
+        fails.append(
+            f"a pointer event on a {layers}-layer {doc}^2 document took {median:.1f} ms, "
+            f"bound is {MAX_GESTURE_EVENT_MS} ms")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -198,8 +210,9 @@ def run(args: argparse.Namespace) -> int:
                     fails.append("the stroke changed nothing")
                 if restored != before:
                     fails.append("undo did not restore every byte of a 2048^2 document")
-                measure_gesture(wire, port, 640, fails)
-                measure_gesture(wire, port, DOC, fails)
+                measure_gesture(wire, port, 640, 1, fails)
+                measure_gesture(wire, port, DOC, 1, fails)
+                measure_gesture(wire, port, DOC, 3, fails)
             except wd.WireError as exc:
                 fails.append(str(exc))
             finally:

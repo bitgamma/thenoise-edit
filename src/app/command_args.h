@@ -32,6 +32,7 @@ json view_json(const AppState& state);
 json image_json(const Image& image, const std::string& label);
 CommandResult require_document(const AppState& state);
 json history_json(const Document& doc);
+json layers_json(const AppState& state, bool with_checksum);
 json document_summary_json(const AppState& state);
 json document_json(const AppState& state);
 json brush_json(const AppState& state);

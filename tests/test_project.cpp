@@ -62,6 +62,15 @@ std::string text_of(const std::vector<std::uint8_t>& bytes) {
     return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
+std::vector<Layer> one(const std::string& name, Image pixels) {
+    std::vector<Layer> layers;
+    Layer layer;
+    layer.name = name;
+    layer.pixels = std::move(pixels);
+    layers.push_back(std::move(layer));
+    return layers;
+}
+
 // A container written by hand, so the reader can be shown files this app would never write.
 void write_archive(const std::string& path, const std::vector<io::ZipEntry>& entries) {
     io::ZipWriter zip;
@@ -103,7 +112,7 @@ void test_pixels_and_layer_name_come_back_unchanged() {
     const Image original = checker(Extent{41, 23});
     const std::string path = temp("roundtrip.noise");
     std::string error;
-    CHECK(io::save_project(path, "Sketch", original, {}, error));
+    CHECK(io::save_project(path, one("Sketch", original), original, {}, error));
 
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
@@ -154,7 +163,7 @@ void test_unknown_members_are_carried_through_a_save() {
         io::ZipEntry{"Thumbnails/thumbnail.png", io::encode_png(image)},
     };
     std::string error;
-    CHECK(io::save_project(path, "Layer 1", image, carried, error));
+    CHECK(io::save_project(path, one("Layer 1", image), image, carried, error));
 
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
@@ -167,7 +176,7 @@ void test_unknown_members_are_carried_through_a_save() {
     CHECK_EQ(text_of(loaded.carried[1].data), provenance);
 
     // And a save after that open keeps them, so an edit-and-save cannot lose them either.
-    CHECK(io::save_project(path, "Layer 1", image, loaded.carried, error));
+    CHECK(io::save_project(path, one("Layer 1", image), image, loaded.carried, error));
     io::Project again;
     CHECK(io::load_project(path, again, error));
     CHECK_EQ(again.carried.size(), 2u);
@@ -187,15 +196,52 @@ void test_a_newer_format_is_refused_by_name() {
     std::filesystem::remove(path);
 }
 
-// Loading a two-layer file as one would silently throw a layer away, which is data loss.
-void test_a_multi_layer_project_is_refused_rather_than_opened_half() {
-    const Image image = checker(Extent{6, 6});
-    const std::string path = temp("layers.noise");
-    write_archive(path, minimal_members(image, io::kFormatVersion, 2));
-    io::Project loaded;
+// Layers are bottom-first in the file and in memory, and a name that came from elsewhere
+// survives a save: rewriting a project must not rename what the user called it.
+void test_layers_keep_their_order_and_names_through_a_save() {
+    const Image base = checker(Extent{13, 11});
+    Image top = checker(Extent{13, 11});
+    top.fill_rect(Rect{0, 0, 4, 4}, std::array<std::uint8_t, 4>{9, 9, 9, 255}.data());
+    const std::string path = temp("stack.noise");
+    std::vector<Layer> stack;
+    stack.push_back(Layer{0, "Paper", base});
+    stack.push_back(Layer{0, "Ink", top});
     std::string error;
+    CHECK(io::save_project(path, stack, top, {}, error));
+
+    io::Project loaded;
+    CHECK(io::load_project(path, loaded, error));
+    CHECK_EQ(loaded.layers.size(), 2u);
+    if (loaded.layers.size() != 2) {
+        return;
+    }
+    CHECK_EQ(loaded.layers[0].name, std::string("Paper"));
+    CHECK_EQ(loaded.layers[1].name, std::string("Ink"));
+    CHECK_EQ(loaded.layers[0].pixels.checksum_hex(), base.checksum_hex());
+    CHECK_EQ(loaded.layers[1].pixels.checksum_hex(), top.checksum_hex());
+    // Ids are the open document's business, so a file cannot name a layer it does not have.
+    CHECK_EQ(loaded.layers[0].id, 0u);
+    std::filesystem::remove(path);
+}
+
+// Every layer covers the whole canvas. One that does not would have to be cropped or padded to
+// open, and doing either silently is data loss.
+void test_a_layer_of_another_size_is_refused() {
+    const Image base = checker(Extent{12, 9});
+    Image odd = checker(Extent{12, 8});
+    const std::string path = temp("odd.noise");
+    std::vector<Layer> stack;
+    stack.push_back(Layer{0, "Paper", base});
+    stack.push_back(Layer{0, "Oversized", odd});
+    std::string error;
+    CHECK(io::save_project(path, stack, base, {}, error));
+
+    io::Project loaded;
     CHECK(!io::load_project(path, loaded, error));
-    CHECK(error.find("2 layers") != std::string::npos);
+    CHECK(error.find("12x8") != std::string::npos);
+    CHECK(error.find("12x9") != std::string::npos);
+    CHECK(error.find("Oversized") != std::string::npos ||
+          error.find("layers/1/layer.png") != std::string::npos);
     std::filesystem::remove(path);
 }
 
@@ -240,17 +286,17 @@ void test_a_failed_save_leaves_no_file_and_keeps_the_old_one() {
     std::string error;
 
     const std::string nowhere = temp("no-such-directory/project.noise");
-    CHECK(!io::save_project(nowhere, "Layer 1", image, {}, error));
+    CHECK(!io::save_project(nowhere, one("Layer 1", image), image, {}, error));
     CHECK(!std::filesystem::exists(nowhere));
 
     const std::string path = temp("replaced.noise");
-    CHECK(io::save_project(path, "First", image, {}, error));
+    CHECK(io::save_project(path, one("First", image), image, {}, error));
     // A directory in the place of the target makes the rename fail, and the original file has
     // to still be there and still be readable.
     const std::string occupied = temp("occupied.noise");
-    CHECK(io::save_project(occupied, "Keep", image, {}, error));
+    CHECK(io::save_project(occupied, one("Keep", image), image, {}, error));
     std::filesystem::create_directory(occupied + ".noise-tmp");
-    CHECK(!io::save_project(occupied, "Replace", image, {}, error));
+    CHECK(!io::save_project(occupied, one("Replace", image), image, {}, error));
     io::Project loaded;
     CHECK(io::load_project(occupied, loaded, error));
     CHECK_EQ(loaded.layers.size(), 1u);
@@ -267,7 +313,8 @@ int main() {
     test_pixels_and_layer_name_come_back_unchanged();
     test_unknown_members_are_carried_through_a_save();
     test_a_newer_format_is_refused_by_name();
-    test_a_multi_layer_project_is_refused_rather_than_opened_half();
+    test_layers_keep_their_order_and_names_through_a_save();
+    test_a_layer_of_another_size_is_refused();
     test_a_manifest_that_lies_about_the_size_is_refused();
     test_a_file_that_is_not_a_project_says_so();
     test_a_failed_save_leaves_no_file_and_keeps_the_old_one();

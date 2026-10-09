@@ -271,7 +271,7 @@ void test_a_pointer_gesture_changes_no_pixel_outside_its_own_rectangle() {
                              {"flow", 1.0},
                              {"spacing", 0.3},
                              {"color", json::array({0, 0, 0, 255})}});
-    const Image before = h.state.doc.pixels();
+    const Image before = h.state.doc.composite();
 
     pointer_gesture(h, json::array({json::array({16.0, 24.0}), json::array({40.0, 24.0})}));
 
@@ -282,7 +282,7 @@ void test_a_pointer_gesture_changes_no_pixel_outside_its_own_rectangle() {
     for (int y = 0; y < 48; ++y) {
         for (int x = 0; x < 64; ++x) {
             const std::uint8_t* a = before.at(x, y);
-            const std::uint8_t* b = h.state.doc.pixels().at(x, y);
+            const std::uint8_t* b = h.state.doc.composite().at(x, y);
             if (!std::equal(a, a + 4, b)) {
                 ++(area.contains(x, y) ? inside : outside);
             }
@@ -321,7 +321,7 @@ void test_a_live_stroke_keeps_every_dab_it_ever_stamped() {
     for (int x = 190; x <= 430; x += 10) {
         ++columns;
         for (int y = 180; y <= 290; ++y) {
-            const std::uint8_t* pixel = h.state.doc.pixels().at(x, y);
+            const std::uint8_t* pixel = h.state.doc.composite().at(x, y);
             if (pixel[0] < 100 && pixel[1] < 100 && pixel[2] < 100) {
                 ++columns_painted;
                 break;
@@ -336,7 +336,7 @@ void test_the_eraser_takes_alpha_and_keeps_the_colour_of_a_partly_erased_pixel()
     h.value("doc.new", json{{"width", 32},
                             {"height", 24},
                             {"fill", json::array({10, 20, 30, 200})}});
-    const Image before = h.state.doc.pixels();
+    const Image before = h.state.doc.composite();
 
     const json selected = h.value("tool.eraser", json::object());
     CHECK_EQ(selected["tool"].get<std::string>(), std::string("eraser"));
@@ -350,7 +350,7 @@ void test_the_eraser_takes_alpha_and_keeps_the_colour_of_a_partly_erased_pixel()
     for (int y = 0; y < 24; ++y) {
         for (int x = 0; x < 32; ++x) {
             const std::uint8_t* a = before.at(x, y);
-            const std::uint8_t* b = h.state.doc.pixels().at(x, y);
+            const std::uint8_t* b = h.state.doc.composite().at(x, y);
             if (b[3] >= a[3]) {
                 continue;
             }
@@ -584,6 +584,119 @@ void test_malformed_fields_name_their_field() {
     CHECK_EQ(h.value("doc.get", json::object())["width"].get<int>(), 8);
 }
 
+// The Layers panel, the keyboard and a wire client all reach the stack through these commands,
+// so what they agree on is what the command table says.
+void test_the_layer_stack_is_edited_through_the_command_table() {
+    Harness h;
+    h.value("doc.new", json{{"width", 16}, {"height", 12}});
+    json listed = h.value("layer.list", json::object());
+    CHECK_EQ(listed["layers"].size(), 1u);
+    CHECK_EQ(listed["layers"][0]["name"].get<std::string>(), std::string("Layer 1"));
+    CHECK_EQ(listed["active"].get<int>(), 0);
+
+    CHECK_OK(h.run("layer.add", json::object()));
+    listed = h.value("layer.list", json::object());
+    CHECK_EQ(listed["layers"].size(), 2u);
+    CHECK_EQ(listed["layers"][1]["name"].get<std::string>(), std::string("Layer 2"));
+    CHECK_EQ(listed["active"].get<int>(), 1);  // the layer you just made is the one you paint on
+
+    const std::string base_before = listed["layers"][0]["checksum"].get<std::string>();
+    const std::string top_before = listed["layers"][1]["checksum"].get<std::string>();
+    h.value("tool.stroke", full_stroke());
+    listed = h.value("layer.list", json::object());
+    CHECK_EQ(listed["layers"][0]["checksum"].get<std::string>(), base_before);
+    CHECK(listed["layers"][1]["checksum"].get<std::string>() != top_before);
+
+    // Selecting moves the target and changes no pixels, so it bumps no revision - and the next
+    // stroke lands below, where the selection now is.
+    const std::uint64_t revision = h.value("doc.get", json::object())["revision"].get<std::uint64_t>();
+    CHECK_OK(h.run("layer.select", json{{"index", 0}}));
+    CHECK_EQ(h.value("doc.get", json::object())["revision"].get<std::uint64_t>(), revision);
+    h.value("tool.stroke", full_stroke());
+    listed = h.value("layer.list", json::object());
+    CHECK(listed["layers"][0]["checksum"].get<std::string>() != base_before);
+
+    // A step belongs to the layer it was made on, not to whichever layer is selected when it is
+    // taken back: undo returns the bottom layer to what it was and leaves the layer above it,
+    // painted earlier in the same session, byte-identical.
+    const std::string bottom_painted = listed["layers"][0]["checksum"].get<std::string>();
+    const std::string top_painted = listed["layers"][1]["checksum"].get<std::string>();
+    CHECK_NE(bottom_painted, base_before);
+    h.value("edit.undo", json::object());
+    const json undone = h.value("layer.list", json::object());
+    CHECK_EQ(undone["layers"][0]["checksum"].get<std::string>(), base_before);
+    CHECK_EQ(undone["layers"][1]["checksum"].get<std::string>(), top_painted);
+
+    // A new layer goes directly above the active one - which the previous steps left at the
+    // bottom - and takes the selection with it.
+    const json named = h.value("layer.add", json{{"name", "Ink"},
+                                                 {"fill", json::array({9, 8, 7, 255})}});
+    CHECK_EQ(named["layers"].size(), 3u);
+    CHECK_EQ(named["layers"][1]["name"].get<std::string>(), std::string("Ink"));
+    CHECK_EQ(named["active"].get<int>(), 1);
+
+    const CommandResult out_of_range = h.run("layer.select", json{{"index", 9}});
+    CHECK(!out_of_range.ok);
+    CHECK(out_of_range.error.find("9") != std::string::npos);
+    CHECK(out_of_range.error.find("3 layers") != std::string::npos);
+    const CommandResult bad_fill = h.run("layer.add", json{{"fill", json::array({300, 0, 0, 0})}});
+    CHECK(!bad_fill.ok);
+    CHECK(bad_fill.error.find("fill") != std::string::npos);
+    const CommandResult no_index = h.run("layer.select", json::object());
+    CHECK(!no_index.ok);
+    CHECK(no_index.error.find("index") != std::string::npos);
+
+    // Down to one layer and no further: removing the last one would leave no canvas to draw on.
+    CHECK_OK(h.run("layer.remove", json{{"index", 1}}));
+    CHECK_OK(h.run("layer.remove", json{{"index", 1}}));
+    const CommandResult last = h.run("layer.remove", json{{"index", 0}});
+    CHECK(!last.ok);
+    CHECK(last.error.find("last layer") != std::string::npos);
+    CHECK_EQ(h.value("layer.list", json::object())["layers"].size(), 1u);
+}
+
+// The container holds a stack, so a save and reopen has to bring back both layers and the
+// thing the user sees, which is neither of them on its own.
+void test_a_two_layer_project_round_trips_and_exports_its_composite() {
+    Harness h;
+    const std::string path = h.temp("stack.noise");
+    const std::string flat = h.temp("stack.png");
+    h.value("doc.new", json{{"width", 20},
+                            {"height", 16},
+                            {"fill", json::array({1, 2, 3, 255})}});
+    h.value("layer.add", json{{"name", "Top"}});
+    h.value("tool.stroke", full_stroke());
+    h.value("layer.select", json{{"index", 0}});
+    h.value("tool.stroke", full_stroke());
+    const json saved_view = h.value("layer.list", json::object());
+    const std::string composite = saved_view["composite_checksum"].get<std::string>();
+
+    CHECK_OK(h.run("doc.save", json{{"path", path}}));
+    h.value("doc.new", json{{"width", 2}, {"height", 2}});
+    const json opened = h.value("doc.open", json{{"path", path}});
+    CHECK_EQ(opened["active"].get<int>(), 1);  // the top of the stack comes back on top
+    CHECK(!opened["dirty"].get<bool>());
+    // Names and per-layer content come from layer.list; doc.open reports the document, and a
+    // stack summary that hashed every layer could not be polled per frame the way app.state is.
+    const json reopened = h.value("layer.list", json::object());
+    CHECK_EQ(reopened["layers"].size(), 2u);
+    if (reopened["layers"].size() == 2) {
+        CHECK_EQ(reopened["layers"][0]["name"].get<std::string>(), std::string("Layer 1"));
+        CHECK_EQ(reopened["layers"][1]["name"].get<std::string>(), std::string("Top"));
+        CHECK_EQ(reopened["layers"][0]["checksum"].get<std::string>(),
+                 saved_view["layers"][0]["checksum"].get<std::string>());
+        CHECK_EQ(reopened["layers"][1]["checksum"].get<std::string>(),
+                 saved_view["layers"][1]["checksum"].get<std::string>());
+    }
+    CHECK_EQ(reopened["composite_checksum"].get<std::string>(), composite);
+
+    CHECK_OK(h.run("doc.export", json{{"path", flat}}));
+    std::string error;
+    CHECK_EQ(io::load_png(flat, error).checksum_hex(), composite);
+    std::filesystem::remove(path);
+    std::filesystem::remove(flat);
+}
+
 void test_a_project_round_trips_and_an_export_is_not_a_save() {
     Harness h;
     const std::string path = h.temp("roundtrip.noise");
@@ -624,7 +737,8 @@ void test_a_project_round_trips_and_an_export_is_not_a_save() {
     CHECK_EQ(reopened["width"].get<int>(), 37);
     CHECK_EQ(reopened["kind"].get<std::string>(), std::string("noise"));
     CHECK(!reopened["dirty"].get<bool>());
-    CHECK_EQ(reopened["layer"].get<std::string>(), std::string("Layer 1"));
+    CHECK_EQ(reopened["layers"][0]["name"].get<std::string>(), std::string("Layer 1"));
+    CHECK_EQ(reopened["active"].get<int>(), 0);
     // replace() must bump the revision, or the GPU texture keeps showing the old pixels.
     CHECK(reopened["revision"].get<std::uint64_t>() > 1u);
 
@@ -636,7 +750,10 @@ void test_a_project_round_trips_and_an_export_is_not_a_save() {
     CHECK(!after_export["dirty"].get<bool>());
     std::string error;
     const Image exported = io::load_png(flat, error);
-    CHECK_EQ(exported.checksum_hex(), created);
+    // A flat export is the composite: the document's own checksum covers the stack, which a
+    // PNG cannot hold, so the comparison is against what the app shows.
+    CHECK_EQ(exported.checksum_hex(),
+             h.value("layer.list", json::object())["composite_checksum"].get<std::string>());
 
     const CommandResult missing = h.run("doc.open", json{{"path", h.temp("absent.png")}});
     CHECK(!missing.ok);
@@ -658,7 +775,7 @@ void test_image_get_returns_the_documents_own_pixels() {
     std::string error;
     const Image written = io::load_png(got["png_path"].get<std::string>(), error);
     CHECK(!written.empty());
-    const Image expected = h.state.doc.pixels().region(Rect{4, 6, 10, 8});
+    const Image expected = h.state.doc.composite().region(Rect{4, 6, 10, 8});
     CHECK_EQ(written.checksum_hex(), expected.checksum_hex());
     CHECK_EQ(got["checksum"].get<std::string>(), expected.checksum_hex());
 
@@ -839,6 +956,8 @@ int main() {
     test_command_invoke_dispatches_and_names_failures();
     test_bad_arguments_name_the_command();
     test_malformed_fields_name_their_field();
+    test_the_layer_stack_is_edited_through_the_command_table();
+    test_a_two_layer_project_round_trips_and_exports_its_composite();
     test_a_project_round_trips_and_an_export_is_not_a_save();
     test_image_get_returns_the_documents_own_pixels();
     test_pixels_compare_finds_a_single_changed_byte();

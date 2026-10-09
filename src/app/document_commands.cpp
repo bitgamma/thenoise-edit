@@ -38,8 +38,12 @@ void register_document_commands(AppState& state, CommandTable& table) {
         if (!arg_rgba(args, "fill", fill)) {
             return fail("doc.new", "'fill' must be [r,g,b,a] with each channel 0..255");
         }
-        state.doc.reset(Image::filled(Extent{width, height}, fill[0], fill[1], fill[2], fill[3]),
-                          std::string());
+        Layer base;
+        base.name = default_layer_name(0);
+        base.pixels = Image::filled(Extent{width, height}, fill[0], fill[1], fill[2], fill[3]);
+        std::vector<Layer> layers;
+        layers.push_back(std::move(base));
+        state.doc.reset(std::move(layers), std::string());
         state.carried.clear();  // a new document is not tied to the file that was open
         request_fit(state);
         log::info("created image " + std::to_string(width) + "x" + std::to_string(height));
@@ -53,29 +57,29 @@ void register_document_commands(AppState& state, CommandTable& table) {
         }
         const std::string path = args.at("path").get<std::string>();
         std::string error;
-        Image loaded;
-        std::string layer;
+        std::vector<Layer> loaded;
         if (io::extension_of(path) == io::kProjectExtension) {
             io::Project project;
             if (!io::load_project(path, project, error)) {
                 return fail("doc.open", error);
             }
-            loaded = std::move(project.layers.front().pixels);
-            layer = project.layers.front().name;
+            loaded = std::move(project.layers);
             state.carried = std::move(project.carried);
         } else {
-            loaded = io::load_png(path, error);
-            if (loaded.empty()) {
+            Image flat = io::load_png(path, error);
+            if (flat.empty()) {
                 return fail("doc.open", error + " (" + path + ")");
             }
+            Layer base;
+            base.name = default_layer_name(0);
+            base.pixels = std::move(flat);
+            loaded.push_back(std::move(base));
             state.carried.clear();
         }
         state.doc.reset(std::move(loaded), path);
-        if (!layer.empty()) {
-            state.doc.set_layer_name(std::move(layer));
-        }
         request_fit(state);
-        log::info("loaded " + path);
+        log::info("loaded " + path + " (" + std::to_string(state.doc.layers().size()) +
+                  " layers)");
         return command_ok(document_json(state));
     });
 
@@ -101,7 +105,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
                             "; use doc.export for a flat image (got '" + path + "')");
         }
         std::string error;
-        if (!io::save_project(path, state.doc.layer_name(), state.doc.pixels(), state.carried,
+        if (!io::save_project(path, state.doc.layers(), state.doc.composite(), state.carried,
                               error)) {
             return fail("doc.save", error);
         }
@@ -127,7 +131,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
             return fail("doc.export", "only '.png' exports exist today (got '" + path + "')");
         }
         std::string error;
-        if (!io::save_png(path, state.doc.pixels(), error)) {
+        if (!io::save_png(path, state.doc.composite(), error)) {
             return fail("doc.export", error);
         }
         log::info("exported " + path);
@@ -146,7 +150,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         if (!arg_rect(args, "region", region)) {
             return fail("image.get", "'region' must be [x, y, width, height] of integers");
         }
-        Image crop = state.doc.pixels().region(region);
+        Image crop = state.doc.composite().region(region);
         if (crop.empty()) {
             return fail("image.get", "region is empty after clipping to the image bounds");
         }

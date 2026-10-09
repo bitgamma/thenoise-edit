@@ -11,6 +11,7 @@ add_executable(test_brush test_brush.cpp)
 add_executable(test_history test_history.cpp)
 add_executable(test_zip test_zip.cpp)
 add_executable(test_project test_project.cpp)
+add_executable(test_document test_document.cpp)
 
 foreach(target test_hash test_geom test_command test_wire test_brush test_history)
     target_link_libraries(${target} PRIVATE noise_core noise_dbg)
@@ -18,6 +19,12 @@ foreach(target test_hash test_geom test_command test_wire test_brush test_histor
     target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -Wshadow)
     add_test(NAME ${target} COMMAND ${target})
 endforeach()
+
+# The document model: what a stack composites to, and the invariants a stack keeps.
+target_link_libraries(test_document PRIVATE noise_core noise_dbg)
+target_include_directories(test_document PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_document PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_document COMMAND test_document)
 
 # The container reader is a parser for files from elsewhere, so it gets the hostile-input
 # tests: crc, truncation, and a directory that lies.

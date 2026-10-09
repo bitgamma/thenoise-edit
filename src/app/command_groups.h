@@ -10,6 +10,7 @@ namespace noise::app {
 // `register_commands` is the one place the whole surface is assembled.
 void register_document_commands(AppState& state, CommandTable& table);
 void register_paint_commands(AppState& state, CommandTable& table);
+void register_layer_commands(AppState& state, CommandTable& table);
 void register_view_commands(AppState& state, CommandTable& table);
 
 }  // namespace noise::app

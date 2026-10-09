@@ -162,11 +162,30 @@ const char* document_kind(const std::string& path) {
     return io::extension_of(path) == io::kProjectExtension ? "noise" : "image";
 }
 
+// `with_checksum` is a parameter and not a default: `app.state` is polled every frame and must
+// not hash a stack to answer it, while `layer.list` is asked on purpose and reports what each
+// layer holds. The row shape is the same either way, so nothing can drift between the two.
+json layers_json(const AppState& state, bool with_checksum) {
+    json rows = json::array();
+    const std::span<const Layer> layers = state.doc.layers();
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        json row{{"index", static_cast<int>(index)},
+                 {"name", layers[index].name},
+                 {"active", static_cast<int>(index) == state.doc.active()}};
+        if (with_checksum) {
+            row["checksum"] = layers[index].pixels.checksum_hex();
+        }
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
 json document_summary_json(const AppState& state) {
     return json{{"path", state.doc.path()},
                 {"kind", document_kind(state.doc.path())},
                 {"dirty", state.doc.dirty()},
-                {"layer", state.doc.layer_name()},
+                {"active", state.doc.active()},
+                {"layers", layers_json(state, false)},
                 {"width", state.doc.width()},
                 {"height", state.doc.height()},
                 {"revision", state.doc.revision()},

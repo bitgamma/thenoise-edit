@@ -41,11 +41,15 @@ but nothing may foreclose them:
 src/
   core/        # no deps, no GPU, no IO — pure data + maths, unit-testable
     image.{h,cpp}      ImageBuffer (RGBA8 straight alpha, stride-aware, tiles later)
-    document.{h,cpp}   Document: pixels, path, revision, and the history under it
-    history.{h,cpp}    undo/redo as stacked rectangle deltas, budgeted by stored bytes
+    document.{h,cpp}   Document: a stack of layers, path, revision, the composite over them
+                       and the history under it
+    layer.{h,cpp}      Layer (id, name, pixels) and generated names; a stack is bottom-first
+    history.{h,cpp}    undo/redo as stacked (layer, rectangle) deltas, budgeted by stored bytes
     brush.{h,cpp}      dabs, stamp coverage, stroke compositing (the CPU paint path)
-    blend.{h,cpp}      blend mode maths (CPU reference impl, matched by GPU shader)
-    blend.{h,cpp}      blend mode maths (CPU reference impl, matched by GPU shader)
+    blend.{h,cpp}      the blend reference: source-over and erase on straight RGBA8, and the
+                       one place a blend result is quantised. A GPU pair has to be checked
+                       against it when the GPU starts blending; today the renderer uploads the
+                       flattened composite, so there is nothing second to match yet.
     maskops.{h,cpp}    rasterize shapes, flood fill, feather, morphology, bbox, colour-match
     heal.{h,cpp}       Telea / Chan fusion inpainting (local, offline)
     command.{h,cpp}    invokable command table: commands, titles and key bindings
@@ -163,9 +167,11 @@ backend, so a naive "upload after every brush dab" on a 4096² layer = 64 MB/fra
    rather than one step per frame. The snapshot follows the stroke's own bounds, not the
    canvas: a 4 px dot must not cost a canvas-sized copy.
 4. On stroke end the pixels are already in place; the only upload is the one the revision bump
-   causes anyway. Cost per pointer event is snapshot-restore over the stroke bounds + one
-   whole-texture upload, which is why the measured cost grows with document area (2.0 ms median
-   at 640², 9.2 ms at 2048² - `probes/2026-10-09-paint-core.md`).
+   causes anyway. Cost per pointer event is snapshot-restore over the stroke bounds, the
+   composite repair over the same bounds, and one whole-texture upload - which is why the cost
+   grows with the area a stroke has reached (2.0 ms median at 640², 10.9 ms at 2048², and
+   33.7 ms there with three layers; `probes/2026-10-09-paint-core.md` and
+   `probes/2026-10-09-layers-composite.md`).
 5. `history` records the old pixels of the rectangle the stroke touched (see below), which is
    why `core::Document::paint` is *given* the rectangle instead of diffing afterwards: diffing
    the whole image per stroke would cost what the stroke was saved.
@@ -173,10 +179,30 @@ backend, so a naive "upload after every brush dab" on a 4096² layer = 64 MB/fra
    `scratch_stamp` and `scratch_composite`, so a wire client and the mouse land on identical
    bytes - asserted, not assumed, in `test_app`.
 
+### Composite
+
+`Document::composite()` is the one flattened image: what the renderer uploads, what a flat
+export writes, what `mergedimage.png` holds. It is derived, owned by the document, and repaired
+only over the rectangles the layers changed since it was last asked for (`blend_over` takes a
+region for exactly this). Two rules keep it cheap and honest:
+
+* **A stack of one is that layer**, returned by reference with no blend at all. Blending a
+  single layer has no second operand, and doing it anyway puts a canvas-sized pass on every
+  frame - which is what the first version of this did, at 71 ms per pointer event on a
+  three-layer 2048² document.
+* **A repair rebuilds its region from transparent** rather than patching it, so the number of
+  layers that came and went since the region was last correct is irrelevant. A structural change
+  widens the pending region to the whole canvas, because nothing is known correct.
+
+`tests/test_document.cpp` holds the property that makes partial repair safe: after strokes,
+layer additions, selection moves, undo, redo and a deletion, the incrementally repaired composite
+equals one built from scratch, byte for byte.
+
 Two ways out if a document gets big enough for the whole-texture upload to dominate, cheapest
-first: a dirty-rect upload (needs a backend that can do partial updates, or the tile cache
-below), or the GPU stamp preview that was the original plan - stamp quads during the stroke,
-no upload until release. Neither is implemented; the measurements above decide.
+first: a dirty-rect upload (the composite already knows which rectangles changed; the backend
+either needs partial updates or the tile cache below), or the GPU stamp preview that was the
+original plan - stamp quads during the stroke, no upload until release. Neither is implemented;
+the measurements above decide.
 
 Upgrade path when we need it (not MVP): split each layer into 256×256 tiles, one
 `sg_image` per tile → cheap partial updates, bounded VRAM, and free large-canvas support.
@@ -189,13 +215,17 @@ Content-addressed storage makes destructive editing *and* cheap undo coexist:
 * `blobs/<sha256>` — immutable, refcounted, zstd-compressed PNG or raw.
 * `Layer.source` is just a `BlobRef`. **An AI op = write a new blob + swap the pointer**,
   so undo/redo of a 3-minute generation is a pointer swap, and no generation is ever lost.
-* Pixel edits push rectangle deltas into the undo stack: one entry is the rectangle an
-  operation declared it would touch plus the bytes it held, and an undo hands the pixels it
+* Pixel edits push rectangle deltas into the undo stack: one entry is a layer, the rectangle an
+  operation declared it would touch, and the bytes it held - so a step belongs to the layer it
+  was made on and stays undoable after the selection moves. An undo hands the pixels it
   displaces to the redo stack instead of keeping a second copy. Budget by stored bytes
   (`kHistoryBudgetBytes`, 128 MB) dropping **whole steps oldest-first**: losing an old step is
   a shorter history, losing part of a step would be a half-restored edit. Tiles become the
-  storage granularity when partial texture uploads need them. Structural commands
-  (add/reorder/opacity/mask) store the inverse command.
+  storage granularity when partial texture uploads need them. Deleting a layer drops the entries
+  naming it from both stacks: a change to a layer that is gone cannot be put back, and the
+  unrelated steps around it are worth more than the half-restored one that would remain.
+  Structural commands (add/reorder/opacity/mask) are planned to store the inverse command;
+  today they are **not** undoable, and adding or deleting a layer does not enter the timeline.
 * Undo and redo are commands like any other (`edit.undo`, `edit.redo`, bound to `Ctrl+Z` and
   `Ctrl+Y`), so a driver can put the pixels back and compare checksums without a keyboard.
 * `history.jsonl` — append-only *journal*: every op with timestamp, params, prompt, model,

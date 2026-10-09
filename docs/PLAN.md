@@ -143,6 +143,38 @@ Still open, when convenient:
   - `zlib` was already in the build through `libpng`; the ZIP reader uses its `crc32` and raw
     inflate rather than vendoring a ZIP library.
 
+* **The document is a stack now, and the composite is a derived value with one owner.**
+  `core/layer.{h,cpp}` is `Layer{id, name, pixels}` (bottom-first, `id` never written to a file),
+  `Document` holds `std::vector<Layer>` plus the active index, `core/blend.{h,cpp}` became the
+  blend reference the docs had been promising - source-over and erase on straight RGBA8, with the
+  one quantisation - and `brush.cpp` now calls it instead of carrying its own arithmetic
+  (`test_brush` passing unchanged at 1820 checks is what proves the move was a move). History
+  entries name the layer they belong to, so a step stays undoable after the selection moves, and
+  `provisional_` is keyed by layer id. `layer.list` / `layer.add` / `layer.remove` /
+  `layer.select` are on the wire and the Layers panel is a front-end for them; `composite()` is
+  what the renderer uploads, what `doc.export` writes and what `mergedimage.png` holds.
+  Costs: `docs/probes/2026-10-09-layers-composite.md`. Three findings:
+  - The first `composite()` rebuilt the whole flattened stack on every revision bump, which put a
+    canvas-sized blend on every frame of a live stroke: **71 ms per pointer event** on a
+    three-layer 2048² document against 10.9 ms single-layer. The probe's own bound caught it, not
+    a review. Fixed by two rules in one place - a stack of one is returned as that layer, and a
+    repair covers only the rectangles that changed - down to 33.7 ms for the canvas-spanning
+    gesture and 9.4 ms for a local one. `test_stroke_probe` now runs the three-layer gesture too,
+    so the regression cannot come back quietly, and `test_document` holds the correctness side
+    (incremental composite == composite built from scratch, through add, paint, select, undo,
+    redo and delete).
+  - `platform::read_some` returned 0 for both "nothing readable" and "peer closed" (`recv`
+    returns 0 at end of stream), so a hung-up debug client kept its slot and once `max_clients`
+    were held **no new connection was ever serviced** - every Python driver that reconnects would
+    eventually hang. The symptom was a probe printing `peak frame_ms 0.0` beside events of 34 ms:
+    a missing measurement, which is a result. `test_a_hung_up_client_gives_its_slot_back` covers
+    it (red before the fix, green after).
+  - Structural commands are not undoable yet, and that is stated rather than papered over:
+    adding or deleting a layer does not enter the timeline, and deleting a layer drops the
+    history entries naming it (`History::drop_layer`) because a change to a layer that is gone
+    cannot be put back. Layers also have no visibility, opacity, blend mode or offset yet - the
+    manifest has no field for them, which is a format decision to ask for rather than invent.
+
 ## Next steps, in order
 
 1. **CI waits until MVP** (decided 2026-10-09): the workflow is not going to run on a runner
@@ -153,20 +185,20 @@ Still open, when convenient:
    Ubuntu's llvmpipe: read `differing_bytes` / `max_channel_delta`, then either widen the two
    constants in `tools/wire_drive.py` deliberately or re-record there with `--update-golden`.
    Never widen a tolerance to hide a structural diff.
-2. **Layers** (`layer.*`, `app/ui/layers`): the document currently holds one `Image`, and
-   `Document` is the seam that a `std::vector<Layer>` replaces - which is also where the
-   composite that the renderer uploads gets its one home. `paint`/provisional/history then
-   operate on the active layer, and the pixel-lock and equivalence tests move with them. The
-   container is ready: `manifest.json` already describes a `layers[]` array and v0 writes one
-   entry of it, so this needs no format change, and `format` stays 1 until a required field
-   appears. The content-addressed blob store waits until something has to outlive the session
-   (variants, undo depth on disk); history rectangles are memory-only and budgeted for now.
+2. **Blend modes, opacity, per-layer visibility and masks.** `core/blend` is the reference for
+   `over` and `erase` and nothing else; the mode set, layer opacity and masks extend it, and the
+   docs' "CPU reference matched by a GPU shader pair" test only becomes meaningful when the GPU
+   blends something - today it uploads the flattened composite. Before any of it lands, ask the
+   human about the `.noise` manifest (`AGENTS.md` §7 puts a format change behind that question):
+   `visible`, `opacity`, `mode` and a mask reference are new required-or-optional fields, and the
+   answer decides whether `format` stays 1.
 3. **The rest of the tool keys** (`V` move, `M` rect select, `,`/`.` hardness and opacity) and
    the panel rows they belong to. `B`/`E`/`[`/`]` landed with the brush.
-4. **Dirty-rect texture upload**, when the pointer-event numbers say it is worth it. At 2048²
-   under software rendering a live event costs 9 ms and the whole-texture upload is the part that
-   scales with the document, so a document that big with a big brush is the case that will ask
-   for it - not the 1280-canvas session that works today.
+4. **Dirty-rect texture upload**, when a measurement says the whole-texture upload dominates. The
+   composite already tracks the rectangles that changed, so half the bookkeeping exists; what is
+   missing is a backend that accepts a partial update, or tiles. Three layers at 2048² currently
+   cost 33.7 ms per pointer event for a canvas-spanning gesture and 9.4 ms for a local one, and
+   the paint plus composite repair are the larger terms - so this is not forced yet.
 5. **M0.5 probe harness** (`tools/tn_probe.py`, `docs/probes/`) — blocked on the dev server.
    Ask the human to export `THENOISE_URL` / `THENOISE_API_KEY`; it feeds `size_policy`, role
    default order, ETA seeds and recipe wording, so it should land before M3 designs hard-code
@@ -187,20 +219,28 @@ no harder to extend than before it, and two places got cheaper:
   paths, which is what makes the layers work below cheap: a layer is another `Image` to
   composite onto, not a second gesture implementation.
 
-Places that will have to move, and where:
+Places that had to move, and where they went (done in the layer pass that followed this review):
 
-* `Document` holds one `Image`. Layers replace that field and take over compositing; nothing
-  outside `core/document` reads `pixels()` for editing, only for capture, which is the property
-  that makes the change local. Do it in one pass, not by bolting a second layer store alongside.
-* `provisional_` is per-document today. It belongs to the layer being painted once there is more
-  than one - keep it inside `Document`, keyed by nothing until a second layer exists.
-* `scratch_composite` and the over/erase arithmetic live in `core/brush.cpp`. `docs/` refers to
-  a `core/blend` reference paired with a shader and checked by a test; **that module does not
-  exist yet** - the arithmetic is only in the brush. It gets its own home when the compositor
-  needs the same maths for layer blending (layer work, step 3), not before.
+* `Document` held one `Image`. It now holds `std::vector<Layer>` with an active index, and
+  `composite()` is the derived flattening the renderer uploads. Because nothing outside
+  `core/document` had been reading pixels for editing, the change stayed inside `document.{h,cpp}`
+  plus the command and container callers - the property the review was betting on held.
+* `provisional_` was per-document; it is now keyed by the layer id the gesture started on, still
+  inside `Document`, as this review predicted.
+* `scratch_composite` and the over/erase arithmetic lived in `core/brush.cpp`, and `docs/`
+  referred to a `core/blend` reference that did not exist. The compositor needed the same maths,
+  so `core/blend.{h,cpp}` is now that home, taken verbatim (`test_brush` green without edits is
+  the evidence), with `blend_over(dst, src, region)` added for the partial composite. The shader
+  half of the doc's claim is still only true once the GPU blends layers; the doc now says so.
+
+New in the review after the layer pass: the composite cache is one value with one owner and one
+invalidation path (the pending rectangle), which is what `AGENTS.md` §4 allows a cache to be; and
+`History` now knows about `Layer`, which is the one place the model grew a dependency for
+convenience - it is core-to-core, and the alternative was a callback per step for no gain.
 
 Deliberately not done: GPU stamp preview during the drag, tile cache, dirty-rect uploads, a
-`BlendMode` enum with nothing to blend between layers. Each is one measurement away from being
+`BlendMode` enum with nothing to blend between layers, and layer visibility/opacity (a manifest
+field, so a question before it is code). Each is one measurement away from being
 the right call and none of them is forced by the next step.
 
 ## Environment notes for this machine

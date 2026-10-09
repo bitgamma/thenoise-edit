@@ -74,7 +74,7 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
                            ImVec2(uv.max_x, uv.max_y));
         }
 
-        canvas_texture.sync(state.doc.pixels(), state.doc.revision());
+        canvas_texture.sync(state.doc.composite(), state.doc.revision());
         if (canvas_texture.valid()) {
             list->AddImage(simgui_imtextureid(canvas_texture.view), canvas_min, canvas_max);
         }
@@ -170,13 +170,27 @@ void draw_tool_panel(AppState& state, CommandTable& commands) {
     ImGui::End();
 }
 
-void draw_layers_panel(const AppState& state) {
+void draw_layers_panel(AppState& state, CommandTable& commands) {
     ImGui::Begin(kWindowLayers);
     if (state.doc.empty()) {
         ImGui::TextUnformatted("no document");
     } else {
-        ImGui::TextUnformatted(state.doc.layer_name().c_str());
+        // Top layer first, which is how every layer list shows them; the document is
+        // bottom-first, so the rows run against the indices.
+        const std::span<const Layer> layers = state.doc.layers();
+        for (std::size_t row = layers.size(); row-- > 0;) {
+            const std::string label = layers[row].name + "###layer" + std::to_string(row);
+            if (ImGui::Selectable(label.c_str(), static_cast<int>(row) == state.doc.active())) {
+                commands.invoke("layer.select", json{{"index", static_cast<int>(row)}});
+            }
+        }
+        if (ImGui::Button("Add layer")) {
+            commands.invoke("layer.add", json::object());
+        }
         ImGui::SameLine();
+        if (ImGui::Button("Delete layer")) {
+            commands.invoke("layer.remove", json::object());
+        }
         ImGui::TextDisabled("%d x %d  %.1f%%", state.doc.width(), state.doc.height(),
                             state.view.scale * 100.0);
     }
@@ -241,7 +255,7 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
 
     draw_canvas(state, commands, canvas_texture, checker);
     draw_tool_panel(state, commands);
-    draw_layers_panel(state);
+    draw_layers_panel(state, commands);
     draw_log_panel();
 
     ImGui::Begin(kWindowStatus, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |

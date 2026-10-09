@@ -35,6 +35,7 @@ WIDTH = 40
 HEIGHT = 24
 MEMBERS = ["mimetype", "manifest.json", "layers/0/layer.png", "mergedimage.png"]
 BIG = 2048
+LAYERS = 3
 # A regression guard, not a benchmark: a save re-encodes two PNGs and a rename.
 MAX_SAVE_SECONDS = 20.0
 
@@ -130,8 +131,9 @@ def check_foreign_project(work: Path, wire: wd.Wire, fails: list[str]) -> None:
         except wd.WireError as exc:
             fails.append(f"the reader refused {project.name}: {exc}")
             continue
-        if got.get("layer") != "Sky sketch":
-            fails.append(f"{project.name}: layer is {got.get('layer')!r}, expected 'Sky sketch'")
+        names = [row["name"] for row in got.get("layers", [])]
+        if names != ["Sky sketch"]:
+            fails.append(f"{project.name}: layers are {names}, expected ['Sky sketch']")
         if [got.get("width"), got.get("height")] != [WIDTH, HEIGHT]:
             fails.append(f"{project.name}: size is {got.get('width')}x{got.get('height')}")
         checksums.append(got["checksum"])
@@ -216,6 +218,26 @@ def run(args: argparse.Namespace) -> int:
                 print(f"container {BIG}^2: save {save_seconds * 1000:.0f} ms, "
                       f"open {open_seconds * 1000:.0f} ms, "
                       f"{big.stat().st_size / 1024:.0f} KiB on disk")
+
+                # A stack costs one PNG encode per layer plus the composite, so this is the
+                # scaling that a save actually pays for.
+                for index in range(1, LAYERS):
+                    wire.call("layer.add", {"name": f"L{index}"})
+                    wire.call("tool.stroke", {"points": diagonal, "size": 70.0, "hardness": 0.3,
+                                             "opacity": 0.85, "flow": 1.0, "spacing": 0.4,
+                                             "color": [60, 200, 90, 255]})
+                stacked = work / "stacked.noise"
+                started = time.perf_counter()
+                wire.call("doc.save", {"path": str(stacked)})
+                stacked_save = time.perf_counter() - started
+                started = time.perf_counter()
+                wire.call("doc.open", {"path": str(stacked)})
+                stacked_open = time.perf_counter() - started
+                if stacked_save > MAX_SAVE_SECONDS:
+                    fails.append(f"a {LAYERS}-layer {BIG}^2 save took {stacked_save:.2f} s")
+                print(f"container {BIG}^2 x {LAYERS} layers: save {stacked_save * 1000:.0f} ms, "
+                      f"open {stacked_open * 1000:.0f} ms, "
+                      f"{stacked.stat().st_size / 1024:.0f} KiB on disk")
             except wd.WireError as exc:
                 fails.append(str(exc))
             finally:

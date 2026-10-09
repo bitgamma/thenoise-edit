@@ -143,7 +143,10 @@ save, `Ctrl+Z`/`Ctrl+Y` undo and redo, `Escape`/`Ctrl+Q` quit, `B`/`E` brush and
 above arrives with the tool or command it belongs to (and
 `command.list` is the truth about what is bound). `Ctrl+S` writes the project and only the
 project (`.noise`); a flat PNG is `doc.export`, which takes neither the document's path nor its
-unsaved mark.
+unsaved mark. The Layers panel is live too - `layer.list` / `add` / `remove` / `select` on the
+wire, click-to-select and the two buttons in the UI, and strokes land on the selected layer while
+each step stays bound to the layer it was made on. Visibility, opacity and blend modes are the
+next layer increment and need a manifest decision first (`docs/PLAN.md`).
 
 Design rules: nothing blocks the canvas, ever · every AI op shows *what it will send* ·
 model swaps are explicit and priced · destructive ops are labelled but never nag (undo is
