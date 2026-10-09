@@ -22,7 +22,7 @@ std::string range_error(const char* who, int index, std::size_t count) {
 }  // namespace
 
 void register_layer_commands(AppState& state, CommandTable& table) {
-    table.add("layer.list", "List the layers, bottom first", {},
+    table.add("layer.list", "List the layers, bottom first", {}, {},
               [&state](const json&) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -33,7 +33,7 @@ void register_layer_commands(AppState& state, CommandTable& table) {
                                {"composite_checksum", state.doc.composite().checksum_hex()}});
     });
 
-    table.add("layer.add", "Add a layer above the active one", {},
+    table.add("layer.add", "Add a layer above the active one", {}, {"name", "fill"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -61,7 +61,7 @@ void register_layer_commands(AppState& state, CommandTable& table) {
                                {"revision", state.doc.revision()}});
     });
 
-    table.add("layer.remove", "Delete a layer, the active one by default", {},
+    table.add("layer.remove", "Delete a layer, the active one by default", {}, {"index"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -90,7 +90,7 @@ void register_layer_commands(AppState& state, CommandTable& table) {
 
     // One command for the layer's non-pixel state, taking only the fields it is given, because
     // that is how `tool.set` works and a panel row should not have to know a verb per field.
-    table.add("layer.set", "Change a layer's visibility or opacity", {},
+    table.add("layer.set", "Change a layer's visibility or opacity", {}, {"index", "visible", "opacity"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -133,7 +133,7 @@ void register_layer_commands(AppState& state, CommandTable& table) {
                                {"revision", state.doc.revision()}});
     });
 
-    table.add("layer.select", "Choose the layer strokes paint on", {},
+    table.add("layer.select", "Choose the layer strokes paint on", {}, {"index"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {

@@ -116,6 +116,70 @@ void test_the_keymap_is_reported_with_the_commands() {
     CHECK_EQ(bound["app.quit"], std::string("Escape Ctrl+Q "));
 }
 
+// The refusal of unread arguments lives in the table, so it has to hold across the whole surface:
+// a command that quietly ignores a field is a probe that measures something else while reporting
+// what it asked for. `command.invoke` needs no exclusion, because the check runs before its handler
+// and its own `args` is passed on to the same check one level down.
+void test_every_command_refuses_an_argument_it_does_not_declare() {
+    Harness h;
+    h.value("doc.new", json{{"width", 16}, {"height", 16}});
+    const json listed = h.value("command.list", json::object());
+    std::size_t checked = 0;
+    for (const json& entry : listed["commands"]) {
+        const std::string id = entry["id"].get<std::string>();
+        const CommandResult result = h.run(id, json{{"no_such_argument_of_this_command", 1}});
+        CHECK(!result.ok);
+        CHECK(result.error.find("no_such_argument_of_this_command") != std::string::npos);
+        CHECK(result.error.find(id) != std::string::npos);
+        // Names what would have worked, or that nothing would.
+        CHECK(result.error.find("it takes ") != std::string::npos);
+        ++checked;
+    }
+    CHECK(checked >= std::size_t(30));  // the surface, not a subset of it
+}
+
+// What closed this: `tool.brush` selects a tool and reads no fields, so a sweep that set the brush
+// through it measured one default-sized brush under five labels. Refusing the field is what turns
+// that mistake back into an error, and the listing is where a driver finds out instead.
+void test_a_brush_field_on_the_command_that_takes_none_is_an_error() {
+    Harness h;
+    h.value("doc.new", json{{"width", 16}, {"height", 16}});
+    const double before = h.value("app.state", json::object())["brush"]["size"].get<double>();
+    const CommandResult on_the_tool_command = h.run("tool.brush", json{{"size", before + 12.0}});
+    CHECK(!on_the_tool_command.ok);
+    CHECK(on_the_tool_command.error.find("'size'") != std::string::npos);
+    CHECK(on_the_tool_command.error.find("it takes none") != std::string::npos);
+    // Refused means nothing happened, not "accepted and ignored".
+    CHECK_EQ(h.value("app.state", json::object())["brush"]["size"].get<double>(), before);
+
+    CHECK_NEAR(h.value("tool.set", json{{"size", 12.0}})["size"].get<double>(), 12.0, 1e-12);
+
+    bool saw_tool_set = false;
+    bool saw_tool_stroke = false;
+    const json listed = h.value("command.list", json::object());
+    for (const json& entry : listed["commands"]) {
+        const std::string id = entry["id"].get<std::string>();
+        if (id != "tool.set" && id != "tool.stroke") {
+            continue;
+        }
+        const std::vector<std::string> args = entry["args"].get<std::vector<std::string>>();
+        // Every brush field, declared from the one table that names them.
+        for (const char* field : {"size", "hardness", "opacity", "flow", "spacing"}) {
+            CHECK(std::find(args.begin(), args.end(), std::string(field)) != args.end());
+        }
+        CHECK(std::find(args.begin(), args.end(), std::string("color")) != args.end());
+        if (id == "tool.set") {
+            saw_tool_set = true;
+            CHECK(std::find(args.begin(), args.end(), std::string("points")) == args.end());
+        } else {
+            saw_tool_stroke = true;
+            CHECK(std::find(args.begin(), args.end(), std::string("points")) != args.end());
+        }
+    }
+    CHECK(saw_tool_set);
+    CHECK(saw_tool_stroke);
+}
+
 json full_stroke() {
     return json{{"points", json::array({json::array({5.0, 5.0}), json::array({30.0, 20.0})})},
                 {"tool", "brush"},
@@ -939,6 +1003,8 @@ void test_view_navigation_keeps_the_image_reachable() {
 int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
+    test_every_command_refuses_an_argument_it_does_not_declare();
+    test_a_brush_field_on_the_command_that_takes_none_is_an_error();
     test_one_stroke_is_one_step_that_puts_every_byte_back();
     test_a_pointer_gesture_lands_where_the_same_path_painted_in_one_go_lands();
     test_a_pointer_gesture_is_one_step_and_reports_itself();

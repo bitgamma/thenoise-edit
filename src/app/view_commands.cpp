@@ -11,7 +11,7 @@
 namespace noise::app {
 
 void register_view_commands(AppState& state, CommandTable& table) {
-    table.add("view.fit", "Fit the document into the viewport", {"F"},
+    table.add("view.fit", "Fit the document into the viewport", {"F"}, {},
               [&state](const json&) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -21,7 +21,7 @@ void register_view_commands(AppState& state, CommandTable& table) {
         return command_ok(view_json(state));
     });
 
-    table.add("view.set", "Set scale and origin explicitly", {}, [&state](const json& args) -> CommandResult {
+    table.add("view.set", "Set scale and origin explicitly", {}, {"scale", "origin"}, [&state](const json& args) -> CommandResult {
         if (!args.contains("scale") || !args.at("scale").is_number()) {
             return fail("view.set", "expected number 'scale'");
         }
@@ -40,7 +40,7 @@ void register_view_commands(AppState& state, CommandTable& table) {
         return command_ok(view_json(state));
     });
 
-    table.add("view.pan", "Pan by a viewport-space delta", {}, [&state](const json& args) -> CommandResult {
+    table.add("view.pan", "Pan by a viewport-space delta", {}, {"dx", "dy"}, [&state](const json& args) -> CommandResult {
         double dx = 0.0;
         double dy = 0.0;
         if (!want_number(args, "dx", dx) || !want_number(args, "dy", dy)) {
@@ -52,7 +52,7 @@ void register_view_commands(AppState& state, CommandTable& table) {
         return command_ok(view_json(state));
     });
 
-    table.add("view.zoom", "Zoom by a factor around a viewport-space anchor", {},
+    table.add("view.zoom", "Zoom by a factor around a viewport-space anchor", {}, {"factor", "anchor"},
               [&state](const json& args) -> CommandResult {
         if (!args.contains("factor") || !args.at("factor").is_number()) {
             return fail("view.zoom", "expected number 'factor'");

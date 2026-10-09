@@ -16,7 +16,7 @@
 namespace noise::app {
 
 void register_document_commands(AppState& state, CommandTable& table) {
-    table.add("doc.get", "Report the document (path, size, checksum, revision, history)", {},
+    table.add("doc.get", "Report the document (path, size, checksum, revision, history)", {}, {},
               [&state](const json&) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -25,7 +25,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         return command_ok(document_json(state));
     });
 
-    table.add("doc.new", "Create an empty document", {}, [&state](const json& args) -> CommandResult {
+    table.add("doc.new", "Create an empty document", {}, {"width", "height", "fill"}, [&state](const json& args) -> CommandResult {
         int width = 0;
         int height = 0;
         if (!want_int(args, "width", width) || !want_int(args, "height", height)) {
@@ -50,7 +50,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         return command_ok(document_json(state));
     });
 
-    table.add("doc.open", "Open a .noise project or a flat image", {},
+    table.add("doc.open", "Open a .noise project or a flat image", {}, {"path"},
               [&state](const json& args) -> CommandResult {
         if (!args.contains("path") || !args.at("path").is_string()) {
             return fail("doc.open", "expected string 'path'");
@@ -83,7 +83,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         return command_ok(document_json(state));
     });
 
-    table.add("doc.save", "Save the project (defaults to its current path)", {"Ctrl+S"},
+    table.add("doc.save", "Save the project (defaults to its current path)", {"Ctrl+S"}, {"path"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -117,7 +117,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
 
     // A flat image is an export, not a save: it does not take the document's path or clear its
     // dirty flag, because the project on disk is still the thing the document is.
-    table.add("doc.export", "Write a flat PNG of the document", {},
+    table.add("doc.export", "Write a flat PNG of the document", {}, {"path"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -140,7 +140,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         return command_ok(result);
     });
 
-    table.add("image.get", "Return document pixels (whole image or a region)", {},
+    table.add("image.get", "Return document pixels (whole image or a region)", {}, {"region", "base64"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {

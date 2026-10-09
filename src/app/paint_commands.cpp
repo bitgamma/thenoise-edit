@@ -30,6 +30,23 @@ constexpr BrushField kBrushFields[]{
     {"spacing", 0.0, 1.0, &Brush::spacing},
 };
 
+// The arguments a call may override the session's tool settings with: the tool, its colour, and
+// every brush field - named from `kBrushFields`, so a field added there is accepted by both
+// commands without being restated in a second place.
+std::vector<std::string> brush_arg_names() {
+    std::vector<std::string> names{"tool", "color"};
+    for (const BrushField& field : kBrushFields) {
+        names.push_back(field.key);
+    }
+    return names;
+}
+
+std::vector<std::string> stroke_arg_names() {
+    std::vector<std::string> names = brush_arg_names();
+    names.push_back("points");
+    return names;
+}
+
 // One field of `brush`, from `args`, range-checked. The message names the field.
 bool read_brush_field(const json& args,
                       const BrushField& field,
@@ -100,7 +117,7 @@ CommandResult read_stroke(const json& args,
 void register_paint_commands(AppState& state, CommandTable& table) {
     table.add("tool.stroke",
               "Paint a stroke along document-space points, overriding the current tool as given",
-              {},
+              {}, stroke_arg_names(),
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -141,7 +158,7 @@ void register_paint_commands(AppState& state, CommandTable& table) {
     });
 
     table.add("tool.pointer",
-              "Feed one pointer phase (press, drag, release) to the current tool", {},
+              "Feed one pointer phase (press, drag, release) to the current tool", {}, {"phase", "at"},
               [&state](const json& args) -> CommandResult {
         if (!args.contains("phase") || !args.at("phase").is_string()) {
             return fail("tool.pointer", "'phase' must be one of press, drag, release");
@@ -163,7 +180,7 @@ void register_paint_commands(AppState& state, CommandTable& table) {
         return command_ok(stroke_json(state));
     });
 
-    table.add("tool.set", "Set the tool, brush fields or colour the next stroke uses", {},
+    table.add("tool.set", "Set the tool, brush fields or colour the next stroke uses", {}, brush_arg_names(),
               [&state](const json& args) -> CommandResult {
         Brush next = state.brush;
         std::string next_tool = state.tool;
@@ -204,25 +221,25 @@ void register_paint_commands(AppState& state, CommandTable& table) {
     for (const ToolInfo& tool : kTools) {
         const std::string id = std::string("tool.") + tool.id;
         std::string title = std::string("Paint with the ") + tool.id + " tool";
-        table.add(id, title, {tool.select_key}, [&state, id](const json&) -> CommandResult {
+        table.add(id, title, {tool.select_key}, {}, [&state, id](const json&) -> CommandResult {
             state.tool = id.substr(std::string("tool.").size());
             return command_ok(brush_json(state));
         });
     }
 
-    table.add("brush.larger", "Widen the brush one step", {"]"},
+    table.add("brush.larger", "Widen the brush one step", {"]"}, {},
               [&state](const json&) -> CommandResult {
         state.brush.size = clamp_brush_size(state.brush.size * kBrushSizeStep);
         return command_ok(brush_json(state));
     });
 
-    table.add("brush.smaller", "Narrow the brush one step", {"["},
+    table.add("brush.smaller", "Narrow the brush one step", {"["}, {},
               [&state](const json&) -> CommandResult {
         state.brush.size = clamp_brush_size(state.brush.size / kBrushSizeStep);
         return command_ok(brush_json(state));
     });
 
-    table.add("edit.undo", "Undo the last change to the pixels", {"Ctrl+Z"},
+    table.add("edit.undo", "Undo the last change to the pixels", {"Ctrl+Z"}, {},
               [&state](const json&) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -237,7 +254,7 @@ void register_paint_commands(AppState& state, CommandTable& table) {
         return command_ok(history_json(state.doc));
     });
 
-    table.add("edit.redo", "Redo the change that undo took back", {"Ctrl+Y"},
+    table.add("edit.redo", "Redo the change that undo took back", {"Ctrl+Y"}, {},
               [&state](const json&) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {

@@ -172,7 +172,7 @@ stroke and a capture, and the PNG turned up where it said.
 |---|---|
 | app | `app.state` `app.quit` `command.list` `command.invoke` `log.tail` `log.level` `wire.info` |
 | document | `doc.new` `doc.open` `doc.save` `doc.export` `doc.get` `image.get` |
-| layers | `layer.list` `layer.add` `layer.remove` `layer.select` |
+| layers | `layer.list` `layer.add` `layer.remove` `layer.select` `layer.set` |
 | paint | `tool.brush` `tool.eraser` `tool.set` `tool.stroke` `tool.pointer` `brush.larger` `brush.smaller` |
 | view | `view.fit` `view.set` `view.pan` `view.zoom` |
 | edit | `edit.undo` `edit.redo` |
@@ -180,8 +180,11 @@ stroke and a capture, and the PNG turned up where it said.
 
 Things worth knowing when writing a driver:
 
-- `command.list` returns every command with its title and shortcuts; that and `app.state` are
-  what a test asserts against rather than a copy of this table.
+- `command.list` returns every command with its title, shortcuts and **arguments**; that and
+  `app.state` are what a test asserts against rather than a copy of this table.
+- An argument a command does not take is **refused**, naming the argument and the names that would
+  have worked. So `tool.brush {"size": 12}` is an error, not a silently ignored field: `tool.brush`
+  selects the tool and takes nothing, brush fields belong to `tool.set`.
 - `tool.stroke` takes a whole polyline, `tool.pointer` feeds the same path one
   `press`/`drag`/`release` event at a time, and both are the real stroke path — so a recorded
   gesture replays byte-identically. Any brush field you send overrides the session value, and

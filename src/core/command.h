@@ -24,6 +24,7 @@ struct CommandInfo {
     std::string id;
     std::string title;
     std::vector<std::string> shortcuts;
+    std::vector<std::string> args;  // the argument names this command reads, and the only ones it takes
 };
 
 class CommandTable {
@@ -32,8 +33,14 @@ public:
     // one is normalized here, and a malformed shortcut or one already bound to another
     // command refuses the registration outright: the table is the only home of key
     // bindings, so a broken binding is a build-time bug, not a runtime surprise.
+    //
+    // `args` is the complete set of top-level argument names the handler reads. `invoke` refuses
+    // anything outside it, so a call can never be silently ignored: an argument the caller believed
+    // in is either read or named in an error. A command that reads fields from a table of its own
+    // (the brush fields) builds its list from that table rather than restating it.
     bool add(const std::string& id, const std::string& title,
-             std::vector<std::string> shortcuts, CommandHandler handler);
+             std::vector<std::string> shortcuts, std::vector<std::string> args,
+             CommandHandler handler);
     bool contains(const std::string& id) const;
     std::vector<CommandInfo> list() const;
     // Id of the command bound to this shortcut, empty when nothing is.
@@ -45,6 +52,7 @@ private:
         std::string id;
         std::string title;
         std::vector<std::string> shortcuts;
+        std::vector<std::string> args;
         CommandHandler handler;
     };
 

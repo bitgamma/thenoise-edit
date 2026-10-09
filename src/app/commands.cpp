@@ -24,7 +24,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
     register_layer_commands(state, table);
     register_view_commands(state, table);
 
-    table.add("app.state", "Report application, document and view state", {},
+    table.add("app.state", "Report application, document and view state", {}, {},
               [&state, &wire](const json&) -> CommandResult {
         json doc = json::object();
         if (!state.doc.empty()) {
@@ -46,7 +46,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                {"wire_port", wire.port()}});
     });
 
-    table.add("app.quit", "Ask the application to exit cleanly", {"Escape", "Ctrl+Q"},
+    table.add("app.quit", "Ask the application to exit cleanly", {"Escape", "Ctrl+Q"}, {},
               [hooks](const json&) -> CommandResult {
         if (!hooks.quit) {
             return fail("app.quit", "no quit hook is attached");
@@ -55,7 +55,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(json{{"quitting", true}});
     });
 
-    table.add("log.tail", "Return the most recent log lines", {}, [](const json& args) -> CommandResult {
+    table.add("log.tail", "Return the most recent log lines", {}, {"count"}, [](const json& args) -> CommandResult {
         int count = 0;
         if (!want_int(args, "count", count) || count < 0) {
             return fail("log.tail", "expected non-negative integer 'count'");
@@ -63,7 +63,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(json{{"lines", log::tail(static_cast<std::size_t>(count))}});
     });
 
-    table.add("log.level", "Set the log level", {}, [](const json& args) -> CommandResult {
+    table.add("log.level", "Set the log level", {}, {"level"}, [](const json& args) -> CommandResult {
         if (!args.contains("level") || !args.at("level").is_string()) {
             return fail("log.level", "expected string 'level' (debug|info|warn|error)");
         }
@@ -76,18 +76,22 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(json{{"level", level}});
     });
 
-    table.add("command.list", "List every invokable command with its title and shortcuts", {},
+    table.add("command.list", "List every invokable command with its title, shortcuts and arguments",
+              {}, {},
               [&table](const json&) -> CommandResult {
         json entries = json::array();
         for (const CommandInfo& info : table.list()) {
             entries.push_back(json{{"id", info.id},
                                    {"title", info.title},
-                                   {"shortcuts", info.shortcuts}});
+                                   {"shortcuts", info.shortcuts},
+                                   // What a command takes, so a caller can ask rather than guess and
+                                   // have an argument refused.
+                                   {"args", info.args}});
         }
         return command_ok(json{{"commands", entries}});
     });
 
-    table.add("command.invoke", "Run another command through the same table the UI uses", {},
+    table.add("command.invoke", "Run another command through the same table the UI uses", {}, {"name", "args"},
               [&table](const json& args) -> CommandResult {
         if (!args.contains("name") || !args.at("name").is_string()) {
             return fail("command.invoke", "expected string 'name'");
@@ -107,7 +111,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(json{{"name", name}, {"result", inner.value}});
     });
 
-    table.add("screenshot", "Capture framebuffer pixels to a PNG", {},
+    table.add("screenshot", "Capture framebuffer pixels to a PNG", {}, {"region", "name", "base64"},
               [&state, capture = hooks.capture](const json& args) -> CommandResult {
         if (!capture) {
             return fail("screenshot", "no framebuffer capture is attached");
@@ -145,7 +149,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(result);
     });
 
-    table.add("pixels.compare", "Compare two PNGs byte for byte", {}, [](const json& args) -> CommandResult {
+    table.add("pixels.compare", "Compare two PNGs byte for byte", {}, {"a", "b"}, [](const json& args) -> CommandResult {
         if (!args.contains("a") || !args.at("a").is_string() || !args.contains("b") ||
             !args.at("b").is_string()) {
             return fail("pixels.compare", "expected string 'a' and 'b' PNG paths");
@@ -183,7 +187,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                {"max_channel_delta", max_delta}});
     });
 
-    table.add("wire.info", "Report debug wire status", {}, [&wire](const json&) -> CommandResult {
+    table.add("wire.info", "Report debug wire status", {}, {}, [&wire](const json&) -> CommandResult {
         return command_ok(json{{"port", wire.port()}, {"clients", wire.client_count()}});
     });
 }

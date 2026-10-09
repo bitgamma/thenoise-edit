@@ -342,6 +342,16 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 * **It dispatches through the same string-keyed command table the UI and the keyboard use**
   (`command.list`, `command.invoke {name, args}`), so exercising the wire exercises the real
   path. The wire reads state and invokes commands; it never reimplements behaviour.
+* **A command declares the argument names it reads, and the table refuses every other key** naming
+  the argument, the command and the names that would have worked (`'colour' is not an argument of
+  tool.set; it takes 'color', 'flow', …`). An argument that is quietly ignored is the worst kind of
+  wrong: the call answers `ok` and the caller goes on believing it - `tool.brush` selects a tool and
+  reads no fields, and a brush sweep that set `size` through it measured one default brush under five
+  labels (`probes/2026-10-09-paint-and-panel-cost.md`). `command.list` carries each command's `args`
+  so a caller asks instead of guessing, and a registration that declares a name twice or declares the
+  empty name is refused, so the refusal cannot be made to lie about itself. A command whose fields come
+  from a table of its own (the brush fields, `kBrushFields`) builds its declaration from that table
+  rather than restating the names.
 * **Key bindings are part of a command's registration**, so `command.list` reports the whole
   keymap and nothing can be bound in one place and documented in another. Shortcut text is
   canonical (`core/shortcut.h`: modifiers Ctrl, Alt, Shift in that order, then a key - `F`,
@@ -356,7 +366,7 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | Group | Commands | Why |
 |---|---|---|
 | state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `selection.get`, `server.state`, `job.list`, `log.tail` | read what the app believes, cheaply |
-| drive | `command.invoke`, `app.quit`, `doc.new/open/save/export/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?}`, `screenshot`, `pixels.compare`, `wire.info` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are all required, so a recorded stroke replays without knowing what the UI had selected. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
+| drive | `command.invoke`, `app.quit`, `doc.new/open/save/export/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?}`, `screenshot`, `pixels.compare`, `wire.info` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are all optional and inherit what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable |
 | ai | `ai.preview {recipe, args}` (compiled request + prepped PNG, **no send**), `ai.run`, `job.wait {id}`, `cache.stats` | verify what we *would* send before spending minutes of someone's GPU |
 

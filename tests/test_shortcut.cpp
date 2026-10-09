@@ -54,8 +54,8 @@ void test_canonical_text() {
 
 void test_the_table_owns_its_bindings() {
     CommandTable table;
-    CHECK(table.add("view.fit", "fit", {"F"}, [](const json&) { return command_ok(json::object()); }));
-    CHECK(table.add("doc.save", "save", {"ctrl+s"},
+    CHECK(table.add("view.fit", "fit", {"F"}, {}, [](const json&) { return command_ok(json::object()); }));
+    CHECK(table.add("doc.save", "save", {"ctrl+s"}, {},
                     [](const json&) { return command_ok(json::object()); }));
 
     // Lookup is by meaning, not spelling: the host produces canonical text, and a driver
@@ -67,9 +67,9 @@ void test_the_table_owns_its_bindings() {
 
     // A second claim on one key, and a key that does not exist, are refused rather than
     // quietly shadowed or left inert.
-    CHECK(!table.add("other.fit", "impostor", {"f"},
+    CHECK(!table.add("other.fit", "impostor", {"f"}, {},
                      [](const json&) { return command_ok(json::object()); }));
-    CHECK(!table.add("bad.key", "typo", {"Cntl+Z"},
+    CHECK(!table.add("bad.key", "typo", {"Cntl+Z"}, {},
                      [](const json&) { return command_ok(json::object()); }));
     CHECK_EQ(table.command_for_shortcut("F"), std::string("view.fit"));
     CHECK(!table.contains("other.fit"));
