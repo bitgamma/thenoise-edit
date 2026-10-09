@@ -52,7 +52,7 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
     // IsItemHovered() would report whatever widget another window submitted last.
     const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 
-    if (!state.doc.image.empty()) {
+    if (!state.doc.empty()) {
         const Vec2 image_screen = state.view.world_to_view({0.0, 0.0});
         const ImVec2 canvas_min(origin.x + static_cast<float>(image_screen.x),
                                 origin.y + static_cast<float>(image_screen.y));
@@ -72,7 +72,7 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
                            ImVec2(uv.max_x, uv.max_y));
         }
 
-        canvas_texture.sync(state.doc.image, state.doc.revision);
+        canvas_texture.sync(state.doc.pixels(), state.doc.revision());
         if (canvas_texture.valid()) {
             list->AddImage(simgui_imtextureid(canvas_texture.view), canvas_min, canvas_max);
         }
@@ -96,12 +96,12 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
 
 void draw_layers_panel(const AppState& state) {
     ImGui::Begin(kWindowLayers);
-    if (state.doc.image.empty()) {
+    if (state.doc.empty()) {
         ImGui::TextUnformatted("no document");
     } else {
         ImGui::TextUnformatted("Layer 1");
         ImGui::SameLine();
-        ImGui::TextDisabled("%d x %d  %.1f%%", state.doc.image.size().w, state.doc.image.size().h,
+        ImGui::TextDisabled("%d x %d  %.1f%%", state.doc.width(), state.doc.height(),
                             state.view.scale * 100.0);
     }
     ImGui::End();
@@ -166,13 +166,20 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
                                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
     ImGui::Text("%.1f%%", state.view.scale * 100.0);
     ImGui::SameLine();
-    ImGui::Text("%d x %d", state.doc.image.size().w, state.doc.image.size().h);
+    ImGui::Text("%d x %d", state.doc.width(), state.doc.height());
     ImGui::SameLine();
-    if (!state.doc.path.empty()) {
-        ImGui::TextUnformatted(state.doc.path.c_str());
+    if (!state.doc.path().empty()) {
+        ImGui::TextUnformatted(state.doc.path().c_str());
     } else {
         ImGui::TextDisabled("unsaved");
     }
+    ImGui::SameLine();
+    // What a stroke would paint now, and how far back the pixels can go: enough to read a
+    // screenshot back into the settings that made it.
+    ImGui::TextDisabled("%s %.0f px", state.tool.c_str(), static_cast<double>(state.brush.size));
+    ImGui::SameLine();
+    ImGui::TextDisabled("undo %d / redo %d", state.doc.history().undo_depth,
+                        state.doc.history().redo_depth);
     ImGui::SameLine();
     ImGui::TextDisabled("%.1f ms", state.frame_ms);
     ImGui::SameLine();

@@ -2,6 +2,7 @@
 #include "app/commands.h"
 
 #include "core/base64.h"
+#include "core/brush.h"
 #include "core/log.h"
 #include "platform/platform.h"
 
@@ -11,7 +12,9 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace noise::app {
 
@@ -102,6 +105,20 @@ bool arg_rgba(const json& args, const char* key, std::uint8_t out[4]) {
     return true;
 }
 
+bool arg_points(const json& args, const char* key, std::vector<Vec2>& out) {
+    if (!args.contains(key) || !args.at(key).is_array()) {
+        return false;
+    }
+    for (const json& point : args.at(key)) {
+        if (!point.is_array() || point.size() != 2u || !point[0].is_number() ||
+            !point[1].is_number()) {
+            return false;
+        }
+        out.push_back({point[0].get<double>(), point[1].get<double>()});
+    }
+    return true;
+}
+
 // Capture names become file names, so they carry no separators.
 bool arg_name(const json& args, const char* key, std::string& out) {
     out = "capture";
@@ -139,33 +156,120 @@ json image_json(const Image& image, const std::string& label) {
                 {"checksum", image.checksum_hex()}};
 }
 
+// A stroke is painted exactly as it is described: every brush field must be present, so one
+// recorded from the wire replays without consulting what the UI happens to have selected.
+CommandResult read_stroke(const json& args,
+                          const char* who,
+                          std::vector<Vec2>& path,
+                          Brush& brush,
+                          Rgba8& color,
+                          std::string& tool) {
+    if (!arg_points(args, "points", path) || path.empty()) {
+        return fail(who, "'points' must be a non-empty array of [x,y] in document pixels");
+    }
+    tool = kDefaultTool;
+    if (args.contains("tool")) {
+        if (!args.at("tool").is_string()) {
+            return fail(who, "'tool' must be a string");
+        }
+        tool = args.at("tool").get<std::string>();
+        if (tool != "brush" && tool != "eraser") {
+            return fail(who, "unknown tool '" + tool + "' (brush, eraser)");
+        }
+    }
+    struct Field {
+        const char* key;
+        double low;
+        double high;
+        double Brush::*member;
+    };
+    const Field fields[] = {{"size", kMinBrushSize, kMaxBrushSize, &Brush::size},
+                            {"hardness", 0.0, 1.0, &Brush::hardness},
+                            {"opacity", 0.0, 1.0, &Brush::opacity},
+                            {"flow", 0.0, 1.0, &Brush::flow},
+                            {"spacing", 0.0, 1.0, &Brush::spacing}};
+    brush = {0.0, 0.0, 0.0, 0.0, 0.0};
+    for (const Field& field : fields) {
+        if (!args.contains(field.key)) {
+            return fail(who, std::string("missing '") + field.key + "'");
+        }
+        const json& value = args.at(field.key);
+        if (!value.is_number()) {
+            return fail(who, std::string("'") + field.key + "' must be a number");
+        }
+        double& target = brush.*(field.member);
+        target = value.get<double>();
+        if (target < field.low || target > field.high) {
+            return fail(who, std::string("'") + field.key + "' must be between " +
+                            std::to_string(field.low) + " and " + std::to_string(field.high));
+        }
+    }
+    if (!args.contains("color")) {
+        return fail(who, "missing 'color'");
+    }
+    std::uint8_t channels[4] = {0, 0, 0, 255};
+    if (!arg_rgba(args, "color", channels)) {
+        return fail(who, "'color' must be [r,g,b,a] with each channel 0..255");
+    }
+    color = Rgba8{channels[0], channels[1], channels[2], channels[3]};
+    return command_ok(json::object());
+}
+
 CommandResult require_document(const AppState& state) {
-    if (state.doc.image.empty()) {
+    if (state.doc.empty()) {
         return fail("no document", "open or create one first (doc.open / doc.new)");
     }
     return command_ok(json::object());
 }
 
+json history_json(const Document& doc) {
+    const HistoryStats history = doc.history();
+    return json{{"undo_depth", history.undo_depth},
+                {"redo_depth", history.redo_depth},
+                {"stored_bytes", history.bytes},
+                // What the budget drops whole steps at; a document whose history is full
+                // loses its oldest step to the next stroke.
+                {"budget_bytes", kHistoryBudgetBytes}};
+}
+
+// app.state is polled every frame by the driver, so it reports the document without hashing
+// its pixels; `doc.get` is the call that pays for a checksum.
+json document_summary_json(const AppState& state) {
+    return json{{"path", state.doc.path()},
+                {"width", state.doc.width()},
+                {"height", state.doc.height()},
+                {"revision", state.doc.revision()},
+                {"history", history_json(state.doc)}};
+}
+
 json document_json(const AppState& state) {
-    json doc = image_json(state.doc.image, state.doc.path);
-    doc["path"] = state.doc.path;
-    doc["revision"] = state.doc.revision;
+    json doc = document_summary_json(state);
+    doc["checksum"] = state.doc.checksum();
     return doc;
+}
+
+json brush_json(const AppState& state) {
+    return json{{"tool", state.tool},
+                {"size", state.brush.size},
+                {"hardness", state.brush.hardness},
+                {"opacity", state.brush.opacity},
+                {"flow", state.brush.flow},
+                {"spacing", state.brush.spacing}};
 }
 
 }
 
 void request_fit(AppState& state) {
-    state.fit_pending = !state.doc.image.empty();
+    state.fit_pending = !state.doc.empty();
     apply_pending_fit(state);
 }
 
 void apply_pending_fit(AppState& state) {
-    if (!state.fit_pending || state.doc.image.empty() || !state.viewport_published ||
+    if (!state.fit_pending || state.doc.empty() || !state.viewport_published ||
         !viewport_holds_fit(state.viewport)) {
         return;
     }
-    state.view = fit_view(state.doc.image.size(), state.viewport, kViewPolicy.fit_margin_px,
+    state.view = fit_view(state.doc.size(), state.viewport, kViewPolicy.fit_margin_px,
                           kViewPolicy.max_scale);
     state.fit_pending = false;
 }
@@ -175,8 +279,8 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
     table.add("app.state", "Report application, document and view state", {},
               [&state, &wire](const json&) -> CommandResult {
         json doc = json::object();
-        if (!state.doc.image.empty()) {
-            doc = document_json(state);
+        if (!state.doc.empty()) {
+            doc = document_summary_json(state);
         }
         return command_ok(json{{"version", kAppVersion},
                                {"pid", platform::pid()},
@@ -188,6 +292,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                                        state.viewport.w, state.viewport.h})},
                                {"framebuffer", json::array({state.framebuffer.w, state.framebuffer.h})},
                                {"document", doc},
+                               {"brush", brush_json(state)},
                                {"view", view_json(state)},
                                {"wire_port", wire.port()}});
     });
@@ -222,7 +327,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         return command_ok(json{{"level", level}});
     });
 
-    table.add("doc.get", "Report the document (path, size, checksum, revision)", {},
+    table.add("doc.get", "Report the document (path, size, checksum, revision, history)", {},
               [&state](const json&) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -275,11 +380,11 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         if (!arg_rgba(args, "fill", fill)) {
             return fail("doc.new", "'fill' must be [r,g,b,a] with each channel 0..255");
         }
-        state.doc.replace(Image::filled(Extent{width, height}, fill[0], fill[1], fill[2], fill[3]),
+        state.doc.reset(Image::filled(Extent{width, height}, fill[0], fill[1], fill[2], fill[3]),
                           std::string());
         request_fit(state);
         log::info("created image " + std::to_string(width) + "x" + std::to_string(height));
-        return command_ok(image_json(state.doc.image, "new"));
+        return command_ok(document_json(state));
     });
 
     table.add("doc.open", "Load a PNG into the document", {}, [&state](const json& args) -> CommandResult {
@@ -292,10 +397,10 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         if (loaded.empty()) {
             return fail("doc.open", error + " (" + path + ")");
         }
-        state.doc.replace(std::move(loaded), path);
+        state.doc.reset(std::move(loaded), path);
         request_fit(state);
         log::info("loaded " + path);
-        return command_ok(image_json(state.doc.image, path));
+        return command_ok(document_json(state));
     });
 
     table.add("doc.save", "Save the document (defaults to its current path)", {"Ctrl+S"},
@@ -304,7 +409,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         if (!guard.ok) {
             return guard;
         }
-        std::string path = state.doc.path;
+        std::string path = state.doc.path();
         if (args.contains("path")) {
             if (!args.at("path").is_string()) {
                 return fail("doc.save", "'path' must be a string");
@@ -315,11 +420,81 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
             return fail("doc.save", "document has no path and none was given");
         }
         std::string error;
-        if (!state.doc.image.save_png(path, error)) {
+        if (!state.doc.pixels().save_png(path, error)) {
             return fail("doc.save", error);
         }
-        state.doc.path = path;
-        return command_ok(image_json(state.doc.image, path));
+        state.doc.set_path(path);
+        return command_ok(document_json(state));
+    });
+
+    table.add("tool.stroke",
+              "Paint a stroke along document-space points with an explicit brush", {},
+              [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        std::vector<Vec2> path;
+        Brush brush;
+        Rgba8 color;
+        std::string tool;
+        CommandResult parsed = read_stroke(args, "tool.stroke", path, brush, color, tool);
+        if (!parsed.ok) {
+            return parsed;
+        }
+        const PaintMode mode = tool == "eraser" ? PaintMode::Erase : PaintMode::Over;
+        const std::size_t dabs = stroke_dabs(path, brush).size();
+        const Rect bounds = stroke_bounds(path, brush, state.doc.size());
+        state.brush = brush;
+        state.tool = tool;
+        if (bounds.empty()) {
+            return command_ok(json{{"tool", tool},
+                                   {"dabs", dabs},
+                                   {"touched", json::array()},
+                                   {"revision", state.doc.revision()},
+                                   {"checksum", state.doc.checksum()}});
+        }
+        std::optional<Rect> touched;
+        state.doc.paint(bounds, [&](Image& image) { touched = paint_stroke(image, path, brush, color, mode); });
+        if (!touched) {
+            return fail("tool.stroke", "the stroke painted nothing inside the document");
+        }
+        return command_ok(json{{"tool", tool},
+                               {"dabs", dabs},
+                               {"touched",
+                                json::array({touched->x, touched->y, touched->w, touched->h})},
+                               {"revision", state.doc.revision()},
+                               {"checksum", state.doc.checksum()}});
+    });
+
+    table.add("edit.undo", "Undo the last change to the pixels", {"Ctrl+Z"},
+              [&state](const json&) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        if (!state.doc.can_undo()) {
+            return fail("edit.undo", "nothing to undo");
+        }
+        if (!state.doc.undo()) {
+            return fail("edit.undo", "the recorded change no longer fits the document");
+        }
+        return command_ok(history_json(state.doc));
+    });
+
+    table.add("edit.redo", "Redo the change that undo took back", {"Ctrl+Y"},
+              [&state](const json&) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        if (!state.doc.can_redo()) {
+            return fail("edit.redo", "nothing to redo");
+        }
+        if (!state.doc.redo()) {
+            return fail("edit.redo", "the recorded change no longer fits the document");
+        }
+        return command_ok(history_json(state.doc));
     });
 
     table.add("image.get", "Return document pixels (whole image or a region)", {},
@@ -328,11 +503,11 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         if (!guard.ok) {
             return guard;
         }
-        Rect region{0, 0, state.doc.image.size().w, state.doc.image.size().h};
+        Rect region{0, 0, state.doc.width(), state.doc.height()};
         if (!arg_rect(args, "region", region)) {
             return fail("image.get", "'region' must be [x, y, width, height] of integers");
         }
-        Image crop = state.doc.image.region(region);
+        Image crop = state.doc.pixels().region(region);
         if (crop.empty()) {
             return fail("image.get", "region is empty after clipping to the image bounds");
         }
@@ -374,7 +549,9 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         if (!arg_vec2(args, "origin", origin)) {
             return fail("view.set", "expected 'origin' as [x,y]");
         }
-        state.view.image = state.doc.image.empty() ? state.view.image : state.doc.image.size();
+        if (!state.doc.empty()) {
+            state.view.image = state.doc.size();
+        }
         const ViewLimits limits = scale_limits(
             state.view.image, state.viewport, kViewPolicy.min_fit_fraction, kViewPolicy.max_scale);
         state.view.scale = clamp_scale(args.at("scale").get<double>(), limits);

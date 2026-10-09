@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "core/brush.h"
+#include "core/document.h"
 #include "core/geom.h"
 #include "core/image.h"
 
@@ -22,21 +24,12 @@ inline constexpr ViewPolicy kViewPolicy{0.05, 64.0, 1.10, 16, 48};
 inline constexpr const char* kAppVersion = "0.0.0-m0";
 inline constexpr const char* kWindowTitle = "noise-edit";
 
-struct Document {
-    std::string path;
-    Image image;
-    // Bumped by every pixel mutation; the GPU texture uploads only when it moves.
-    std::uint64_t revision = 0;
-
-    void replace(Image new_image, std::string new_path) {
-        image = std::move(new_image);
-        path = std::move(new_path);
-        ++revision;
-    }
-};
-
 struct AppState {
     Document doc;
+    // The brush the next stroke uses, and the one the last stroke ran with: the status bar
+    // and the wire read this, so a screenshot can be reproduced from the state alone.
+    Brush brush = kBrushDefaults;
+    std::string tool = kDefaultTool;
     ViewTransform view{{0, 0}, 1.0, {0.0, 0.0}};
     // Where the app writes: captures, the wire endpoint file, the imgui layout. Set once
     // by the host so nothing in the command layer reaches for an ambient directory.

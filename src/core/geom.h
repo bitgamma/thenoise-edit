@@ -26,6 +26,10 @@ struct Rect {
     int bottom() const { return y + h; }
     bool empty() const { return w <= 0 || h <= 0; }
     bool contains(int px, int py) const { return px >= x && px < right() && py >= y && py < bottom(); }
+    // Half-open containment inside an image or viewport of `bounds`.
+    bool inside(Extent bounds) const {
+        return x >= 0 && y >= 0 && right() <= bounds.w && bottom() <= bounds.h;
+    }
 };
 
 inline bool operator==(Extent a, Extent b) { return a.w == b.w && a.h == b.h; }

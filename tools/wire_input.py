@@ -201,6 +201,7 @@ WIDTH, HEIGHT = 800, 500
 KEY_ESCAPE = 0xFF1B    # XK_Escape
 KEY_F = 0x66           # XK_f
 KEY_S = 0x73           # XK_s
+KEY_Z = 0x7A           # XK_z
 KEY_J = 0x6A           # XK_j, bound to nothing today
 
 
@@ -273,6 +274,22 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
     print(f"Ctrl+S on a pathless document: {reported[-1] if reported else 'nothing logged'}")
     if not reported:
         fails.append("Ctrl+S reached neither doc.save nor the log")
+
+    # A key bound to an editing command must move pixels, not just appear in the table:
+    # stroke, then Ctrl+Z, and the document's own checksum says whether it went back.
+    before = wire.call("doc.get", {})["checksum"]
+    wire.call("tool.stroke", {
+        "points": [[8.0, 8.0], [48.0, 32.0]], "tool": "brush", "size": 12.0, "hardness": 0.5,
+        "opacity": 1.0, "flow": 0.8, "spacing": 0.3, "color": [10, 200, 60, 255]})
+    painted = wire.call("doc.get", {})["checksum"]
+    inj.control_key(KEY_Z)
+    wd.settle(wire)
+    restored = wire.call("doc.get", {})["checksum"]
+    print(f"Ctrl+Z: document {before[:12]} -> stroke {painted[:12]} -> undo {restored[:12]}")
+    if painted == before:
+        fails.append("tool.stroke changed nothing, so Ctrl+Z proved nothing")
+    if restored != before:
+        fails.append("Ctrl+Z did not undo the stroke")
 
     # And a key bound to nothing changes nothing.
     before = wire.call("app.state")["view"]

@@ -101,24 +101,45 @@ Still open, when convenient:
      right-drag pan, `F`, a failing `Ctrl+S` reaching the log, an unbound key doing nothing,
      and `Escape` quitting.
 3. **M1 paint core.** Acceptance (MVP.md): *5000-dab stroke at 2048² without dropped frames,
-   20× undo*. Slices, each with its own wire command and test:
-   a. **Blob store + undo**: content-addressed by the existing `sha256_hex`, undo/redo as pointer
-      swaps. Test: undo after N mutations returns byte-identical images, whole-image diff.
-   b. **Dirty-rect texture upload**: `gfx::Texture::sync` currently recreates the whole image on
-      any revision change — fine for load, unusable for painting (MVP risk 9). Put the upload
-      path behind an accessor taking dirty rects, and keep the whole-image path as one case.
+   20× undo*. Landed so far:
+   * **Paint path**: `core/brush.{h,cpp}` (dabs at `spacing x size` along the path, round stamp
+     with a smoothstep falloff and a half-pixel rim band, dabs accumulated into a coverage
+     buffer so opacity is per stroke and flow per dab), `core/document.{h,cpp}` taking over
+     the document model from `app/state.h`, `core/history.{h,cpp}` undoing and redoing
+     **rectangle deltas** budgeted by stored bytes. `tool.stroke`, `edit.undo`, `edit.redo`
+     are on the wire, `Ctrl+Z`/`Ctrl+Y` are bound, `app.state` reports the brush and the
+     history depths, and the status bar shows tool, size and undo depth.
+     Tests: `test_brush` (dab placement across corners, coverage shape and monotonicity, the
+     blend reference arithmetic including two strokes at half flow landing on 0.75 alpha, the
+     eraser, and the invariant that `stroke_bounds` is exactly the painted rectangle - if the
+     two ever disagreed, undo would silently leave paint behind), `test_history` (undo after
+     12 mutations restores every byte; redo restores them forward; one undo touches only its
+     own rectangle, checked as a whole-image diff against a document that ran only the first
+     step; a mutation after an undo clears redo; the budget drops whole steps oldest-first),
+     and `test_app` (one stroke is one step whose undo returns the document checksum exactly;
+     a rejected stroke names the field and changes no pixels; a stroke that misses the
+     document is not a step). `tools/wire_input.py` presses `Ctrl+Z` for real: document
+     `f3cc10313642` -> stroke `eec9c191e58c` -> undo `f3cc10313642`.
+     Two findings: a brush of one pixel painted *nothing* while the rim feather lived inside
+     the circle - the band has to straddle the rim (`kRimBand`) - and `screenshot` hashes the
+     whole framebuffer, so the frame can never compare equal across a frame boundary (the
+     status bar reports a live `frame_ms`); compare document checksums, not screenshots, for
+     exactness.
+   Next, in order:
+   a. **Dirty-rect texture upload**: `gfx::Texture::sync` recreates the whole image on any
+      revision change - fine for load, unusable for painting (MVP risk 9). Put the upload path
+      behind an accessor taking dirty rects and keep the whole-image path as one case.
       Test: a 1-px edit uploads one rect, checksum still matches CPU pixels.
-   c. **`tool.stroke {points, tool, size, hardness, opacity, flow}`** driving the real painting
-      path (spec'd in `ARCHITECTURE.md`'s wire table), so painting is testable without a mouse.
-      Brush math (hardness/flow falloff, stroke interpolation) lives in `core/`, CPU-side, with a
-      reference implementation a test can compare against.
-   d. **Stroke timing test**: 5000 dabs at 2048² through `tool.stroke`, assert no dropped frames
-      using `app.state.frame` / `frame_ms` — the observation primitive already exists.
-   e. **`.noise` v0**: read `ARCHITECTURE.md`'s file-format section first (single-file zip,
-      `manifest.json:format`, blobs by hash). Round-trip test: save → load → identical checksums
-      and identical undo history length. Older `format` values must be refused with a message
-      naming the version found.
-   f. Status bar already reports zoom/size/path/frame-ms/wire; add tool + brush readout.
+   b. **Stroke timing test**: 5000 dabs at 2048² through `tool.stroke`, asserting no dropped
+      frames from `app.state.frame` / `frame_ms`. This is the acceptance test for M1 and the
+      first thing that will show whether the CPU stamp loop needs the tile migration.
+   c. **`.noise` v0** and the content-addressed blob store together (`ARCHITECTURE.md`'s file
+      format section: single-file zip, `manifest.json:format`, blobs by hash): undo wants
+      rectangles, layers want `BlobRef` sources, and the container is what makes the two
+      worth persisting. Round-trip test: save -> load -> identical checksums and identical
+      history depth. Older `format` values are refused with a message naming the version found.
+   d. **Layers** (`layer.*`), then the tool keys (`B`, `E`, `[`, `]`) that select and tune the
+      brush instead of naming it per stroke.
 4. **Close the small honest gaps** left in M0, when convenient:
    * `--headless` (`SG_BACKEND_NULL` + CPU composite) from the wire spec is not implemented; CI
      uses Xvfb + llvmpipe instead. Until it exists, keep the `ARCHITECTURE.md` note honest.

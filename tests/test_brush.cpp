@@ -1,0 +1,219 @@
+// SPDX-License-Identifier: Apache-2.0
+#include "test.h"
+
+#include "core/brush.h"
+
+#include <cmath>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+using namespace noise;
+
+namespace {
+
+Brush make_brush(double size, double hardness, double opacity, double flow, double spacing) {
+    return Brush{size, hardness, opacity, flow, spacing};
+}
+
+// The brush the tests stamp with: a 6 px circle at the centre of an 8x8 tile.
+const Brush kTile = {6.0, 1.0, 1.0, 1.0, 0.5};
+
+int alpha_centre(const Image& image) { return image.at(image.size().w / 2, image.size().h / 2)[3]; }
+
+int channel_sum(const Image& image) {
+    int sum = 0;
+    for (const std::uint8_t byte : image.pixels()) {
+        sum += byte;
+    }
+    return sum;
+}
+
+void test_dabs_are_spaced_from_the_brush_size() {
+    const Brush brush = make_brush(10.0, 1.0, 1.0, 1.0, 0.5);  // 5 px between dab centres
+    const std::vector<Vec2> straight = stroke_dabs({{0.0, 0.0}, {10.0, 0.0}}, brush);
+    CHECK_EQ(straight.size(), 3u);
+    if (straight.size() == 3) {
+        CHECK_NEAR(straight[1].x, 5.0, 1e-9);
+        CHECK_NEAR(straight[2].x, 10.0, 1e-9);
+    }
+
+    // Spacing carries across a corner rather than restarting on each segment, so the dab
+    // density along a path is a property of the path, not of how it was sampled.
+    const std::vector<Vec2> corner = stroke_dabs({{0.0, 0.0}, {8.0, 0.0}, {8.0, 8.0}}, brush);
+    CHECK_EQ(corner.size(), 4u);
+    CHECK_EQ(stroke_dabs({{0.0, 0.0}}, brush).size(), 1u);
+    CHECK(stroke_dabs({}, brush).empty());
+
+    const std::vector<Vec2> long_path =
+        stroke_dabs({{0.0, 0.0}, {10.0, 0.0}, {10.0, 10.0}, {13.0, 10.0}}, brush);
+    CHECK_EQ(long_path.size(), 5u);  // 1 + floor(23 / 5)
+
+    // A spacing of 0 still cannot place dabs closer than one pixel: the cost of a stroke is
+    // bounded by its length in pixels, not by how finely the pointer was sampled.
+    const std::vector<Vec2> dense = stroke_dabs({{0.0, 0.0}, {10.0, 0.0}},
+                                                make_brush(10.0, 1.0, 1.0, 1.0, 0.0));
+    CHECK_EQ(dense.size(), 11u);
+}
+
+void test_coverage_is_a_round_ramped_stamp() {
+    // Distances are document pixels from the dab centre; the radius is 10.
+    CHECK_NEAR(stamp_coverage(0.0, 0.5, 10.0), 1.0, 1e-12);
+    CHECK_EQ(stamp_coverage(10.5, 0.5, 10.0), 0.0);          // past the rim band
+    CHECK_NEAR(stamp_coverage(9.0, 1.0, 10.0), 1.0, 1e-12);  // a hard brush holds to the rim
+    CHECK_NEAR(stamp_coverage(10.0, 1.0, 10.0), 0.5, 1e-12);  // on the rim it is half in
+    // Half way from the centre to the outer edge of the rim band, a fully soft brush is at
+    // half strength. The tolerance is the smoothstep's own asymmetry about that point.
+    CHECK_NEAR(stamp_coverage(5.0, 0.0, 10.0), 0.5, 0.05);
+
+    // The smallest brush in the UI still paints its own pixel, and bleeds a little into the
+    // ones it clips.
+    CHECK_NEAR(stamp_coverage(0.0, 1.0, 0.5), 1.0, 1e-12);
+    CHECK(stamp_coverage(0.707, 1.0, 0.5) > 0.0);
+
+    for (const double hardness : {0.0, 0.25, 0.75, 1.0}) {
+        double previous = 1.0;
+        for (int step = 1; step <= 200; ++step) {
+            const double distance = step / 20.0;
+            const double coverage = stamp_coverage(distance, hardness, 8.0);
+            CHECK(coverage <= previous + 1e-12);
+            CHECK(coverage >= 0.0 && coverage <= 1.0);
+            previous = coverage;
+        }
+    }
+}
+
+void test_a_stroke_keeps_its_colour_and_only_spreads_where_the_stamp_reaches() {
+    Image canvas = Image::filled(Extent{8, 8}, 0, 0, 0, 0);
+    const Rgba8 red{255, 128, 0, 255};
+    const std::optional<Rect> touched =
+        paint_stroke(canvas, {{4.0, 4.0}}, make_brush(6.0, 1.0, 1.0, 1.0, 0.5), red,
+                     PaintMode::Over);
+    CHECK(touched.has_value());
+    if (!touched) {
+        return;
+    }
+    // Source-over of one flat colour over transparency returns that colour exactly, at any
+    // coverage, so every painted pixel must carry the brush colour and nothing else.
+    for (int y = 0; y < canvas.size().h; ++y) {
+        for (int x = 0; x < canvas.size().w; ++x) {
+            const std::uint8_t* pixel = canvas.at(x, y);
+            const bool inside = touched->contains(x, y) && pixel[3] > 0;
+            if (!inside) {
+                CHECK_EQ(pixel[0] + pixel[1] + pixel[2] + pixel[3], 0);
+                continue;
+            }
+            CHECK_EQ(static_cast<int>(pixel[0]), 255);
+            CHECK_EQ(static_cast<int>(pixel[1]), 128);
+            CHECK_EQ(static_cast<int>(pixel[2]), 0);
+        }
+    }
+    CHECK_EQ(alpha_centre(canvas), 255);
+    CHECK_EQ(canvas.at(1, 1)[3], 0);   // hypot(3.5,3.5) is past the 3 px radius
+    // The stamp is symmetric, and the rim is feathered rather than staircased.
+    // The stamp is symmetric about the dab, and its rim is feathered, not staircased.
+    CHECK_EQ(canvas.at(2, 4)[3], canvas.at(5, 4)[3]);
+    CHECK_EQ(canvas.at(4, 2)[3], canvas.at(4, 5)[3]);
+    bool feathered = false;
+    for (const std::uint8_t byte : canvas.pixels()) {
+        feathered = feathered || byte > 0;
+    }
+    CHECK(feathered);
+    bool partial = false;
+    for (int y = 0; y < canvas.size().h; ++y) {
+        for (int x = 0; x < canvas.size().w; ++x) {
+            partial = partial || (canvas.at(x, y)[3] > 0 && canvas.at(x, y)[3] < 255);
+        }
+    }
+    CHECK(partial);
+}
+
+void test_the_blend_matches_the_reference_arithmetic() {
+    Image canvas = Image::filled(Extent{8, 8}, 0, 0, 255, 255);
+    const Rgba8 red{255, 0, 0, 255};
+    // Centre pixel of a hard brush at half opacity over an opaque blue: src-over gives
+    // (255*0.5 + 0*0.5) = 127.5 -> 128 red, 0 green, 128 blue, fully opaque.
+    paint_stroke(canvas, {{4.0, 4.0}}, make_brush(8.0, 1.0, 0.5, 1.0, 0.5), red, PaintMode::Over);
+    const std::uint8_t* centre = canvas.at(4, 4);
+    CHECK_EQ(static_cast<int>(centre[0]), 128);
+    CHECK_EQ(static_cast<int>(centre[1]), 0);
+    CHECK_EQ(static_cast<int>(centre[2]), 128);
+    CHECK_EQ(static_cast<int>(centre[3]), 255);
+
+    // Two strokes at half flow stack as "over", not as a sum: 0.5 then 0.75, never 1.0.
+    Image thin = Image::filled(Extent{8, 8}, 0, 0, 0, 0);
+    const Brush flow_half = make_brush(4.0, 1.0, 1.0, 0.5, 0.5);
+    paint_stroke(thin, {{4.0, 4.0}}, flow_half, red, PaintMode::Over);
+    CHECK_NEAR(alpha_centre(thin), 128.0, 1.0);
+    paint_stroke(thin, {{4.0, 4.0}}, flow_half, red, PaintMode::Over);
+    CHECK_NEAR(alpha_centre(thin), 191.0, 1.0);
+    for (int i = 0; i < 12; ++i) {
+        paint_stroke(thin, {{4.0, 4.0}}, flow_half, red, PaintMode::Over);
+    }
+    CHECK_EQ(alpha_centre(thin), 255);
+
+    // Erasing takes alpha and leaves the colour alone until the pixel is empty.
+    Image erased = Image::filled(Extent{8, 8}, 0, 0, 255, 255);
+    paint_stroke(erased, {{4.0, 4.0}}, make_brush(8.0, 1.0, 0.5, 1.0, 0.5), Rgba8{0, 0, 0, 255},
+                 PaintMode::Erase);
+    const std::uint8_t* half = erased.at(4, 4);
+    CHECK_NEAR(half[3], 128.0, 1.0);
+    CHECK_EQ(static_cast<int>(half[2]), 255);
+    paint_stroke(erased, {{4.0, 4.0}}, make_brush(8.0, 1.0, 1.0, 1.0, 0.5), Rgba8{0, 0, 0, 255},
+                 PaintMode::Erase);
+    CHECK_EQ(static_cast<int>(erased.at(4, 4)[3]), 0);
+    CHECK_EQ(static_cast<int>(erased.at(4, 4)[0] + erased.at(4, 4)[1] + erased.at(4, 4)[2]), 0);
+}
+
+void test_a_stroke_outside_the_document_changes_nothing() {
+    Image canvas = Image::filled(Extent{4, 4}, 10, 20, 30, 255);
+    const std::string before = canvas.checksum_hex();
+    CHECK(!paint_stroke(canvas, {{40.0, 40.0}}, kTile, Rgba8{0, 0, 0, 255}, PaintMode::Over)
+               .has_value());
+    CHECK_EQ(canvas.checksum_hex(), before);
+    CHECK(stroke_bounds({{40.0, 40.0}}, kTile, canvas.size()).empty());
+}
+
+// The document captures the pixels inside `stroke_bounds` before painting and puts them back
+// on undo. If the two rectangles ever disagree, undo leaves paint behind - silently.
+void test_stroke_bounds_is_exactly_the_painted_rectangle() {
+    const std::vector<Vec2> paths[] = {
+        {{12.0, 12.0}},
+        {{0.0, 0.0}},
+        {{31.0, 31.0}},
+        {{-4.0, 6.0}, {36.0, 6.0}},
+        {{2.0, 2.0}, {30.0, 30.0}, {4.0, 28.0}},
+    };
+    for (const std::vector<Vec2>& path : paths) {
+        for (const double size : {1.0, 7.0, 24.0}) {
+            const Brush brush = make_brush(size, 0.6, 1.0, 1.0, 0.25);
+            Image canvas = Image::filled(Extent{32, 32}, 0, 0, 0, 0);
+            const Rect bounds = stroke_bounds(path, brush, canvas.size());
+            const std::optional<Rect> touched =
+                paint_stroke(canvas, path, brush, Rgba8{9, 9, 9, 255}, PaintMode::Over);
+            if (bounds.empty()) {
+                CHECK(!touched.has_value());
+                continue;
+            }
+            CHECK(touched.has_value());
+            if (touched) {
+                CHECK_EQ(bounds.x == touched->x && bounds.y == touched->y &&
+                             bounds.w == touched->w && bounds.h == touched->h,
+                         true);
+            }
+            CHECK(channel_sum(canvas) > 0);
+        }
+    }
+}
+
+}  // namespace
+
+int main() {
+    test_dabs_are_spaced_from_the_brush_size();
+    test_coverage_is_a_round_ramped_stamp();
+    test_a_stroke_keeps_its_colour_and_only_spreads_where_the_stamp_reaches();
+    test_the_blend_matches_the_reference_arithmetic();
+    test_a_stroke_outside_the_document_changes_nothing();
+    test_stroke_bounds_is_exactly_the_painted_rectangle();
+    return noise::test::summary("brush");
+}

@@ -73,7 +73,10 @@ add_library(noise_core STATIC
     src/core/hash.cpp
     src/core/base64.cpp
     src/core/command.cpp
+    src/core/brush.cpp
+    src/core/document.cpp
     src/core/geom.cpp
+    src/core/history.cpp
     src/core/image.cpp
     src/core/shortcut.cpp)
 target_include_directories(noise_core PUBLIC src)

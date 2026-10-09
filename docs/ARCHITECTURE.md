@@ -41,11 +41,14 @@ but nothing may foreclose them:
 src/
   core/        # no deps, no GPU, no IO — pure data + maths, unit-testable
     image.{h,cpp}      ImageBuffer (RGBA8 straight alpha, stride-aware, tiles later)
-    document.{h,cpp}   Document, Layer, Mask
+    document.{h,cpp}   Document: pixels, path, revision, and the history under it
+    history.{h,cpp}    undo/redo as stacked rectangle deltas, budgeted by stored bytes
+    brush.{h,cpp}      dabs, stamp coverage, stroke compositing (the CPU paint path)
+    blend.{h,cpp}      blend mode maths (CPU reference impl, matched by GPU shader)
     blend.{h,cpp}      blend mode maths (CPU reference impl, matched by GPU shader)
     maskops.{h,cpp}    rasterize shapes, flood fill, feather, morphology, bbox, colour-match
     heal.{h,cpp}       Telea / Chan fusion inpainting (local, offline)
-    command.{h,cpp}    undoable command interface + pixel-delta commands
+    command.{h,cpp}    invokable command table: commands, titles and key bindings
     shortcut.{h,cpp}   canonical shortcut text: grammar, vocabulary, normalization
     blob.{h,cpp}       content-addressed store API (impl in io/)
   gfx/
@@ -147,7 +150,11 @@ backend, so a naive "upload after every brush dab" on a 4096² layer = 64 MB/fra
 2. During a stroke: stamp **GPU** preview quads over the canvas; no upload at all.
 3. On stroke end: commit stamping to the CPU store, single full `sg_update_texture`
    (~6 ms at 4096² — one-time per stroke, invisible).
-4. `history` records the touched tiles' old pixels (see below).
+4. `history` records the old pixels of the rectangle the stroke touched (see below), which
+   is why `core::Document::paint` is *given* the rectangle instead of diffing afterwards:
+   diffing the whole image per stroke would cost what the stroke was saved.
+5. `tool.stroke` runs this exact path, so a wire client paints with the same code the
+   pointer does.
 
 Upgrade path when we need it (not MVP): split each layer into 256×256 tiles, one
 `sg_image` per tile → cheap partial updates, bounded VRAM, and free large-canvas support.
@@ -160,9 +167,15 @@ Content-addressed storage makes destructive editing *and* cheap undo coexist:
 * `blobs/<sha256>` — immutable, refcounted, zstd-compressed PNG or raw.
 * `Layer.source` is just a `BlobRef`. **An AI op = write a new blob + swap the pointer**,
   so undo/redo of a 3-minute generation is a pointer swap, and no generation is ever lost.
-* Pixel edits push tile deltas (old pixels) into the history stack; budget by tile count
-  (e.g. 128 MB) with disk spill. Structural commands (add/reorder/opacity/mask) store the
-  inverse command.
+* Pixel edits push rectangle deltas into the undo stack: one entry is the rectangle an
+  operation declared it would touch plus the bytes it held, and an undo hands the pixels it
+  displaces to the redo stack instead of keeping a second copy. Budget by stored bytes
+  (`kHistoryBudgetBytes`, 128 MB) dropping **whole steps oldest-first**: losing an old step is
+  a shorter history, losing part of a step would be a half-restored edit. Tiles become the
+  storage granularity when partial texture uploads need them. Structural commands
+  (add/reorder/opacity/mask) store the inverse command.
+* Undo and redo are commands like any other (`edit.undo`, `edit.redo`, bound to `Ctrl+Z` and
+  `Ctrl+Y`), so a driver can put the pixels back and compare checksums without a keyboard.
 * `history.jsonl` — append-only *journal*: every op with timestamp, params, prompt, model,
   seed, blob hashes, timings. Two jobs: (a) Provenance panel ("which prompt made this
   layer?" → one-click **Regenerate with same params**), (b) recovery/replay after a crash.
@@ -236,16 +249,19 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | Group | Commands | Why |
 |---|---|---|
 | state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `selection.get`, `server.state`, `job.list`, `log.tail` | read what the app believes, cheaply |
-| drive | `command.invoke`, `app.quit`, `doc.new/open/save`, `log.level`, `view.fit/set/pan/zoom`, `layer.add/set/delete`, `selection.set`, `tool.stroke {points}` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse |
+| drive | `command.invoke`, `app.quit`, `doc.new/open/save`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool, size, hardness, opacity, flow, spacing, color}`, `layer.add/set/delete`, `selection.set` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are all required, so a recorded stroke replays without knowing what the UI had selected |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable |
 | ai | `ai.preview {recipe, args}` (compiled request + prepped PNG, **no send**), `ai.run`, `job.wait {id}`, `cache.stats` | verify what we *would* send before spending minutes of someone's GPU |
 
 Live now: the state/drive/pixels rows minus `layer.*`, `selection.*`, `server.state`,
-`job.list`, `tool.stroke` and the whole ai row, which arrive with their milestones.
+`job.list` and the whole ai row, which arrive with their milestones.
 `app.state` reports `frame` (frames presented), `frame_ms` (last presented frame), `canvas`
 (origin + size of the canvas content area in framebuffer px) and the view transform
-(`scale`, `origin`, `image`, `fit_pending`) — enough for a driver to place an image rect on
-screen and wait for the frame that drew it. `fit_pending` is true while a fit waits for a
+(`scale`, `origin`, `image`, `fit_pending`), the brush and tool the last stroke ran with, and
+the document's `history` depths — enough for a driver to place an image rect on screen, wait
+for the frame that drew it, and tell a stroke from an undo. `doc.get` is the call that hashes
+the pixels and answers with a checksum; `app.state` deliberately does not, because a driver
+polls it every frame. `fit_pending` is true while a fit waits for a
 frame to publish a canvas area wide enough to hold the document: the framebuffer is not the
 canvas, and fitting against it latches a scale that spills past the panel.
 `ui_vertices` / `ui_vertex_limit` report the geometry the last frame demanded against the

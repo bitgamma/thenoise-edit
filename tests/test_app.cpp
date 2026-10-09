@@ -109,8 +109,110 @@ void test_the_keymap_is_reported_with_the_commands() {
         bound[entry["id"].get<std::string>()] = joined;
     }
     CHECK_EQ(bound["view.fit"], std::string("F "));
+    CHECK_EQ(bound["edit.undo"], std::string("Ctrl+Z "));
+    CHECK_EQ(bound["edit.redo"], std::string("Ctrl+Y "));
     CHECK_EQ(bound["doc.save"], std::string("Ctrl+S "));
     CHECK_EQ(bound["app.quit"], std::string("Escape Ctrl+Q "));
+}
+
+json full_stroke() {
+    return json{{"points", json::array({json::array({5.0, 5.0}), json::array({30.0, 20.0})})},
+                {"tool", "brush"},
+                {"size", 8.0},
+                {"hardness", 0.6},
+                {"opacity", 0.8},
+                {"flow", 0.7},
+                {"spacing", 0.25},
+                {"color", json::array({255, 0, 0, 255})}};
+}
+
+std::string checksum_of(Harness& h) {
+    return h.value("doc.get", json::object())["checksum"].get<std::string>();
+}
+
+int undo_depth(Harness& h) {
+    return h.value("app.state", json::object())["document"]["history"]["undo_depth"].get<int>();
+}
+
+void test_one_stroke_is_one_step_that_puts_every_byte_back() {
+    Harness h;
+    h.value("doc.new", json{{"width", 40},
+                            {"height", 30},
+                            {"fill", json::array({10, 20, 30, 255})}});
+    const std::string blank = checksum_of(h);
+    CHECK_EQ(undo_depth(h), 0);
+
+    const json painted = h.value("tool.stroke", full_stroke());
+    CHECK(painted["dabs"].get<int>() > 1);
+    CHECK_EQ(painted["touched"].size(), 4u);
+    const std::string stroked = checksum_of(h);
+    CHECK_NE(stroked, blank);
+    CHECK_EQ(undo_depth(h), 1);
+
+    const json undone = h.value("edit.undo", json::object());
+    CHECK_EQ(undone["undo_depth"].get<int>(), 0);
+    CHECK_EQ(undone["redo_depth"].get<int>(), 1);
+    CHECK_EQ(checksum_of(h), blank);
+
+    h.value("edit.redo", json::object());
+    CHECK_EQ(checksum_of(h), stroked);
+
+    // What the status bar shows is what the last stroke ran with, so a screenshot can be
+    // reproduced from reported state alone.
+    const json brush = h.value("app.state", json::object())["brush"];
+    CHECK_EQ(brush["tool"].get<std::string>(), std::string("brush"));
+    CHECK_NEAR(brush["size"].get<double>(), 8.0, 1e-12);
+    CHECK_NEAR(brush["hardness"].get<double>(), 0.6, 1e-12);
+}
+
+void test_a_stroke_that_cannot_run_names_the_field_that_is_wrong() {
+    Harness h;
+    h.value("doc.new", json{{"width", 16}, {"height", 16}});
+    const std::string before = checksum_of(h);
+    const json valid = full_stroke();
+
+    for (const char* missing : {"size", "hardness", "opacity", "flow", "spacing", "color"}) {
+        json args = valid;
+        args.erase(missing);
+        const CommandResult result = h.run("tool.stroke", args);
+        CHECK(!result.ok);
+        CHECK(result.error.find(missing) != std::string::npos);
+    }
+
+    json bad_tool = valid;
+    bad_tool["tool"] = "hatch";
+    const CommandResult tool = h.run("tool.stroke", bad_tool);
+    CHECK(!tool.ok);
+    CHECK(tool.error.find("hatch") != std::string::npos);
+
+    for (const char* field : {"hardness", "opacity", "flow", "spacing"}) {
+        json out_of_range = valid;
+        out_of_range[field] = 1.5;
+        CHECK(!h.run("tool.stroke", out_of_range).ok);
+    }
+    json too_small = valid;
+    too_small["size"] = 0.0;
+    CHECK(!h.run("tool.stroke", too_small).ok);
+
+    CHECK_EQ(checksum_of(h), before);
+    const CommandResult nothing = h.run("edit.undo", json::object());
+    CHECK(!nothing.ok);
+    CHECK(nothing.error.find("nothing to undo") != std::string::npos);
+    CHECK(!h.run("edit.redo", json::object()).ok);
+}
+
+void test_a_stroke_that_misses_the_document_is_not_a_step() {
+    Harness h;
+    h.value("doc.new", json{{"width", 16}, {"height", 16}});
+    const std::string before = checksum_of(h);
+    const std::uint64_t revision = h.state.doc.revision();
+    json args = full_stroke();
+    args["points"] = json::array({json::array({500.0, 500.0})});
+    const json result = h.value("tool.stroke", args);
+    CHECK_EQ(result["touched"].size(), 0u);
+    CHECK_EQ(checksum_of(h), before);
+    CHECK_EQ(h.state.doc.revision(), revision);
+    CHECK_EQ(undo_depth(h), 0);
 }
 
 void test_app_quit_reaches_the_host() {
@@ -148,7 +250,7 @@ void test_bad_arguments_name_the_command() {
         const CommandResult result = h.run("doc.new", bad);
         CHECK(!result.ok);
         CHECK(result.error.find("doc.new") != std::string::npos);
-        CHECK(h.state.doc.image.empty());
+        CHECK(h.state.doc.empty());
     }
 
     const CommandResult no_document = h.run("doc.get", json::object());
@@ -222,7 +324,7 @@ void test_image_get_returns_the_documents_own_pixels() {
     std::string error;
     const Image written = Image::load_png(got["png_path"].get<std::string>(), error);
     CHECK(!written.empty());
-    const Image expected = h.state.doc.image.region(Rect{4, 6, 10, 8});
+    const Image expected = h.state.doc.pixels().region(Rect{4, 6, 10, 8});
     CHECK_EQ(written.checksum_hex(), expected.checksum_hex());
     CHECK_EQ(got["checksum"].get<std::string>(), expected.checksum_hex());
 
@@ -386,6 +488,9 @@ void test_view_navigation_keeps_the_image_reachable() {
 int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
+    test_one_stroke_is_one_step_that_puts_every_byte_back();
+    test_a_stroke_that_cannot_run_names_the_field_that_is_wrong();
+    test_a_stroke_that_misses_the_document_is_not_a_step();
     test_the_keymap_is_reported_with_the_commands();
     test_app_quit_reaches_the_host();
     test_command_invoke_dispatches_and_names_failures();
