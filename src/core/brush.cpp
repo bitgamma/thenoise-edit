@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "core/brush.h"
 
+#include "core/blend.h"
+
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -54,10 +56,6 @@ std::size_t area(Rect rect) {
 std::size_t index(Rect rect, int x, int y) {
     return static_cast<std::size_t>(y - rect.y) * static_cast<std::size_t>(rect.w) +
            static_cast<std::size_t>(x - rect.x);
-}
-
-std::uint8_t channel_from_unit(double unit) {
-    return static_cast<std::uint8_t>(std::lround(std::clamp(unit, 0.0, 1.0) * 255.0));
 }
 
 // The rectangle a set of dabs can affect, unclipped.
@@ -188,6 +186,7 @@ void scratch_composite(Image& image, const StrokeScratch& scratch, Rgba8 color,
                        const Brush& brush, PaintMode mode) {
     const Rect touched = intersect(scratch.rect, Rect{0, 0, image.size().w, image.size().h});
     const double opacity = brush.opacity * (color.a / 255.0);
+    const std::uint8_t source_rgb[4] = {color.r, color.g, color.b, 0};
     for (int y = touched.y; y < touched.bottom(); ++y) {
         for (int x = touched.x; x < touched.right(); ++x) {
             const double source = scratch.coverage[index(scratch.rect, x, y)] * opacity;
@@ -195,25 +194,11 @@ void scratch_composite(Image& image, const StrokeScratch& scratch, Rgba8 color,
                 continue;
             }
             std::uint8_t* pixel = image.at(x, y);
-            const double dest_alpha = pixel[3] / 255.0;
             if (mode == PaintMode::Erase) {
-                pixel[3] = channel_from_unit(dest_alpha * (1.0 - source));
-                if (pixel[3] == 0) {
-                    pixel[0] = 0;
-                    pixel[1] = 0;
-                    pixel[2] = 0;
-                }
+                blend_erase(pixel, source);
                 continue;
             }
-            const double out_alpha = source + dest_alpha * (1.0 - source);
-            const double kept = 1.0 - source;
-            pixel[0] = channel_from_unit(((color.r / 255.0) * source +
-                                          (pixel[0] / 255.0) * dest_alpha * kept) / out_alpha);
-            pixel[1] = channel_from_unit(((color.g / 255.0) * source +
-                                          (pixel[1] / 255.0) * dest_alpha * kept) / out_alpha);
-            pixel[2] = channel_from_unit(((color.b / 255.0) * source +
-                                          (pixel[2] / 255.0) * dest_alpha * kept) / out_alpha);
-            pixel[3] = channel_from_unit(out_alpha);
+            blend_over(pixel, source_rgb, source);
         }
     }
 }

@@ -11,6 +11,15 @@
 
 namespace noise {
 
+// One pixel, as the app names its channels. The store itself is bytes; this is for code that
+// reasons about a colour rather than a buffer.
+struct Rgba8 {
+    std::uint8_t r;
+    std::uint8_t g;
+    std::uint8_t b;
+    std::uint8_t a;
+};
+
 // Row length in bytes. The store is tightly packed, and codecs write with this stride.
 std::size_t stride_of(Extent size);
 

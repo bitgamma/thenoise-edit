@@ -73,6 +73,7 @@ add_library(noise_core STATIC
     src/core/log.cpp
     src/core/hash.cpp
     src/core/base64.cpp
+    src/core/blend.cpp
     src/core/command.cpp
     src/core/brush.cpp
     src/core/document.cpp

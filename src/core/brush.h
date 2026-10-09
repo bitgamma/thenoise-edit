@@ -29,13 +29,6 @@ inline constexpr double kMinBrushSize = 1.0;
 inline constexpr double kMaxBrushSize = 4096.0;
 inline constexpr const char* kDefaultTool = "brush";
 
-struct Rgba8 {
-    std::uint8_t r;
-    std::uint8_t g;
-    std::uint8_t b;
-    std::uint8_t a;
-};
-
 // What a fresh session paints with, until the user says otherwise.
 inline constexpr Rgba8 kDefaultColor{0, 0, 0, 255};
 
