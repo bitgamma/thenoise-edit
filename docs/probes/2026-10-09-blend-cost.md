@@ -107,8 +107,24 @@ comparison, which is the intended split: with tables off the pixels stay exactly
   eight layers still costs one pass per layer over that corner. Correct and cheap; content rects per
   layer would make it cheaper still, and is the next item on the list in `PLAN.md` if a real document
   ever says otherwise.
-- The composite is uploaded to GL whole when its revision changes: 16 MB at 2048². It hid behind the
-  repair in every number above, so it has not been measured on its own. Dirty-rect upload is the
-  `PLAN.md` item that would make a small change cheap on a machine where 16 MB is not free.
+- The composite is uploaded to GL whole when its revision changes: 16 MB at 2048², 64 MB at 4096². It
+  was never the bottleneck here - `PLAN.md`'s dirty-rect upload item is closed as not-a-defect on
+  this box, by cadence rather than by `frame_ms`:
+
+  ```
+  frames counted while painting (150 pointer moves, Release)
+
+  2048², 24 px brush      3.0 ms/frame   (334 fps)      idle at the same size: 2.3 ms
+  2048², 300 px brush     2.7 ms/frame   (375 fps)
+  512²,  24 px brush      2.4 ms/frame   (420 fps)
+  4096², 24 px brush      9.1 ms/frame   (110 fps)
+  ```
+
+  A stroke dirties a small region and still uploads the whole texture every time its revision moves,
+  so those numbers *include* the upload: it costs about 0.7 ms at 2048² and about 7 ms at 4096²,
+  against a repair that costs 14 ms and ~60 ms. Dragging the opacity at 4096² runs at 70 ms/frame
+  (14 fps) and is still the blend arithmetic, scaling with pixels as it did at 2048². Revisit if a
+  real GPU enters the picture, where 64 MB is a PCIe transfer instead of a memcpy - or if a document
+  gets bigger than 4096².
 - No GPU blending exists, so there is still no shader pair to check this reference against. The
   reference stays the only implementation until something measures a reason for a second.

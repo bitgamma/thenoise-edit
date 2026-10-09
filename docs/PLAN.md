@@ -177,11 +177,13 @@ one composite rule (`(1-ab)·as·Cs + as·ab·B + (1-as)·ab·Cb`, PDF 1.4 / CSS
    82.5 ms -> 14.6 ms Release / 806 ms -> 269 ms Debug. Three exact paths in front of the
    reference, tables built by calling the reference, checked against it byte for byte; the one case
    that got slower (9 %) is a layer whose alpha differs every pixel, written up with the rest in
-   `probes/2026-10-09-blend-cost.md`. What that probe says is still open, in the order it says it:
-   dirty-rect texture upload (16 MB at 2048^2 whenever the composite revision moves - it hid behind
-   the repair in every number above, so it has never been measured on its own), per-layer content
-   rectangles, GPU stamp preview, per-layer GPU textures + the shader blend pair checked against
-   `core/blend`.
+   `probes/2026-10-09-blend-cost.md`. **Dirty-rect texture upload is closed by measurement, not by
+   implementation**: cadence counted while painting is 334 fps at 2048^2 and 375 fps with a 300 px
+   brush, against 2.3 ms idle, and those frames already carry the whole-texture upload - ~0.7 ms at
+   2048^2, ~7 ms at 4096^2, where the repair is 60 ms. It is not a defect on this box; it is a
+   real-GPU question and the probe says where the number comes from. Still open, in cost order:
+   per-layer content rectangles (the repair at 4096^2 is 14 fps and is arithmetic), GPU stamp
+   preview, per-layer GPU textures + the shader blend pair checked against `core/blend`.
 4. **The move tool** (`V`) - drag translates the active layer's pixels, one undo step per gesture,
    with the ghost the overlay path draws while the button is down. Reachable through the existing
    `tool.pointer` events, so it is testable the way the brush already is.
