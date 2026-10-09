@@ -3,6 +3,138 @@
 Working note for the next session. Facts below were observed, not assumed; re-check any
 that matter before building on them. Refresh or delete this file as milestones close.
 
+## Handoff for the next context (2026-10-09, written mid-session)
+
+Read `AGENTS.md`, then this section, then `docs/MVP.md` M1/M2 rows. Everything below was
+observed, not assumed; the numbers are from one dev box and rotate with it.
+
+### Machine rules for this repo (already true, keep them true)
+
+- Build/gate: `cmake -B build -G Ninja && cmake --build build && xvfb-run -a ctest --test-dir build`
+  → currently **16/16 green**. Binary is `build/noise-edit`.
+- Commits need `--no-gpg-sign` (`commit.gpgsign=true`, no signing key here).
+- **Never write a server URL, hostname or key into the repo** - not in docs, probes, comments or
+  commit messages. The dev pool rotates by occupancy, so reference `$THENOISE_URL` /
+  `$THENOISE_API_KEY` and say "the dev box". Two example LAN addresses are still in the docs and
+  need genericising (see To do #1).
+- Live tier runs only with those env vars set; `tools/tn_probe.py` skips loudly otherwise, and it
+  caps requests with `--max-images`. Ask before spending more than ~10 images.
+
+### Decisions taken by the human this session
+
+1. **`.noise` format: always bump.** Adding required or optional manifest fields bumps
+   `manifest.json:format` and refuses older files naming the version. Do not add optional fields
+   under an old version number. (Needed for layer `visible` / `opacity` / `mode` / mask refs.)
+2. **Live server is available**; use the **`Flux-2-Klein-4B-TheNoise`** recipe for now (lightest).
+   "If you have ANY doubt on how to use the API or if something doesn't work, ping me."
+   The box had a huge LLM resident during probing, so first-request load costs measured today are
+   outliers, not the normal case.
+3. **Write a short user guide** - explicit request: "even I don't know how to use it. I saw the
+   layers and the brushes." Nobody has asked for anything else in the UI yet.
+
+### Committed (all green, tree clean at each commit)
+
+| commit | what |
+|---|---|
+| `ba8befc` | a stroke inherits the tool settings the app is on; present fields still range-checked |
+| `f28d72e` | `.noise` v0 container, `doc.save`/`doc.export`, dirty flag, layer name |
+| `da2de36` | debug wire: closed clients release their slot (`recv` 0 == EOF, not "idle") |
+| `ff828ad` | `core/blend.{h,cpp}` - the blend reference; `Rgba8` moved to `core/image.h` |
+| `0fee97d` | the document is a layer stack: `Layer{id,name,pixels}`, per-layer history, `composite()`, `layer.*` commands, container N layers, `core/blend` region blend |
+
+### Uncommitted right now
+
+- `tools/tn_probe.py` - the live-tier probe harness, **works, all checks green**, but is not yet:
+  registered in `tests/CMakeLists.txt` (want `LABELS live`, `SKIP_REGULAR_EXPRESSION "SKIP:"`,
+  timeout ~1800 s), nor documented. It reads only `$THENOISE_URL` / `$THENOISE_API_KEY`, prints no
+  secret, and takes `--model --sizes --max-images --upscale --timeout`.
+- Nothing else is dirty. Probe findings below are not yet written into `docs/probes/` (do that,
+  without a hostname).
+
+### Live server findings (2026-10-09, one box, Klein-4B) - do not re-spend images to learn these
+
+- Discovery: `GET /health` (status/version/`model_loaded` string/`all_models_models[]` with
+  `model_name`,`checkpoint`,`device`,`pinned`; `max_models.image == 1` ⇒ one image model at a
+  time). `GET /models` returns the box's short list; `GET /models?show_all=true` returns 187
+  entries. Model entries carry `recipe`, `labels` (`image`, `edit`, `upscaling`, `chat`,
+  `vision`, `custom`), `downloaded`, `size` (GB) and `image_defaults` (`steps`, `cfg_scale`,
+  `width`, `height`) - **`image_defaults` is the authoritative source for role defaults**, and the
+  list differs per box, so `roles.toml` must resolve against what is actually downloaded.
+  Note `Flux-2-Klein-4B` is `recipe: sd-cpp` (excluded by policy) while
+  `Flux-2-Klein-4B-TheNoise` is `thenoise` ✓. `Anima-VAE` / `Krea-2-VAE` also show as
+  `thenoise`+`image` with their own defaults - they are VAE-swap aliases, not separate roles;
+  no clean machine-readable flag distinguishes them, so preference order has to name candidates.
+- Timing (warm model, 4 steps): 64² 0.7 s · 512² 1.6 s · 768×512 2.1 s · 1024² 5.2 s ·
+  1536×2048 20.3 s · edit 512² 2.6 s · upscale 512²→2048² 5.0 s. Cold start with a big LLM
+  resident: 113 s (outlier, per the human).
+- **Sizes snap to a multiple of 16, silently**: asking 500×300 returns 512×304. `size_policy` is
+  16 in practice, not 64, and a request is never refused for a bad multiple - so the region
+  compiler must expect output dims ≠ requested dims (the resample already handles it) and should
+  send multiples of 16 itself.
+- **`size` is honoured on edits; omitting it does NOT follow the reference image** - it returns
+  the model default (1024²). The old claim in `AI-BACKEND.md` ("the first reference image sets
+  output size") is wrong for this server; explicit size stays mandatory. Omitting it also costs
+  10.8 s vs 2.6 s at 512², so it is not a free mistake.
+- **The server answers an identical request in 0.1 s** - there is a response cache keyed on the
+  request. Two consequences: (a) a timing probe must vary the seed or it measures a cache hit,
+  and (b) the client-side request cache is still worth having but must not be believed as
+  "reproduction of a model run". Whether that cache is intended/configurable is an open question
+  for the human.
+- Reproducibility: same prompt+params+seed **warm** ⇒ byte-identical ✓ (a cold first request after
+  a load did differ once - do not conclude non-determinism from a cold run).
+- Failure shapes to branch on: 404 `{"error":{"code":"model_not_found","message":…,"param":"model",
+  "requested_model":…}}`; 400 `{"error":{"message":"Missing 'prompt' field in request","type":
+  "invalid_request_error"}}`.
+- **Bad field values are accepted, not rejected**: `seed: "abc"` returned 200. So the request
+  builder must validate its own fields; a typo'd field name will silently mean "default".
+- Upscale works via `POST /images/upscale {model, image(b64 PNG)}` with
+  `RealESRGAN-4xplus-TheNoise` (0.1 GB, `labels: upscaling,image`) - it was absent from the
+  default `/models` list early in the session and present later, so do not gate a role on
+  discovery alone: try the endpoint and map the refusal.
+
+### To do, in order
+
+1. Scrub the example LAN address from `docs/AI-BACKEND.md` (~line 165) and the mockup line in
+   `docs/MVP.md` (~line 124); replace with `http://<server>:13305/api/v1` style placeholders.
+2. Write `docs/probes/2026-10-09-live-server.md` from the findings above (no hostname, no key),
+   register `tn_probe.py` as ctest `tn_probe_live` with `LABELS live` + skip regex, and correct
+   `docs/AI-BACKEND.md` where the measurements contradict it: size multiple 16 and silent
+   snapping, omitted-size behaviour, the response cache and its effect on ETA/EMA, discovery
+   being per-box and `show_all=true`, upscaler gating, "bad fields are ignored ⇒ validate our own".
+   Record in `AGENTS.md` that server URLs/keys never enter the repo.
+3. **User guide** (`docs/USER-GUIDE.md`, linked from `docs/README.md`): how to start it, the
+   window layout, mouse/keys that exist today (`F`, wheel zoom-to-cursor, right-drag pan,
+   left-drag paint, `B`/`E`, `[`/`]`, `Ctrl+Z`/`Ctrl+Y`, `Ctrl+S`, `Escape`/`Ctrl+Q`), the Brush
+   panel, Layers panel (add/select/delete, what "active layer" means, what the composite is),
+   `.noise` vs PNG (`doc.save` vs `doc.export`), and the debug wire section for people driving it
+   from a terminal (`--debug-wire`, `command.list`, `doc.get`, `layer.list`, `tool.pointer`,
+   `screenshot`). State plainly what does not exist yet: no AI commands, no masks, no blend
+   modes, no move tool, no reorder in the panel.
+4. `.noise` **format 2** (decision 1): `manifest.json:format = 2`, refuse 1 naming the version,
+   layer entries gain `visible`, `opacity`, `mode` (and later `mask`). Then implement visibility
+   and opacity in the composite (`core/blend` scales source alpha by layer opacity for `normal`),
+   the Layers panel eye/opacity row, and tests (round-trip keeps them; hidden layer contributes
+   nothing; composite-with-opacity equals a reference; `test_document`'s incremental-vs-scratch
+   equivalence must cover them). Keep `mode` to `normal` until the blend-mode set is designed -
+   a field with one value is honest, one with five unimplemented is not.
+5. Then the remaining tool keys (`V`, `M`, `,`/`.`) and the panel rows they belong to.
+6. Later, gated by measurement: dirty-rect texture upload; GPU stamp preview; per-layer GPU
+   textures + the shader blend pair checked against `core/blend`.
+7. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
+   outlive the session).
+
+### Things that bit me, so they don't bite twice
+
+- Our own reader accepting our own writer proves nothing: the ZIP end-of-directory size was 12
+  bytes wrong, `unzip` tolerated it, Python's `zipfile` refused it. `tools/container_probe.py`
+  exists because of this. Any new format surface needs a second implementation reading it.
+- A missing measurement is a result: `peak frame_ms 0.0` during a running stroke led to the wire
+  slot leak.
+- The probe bound caught a 71 ms/event composite regression that looked fine in review.
+- `CHECK_EQ` evaluates each operand once (fixed); `nlohmann::json::contains()` is always false for
+  arrays; `StrokeScratch::grow_to` once copied coverage as if every rect started at the corner.
+- Live pointer strokes must equal the same polyline sent as one `tool.stroke` call; provisional
+  edits exist so a drag is one undo step and does not compound opacity per frame.
 ## State at the M0 handoff
 
 `cmake -B build -G Ninja && cmake --build build && ctest --test-dir build` → 7/7 green,
