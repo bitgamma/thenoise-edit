@@ -10,12 +10,18 @@ add_executable(test_shortcut test_shortcut.cpp)
 add_executable(test_brush test_brush.cpp)
 add_executable(test_history test_history.cpp)
 
-foreach(target test_hash test_geom test_image test_command test_wire test_brush test_history)
+foreach(target test_hash test_geom test_command test_wire test_brush test_history)
     target_link_libraries(${target} PRIVATE noise_core noise_dbg)
     target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -Wshadow)
     add_test(NAME ${target} COMMAND ${target})
 endforeach()
+
+# Pixels plus the codec that reads and writes them.
+target_link_libraries(test_image PRIVATE noise_core noise_io noise_dbg)
+target_include_directories(test_image PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_image PRIVATE -Wall -Wextra -Werror -Wshadow)
+add_test(NAME test_image COMMAND test_image)
 
 # The command table is windowless, so the app's own behaviour is testable here. The
 # harness injects its own runtime dir, so the test runs standalone as well as under ctest.

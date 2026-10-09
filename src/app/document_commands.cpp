@@ -6,6 +6,7 @@
 #include "app/commands.h"
 #include "core/base64.h"
 #include "core/log.h"
+#include "io/png.h"
 
 #include <nlohmann/json.hpp>
 
@@ -48,7 +49,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         }
         const std::string path = args.at("path").get<std::string>();
         std::string error;
-        Image loaded = Image::load_png(path, error);
+        Image loaded = io::load_png(path, error);
         if (loaded.empty()) {
             return fail("doc.open", error + " (" + path + ")");
         }
@@ -75,7 +76,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
             return fail("doc.save", "document has no path and none was given");
         }
         std::string error;
-        if (!state.doc.pixels().save_png(path, error)) {
+        if (!io::save_png(path, state.doc.pixels(), error)) {
             return fail("doc.save", error);
         }
         state.doc.set_path(path);
@@ -96,7 +97,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         if (crop.empty()) {
             return fail("image.get", "region is empty after clipping to the image bounds");
         }
-        const std::vector<std::uint8_t> png = crop.encode_png();
+        const std::vector<std::uint8_t> png = io::encode_png(crop);
         json result = image_json(crop, "region");
         result["region"] = json::array({region.x, region.y, crop.size().w, crop.size().h});
         bool as_base64 = false;
@@ -108,7 +109,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         } else {
             const std::string path = captures_dir(state) + "/image-" + crop.checksum_hex().substr(0, 12) + ".png";
             std::string error;
-            if (!crop.save_png(path, error)) {
+            if (!io::save_png(path, crop, error)) {
                 return fail("image.get", error);
             }
             result["png_path"] = path;

@@ -6,6 +6,7 @@
 
 #include "core/base64.h"
 #include "core/log.h"
+#include "io/png.h"
 #include "platform/platform.h"
 
 #include <nlohmann/json.hpp>
@@ -127,7 +128,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         }
         const std::string path = captures_dir(state) + "/" + name + "-" + sha.substr(0, 12) + ".png";
         std::string error;
-        if (!crop.save_png(path, error)) {
+        if (!io::save_png(path, crop, error)) {
             return fail("screenshot", error);
         }
         json result = image_json(crop, path);
@@ -138,7 +139,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
             return fail("screenshot", "'base64' must be a boolean");
         }
         if (as_base64) {
-            result["png_base64"] = base64_encode(std::span<const std::uint8_t>(crop.encode_png()));
+            result["png_base64"] = base64_encode(std::span<const std::uint8_t>(io::encode_png(crop)));
         }
         return command_ok(result);
     });
@@ -151,11 +152,11 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         const std::string path_a = args.at("a").get<std::string>();
         const std::string path_b = args.at("b").get<std::string>();
         std::string error;
-        const Image a = Image::load_png(path_a, error);
+        const Image a = io::load_png(path_a, error);
         if (a.empty()) {
             return fail("pixels.compare", error + " (" + path_a + ")");
         }
-        const Image b = Image::load_png(path_b, error);
+        const Image b = io::load_png(path_b, error);
         if (b.empty()) {
             return fail("pixels.compare", error + " (" + path_b + ")");
         }

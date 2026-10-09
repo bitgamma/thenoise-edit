@@ -81,9 +81,16 @@ add_library(noise_core STATIC
     src/core/shortcut.cpp)
 target_include_directories(noise_core PUBLIC src)
 target_link_libraries(noise_core PUBLIC noise_platform nlohmann_json::nlohmann_json Threads::Threads)
-target_include_directories(noise_core PUBLIC ${LIBPNG_INCLUDE_DIRS})
-target_link_libraries(noise_core PUBLIC ${LIBPNG_LIBRARIES})
-target_compile_options(noise_core PUBLIC ${LIBPNG_CFLAGS_OTHER})
+
+# File formats live here, not in core: core is pixels and maths with no IO, which is what
+# keeps it testable headless and the codecs swappable.
+add_library(noise_io STATIC
+    src/io/png.cpp)
+target_include_directories(noise_io PUBLIC src)
+target_link_libraries(noise_io PUBLIC noise_core)
+target_include_directories(noise_io PUBLIC ${LIBPNG_INCLUDE_DIRS})
+target_link_libraries(noise_io PUBLIC ${LIBPNG_LIBRARIES})
+target_compile_options(noise_io PUBLIC ${LIBPNG_CFLAGS_OTHER})
 
 add_library(noise_gfx STATIC
     src/gfx/checker.cpp
@@ -106,7 +113,7 @@ add_library(noise_app STATIC
     src/app/tools/brush.cpp
     src/app/view_commands.cpp)
 target_include_directories(noise_app PUBLIC src)
-target_link_libraries(noise_app PUBLIC noise_dbg noise_core noise_platform)
+target_link_libraries(noise_app PUBLIC noise_dbg noise_core noise_io noise_platform)
 
 # The host side of the UI: it needs sokol's event and keycode types, so the key-event
 # translation builds with this target and not with the windowless command table.
@@ -122,7 +129,8 @@ target_link_libraries(noise-edit PRIVATE noise_ui noise_gfx noise_dbg noise_core
 
 if(NOISE_WERROR)
     set(NOISE_WARNINGS -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
-    foreach(tgt noise_platform noise_core noise_gfx noise_dbg noise_app noise_ui noise-edit)
+    foreach(tgt noise_platform noise_core noise_io noise_gfx noise_dbg noise_app noise_ui
+                    noise-edit)
         target_compile_options(${tgt} PRIVATE ${NOISE_WARNINGS})
     endforeach()
 endif()

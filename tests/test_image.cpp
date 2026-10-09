@@ -2,6 +2,7 @@
 #include "test.h"
 
 #include "core/image.h"
+#include "io/png.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -38,10 +39,10 @@ void test_png_round_trip() {
     for (const int w : widths) {
         for (const int h : heights) {
             const Image source = make_pattern(Extent{w, h});
-            const std::vector<std::uint8_t> encoded = source.encode_png();
+            const std::vector<std::uint8_t> encoded = io::encode_png(source);
             CHECK(!encoded.empty());
             std::string error;
-            const Image decoded = Image::decode_png(std::span<const std::uint8_t>(encoded), error);
+            const Image decoded = io::decode_png(std::span<const std::uint8_t>(encoded), error);
             CHECK_EQ(decoded.size().w, w);
             CHECK_EQ(decoded.size().h, h);
             CHECK_EQ(decoded.bytes(), source.bytes());
@@ -54,8 +55,8 @@ void test_png_file_round_trip_preserves_alpha() {
     const Image source = make_pattern(Extent{23, 11});
     const std::string path = temp_path("alpha.png");
     std::string error;
-    CHECK(source.save_png(path, error));
-    const Image loaded = Image::load_png(path, error);
+    CHECK(io::save_png(path, source, error));
+    const Image loaded = io::load_png(path, error);
     CHECK_EQ(loaded.checksum_hex(), source.checksum_hex());
     // Transparent pixels must stay transparent, not be flattened onto anything.
     for (int y = 0; y < source.size().h; ++y) {
@@ -71,18 +72,18 @@ void test_png_file_round_trip_preserves_alpha() {
 void test_decode_rejects_bad_input() {
     std::string error;
     const std::vector<std::uint8_t> garbage{0x00, 0x01, 0x02, 0x03, 0x04, 0x05};
-    CHECK(Image::decode_png(std::span<const std::uint8_t>(garbage), error).empty());
+    CHECK(io::decode_png(std::span<const std::uint8_t>(garbage), error).empty());
     CHECK(!error.empty());
 
     const Image source = make_pattern(Extent{40, 40});
-    std::vector<std::uint8_t> truncated = source.encode_png();
+    std::vector<std::uint8_t> truncated = io::encode_png(source);
     truncated.resize(truncated.size() / 2);
     error.clear();
-    CHECK(Image::decode_png(std::span<const std::uint8_t>(truncated), error).empty());
+    CHECK(io::decode_png(std::span<const std::uint8_t>(truncated), error).empty());
     CHECK(!error.empty());
 
     error.clear();
-    CHECK(Image::load_png(temp_path("does-not-exist.png"), error).empty());
+    CHECK(io::load_png(temp_path("does-not-exist.png"), error).empty());
     CHECK(error.find("does-not-exist.png") != std::string::npos);
 }
 

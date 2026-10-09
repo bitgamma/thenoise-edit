@@ -11,6 +11,9 @@
 
 namespace noise {
 
+// Row length in bytes. The store is tightly packed, and codecs write with this stride.
+std::size_t stride_of(Extent size);
+
 // RGBA8, 8 bits per channel, stride == width * 4. This is the CPU backing store
 // the whole app reads from: painting, compositing, saving and AI all go through it.
 class Image {
@@ -18,8 +21,9 @@ public:
     Image() = default;
 
     static Image filled(Extent size, std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a);
-    static Image decode_png(std::span<const std::uint8_t> bytes, std::string& error);
-    static Image load_png(const std::string& path, std::string& error);
+    // Takes the pixels a decoder produced. `rgba` must hold exactly stride_of(size) * size.h
+    // bytes; anything else is a decoder bug, so this asserts rather than resizes.
+    static Image from_rgba(Extent size, std::vector<std::uint8_t> rgba);
 
     Extent size() const { return size_; }
     bool empty() const { return size_.w == 0 || size_.h == 0; }
@@ -37,9 +41,6 @@ public:
     void blit(const Image& src, int dst_x, int dst_y);
     void fill_rect(Rect r, const std::uint8_t rgba[4]);
     std::string checksum_hex() const;
-
-    std::vector<std::uint8_t> encode_png() const;
-    bool save_png(const std::string& path, std::string& error) const;
 
 private:
     Extent size_{};

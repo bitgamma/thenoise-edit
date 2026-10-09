@@ -4,6 +4,7 @@
 #include "app/commands.h"
 #include "app/state.h"
 #include "core/image.h"
+#include "io/png.h"
 #include "core/log.h"
 #include "dbg/wire.h"
 #include "platform/platform.h"
@@ -610,7 +611,7 @@ void test_image_get_returns_the_documents_own_pixels() {
     CHECK_EQ(got["height"].get<int>(), 8);
 
     std::string error;
-    const Image written = Image::load_png(got["png_path"].get<std::string>(), error);
+    const Image written = io::load_png(got["png_path"].get<std::string>(), error);
     CHECK(!written.empty());
     const Image expected = h.state.doc.pixels().region(Rect{4, 6, 10, 8});
     CHECK_EQ(written.checksum_hex(), expected.checksum_hex());
@@ -635,8 +636,8 @@ void test_pixels_compare_finds_a_single_changed_byte() {
     b.blit(Image::filled(Extent{2, 2}, 200, 30, 40, 255), 5, 6);
     b.at(5, 6)[1] = 31;  // one channel of one pixel
     std::string error;
-    CHECK(a.save_png(path_a, error));
-    CHECK(b.save_png(path_b, error));
+    CHECK(io::save_png(path_a, a, error));
+    CHECK(io::save_png(path_b, b, error));
 
     const json same = h.value("pixels.compare", json{{"a", path_a}, {"b", path_a}});
     CHECK_EQ(same["equal"].get<bool>(), true);
@@ -665,7 +666,7 @@ void test_screenshot_returns_exactly_what_the_capture_gave() {
     CHECK_EQ(shot["sha256"].get<std::string>(), expected.checksum_hex());
 
     std::string error;
-    const Image loaded = Image::load_png(shot["path"].get<std::string>(), error);
+    const Image loaded = io::load_png(shot["path"].get<std::string>(), error);
     CHECK_EQ(loaded.checksum_hex(), expected.checksum_hex());
     CHECK(shot["path"].get<std::string>().find("unit-") != std::string::npos);
 

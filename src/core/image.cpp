@@ -3,7 +3,6 @@
 
 #include "core/hash.h"
 
-#include <png.h>
 
 #include <algorithm>
 #include <cassert>
@@ -16,10 +15,19 @@ namespace {
 
 constexpr int kChannels = 4;
 
+}
+
 std::size_t stride_of(Extent size) {
     return static_cast<std::size_t>(size.w) * kChannels;
 }
 
+Image Image::from_rgba(Extent size, std::vector<std::uint8_t> rgba) {
+    assert(rgba.size() == stride_of(size) * static_cast<std::size_t>(size.h) &&
+           "decoder gave the wrong number of pixels");
+    Image img;
+    img.size_ = size;
+    img.px_ = std::move(rgba);
+    return img;
 }
 
 Image Image::filled(Extent size, std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a) {
@@ -82,77 +90,6 @@ void Image::fill_rect(Rect r, const std::uint8_t rgba[4]) {
 
 std::string Image::checksum_hex() const {
     return sha256_hex(pixels());
-}
-
-Image Image::decode_png(std::span<const std::uint8_t> bytes, std::string& error) {
-    png_image png{};
-    png.version = PNG_IMAGE_VERSION;
-    if (!png_image_begin_read_from_memory(&png, bytes.data(), bytes.size())) {
-        error = std::string("png decode: ") + png.message;
-        return {};
-    }
-    png.format = PNG_FORMAT_RGBA;
-    Image img;
-    img.size_ = Extent{static_cast<int>(png.width), static_cast<int>(png.height)};
-    img.px_.resize(PNG_IMAGE_SIZE(png));
-    if (!png_image_finish_read(&png, nullptr, img.px_.data(),
-                               static_cast<png_int_32>(stride_of(img.size_)), nullptr)) {
-        error = std::string("png decode: ") + png.message;
-        return {};
-    }
-    return img;
-}
-
-Image Image::load_png(const std::string& path, std::string& error) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        error = "cannot open file: " + path;
-        return {};
-    }
-    std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(file)),
-                                    std::istreambuf_iterator<char>());
-    return decode_png(std::span<const std::uint8_t>(bytes), error);
-}
-
-std::vector<std::uint8_t> Image::encode_png() const {
-    png_image png{};
-    png.version = PNG_IMAGE_VERSION;
-    png.width = static_cast<png_uint_32>(size_.w);
-    png.height = static_cast<png_uint_32>(size_.h);
-    png.format = PNG_FORMAT_RGBA;
-
-    png_alloc_size_t needed = 0;
-    if (!png_image_write_to_memory(&png, nullptr, &needed, 0, px_.data(),
-                                   static_cast<png_int_32>(stride_of(size_)), nullptr)) {
-        return {};
-    }
-    std::vector<std::uint8_t> out(needed);
-    if (!png_image_write_to_memory(&png, out.data(), &needed, 0, px_.data(),
-                                   static_cast<png_int_32>(stride_of(size_)), nullptr)) {
-        return {};
-    }
-    out.resize(needed);
-    return out;
-}
-
-bool Image::save_png(const std::string& path, std::string& error) const {
-    const std::vector<std::uint8_t> bytes = encode_png();
-    if (bytes.empty()) {
-        error = "png encode failed";
-        return false;
-    }
-    std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    if (!file) {
-        error = "cannot write file: " + path;
-        return false;
-    }
-    file.write(reinterpret_cast<const char*>(bytes.data()),
-               static_cast<std::streamsize>(bytes.size()));
-    if (!file) {
-        error = "short write: " + path;
-        return false;
-    }
-    return true;
 }
 
 }
