@@ -254,6 +254,39 @@ void test_token_required_before_any_command() {
     wire.stop();
 }
 
+// The server holds a fixed number of clients and the debug wire is the way in for every driver,
+// so a peer that hangs up has to give its slot back: with `recv` returning 0 read as "nothing
+// yet", closed connections piled up until no new one was ever accepted.
+void test_a_hung_up_client_gives_its_slot_back() {
+    CommandTable table;
+    build_table(table);
+    dbg::DebugWire wire(table);
+    std::string error;
+    CHECK(wire.start(config_for(""), error));
+    const std::uint16_t port = wire.port();
+
+    // Well past config max_clients, each one asked to answer before it hangs up.
+    for (int round = 0; round < 12; ++round) {
+        const int client = connect_client(port);
+        CHECK(client >= 0);
+        if (client < 0) {
+            break;
+        }
+        CHECK(send_line(client, R"({"cmd":"test.echo","args":{"round":1}})"));
+        LineFramer framer(kMaxFrameBytes);
+        const json reply = wait_for_response(wire, client, framer);
+        CHECK(reply["ok"].get<bool>());
+        platform::close_fd(client);
+
+        const double deadline = platform::now_seconds() + kDeadlineSeconds;
+        while (wire.client_count() > 0 && platform::now_seconds() < deadline) {
+            wire.poll();
+        }
+        CHECK_EQ(wire.client_count(), 0u);
+    }
+    wire.stop();
+}
+
 void test_start_reports_a_bad_bind_address() {
     CommandTable table;
     build_table(table);
@@ -287,6 +320,7 @@ int main() {
     test_malformed_and_unknown_requests();
     test_frame_over_bound_drops_client();
     test_token_required_before_any_command();
+    test_a_hung_up_client_gives_its_slot_back();
     test_start_reports_a_bad_bind_address();
     test_stops_listening_after_stop();
     return test::summary("wire");

@@ -120,10 +120,13 @@ bool write_all(int fd, const std::string& bytes, int timeout_ms) {
 
 std::int64_t read_some(int fd, char* buffer, std::size_t capacity) {
     const auto got = ::recv(fd, buffer, capacity, 0);
-    if (got < 0) {
-        return (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
+    if (got > 0) {
+        return got;
     }
-    return got;
+    if (got == 0) {
+        return -1;  // end of stream: the peer is gone
+    }
+    return (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
 }
 
 void close_fd(int fd) {
