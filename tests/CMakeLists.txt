@@ -46,6 +46,16 @@ if(Python3_Interpreter_FOUND)
                          TIMEOUT 120
                          DEPENDS noise-edit)
 
+    # M1 acceptance: a 5000-dab stroke over 2048^2 with the app still drivable, and undo
+    # returning every byte. Records timings; asserts only wide behavioural bounds.
+    add_test(NAME test_stroke_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/stroke_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_stroke_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 180
+                         DEPENDS noise-edit)
+
     add_test(NAME test_view_golden
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/wire_drive.py
                      --bin $<TARGET_FILE:noise-edit>

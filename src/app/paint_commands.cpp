@@ -98,20 +98,20 @@ void register_paint_commands(AppState& state, CommandTable& table) {
             return command_ok(json{{"tool", tool},
                                    {"dabs", dabs},
                                    {"touched", json::array()},
-                                   {"revision", state.doc.revision()},
-                                   {"checksum", state.doc.checksum()}});
+                                   {"revision", state.doc.revision()}});
         }
         std::optional<Rect> touched;
         state.doc.paint(bounds, [&](Image& image) { touched = paint_stroke(image, path, brush, color, mode); });
         if (!touched) {
             return fail("tool.stroke", "the stroke painted nothing inside the document");
         }
+        // No checksum here: hashing a 2048² document costs more than painting a stroke
+        // across it, and a caller that wants one asks `doc.get`.
         return command_ok(json{{"tool", tool},
                                {"dabs", dabs},
                                {"touched",
                                 json::array({touched->x, touched->y, touched->w, touched->h})},
-                               {"revision", state.doc.revision()},
-                               {"checksum", state.doc.checksum()}});
+                               {"revision", state.doc.revision()}});
     });
 
     table.add("edit.undo", "Undo the last change to the pixels", {"Ctrl+Z"},

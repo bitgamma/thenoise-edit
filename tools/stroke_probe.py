@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""M1 acceptance: a 5000-dab stroke across a 2048^2 document, and the app stays drivable.
+
+The stroke is sent as a polyline; the app turns it into dabs with the brush's own spacing, so
+this drives the real paint path rather than a loop of small commands. Timings are printed for
+docs/probes/ and only the behavioural bounds are asserted - this catches a paint path that
+became tens of times slower or stopped undoing exactly, not one that lost 5%.
+
+    python3 tools/stroke_probe.py --bin build/noise-edit
+
+Skips loudly (exit 0, "SKIP:" on stdout) when it cannot render.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import statistics
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import wire_drive as wd  # noqa: E402
+
+DOC = 2048
+BRUSH_SIZE = 20.0
+SPACING = 0.25
+TARGET_DABS = 5000
+# A regression guard, not a benchmark: this box does the whole stroke in ~35 ms, and CI's
+# llvmpipe is allowed to be several times slower.
+MAX_STROKE_SECONDS = 1.0
+MAX_FRAME_MS = 400.0
+SAMPLE_INTERVAL = 0.002
+
+
+def serpentine(doc: int, dabs: int) -> list[list[float]]:
+    """A path long enough to need `dabs` dabs at the brush's own spacing."""
+    step = SPACING * BRUSH_SIZE
+    run = float(doc) - 2.0 * BRUSH_SIZE
+    legs = max(1, min(doc // 8, int(step * dabs / run) + 1))
+    points = []
+    for i in range(legs + 1):
+        y = BRUSH_SIZE + run * (i / legs)
+        points.append([BRUSH_SIZE if i % 2 == 0 else doc - BRUSH_SIZE, y])
+    return points
+
+
+class FrameSampler(threading.Thread):
+    """Watches `frame` and `frame_ms` while the stroke runs, without blocking it."""
+
+    def __init__(self, port: int) -> None:
+        super().__init__(daemon=True)
+        self.port = port
+        self.frames: list[int] = []
+        self.frame_ms: list[float] = []
+        self.stop_after = time.monotonic() + 30.0
+
+    def run(self) -> None:
+        wire = wd.Wire(self.port)
+        last = 0
+        while time.monotonic() < self.stop_after:
+            try:
+                state = wire.call("app.state")
+            except (wd.WireError, OSError):
+                break
+            if state["frame"] != last:
+                last = state["frame"]
+                self.frames.append(state["frame"])
+                self.frame_ms.append(state["frame_ms"])
+            else:
+                time.sleep(SAMPLE_INTERVAL)
+
+    def stop(self) -> None:
+        self.stop_after = time.monotonic()
+
+
+def run(args: argparse.Namespace) -> int:
+    runtime = Path(tempfile.mkdtemp(prefix="noise-stroke-"))
+    env = dict(os.environ)
+    env["NOISE_RUNTIME_DIR"] = str(runtime)
+    env.pop("NOISE_CONFIG_DIR", None)
+    try:
+        with (runtime / "app-stderr.log").open("w") as app_stderr:
+            proc = subprocess.Popen(
+                [str(args.bin), "--width=900", "--height=600", "--debug-wire=0"],
+                env=env, stderr=app_stderr)
+            wire = None
+            fails: list[str] = []
+            sampler: FrameSampler | None = None
+            try:
+                port = wd.wire_port(runtime, proc, args.startup_timeout)
+                wire = wd.Wire(port)
+                wire.call("doc.new", {"width": DOC, "height": DOC, "fill": [24, 32, 40, 255]})
+                wd.wait_for_fit(wire)
+                before = wire.call("doc.get", {})["checksum"]
+
+                sampler = FrameSampler(port)
+                sampler.start()
+                started = time.monotonic()
+                stroke = wire.call("tool.stroke", {
+                    "points": serpentine(DOC, TARGET_DABS),
+                    "tool": "brush", "size": BRUSH_SIZE, "hardness": 0.8, "opacity": 1.0,
+                    "flow": 1.0, "spacing": SPACING, "color": [210, 40, 90, 255]})
+                elapsed = time.monotonic() - started
+                wd.settle(wire)
+                sampler.stop()
+                sampler.join(timeout=5)
+
+                dabs = stroke["dabs"]
+                touched = stroke["touched"]
+                painted = wire.call("doc.get", {})["checksum"]
+                history = wire.call("edit.undo", {})
+                restored = wire.call("doc.get", {})["checksum"]
+                peak = max(sampler.frame_ms, default=0.0)
+                print(f"{dabs} dabs over a {DOC}^2 document, brush {BRUSH_SIZE:.0f} px: "
+                      f"stroke {elapsed * 1000.0:.1f} ms, touched {touched[2]}x{touched[3]}, "
+                      f"history stored {history['stored_bytes'] >> 20} MiB, "
+                      f"peak frame_ms seen {peak:.1f}, "
+                      f"{len(set(sampler.frames))} frames presented around it")
+                if dabs < TARGET_DABS * 0.9:
+                    fails.append(f"the path produced {dabs} dabs, expected about {TARGET_DABS}")
+                if elapsed > MAX_STROKE_SECONDS:
+                    fails.append(f"the stroke took {elapsed:.3f} s, bound is "
+                                 f"{MAX_STROKE_SECONDS} s")
+                if peak > MAX_FRAME_MS:
+                    fails.append(f"a frame took {peak:.1f} ms, bound is {MAX_FRAME_MS} ms")
+                if painted == before:
+                    fails.append("the stroke changed nothing")
+                if restored != before:
+                    fails.append("undo did not restore every byte of a 2048^2 document")
+            except wd.WireError as exc:
+                fails.append(str(exc))
+            finally:
+                if sampler is not None:
+                    sampler.stop()
+                wd.shutdown(proc, wire)
+            stderr_text = (runtime / "app-stderr.log").read_text(errors="replace")
+            if "BUFFER_OVERFLOW" in stderr_text:
+                fails.append("the UI overflowed its vertex buffer")
+            for line in fails:
+                print(f"FAIL: {line}")
+            return 1 if fails else 0
+    finally:
+        shutil.rmtree(runtime, ignore_errors=True)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bin", type=Path, required=True, help="path to noise-edit")
+    parser.add_argument("--startup-timeout", type=float, default=40.0)
+    args = parser.parse_args()
+    if not args.bin.exists():
+        print(f"FAIL: no binary at {args.bin}")
+        return 1
+    if not (os.environ.get("DISPLAY") or shutil.which("xvfb-run")):
+        print("SKIP: no DISPLAY and no xvfb-run, so nothing can render")
+        return 0
+    if not os.environ.get("DISPLAY"):
+        os.execvpe("xvfb-run", ["xvfb-run", "-a", sys.executable, __file__,
+                                "--bin", str(args.bin),
+                                "--startup-timeout", str(args.startup_timeout)], os.environ)
+    return run(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

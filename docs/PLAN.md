@@ -125,21 +125,36 @@ Still open, when convenient:
      whole framebuffer, so the frame can never compare equal across a frame boundary (the
      status bar reports a live `frame_ms`); compare document checksums, not screenshots, for
      exactness.
+   Measured (docs/probes/2026-10-09-paint-core.md), because three different things looked
+   like the bottleneck until they were timed: 5237 dabs across a 2048² document take
+   **108 ms in the Debug build the app and CI use** (32 ms for the same stroke at `-O2`),
+   the rectangle delta costs 15 MiB, undo restores the document checksum exactly, and a
+   frame presents in ~4 ms afterwards. `tools/stroke_probe.py` (`test_stroke_probe`) re-runs
+   that and asserts only wide bounds - it is there to catch a paint path that becomes tens of
+   times slower or stops undoing exactly, not one that loses five percent. Two things it
+   turned up:
+   * `tool.stroke` used to answer with a checksum of the pixels it had just painted, and
+     `sha256` over 16 MB cost more than the stroke: 166 ms per call, 10 ms after the checksum
+     moved back to `doc.get`, which is the call a caller makes when it wants one.
+   * A full `sg_image` re-upload after a commit costs ~3 ms at 2048² under llvmpipe - cheap
+     **once per stroke**, which is why live pointer painting needs the GPU stamp preview and
+     not a per-mouse-move revision bump. It is not, at this size, the argument for
+     dirty-rect uploads; tiles remain the answer if rectangle deltas ever cost like images.
    Next, in order:
-   a. **Dirty-rect texture upload**: `gfx::Texture::sync` recreates the whole image on any
-      revision change - fine for load, unusable for painting (MVP risk 9). Put the upload path
-      behind an accessor taking dirty rects and keep the whole-image path as one case.
-      Test: a 1-px edit uploads one rect, checksum still matches CPU pixels.
-   b. **Stroke timing test**: 5000 dabs at 2048² through `tool.stroke`, asserting no dropped
-      frames from `app.state.frame` / `frame_ms`. This is the acceptance test for M1 and the
-      first thing that will show whether the CPU stamp loop needs the tile migration.
-   c. **`.noise` v0** and the content-addressed blob store together (`ARCHITECTURE.md`'s file
-      format section: single-file zip, `manifest.json:format`, blobs by hash): undo wants
-      rectangles, layers want `BlobRef` sources, and the container is what makes the two
-      worth persisting. Round-trip test: save -> load -> identical checksums and identical
-      history depth. Older `format` values are refused with a message naming the version found.
-   d. **Layers** (`layer.*`), then the tool keys (`B`, `E`, `[`, `]`) that select and tune the
+   a. **Paint from the pointer, not only from the wire**: the tool state machine
+      (press / drag / release) in `app/tools/`, GPU stamp quads previewed during the drag, one
+      `Document::paint` on release. The bound that matters is one pointer event per frame, and
+      the measurement above says a commit cannot be paid that often. `tool.stroke` stays the
+      test path and the recorded-session path.
+   b. **`.noise` v0 and the content-addressed blob store** (`ARCHITECTURE.md`'s file format:
+      single-file zip, `manifest.json:format`, blobs by hash): undo wants rectangles, layers
+      want `BlobRef` sources, and the container is what makes both worth persisting.
+      Round-trip test: save -> load -> identical checksums and identical history depth; older
+      `format` values refused with a message naming the version found.
+   c. **Layers** (`layer.*`), then the tool keys (`B`, `E`, `[`, `]`) that select and tune the
       brush instead of naming it per stroke.
+   d. **Dirty-rect texture upload**, only when something measured needs it (see the note
+      above about what it is and is not).
 4. **Close the small honest gaps** left in M0, when convenient:
    * `--headless` (`SG_BACKEND_NULL` + CPU composite) from the wire spec is not implemented; CI
      uses Xvfb + llvmpipe instead. Until it exists, keep the `ARCHITECTURE.md` note honest.
