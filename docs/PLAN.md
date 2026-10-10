@@ -587,6 +587,24 @@ requires every command to refuse it, which is 101 red checks if the rule is remo
 
 ### Things that bit me, so they don't bite twice
 
+- **A test rectangle that starts at the origin tests one corner of the addressing and nothing else.**
+  Every mask-gesture test had its rectangles at `y = 0`, so the copy that forgot to subtract the
+  destination's own origin survived the whole suite and killed the app on the first real drag, four
+  pixels down the canvas. Gesture and region tests want a non-zero origin *and* a growth event.
+- **Measure the document rectangle, not the canvas area.** `app.state.canvas` is the docked canvas area;
+  what lies outside the document inside it is the void behind the layers. Counting "pixels that are
+  neither colour" there made a hard-edged stroke look two thirds antialiased - 68k px of void against a
+  stroke whose real rim was 6k.
+- **`app.state.stroke` is cleared on release.** A gesture's `plane`/`dabs`/`marquee` have to be read
+  between the last move and the release; read after the press they report one dab and prove nothing.
+- **A stray `noise-edit` left running makes `test_input_gestures` go red**, because XTest input goes to
+  whichever window has focus and the second app steals it. `pgrep -f noise-edit` before chasing a red
+  injected-input test - it was a phantom once and cost a full gate to unsee.
+- **Do not edit product sources while a mutation harness is running**: it keeps the file contents it read
+  at start and writes them back after every mutation, so a refactor made mid-run is reverted silently.
+  Related: `build-failed` is not a caught mutation - five of 27 anchors needed rewriting (unused
+  variables under `-Werror`, a `uint64_t` compared against its own type limit, and one that never
+  matched the source and so had never been tested).
 - Our own reader accepting our own writer proves nothing: the ZIP end-of-directory size was 12
   bytes wrong, `unzip` tolerated it, Python's `zipfile` refused it. `tools/container_probe.py`
   exists because of this. Any new format surface needs a second implementation reading it.
