@@ -39,6 +39,14 @@ bool arg_feather(const json& args, const char* key, std::optional<int>& out) {
     return true;
 }
 
+// "every pixel may receive an answer", stated as a mask because a mask is how this codebase says where
+// a write goes.
+Mask whole_canvas(Extent size) {
+    Mask all(size);
+    all.fill(kMaskIn);
+    return all;
+}
+
 json rect_json(Rect rect) {
     return json::array({rect.x, rect.y, rect.w, rect.h});
 }
@@ -63,7 +71,7 @@ json report_json(const ai::ComposeReport& report) {
                 {"result_height", report.result_dims.h},
                 {"answered_as_requested", report.answered_as_requested},
                 {"pixels_changed", report.pixels_changed},
-                {"pixels_clipped_by_alpha", report.pixels_clipped_by_alpha},
+                {"pixels_clipped_by_extent", report.pixels_clipped_by_extent},
                 {"coverage_pixels", report.coverage.covered()},
                 {"coverage_area", report.coverage.area()},
                 {"coverage_bounds", rect_json(report.coverage.bounds())}};
@@ -77,7 +85,7 @@ void register_ai_commands(AppState& state, CommandTable& table) {
     // exists this is the only way to see a composite on a real document - and the way to see it on
     // the wire as pixels, not as a claim.
     table.add("ai.compose", "Land an answer image on the document under the feathered mask",
-              {}, {"image", "apply", "feather", "colour_match", "lock_band"},
+              {}, {"image", "apply", "feather", "colour_match", "lock_band", "extent"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -108,15 +116,36 @@ void register_ai_commands(AppState& state, CommandTable& table) {
                             std::to_string(policy.lock_band_px) + ")");
         }
 
+        // How far a write may exist. An edit is received into the layer's own alpha; a generation may
+        // fill pixels the layer never had. That is a claim about the operation, so the caller states it
+        // and the compositor only multiplies masks.
+        std::string extent_name = "layer";
+        if (args.contains("extent")) {
+            if (!args.at("extent").is_string()) {
+                return fail("ai.compose",
+                            "'extent' must be 'layer' or 'canvas', not a " +
+                                std::string(args.at("extent").type_name()));
+            }
+            extent_name = args.at("extent").get<std::string>();
+        }
+        if (extent_name != "layer" && extent_name != "canvas") {
+            return fail("ai.compose",
+                        "'extent' is 'layer' (an edit, received into the layer's own alpha) or "
+                        "'canvas' (a generation, which may fill empty pixels); got '" +
+                            extent_name + "'");
+        }
+
         // No selection is the whole canvas, which is what a full-frame recipe means; a selection
         // that covers nothing is the other thing the document distinguishes, and it compiles to no
         // region at all.
         std::string coverage_source = "selection";
-        Mask coverage = state.doc.selection().value_or(Mask{state.doc.size()});
+        Mask coverage = state.doc.selection().value_or(whole_canvas(state.doc.size()));
         if (!state.doc.selection().has_value()) {
-            coverage.fill(kMaskIn);
             coverage_source = "whole document (no selection)";
         }
+        const Mask extent = extent_name == "canvas"
+                                ? whole_canvas(state.doc.size())
+                                : alpha_coverage(state.active_layer().pixels);
 
         const std::optional<ai::RegionPlan> plan =
             ai::plan_region(state.doc.size(), coverage, ai::kRegionPolicy);
@@ -140,11 +169,11 @@ void register_ai_commands(AppState& state, CommandTable& table) {
             // it would delete the feather and leave the report describing an edit the document did not
             // perform.
             state.doc.paint(plan->crop, PaintFence::own_coverage, [&](Image& layer) {
-                report = compose_result(layer, answer, *plan, coverage, policy);
+                report = compose_result(layer, answer, *plan, coverage, extent, policy);
             });
         } else {
-            Image candidate = state.doc.layer(static_cast<std::size_t>(state.doc.active())).pixels;
-            report = compose_result(candidate, answer, *plan, coverage, policy);
+            Image candidate = state.active_layer().pixels;
+            report = compose_result(candidate, answer, *plan, coverage, extent, policy);
             if (!report.composed) {
                 return fail("ai.compose", report.refusal);
             }
@@ -166,6 +195,7 @@ void register_ai_commands(AppState& state, CommandTable& table) {
         json result = json{{"applied", apply},
                            {"answer", path},
                            {"region", region_json(*plan, coverage_source)},
+                           {"extent", extent_name},
                            {"policy", json{{"feather", policy.feather_px.has_value()
                                                              ? json(*policy.feather_px)
                                                              : json("auto")},

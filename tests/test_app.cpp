@@ -2015,7 +2015,7 @@ void test_an_answer_lands_on_the_document_and_undoes_completely() {
     const std::size_t changed = preview["composite"]["pixels_changed"].get<std::size_t>();
     CHECK(changed > 0);
     CHECK(preview["composite"]["coverage_pixels"].get<std::size_t>() >= 20u * 14u);
-    CHECK_EQ(preview["composite"]["pixels_clipped_by_alpha"].get<std::size_t>(), std::size_t(0));
+    CHECK_EQ(preview["composite"]["pixels_clipped_by_extent"].get<std::size_t>(), std::size_t(0));
     CHECK(std::filesystem::exists(preview["preview"].get<std::string>()));
     // A preview previews: the document is untouched and no step was taken.
     CHECK_EQ(checksum_of(h), before);
@@ -2095,10 +2095,53 @@ void test_an_answer_lands_on_the_document_and_undoes_completely() {
     CHECK(full["composite"]["pixels_changed"].get<std::size_t>() > 0);
 }
 
+// A generation is not an edit: its point is pixels the layer never had, so the extent it names is the
+// canvas rather than the layer's alpha. Same command, same compositor, one argument - and the report
+// says which happened, because "composed successfully" over an empty layer would otherwise read as an
+// edit that worked.
+void test_an_answer_can_fill_pixels_the_layer_never_had() {
+    Harness h;
+    h.value("doc.new", json{{"width", 48}, {"height", 32}});  // transparent: nothing to receive into
+    h.value("select.rect", json{{"rect", json::array({10, 8, 16, 10})}});
+    const std::string empty_document = checksum_of(h);
+
+    std::string error;
+    const std::string answer_path = h.temp("generated.png");
+    CHECK(io::save_png(answer_path, Image::filled(Extent{96, 64}, 210, 30, 90, 255), error));
+
+    const json edit = h.value("ai.compose", json{{"image", answer_path}, {"apply", true}});
+    CHECK_EQ(edit["extent"].get<std::string>(), "layer");
+    CHECK_EQ(edit["composite"]["pixels_changed"].get<std::size_t>(), std::size_t(0));
+    CHECK(edit["composite"]["pixels_clipped_by_extent"].get<std::size_t>() > 0);
+    CHECK_EQ(checksum_of(h), empty_document);
+    // An edit of nothing spent nothing: no step, no dirty mark, nothing to undo.
+    CHECK_EQ(undo_depth(h), 0);
+
+    const json generation = h.value("ai.compose",
+                                   json{{"image", answer_path}, {"apply", true}, {"extent", "canvas"}});
+    CHECK_EQ(generation["extent"].get<std::string>(), "canvas");
+    CHECK_EQ(generation["composite"]["pixels_clipped_by_extent"].get<std::size_t>(), std::size_t(0));
+    CHECK(generation["composite"]["pixels_changed"].get<std::size_t>() > 0);
+    CHECK_NE(checksum_of(h), empty_document);
+    // Pixels the layer never had, alpha included, which is what the argument is for.
+    CHECK_EQ(h.state.doc.layer(0).pixels.at(14, 12)[3], 255);
+    CHECK_EQ(h.state.doc.layer(0).pixels.at(0, 0)[3], 0);  // the extent is still bounded by the region
+    CHECK_EQ(undo_depth(h), 1);
+    h.value("edit.undo", json::object());
+    CHECK_EQ(checksum_of(h), empty_document);
+
+    const CommandResult odd =
+        h.run("ai.compose", json{{"image", answer_path}, {"extent", "sprite"}});
+    CHECK(!odd.ok);
+    CHECK(odd.error.find("'layer'") != std::string::npos);
+    CHECK(odd.error.find("'canvas'") != std::string::npos);
+}
+
 int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
     test_an_answer_lands_on_the_document_and_undoes_completely();
+    test_an_answer_can_fill_pixels_the_layer_never_had();
     test_every_command_refuses_an_argument_it_does_not_declare();
     test_a_container_that_is_not_ours_is_refused_naming_what_it_met();
     test_exporting_to_a_flat_format_reports_what_the_format_could_hold();

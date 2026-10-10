@@ -72,19 +72,19 @@ struct ComposeReport {
     Extent result_dims{};
     bool answered_as_requested = false;
 
-    // The coverage that was pasted, in document pixels: feathered, and zeroed in the lock band and
-    // wherever the layer had no alpha. Every byte of `target` outside it is the byte that was there.
+    // The coverage that was pasted, in document pixels: feathered, cut by the lock band and multiplied
+    // by the extent. Every byte of `target` outside it is the byte that was there.
     Mask coverage{};
     std::size_t pixels_changed = 0;
-    // How many pixels the layer's own alpha stopped. A composite that pasted nothing because the
-    // layer was transparent there says so, rather than reporting a successful edit of nothing -
-    // which is what a generation into an empty layer looks like from here.
-    std::size_t pixels_clipped_by_alpha = 0;
+    // How many pixels the extent stopped outright, so a composite that pasted nothing says so instead
+    // of reporting a successful edit of nowhere. Zero for a generation, whose extent is the whole
+    // canvas by construction.
+    std::size_t pixels_clipped_by_extent = 0;
 };
 
 // Lands an answer on the document pixels it was compiled from, in `target`, inside `plan.crop`:
 // resample to the crop, colour match to the ring, `out = orig*(1-m) + result*m` with `m` the
-// feathered `coverage` cut by the lock band and the layer's own alpha.
+// feathered `coverage`, cut by the lock band and multiplied by `extent`.
 //
 // The blend is `restrict_to`, so it is the same premultiplied mix a brush write goes through and
 // exact at both ends of the coverage scale: `m == 0` leaves the byte alone, `m == 255` leaves the
@@ -94,9 +94,21 @@ struct ComposeReport {
 //
 // `coverage` is the document's coverage in document pixels - the same mask the region was compiled
 // from, which is why `plan.crop` always contains its bounds. `target` keeps its own pixels anywhere
-// else. A refusal (an empty answer, a plan off `target`, a mask with no coverage inside the crop)
-// composes nothing, and the report says which.
+// else.
+//
+// `extent`, same coordinates, says how far a write may exist: how much of the destination is there to
+// receive an answer. An edit passes `alpha_coverage(layer)`, or that intersected with the layer's own
+// mask, so an answer cannot extend the layer's silhouette; a generation passes a mask filled to 255,
+// because filling pixels the layer never had is the point of it. The compositor has no opinion of its
+// own on the matter - it blends by coverage, which is the one rule that covers both operations. The
+// extent is multiplied *after* the feather, which is what keeps an edit's edge soft and its silhouette
+// intact at the same time; folding it into the mask beforehand would bleed the silhouette by the feather
+// radius.
+//
+// A refusal (an empty answer, a plan off `target`, a mask with no coverage inside the crop) composes
+// nothing, and the report says which.
 ComposeReport compose_result(Image& target, const Image& result, const RegionPlan& plan,
-                             const Mask& coverage, const CompositePolicy& policy);
+                             const Mask& coverage, const Mask& extent,
+                             const CompositePolicy& policy);
 
 }  // namespace noise::ai

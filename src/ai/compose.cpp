@@ -47,16 +47,17 @@ LockBand lock_band(Rect crop, Extent canvas, int px) {
 }
 
 // The coverage the blend will use, in the crop's own coordinates: the selection softened by the
-// feather, then emptied in the lock band and wherever the layer has no alpha of its own.
+// feather, then emptied in the lock band and wherever the extent says no write may exist.
 //
 // The feather is computed over the crop and not the canvas because the selection cannot reach past
 // the crop - the plan grew the crop around its bounds - so a crop-sized blur sees exactly the same
 // coverage and costs the crop.
-Mask paste_coverage(const Mask& selection, const Image& target, Rect crop, int feather_px,
-                    int lock_band_px, std::size_t& clipped_by_alpha) {
-    Mask soft = feathered_mask(selection.region(crop), feather_px);
+Mask paste_coverage(const Mask& coverage, const Mask& extent, Rect crop, int feather_px,
+                    int lock_band_px, std::size_t& clipped_by_extent) {
+    Mask soft = feathered_mask(coverage.region(crop), feather_px);
     std::vector<std::uint8_t> plane = soft.plane();
-    const LockBand band = lock_band(crop, target.size(), lock_band_px);
+    const Mask crop_extent = extent.region(crop);
+    const LockBand band = lock_band(crop, extent.size(), lock_band_px);
     for (int y = 0; y < crop.h; ++y) {
         for (int x = 0; x < crop.w; ++x) {
             const std::size_t at = static_cast<std::size_t>(y) * static_cast<std::size_t>(crop.w) +
@@ -65,17 +66,19 @@ Mask paste_coverage(const Mask& selection, const Image& target, Rect crop, int f
                 plane[at] = kMaskOut;
                 continue;
             }
-            const std::uint8_t alpha = target.at(crop.x + x, crop.y + y)[3];
-            if (alpha == 0) {
+            // The extent is multiplied after the feather rather than folded into the mask before it:
+            // pre-feather clipping lets the feather bleed coverage past where the destination exists,
+            // which is a silhouette the caller said the write may not extend.
+            const std::uint8_t allowed = crop_extent.coverage(x, y);
+            if (allowed == 0) {
                 if (plane[at] > 0) {
-                    ++clipped_by_alpha;
+                    ++clipped_by_extent;
                 }
                 plane[at] = kMaskOut;
-            } else if (alpha < kMaskIn) {
-                // Painting proportional to how much layer is there, which is what a brush does: an
-                // answer cannot give the layer pixels it never had, not even partly.
+            } else if (allowed < kMaskIn) {
                 plane[at] = static_cast<std::uint8_t>(
-                    (static_cast<int>(plane[at]) * static_cast<int>(alpha) + kMaskIn / 2) / kMaskIn);
+                    (static_cast<int>(plane[at]) * static_cast<int>(allowed) + kMaskIn / 2) /
+                    kMaskIn);
             }
         }
     }
@@ -117,7 +120,8 @@ int auto_feather_radius(const Mask& coverage) {
 }
 
 ComposeReport compose_result(Image& target, const Image& result, const RegionPlan& plan,
-                             const Mask& coverage, const CompositePolicy& policy) {
+                             const Mask& coverage, const Mask& extent,
+                             const CompositePolicy& policy) {
     ComposeReport report;
     report.result_dims = result.size();
     report.answered_as_requested = result.size() == plan.requested;
@@ -159,8 +163,8 @@ ComposeReport compose_result(Image& target, const Image& result, const RegionPla
 
     const Image original = target.region(crop);
     const Mask crop_mask =
-        paste_coverage(coverage, target, crop, report.feather_px, policy.lock_band_px,
-                       report.pixels_clipped_by_alpha);
+        paste_coverage(coverage, extent, crop, report.feather_px, policy.lock_band_px,
+                       report.pixels_clipped_by_extent);
 
     Image patch = resample_lanczos3(result, Extent{crop.w, crop.h});
     report.colour_corrected = policy.colour_match && colour_match_ring(patch, original, crop_mask);

@@ -2,6 +2,7 @@
 #pragma once
 
 #include "core/geom.h"
+#include "core/image.h"
 #include "core/mask.h"
 
 #include <optional>
@@ -39,5 +40,11 @@ std::string mask_shape_names();
 // rectangle selected as a rectangle are the same bytes by construction rather than by a test that
 // happens to agree.
 void op_shape(Mask& mask, MaskShape shape, Rect box, MaskOp op);
+
+// An image's alpha channel as coverage: "how much layer is here", stated in the units a mask is
+// stated in. Which pixels may receive an answer is a claim about the operation, and a mask is how this
+// codebase states one - so an edit confined to where its layer exists and a generation that fills empty
+// pixels differ by which mask they carry, not by a rule of their own.
+Mask alpha_coverage(const Image& layer);
 
 }  // namespace noise

@@ -59,6 +59,14 @@ def depths(wire: wd.Wire) -> tuple[int, int]:
     return int(history["undo_depth"]), int(history["redo_depth"])
 
 
+def layer_checksum(wire: wd.Wire) -> str:
+    """The active layer's own digest, so 'the layer has pixels' is a fact and not an inference from
+    the composite, which would also change if the wrong layer had been written."""
+    rows = wire.call("layer.list")["layers"]
+    active = next(r for r in rows if r.get("active"))
+    return active["checksum"]
+
+
 def export(wire: wd.Wire, path: pathlib.Path) -> np.ndarray:
     wire.call("doc.export", {"path": str(path)})
     return np.asarray(Image.open(path).convert("RGB"), dtype=np.uint8)
@@ -151,7 +159,7 @@ def main() -> int:
         comp = preview["composite"]
         print(f"preview: feather={comp['feather_px']}px changed={comp['pixels_changed']} "
               f"coverage={comp['coverage_pixels']} px / area {comp['coverage_area']} "
-              f"clipped_by_alpha={comp['pixels_clipped_by_alpha']} "
+              f"clipped_by_extent={comp['pixels_clipped_by_extent']} "
               f"answered_as_requested={comp['answered_as_requested']} "
               f"colour_corrected={comp['colour_corrected']}")
         print(f"preview png: {preview.get('preview')}")
@@ -215,6 +223,35 @@ def main() -> int:
         if on_error > off_error * 0.4:
             print(f"FAIL: the ring correction left the patch's mean {off_error:.1f} -> {on_error:.1f} "
                   "from the truth, which is not a correction")
+            fail += 1
+
+        # A generation, which is the other operation the compositor serves: its own empty layer, so the
+        # extent is the canvas and "nothing there to receive it" is not an answer.
+        wire.call("layer.add")
+        blank = layer_checksum(wire)
+        wire.call("select.rect", {"rect": [cx - 40, cy - 40, 80, 80]})
+        as_edit = wire.call("ai.compose", {"image": str(patch_png), "apply": True})
+        print(f"generation into an empty layer, extent=layer: changed="
+              f"{as_edit['composite']['pixels_changed']} "
+              f"clipped_by_extent={as_edit['composite']['pixels_clipped_by_extent']}")
+        if as_edit["composite"]["pixels_changed"] or layer_checksum(wire) != blank:
+            print("FAIL: an edit wrote pixels into a layer that has none to give")
+            fail += 1
+        as_generation = wire.call("ai.compose", {"image": str(patch_png), "apply": True,
+                                                 "extent": "canvas"})
+        print(f"generation into an empty layer, extent=canvas: changed="
+              f"{as_generation['composite']['pixels_changed']} "
+              f"clipped_by_extent={as_generation['composite']['pixels_clipped_by_extent']}")
+        if as_generation["composite"]["pixels_clipped_by_extent"] or \
+                not as_generation["composite"]["pixels_changed"]:
+            print("FAIL: the canvas extent neither filled the layer nor reported a clean run")
+            fail += 1
+        if layer_checksum(wire) == blank:
+            print("FAIL: the top layer still holds no pixels after a generation")
+            fail += 1
+        wire.call("edit.undo")
+        if layer_checksum(wire) != blank:
+            print("FAIL: undo left the generated pixels behind")
             fail += 1
 
         wire.call("app.quit")

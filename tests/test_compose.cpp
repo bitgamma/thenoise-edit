@@ -11,6 +11,7 @@
 #include "ai/compose.h"
 #include "ai/region.h"
 #include "core/mask.h"
+#include "core/maskops.h"
 
 #include <algorithm>
 #include <cmath>
@@ -22,6 +23,7 @@
 using namespace noise;
 using noise::ai::auto_feather_radius;
 using noise::ai::colour_match_ring;
+using noise::alpha_coverage;
 using noise::ai::ComposeReport;
 using noise::ai::compose_result;
 using noise::ai::CompositePolicy;
@@ -166,7 +168,8 @@ void test_every_byte_outside_the_feather_is_the_byte_that_was_there() {
     const Image answer = answer_pattern(f.plan.requested);
     const CompositePolicy policy{3, false, 5};
 
-    const ComposeReport report = compose_result(target, answer, f.plan, f.coverage, policy);
+    const ComposeReport report = compose_result(target, answer, f.plan, f.coverage, alpha_coverage(target), policy)
+                                                ;
     CHECK(report.composed);
     CHECK(report.refusal.empty());
     CHECK_EQ(report.feather_px, 3);  // a policy that named a radius got that radius
@@ -215,7 +218,8 @@ void test_the_two_ends_of_the_coverage_scale_are_exact() {
     const Image answer = Image::filled(f.plan.requested, 10, 200, 30, 255);
     const CompositePolicy policy{3, false, 0};
 
-    const ComposeReport report = compose_result(target, answer, f.plan, f.coverage, policy);
+    const ComposeReport report = compose_result(target, answer, f.plan, f.coverage, alpha_coverage(target), policy)
+                                                ;
     CHECK(report.composed);
 
     // Where the mask is wholly over a wholly opaque part of the layer, the answer is all there is.
@@ -233,7 +237,7 @@ void test_the_two_ends_of_the_coverage_scale_are_exact() {
             CHECK_EQ(std::memcmp(target.at(x, y), kEmptyPixel, kChannels), 0);
         }
     }
-    CHECK_EQ(report.pixels_clipped_by_alpha, static_cast<std::size_t>(area(kLayerHole)));
+    CHECK_EQ(report.pixels_clipped_by_extent, static_cast<std::size_t>(area(kLayerHole)));
 
     // Where the layer was half there, the answer is half painted on: the clip is proportional, not
     // a binary veto, which is what a brush does to a sheer layer.
@@ -290,7 +294,8 @@ void test_the_lock_band_holds_the_original_at_the_crop_edge() {
     Image target = f.source;
     const Image answer = Image::filled(plan.requested, 10, 200, 30, 255);
     const CompositePolicy policy{3, false, kBand};
-    const ComposeReport report = compose_result(target, answer, plan, f.coverage, policy);
+    const ComposeReport report = compose_result(target, answer, plan, f.coverage, alpha_coverage(target), policy)
+                                                ;
     CHECK(report.composed);
     CHECK(report.pixels_changed > 0);
 
@@ -324,8 +329,8 @@ void test_the_lock_band_holds_the_original_at_the_crop_edge() {
 
     // Without the band the same pixels do move - the band is what stopped them, not the feather.
     Image unbanded = f.source;
-    const ComposeReport wide = compose_result(unbanded, answer, plan, f.coverage,
-                                              CompositePolicy{3, false, 0});
+    const ComposeReport wide = compose_result(unbanded, answer, plan, f.coverage, alpha_coverage(unbanded), CompositePolicy{3, false, 0})
+                                              ;
     CHECK(wide.composed);
     std::size_t moved = 0;
     for (int y = plan.crop.y + kBand; y < plan.crop.bottom() - kBand; ++y) {
@@ -342,7 +347,8 @@ void test_a_refusal_leaves_every_byte_alone() {
     const CompositePolicy policy{3, true, 6};
 
     Image target = f.source;
-    const ComposeReport no_answer = compose_result(target, Image{}, f.plan, f.coverage, policy);
+    const ComposeReport no_answer = compose_result(target, Image{}, f.plan, f.coverage, alpha_coverage(target), policy)
+                                                   ;
     CHECK(!no_answer.composed);
     CHECK(no_answer.refusal.find("answer") != std::string::npos);
     CHECK_EQ(no_answer.pixels_changed, std::size_t(0));
@@ -355,8 +361,8 @@ void test_a_refusal_leaves_every_byte_alone() {
 
     // A plan for a canvas this target is not.
     Image small = Image::filled(Extent{16, 16}, 5, 5, 5, 255);
-    const ComposeReport wrong_target = compose_result(small, answer_pattern(f.plan.requested), f.plan,
-                                                      f.coverage, policy);
+    const ComposeReport wrong_target = compose_result(small, answer_pattern(f.plan.requested), f.plan, f.coverage, alpha_coverage(small), policy)
+                                                      ;
     CHECK(!wrong_target.composed);
     CHECK(wrong_target.refusal.find("crop") != std::string::npos);
 
@@ -365,15 +371,15 @@ void test_a_refusal_leaves_every_byte_alone() {
     Mask elsewhere(kCanvas);
     elsewhere.op(Rect{250, 200, 20, 20}, MaskOp::replace);
     Image untouched = f.source;
-    const ComposeReport wrong_mask = compose_result(untouched, answer_pattern(f.plan.requested),
-                                                    f.plan, elsewhere, policy);
+    const ComposeReport wrong_mask = compose_result(untouched, answer_pattern(f.plan.requested), f.plan, elsewhere, alpha_coverage(untouched), policy)
+                                                    ;
     CHECK(!wrong_mask.composed);
     CHECK(wrong_mask.refusal.find("coverage") != std::string::npos);
 
     // And a mask with no pixels at all is not "everything", it is nothing: the distinction the
     // document draws, drawn here too.
-    const ComposeReport no_mask = compose_result(untouched, answer_pattern(f.plan.requested), f.plan,
-                                                 Mask{}, policy);
+    const ComposeReport no_mask = compose_result(untouched, answer_pattern(f.plan.requested), f.plan, Mask{}, alpha_coverage(untouched), policy)
+                                                 ;
     CHECK(!no_mask.composed);
     CHECK(no_mask.refusal.find("coverage") != std::string::npos);
     for (int y = 0; y < kHeight; ++y) {
@@ -410,15 +416,15 @@ void test_the_auto_feather_is_a_fraction_of_the_feature() {
     // What the range is for: the thin feature keeps its edge, the fat one gets a seam hidden.
     Fixture f;
     Image target = f.source;
-    const ComposeReport report = compose_result(target, answer_pattern(f.plan.requested), f.plan,
-                                                f.coverage, CompositePolicy{std::nullopt, false, 0});
+    const ComposeReport report = compose_result(target, answer_pattern(f.plan.requested), f.plan, f.coverage, alpha_coverage(target), CompositePolicy{std::nullopt, false, 0})
+                                                ;
     CHECK(report.composed);
     CHECK(report.feather_px >= kAutoFeatherMinPx);
     CHECK(report.feather_px <= kAutoFeatherMaxPx);
     // A feather of none is a hard edge, and it is a legal policy.
     Image hard = f.source;
-    const ComposeReport cut = compose_result(hard, answer_pattern(f.plan.requested), f.plan,
-                                             f.coverage, CompositePolicy{0, false, 0});
+    const ComposeReport cut = compose_result(hard, answer_pattern(f.plan.requested), f.plan, f.coverage, alpha_coverage(hard), CompositePolicy{0, false, 0})
+                                             ;
     CHECK(cut.composed);
     CHECK_EQ(cut.feather_px, 0);
     // A hard edge is the selection itself, except where the layer has no alpha to hold it: exactly
@@ -439,7 +445,7 @@ void test_the_auto_feather_is_a_fraction_of_the_feature() {
     CHECK_EQ(differs, static_cast<std::size_t>(area(kLayerHole)) + area(kLayerSheer));
     CHECK_EQ(where_the_layer_was_opaque, std::size_t(0));
     // Only the wholly transparent half is a clip; the sheer half is painted, proportionally.
-    CHECK_EQ(cut.pixels_clipped_by_alpha, static_cast<std::size_t>(area(kLayerHole)));
+    CHECK_EQ(cut.pixels_clipped_by_extent, static_cast<std::size_t>(area(kLayerHole)));
 }
 
 // The other side of the map: the compiler recorded where the request sits, the compositor lands the
@@ -455,8 +461,8 @@ void test_an_answer_lands_on_the_crop_it_came_from() {
         std::uint8_t* bright = answer.at(marker_x, marker_y);
         bright[0] = bright[1] = bright[2] = 255;
 
-        const ComposeReport report = compose_result(target, answer, f.plan, f.coverage,
-                                                   CompositePolicy{0, false, 0});
+        const ComposeReport report = compose_result(target, answer, f.plan, f.coverage, alpha_coverage(target), CompositePolicy{0, false, 0})
+                                                    ;
         CHECK(report.composed);
         const Vec2 expected = f.plan.to_document(Vec2{static_cast<double>(marker_x) + 0.5,
                                                      static_cast<double>(marker_y) + 0.5});
@@ -491,8 +497,8 @@ void test_an_answer_lands_on_the_crop_it_came_from() {
         std::uint8_t* bright = answer.at(marker_x, marker_y);
         bright[0] = bright[1] = bright[2] = 255;
 
-        const ComposeReport report = compose_result(target, answer, plan, coverage,
-                                                   CompositePolicy{0, false, 0});
+        const ComposeReport report = compose_result(target, answer, plan, coverage, alpha_coverage(target), CompositePolicy{0, false, 0})
+                                                    ;
         CHECK(report.composed);
         CHECK(report.answered_as_requested);
         const Vec2 expected = plan.to_document(Vec2{static_cast<double>(marker_x) + 0.5,
@@ -534,8 +540,8 @@ void test_an_answer_lands_on_the_crop_it_came_from() {
             }
         }
 
-        const ComposeReport report = compose_result(target, answer, f.plan, f.coverage,
-                                                   CompositePolicy{0, false, 0});
+        const ComposeReport report = compose_result(target, answer, f.plan, f.coverage, alpha_coverage(target), CompositePolicy{0, false, 0})
+                                                    ;
         CHECK(report.composed);
         CHECK(!report.answered_as_requested);
         CHECK(report.result_dims == snapped);
@@ -568,11 +574,11 @@ void test_the_flag_decides_and_a_missing_ring_matches_nothing() {
     Image drifted = Image::filled(f.plan.requested, 250, 250, 250, 255);
 
     Image matched = f.source;
-    const ComposeReport with_match = compose_result(matched, drifted, f.plan, f.coverage,
-                                                   CompositePolicy{2, true, 0});
+    const ComposeReport with_match = compose_result(matched, drifted, f.plan, f.coverage, alpha_coverage(matched), CompositePolicy{2, true, 0})
+                                                    ;
     Image unmatched = f.source;
-    const ComposeReport without = compose_result(unmatched, drifted, f.plan, f.coverage,
-                                                CompositePolicy{2, false, 0});
+    const ComposeReport without = compose_result(unmatched, drifted, f.plan, f.coverage, alpha_coverage(unmatched), CompositePolicy{2, false, 0})
+                                                 ;
     CHECK(with_match.composed);
     CHECK(without.composed);
     CHECK(!without.colour_corrected);
@@ -605,8 +611,8 @@ void test_the_flag_decides_and_a_missing_ring_matches_nothing() {
     const RegionPlan full = plan_region(kCanvas, whole, kTightPolicy).value();
     Image all = Image::filled(kCanvas, 100, 90, 80, 255);
     const Image before = all;
-    const ComposeReport report = compose_result(all, answer_pattern(full.requested), full, whole,
-                                               CompositePolicy{0, true, 0});
+    const ComposeReport report = compose_result(all, answer_pattern(full.requested), full, whole, alpha_coverage(all), CompositePolicy{0, true, 0})
+                                                ;
     CHECK(report.composed);
     CHECK(!report.colour_corrected);
     for (int y = 0; y < kHeight; ++y) {
@@ -823,8 +829,63 @@ void test_the_spread_correction_stops_short_of_a_palette_change() {
 
 }  // namespace
 
+// The other operation the compositor has to serve: a generation, whose whole point is pixels the layer
+// never had. Same rule, one argument changed - it blends by coverage either way, and how far a write may
+// exist arrives as a mask like any other, so nothing branches on which operation is being served.
+void test_an_extent_of_the_whole_canvas_fills_where_the_layer_has_nothing() {
+    const Fixture f;
+    const Image answer = answer_pattern(f.plan.requested);
+    const CompositePolicy policy{3, false, 5};
+
+    Image edit = f.source;
+    const ComposeReport clipped =
+        compose_result(edit, answer, f.plan, f.coverage, alpha_coverage(f.source), policy);
+
+    Image generation = f.source;
+    Mask everywhere(kCanvas);
+    everywhere.fill(kMaskIn);
+    const ComposeReport filled =
+        compose_result(generation, answer, f.plan, f.coverage, everywhere, policy);
+
+    CHECK(clipped.composed);
+    CHECK(filled.composed);
+    CHECK_EQ(filled.pixels_clipped_by_extent, std::size_t(0));
+    CHECK_EQ(clipped.pixels_clipped_by_extent, static_cast<std::size_t>(area(kLayerHole)));
+
+    // The hole received the answer, alpha and all: an empty pixel is no longer a refusal to write.
+    for (int y = kLayerHole.y; y < kLayerHole.bottom(); ++y) {
+        for (int x = kLayerHole.x; x < kLayerHole.right(); ++x) {
+            CHECK(filled.coverage.coverage(x, y) > 0);
+            CHECK_EQ(generation.at(x, y)[3], 255);
+            CHECK(!same(edit, generation, x, y));
+        }
+    }
+
+    // The extent means something only where the destination was partial. On every pixel the layer held
+    // in full the two agree byte for byte, so an ordinary edit did not move at all - which is the whole
+    // argument for stating this as data rather than as a mode.
+    std::size_t whole = 0;
+    std::size_t differs = 0;
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            if (f.source.at(x, y)[3] == 255) {
+                CHECK(same(edit, generation, x, y));
+                ++whole;
+            } else if (!same(edit, generation, x, y)) {
+                ++differs;
+            }
+        }
+    }
+    CHECK(whole > 0);
+    CHECK_EQ(differs, static_cast<std::size_t>(area(kLayerHole)) + area(kLayerSheer));
+
+    // Pixel-lock is the same claim for a generation: outside the coverage it reported, nothing moved.
+    CHECK_EQ(compare(f.source, generation, filled.coverage).changed_uncovered, std::size_t(0));
+}
+
 int main() {
     test_the_fixture_describes_the_case();
+    test_an_extent_of_the_whole_canvas_fills_where_the_layer_has_nothing();
     test_every_byte_outside_the_feather_is_the_byte_that_was_there();
     test_the_two_ends_of_the_coverage_scale_are_exact();
     test_the_lock_band_holds_the_original_at_the_crop_edge();
