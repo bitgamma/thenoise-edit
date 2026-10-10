@@ -74,6 +74,8 @@ observed, not assumed; the numbers are from one dev box and rotate with it.
 | `0a5ab03` | the boundary as `MaskRun` **edges** with the side they face, and `src/app/ants.{h,cpp}` marching every run along one perimeter coordinate in screen px; `app.state.ants`, `ants.freeze` | the human's "different parts still march at different rates" was a representation bug, not a rate: boundary pixels grouped along rows turn a vertical edge into a 1 px run per row. Edges are what a staircase actually is, so one ring now covers holes and disjoint pieces too, and the phases are inspectable because a blink that is only visible live cannot be pinned |
 | `3d9f02d` | `Mask::op(area, patch, op)` and `core/maskops`: `MaskShape` (`rect`, `ellipse`) applied with a `MaskOp`, the ellipse anti-aliased by exact strips (13.4 ms vs the rectangle's 11.6 ms at 2048^2); `Shift+M`, `select.ellipse`; `MaskFacts::area` beside `covered` | a shape had to be a *producer of coverage* and not a selection type, or every write door, the format and the overlay would have learned a case; partial coverage finally has a producer, which is what makes the premultiplied write-door mix observable rather than theoretical |
 ### What the last commit changed, and why it was one commit
+| `17ee6c9` | a mask becomes a plane you can write: `LayerPlane`, `Mask::paint(rect, ink, reveal\|hide)`, `Document::paint_mask`, per-plane history and a gesture that holds one plane; `Document::checksum()` counts masks | undo had to know which plane a step restores or it would paste coverage over colour; the digest hole meant a `.noise` round-trip check had been blind to lost coverage for as long as masks existed |
+| `ed249ba` | `mask.add/remove/fill/invert/target/get`, the Layers panel's mask section and `paint: layer\|mask` radios, brush and eraser writing coverage, `brush.paint_target`, `stroke.plane`, mask `area`; the row-addressing fix | the panel, the aim and the refusal are one claim - without the refusal the aim can lie, without the reports a driver cannot tell a mask that hides everything from a layer that has none. Also the out-of-bounds copy every unit test missed by starting its gestures at `y = 0` |
 
 Three facts, entangled in `document.cpp` and `command_args.cpp`, each verified on its own:
 
@@ -482,6 +484,21 @@ sums them.
 Counts after the slice: `mask` 4766, `brush` 1843, `document` 3576, `maskops` 8515, `history` 138,
 `app` 56213; 21/21 green in Debug and Release with no new warnings.
 
+`/tmp/redcheck_maskpaint.py` - 27 mutations over the coverage door, the scratch hand-off, the gesture's
+plane, the aim, the commands and the four new reported fields: reveal and hide swapped, an oversized ink
+accepted, the derived facts left stale, the eraser revealing, opacity ignored in either of the two places
+it applies, a patch read from outside the scratch, each of the two origin subtractions dropped from the
+row copy, the row copy doing nothing, either selection fence removed, a no-op stroke charged a step, the
+press aimed at nothing accepted, a press not keeping its plane, either door's mask branch removed, a
+coverage step restoring colour, `mask.remove` keeping the steps that name coverage, the digest forgetting
+a mask, and each report field deleted. **All 27 red** - though five of them took a second pass, because
+`build-failed` is not a caught mutation: four anchors stopped compiling (a variable left unused under
+`-Werror`, a `uint64_t` compared against its own type limit) and one did not match the source at all.
+That last one was worth the detour: it aimed at the **gesture's** selection fence, and the reason it did
+not match is that the fence had been written in the one-callee and tested only through `paint_mask`. The
+gesture path - the one the pointer takes - had no fence test. `test_a_mask_gesture_is_fenced_by_the_selection`
+now fences it during the drag, after the commit and after a redo.
+
 **Where that leaves the design.** A mask is now a plane with two doors and one representation, which is what the
 AI path was missing: a painted mask *is* an inpaint region, and `region compile = mask ∩ layer, cropped to
 Mask::bounds` needs no new type to exist. What the panel still cannot do is enable or disable a mask without
@@ -489,6 +506,18 @@ deleting it, apply it, or show a thumbnail to click - the thumbnail is a pointer
 same UI plumbing the layer rows will want for reorder. `paint_target` deliberately has no reset policy: it is a
 claim about the next stroke, and the answer to a claim that does not hold is a refusal that names the layer, not
 a second piece of state shadowing what the document looks like.
+
+**Ordering, as the human set it.** Masks first, then painting masks, then AI-server editing; the lasso and
+the wand are deferred to much later. That is why this slice went to the panel and the aim rather than to
+`maskops`, and why the next item is 6 - `cut`/`copy`/`paste`, then the first AI command with a region
+compile behind it - with a painted mask as the region a recipe wants.
+
+**Flagged for approval, not blocked on it.** This slice added rows to the debug command table
+(`mask.add/remove/fill/invert/target/get`) and fields to existing reports (`brush.paint_target`,
+`stroke.plane`, `tool.stroke`'s `plane`, a mask's `area`), as did the two before it (`ants.freeze`,
+`select.ellipse`, `select.get`'s `area`, `stroke.marquee_shape`). They have been treated as ordinary
+command-table growth; if any wire-visible addition counts as a protocol change needing a yes first, that
+covers these too and they should be said so now rather than at the next review.
 
 ### To do, in order
 
