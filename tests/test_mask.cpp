@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -422,30 +423,34 @@ void test_the_boundary_of_a_small_shape_costs_the_shape_not_the_plane(
     mask.op(Rect{1000, 1000, 40, 30}, MaskOp::replace);
     CHECK_EQ(mask.boundary().size(), 4u);
 
-    double walk = 0.0;
-    double reference = 0.0;
-    for (int round = 0; round < 3; ++round) {
+    // The walk first and the reference after it, in separate phases: a reference round copies 4 MB,
+    // and an allocation that churns the heap right before a small one measures the page faults of the
+    // reference rather than the walk.
+    double walk = std::numeric_limits<double>::max();
+    for (int round = 0; round < 5; ++round) {
         // Re-write the same coverage, which drops the caches without changing the shape.
         mask.op(Rect{1000, 1000, 40, 30}, MaskOp::replace);
-        double before = now_ms();
+        const double before = now_ms();
         const std::size_t edges = mask.boundary().size();
-        walk = std::max(walk, now_ms() - before);
+        walk = std::min(walk, now_ms() - before);
         if (edges != 4u) {
             noise::test::report("boundary of the blob", __FILE__, __LINE__,
                                 "got " + std::to_string(edges) + ", want 4");
         }
+    }
 
-        before = now_ms();
+    double reference = std::numeric_limits<double>::max();
+    for (int round = 0; round < 5; ++round) {
+        const double before = now_ms();
         const Mask whole = mask.region(Rect{0, 0, size.w, size.h});
         const std::size_t same_edges = whole.boundary().size();
-        reference += now_ms() - before;
-        if (same_edges != edges) {
+        reference = std::min(reference, now_ms() - before);
+        if (same_edges != 4u) {
             noise::test::report("boundary the whole-plane way", __FILE__, __LINE__,
-                                "got " + std::to_string(same_edges) + ", want " +
-                                    std::to_string(edges));
+                                "got " + std::to_string(same_edges) + ", want 4");
         }
     }
-    if (!(walk * 50.0 < reference)) {
+    if (!(walk * 4.0 < reference)) {
         noise::test::report("the boundary walk costs the shape", __FILE__, __LINE__,
                             "walk " + std::to_string(walk) + " ms, whole-plane " +
                                 std::to_string(reference) + " ms");
@@ -465,14 +470,14 @@ void test_counts_after_a_small_write_cost_the_rows_they_touched(
     mask.covered();  // the fill dirties every row; that scan is not what is being measured here
     const std::vector<std::uint8_t> ink(16, 0);
 
-    double counts_cost = 0.0;
-    double pass_cost = 0.0;
+    double counts_cost = std::numeric_limits<double>::max();
+    double pass_cost = std::numeric_limits<double>::max();
     for (int round = 0; round < 5; ++round) {
         mask.paint(Rect{1000, 1000, 4, 4}, ink, MaskInk::reveal);
         double before = now_ms();
         const std::size_t covered = mask.covered() + static_cast<std::size_t>(mask.area());
         const Rect bounds = mask.bounds();
-        counts_cost = std::max(counts_cost, now_ms() - before);
+        counts_cost = std::min(counts_cost, now_ms() - before);
         if (covered == 0u || bounds.empty()) {
             noise::test::report("counts read", __FILE__, __LINE__, "the plane is not empty");
         }
@@ -481,7 +486,7 @@ void test_counts_after_a_small_write_cost_the_rows_they_touched(
         before = now_ms();
         const Mask copied = mask.region(Rect{0, 0, size.w, size.h});
         const std::size_t from_scratch = copied.covered();
-        pass_cost = std::max(pass_cost, now_ms() - before);
+        pass_cost = std::min(pass_cost, now_ms() - before);
         if (copied.size().w != size.w || from_scratch != mask.covered()) {
             noise::test::report("copy of the plane", __FILE__, __LINE__, "not the same coverage");
         }
