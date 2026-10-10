@@ -270,6 +270,39 @@ const Image& Document::composite() const {
     return composite_;
 }
 
+Image Document::flatten_over(Rect bounds, std::size_t top_layer) const {
+    // The same pass `composite()` runs, restricted to the layers at or below `top_layer` and to the
+    // rectangle a request covers. It runs on a canvas-sized buffer rather than a crop-sized one because
+    // `blend_layer` works in canvas coordinates; the alternative is a second blend, which is exactly how
+    // a compositor and a canvas stop agreeing. A request is compiled once per job, not once per frame.
+    const Rect canvas_rect{0, 0, size().w, size().h};
+    const Rect region = intersect(bounds, canvas_rect);
+    if (region.empty()) {
+        return Image{};
+    }
+    Image canvas = Image::filled(size(), 0, 0, 0, 0);
+    Image masked;
+    const std::size_t limit = std::min(top_layer + 1, layers_.size());
+    for (std::size_t i = 0; i < limit; ++i) {
+        const Layer& layer = layers_[i];
+        if (!layer.visible) {
+            continue;
+        }
+        const Image* source = &layer.pixels;
+        if (layer.mask) {
+            if (layer.mask->covers_nothing(region)) {
+                continue;
+            }
+            if (!layer.mask->covers_all(region)) {
+                scale_by_coverage(*layer.mask, region, layer.pixels, masked);
+                source = &masked;
+            }
+        }
+        blend_layer(canvas, *source, region, layer.mode, layer.opacity);
+    }
+    return canvas.region(region);
+}
+
 std::uint64_t Document::revision() const { return revision_; }
 
 void Document::paint(Rect bounds, PaintFence fence, const std::function<void(Image&)>& edit) {

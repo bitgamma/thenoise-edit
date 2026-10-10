@@ -116,6 +116,11 @@ public:
     // puts a canvas-sized pass on every frame of a live stroke.
     const Image& composite() const;
 
+    // The visible layers at or below `top_layer`, cropped to `bounds`, over transparent. A request's
+    // base must not include a layer the answer is written back *under*: the patch would bake in content
+    // that then lands twice. `top_layer` is normally the active layer.
+    Image flatten_over(Rect bounds, std::size_t top_layer) const;
+
     // Bumped by anything a step could undo and by anything that changes what the canvas shows;
     // the renderer re-uploads on it.
     std::uint64_t revision() const;
