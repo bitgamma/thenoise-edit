@@ -3,6 +3,7 @@
 
 #include "core/document.h"
 #include "core/mask.h"
+#include "core/maskops.h"
 
 #include <cstdint>
 #include <span>
@@ -536,6 +537,47 @@ void test_a_selection_holds_every_write_inside_it() {
     CHECK_NE(doc.checksum(), std::string{});
 }
 
+// A shape whose edge covers part of a pixel is the case the coverage plane exists for: the write is
+// mixed by how much, not switched on and off by whether there is any. Painting white onto black makes
+// the expected result exact - the coverage byte itself - so this pins the whole path from a shape's
+// raster to the pixel, selection door included.
+void test_a_partly_covered_selection_paints_partly() {
+    const Extent size{40, 20};
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(size, 0, 0, 0, 0)}}), std::nullopt, "x.noise");
+
+    Mask selection(size);
+    op_shape(selection, MaskShape::ellipse, Rect{0, 0, size.w, size.h}, MaskOp::replace);
+    CHECK(doc.set_selection(selection));
+    CHECK_EQ(selection.coverage(20, 10), 255);
+    CHECK_EQ(selection.coverage(0, 0), 0);
+
+    const std::string before = doc.checksum();
+    paint_on(doc, Rect{0, 0, size.w, size.h}, 255);
+    const Image after = doc.layer(0).pixels;
+    std::size_t partial = 0;
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const int coverage = selection.coverage(x, y);
+            // Alpha takes the coverage; the colour is the paint's, unchanged. That is what mixing on
+            // premultiplied values buys, and a test that expected the colour to fade would be
+            // asserting the bug this rule exists to avoid.
+            CHECK_EQ(static_cast<int>(after.at(x, y)[3]), coverage);
+            if (coverage != 0) {
+                CHECK_EQ(static_cast<int>(after.at(x, y)[0]), 255);
+            }
+            partial += coverage != 0 && coverage != 255 ? 1u : 0u;
+        }
+    }
+    // If the raster had come back as a staircase there would be no partial pixel to mix, and this
+    // test would be checking the wrong thing without noticing.
+    CHECK(partial > 40u);
+
+    // And undo puts all of it back, partial mixes included.
+    doc.undo();
+    CHECK_EQ(doc.checksum(), before);
+}
+
 // The gesture door has to honour the selection too - it is the one the brush and the move tool go
 // through - and the step it commits has to put the pixels back exactly.
 void test_a_gesture_clips_to_the_selection_and_undoes_exactly() {
@@ -804,6 +846,7 @@ int main() {
     test_the_document_checksum_follows_the_stack();
     test_no_selection_and_an_empty_selection_are_different_things();
     test_a_selection_holds_every_write_inside_it();
+    test_a_partly_covered_selection_paints_partly();
     test_a_gesture_clips_to_the_selection_and_undoes_exactly();
     test_a_selection_of_another_size_is_refused();
     test_a_selection_change_is_a_document_change();

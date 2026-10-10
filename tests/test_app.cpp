@@ -1697,6 +1697,103 @@ void test_a_layer_mask_costs_no_undo_step_and_reaches_the_file() {
 }
 
 // The select tool through the pointer: the marquee is live, and the gesture costs no pixel history.
+// The reported area of an elliptical selection against the ellipse's own arithmetic: read the bounds
+// back, compute pi*a*b, require the plane to agree. The same helper serves the gesture, so a marquee
+// that drew a staircase or shifted its centre fails here rather than in a screenshot.
+void expect_ellipse_area(const json& selection, double tolerance, int line) {
+    const double a = selection["bounds"][2].get<double>() / 2.0;
+    const double b = selection["bounds"][3].get<double>() / 2.0;
+    const double want = M_PI * a * b;
+    const double got = selection["area"].get<double>();
+    noise::test::expect(std::fabs(got - want) <= tolerance * want, "ellipse area matches pi*a*b",
+                        __FILE__, line,
+                        "got " + std::to_string(got) + " want " + std::to_string(want));
+    // Pixels touched is at least the area claimed and less than the box: the difference between them
+    // is the anti-aliased edge, and either equality would mean it had gone.
+    const double covered = selection["covered"].get<double>();
+    const double box = selection["bounds"][2].get<double>() * selection["bounds"][3].get<double>();
+    noise::test::expect(covered >= got && covered < box,
+                        "covered sits between the area claimed and the box", __FILE__, line,
+                        selection.dump());
+}
+
+void test_the_ellipse_command_selects_the_curve_and_not_its_box() {
+    Harness h;
+    h.value("doc.new", json{{"width", 40}, {"height", 20}, {"fill", json::array({0, 0, 0, 255})}});
+
+    h.value("select.rect", json{{"rect", json::array({0, 0, 40, 20})}});
+    const json square = h.value("select.get", json::object());
+    CHECK_EQ(square["covered"].get<int>(), 800);
+    // A rectangle has no edge to speak of: it claims exactly the pixels it touches.
+    CHECK_NEAR(square["area"].get<double>(), 800.0, 0.001);
+
+    h.value("select.ellipse", json{{"rect", json::array({0, 0, 40, 20})}});
+    const json round = h.value("select.get", json::object());
+    expect_ellipse_area(round, 0.01, __LINE__);
+    CHECK(rect_is(Rect{round["bounds"][0].get<int>(), round["bounds"][1].get<int>(),
+                       round["bounds"][2].get<int>(), round["bounds"][3].get<int>()},
+                  Rect{0, 0, 40, 20}, __LINE__));
+
+    // Combining works the same way as for a rectangle, because it is the same operation: taking the
+    // curve out of the box leaves the corners the curve does not reach, and taking the box out of the
+    // curve leaves nothing - which only holds if the partial pixels subtracted as partial.
+    h.value("select.rect", json{{"rect", json::array({0, 0, 40, 20})}});
+    h.value("select.ellipse", json{{"rect", json::array({0, 0, 40, 20})}, {"mode", "subtract"}});
+    const json corners = h.value("select.get", json::object());
+    CHECK_NEAR(corners["area"].get<double>(), 800.0 - round["area"].get<double>(), 0.02);
+    h.value("select.rect", json{{"rect", json::array({0, 0, 40, 20})}, {"mode", "subtract"}});
+    CHECK_NEAR(h.value("select.get", json::object())["area"].get<double>(), 0.0, 0.001);
+
+    // A shape the table does not have is refused outright, a bad box names the argument, and neither
+    // touches what was already selected.
+    h.value("select.ellipse", json{{"rect", json::array({0, 0, 40, 20})}});
+    const json settled = h.value("select.get", json::object());
+    const CommandResult odd = h.run("select.parabola", json{{"rect", json::array({0, 0, 4, 4})}});
+    CHECK(!odd.ok);
+    const CommandResult flat = h.run("select.ellipse", json{{"rect", json::array({0, 0, 0, 9})}});
+    CHECK(!flat.ok);
+    CHECK(flat.error.find("0x9") != std::string::npos);
+    CHECK(h.value("select.get", json::object()) == settled);
+}
+
+void test_the_ellipse_marquee_draws_the_shape_of_its_own_tool_row() {
+    Harness h;
+    h.value("doc.new", json{{"width", 40}, {"height", 20}, {"fill", json::array({0, 0, 0, 255})}});
+    h.value("tool.select_ellipse", json::object());
+    CHECK_EQ(h.state.tool, std::string("select_ellipse"));
+    // Like the rectangle marquee it selects, so painting through it is refused - naming the tools
+    // that do paint.
+    const CommandResult paint_attempt =
+        h.run("tool.stroke", json{{"points", json::array({json::array({1.0, 1.0})})}});
+    CHECK(!paint_attempt.ok);
+    CHECK(paint_attempt.error.find("select_ellipse") != std::string::npos);
+
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({5.0, 5.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({35.0, 15.0})}});
+    CHECK_EQ(h.value("app.state", json::object())["stroke"]["marquee_shape"].get<std::string>(),
+             "ellipse");
+    expect_ellipse_area(h.value("select.get", json::object()), 0.01, __LINE__);
+    CHECK_EQ(undo_depth(h), 0);
+
+    // Switching tools mid-marquee does not change the shape of the one already being drawn: the box
+    // grows, the curve stays a curve.
+    h.value("tool.select", json::object());
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({39.0, 19.0})}});
+    CHECK_EQ(h.value("app.state", json::object())["stroke"]["marquee_shape"].get<std::string>(),
+             "ellipse");
+    expect_ellipse_area(h.value("select.get", json::object()), 0.01, __LINE__);
+    h.value("tool.pointer", json{{"phase", "release"}});
+    expect_ellipse_area(h.value("select.get", json::object()), 0.01, __LINE__);
+
+    // The rectangle tool, by contrast, fills the box it dragged.
+    h.value("tool.select", json::object());
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({5.0, 5.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({39.0, 19.0})}});
+    CHECK_EQ(h.value("app.state", json::object())["stroke"]["marquee_shape"].get<std::string>(),
+             "rect");
+    CHECK_NEAR(h.value("select.get", json::object())["area"].get<double>(), 34.0 * 14.0, 0.001);
+}
+
 void test_the_select_gesture_draws_and_puts_down_the_selection() {
     Harness h;
     h.value("doc.new", json{{"width", 40}, {"height", 20}, {"fill", json::array({0, 0, 0, 255})}});
@@ -1774,6 +1871,8 @@ int main() {
     test_the_marquee_claims_every_pixel_it_passed_over();
     test_the_select_commands_set_add_and_take_away();
     test_a_selection_holds_a_stroke_inside_it();
+    test_the_ellipse_command_selects_the_curve_and_not_its_box();
+    test_the_ellipse_marquee_draws_the_shape_of_its_own_tool_row();
     test_the_select_gesture_draws_and_puts_down_the_selection();
     test_a_selection_becomes_a_mask_and_a_mask_becomes_a_selection();
     test_a_layer_mask_costs_no_undo_step_and_reaches_the_file();

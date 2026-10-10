@@ -341,6 +341,69 @@ which is a statement about types rather than about features: it is why the selec
 draw a mask except by selecting first), and per-layer content rectangles - which a mask makes worth
 doing, since a masked layer's visible box is `min(pixels.bounds, mask.bounds())`.
 
+### The rectangle was the only shape
+
+**Built.** `Shift+M` and a drag give an ellipse, `select.ellipse {rect, mode}` gives one to a script,
+and nothing gained a type: **a shape is a producer of coverage, never a kind of selection**.
+
+The seam that made that cheap is `Mask::op(area, patch, op)` - coverage someone else produced, over a
+rectangle, through the same `combined()` arithmetic `op(rect, op)` uses. `core/maskops` is the one home
+of the producers: `MaskShape` (`rect`, `ellipse`), one table row naming each, and one function that
+rasterises and hands the bytes over. Everything the mask already guaranteed then applies to the curve
+without being restated: `add`/`subtract`/`replace`, the canvas clip at the door, the cached facts, the
+boundary the ants walk, persistence (`selection.m8` was already a coverage plane, so the `format` number
+did not move), `mask.from_selection`, and the write-time clip. The curve's edge pixels are *partly*
+covered, so a stroke landing half on one happens half - which is what `restrict_to`'s premultiplied mix
+was built for and had never been shown on a shape. `test_a_partly_covered_selection_paints_partly` says
+it in bytes: alpha scales with coverage, the premultiplied colour is untouched, `Ctrl+Z` puts it back.
+
+The ellipse is inscribed in the box dragged and anti-aliased by **exact vertical strips**: for a pixel
+row, each pixel straddling the curve takes its coverage from the strip of the ellipse between its left
+and right edges, sampled at 16 places, which bounds the error by one strip (`2 / semi_axis`) however the
+curve behaves there. A row's pixels wholly inside the interval where every sample is complete are filled
+without being tested, and so is the band beyond the curve's reach; only the boundary band is sampled.
+At 2048² that costs **13.4 ms against the rectangle's 11.6 ms** - 1.16x - after 79 ms for the per-pixel
+version and 218 ms before the row fast paths. `test_the_ellipse_is_the_area_it_claims` compares the bytes
+with pi·a·b: **+0.031%** worst over squares and uneven boxes up to 400x300, +0.22% at 2048², +0.28% at
+21x9, and +0.49% of pi/4 for a single 1x1 pixel where the estimator is weakest. Every case also has to
+land strictly between an empty and a full box, which no threshold-only assertion catches.
+
+Two numbers are reported now because one could not say both things: `covered` counts pixels touched,
+`area` adds the coverage up. Equal for a rectangle; for an ellipse in an 80x60 box they are 3884 and
+3769.914 against pi·a·b = 3769.911. The panel and status bar say *touched*, which is what a person asks
+about an edge; the wire says both, and `select.get` is what a script asserts against.
+
+On screen (`/tmp/ellipse_probe.py`, 3.67 px per doc px), with the outline located from the pixels the
+overlay itself changed - a screenshot carries window chrome the view transform knows nothing about: the
+drawn outline measures 40.09 x 30.14 doc px where the semi-axes are 40 x 30, and of 720 rays out from
+the centre **707 cross the band within 1 doc px of the analytic radius and none cross it twice**; 11
+land slightly off and 2 find nothing, all at the flat extremes where the band is one device pixel and
+the ray grazes it. The same probe against a rectangle in the same box matches 316, so the measurement
+separates a curve from a box instead of accepting any squiggle. `/tmp/ellipse_selection.png` is the
+picture, and it shows the tool row with its `Shift+M` hint. Through real X events
+(`tools/wire_input.py`, extended): `Shift+M` selects the ellipse row, the dragged marquee reports
+`marquee_shape: ellipse` and leaves `area` 433.6 against pi·a·b = 433.5 with 468 of its 552 box pixels
+touched, and `M` immediately afterwards still makes a rectangle.
+
+`/tmp/redcheck_ellipse.py` - 16 mutations: centre off by half a pixel, semi-axis taken as the whole
+width, strips dropped to 1, the strip clipped one pixel too generously, the wholly-inside test using the
+nearest rather than the farthest corner, the boundary band too narrow, the row fast path filling with
+nothing, a rectangle no longer routed through the rectangle op, `subtract` with its operands reversed,
+an oversized patch accepted, the area fact not computed, the two marquee rows swapping shapes, the
+marquee ignoring the shape it was started with, `replace` not starting from empty, and each of the two
+newly reported fields removed. **All 16 red.**
+
+Counts: `maskops` 8515 (new file), `document` 3343, `app` 56064, `mask` 4664; 21/21 green in Debug and
+Release with no new warnings.
+
+**Where that leaves the design.** `Mask::op(rect, patch, op)` is now the only door coverage enters
+through besides `op(rect, op)`, and both end in the same `combined()`. The wand is a flood fill in
+`maskops` - a seed, a tolerance, and the same patch hand-off; feather and morphology are a pass over an
+existing plane; neither is a new type, and none of them touches `Document`, the composite, the format or
+the overlay. The lasso is the one item here that is not a producer over a box: it needs a freehand path
+gesture, which is `stroke`-shaped rather than marquee-shaped, and that is the reason it stayed on the
+list rather than coming with this slice.
+
 ### To do, in order
 
 1. ~~**Blend modes**~~ - done; see "Blend modes, as built" above for the arithmetic, the
@@ -351,11 +414,14 @@ doing, since a masked layer's visible box is `min(pixels.bounds, mask.bounds())`
 3. ~~**Layer masks, and the two conversions**~~ - done as the section above. What is left of the idea
    is mask *painting* (item 5) and a mask affordance in the Layers panel: today a mask can only come
    from a selection, and can only be removed by converting a covered-nothing selection.
-4. **The rectangle is still the only shape.** `Mask` holds coverage, so an ellipse, a lasso or a wand
-   is a new way to produce runs of it rather than a new type; grow/shrink/feather are `MaskOp` rows or
-   one pass over the plane. Neither the selection nor a layer mask has to change when they arrive.
-5. **`core/maskops`**: rasterize shapes, flood fill, feather, morphology, colour-match - the pieces
-   mask painting and the region compiler both want, in the order the first of them needs them.
+4. ~~**The rectangle is still the only shape**~~ - the ellipse is done, and it cost no new type: see
+   "The rectangle was the only shape" above. Left here: the lasso, which needs a freehand path rather
+   than a box (a gesture shaped like `stroke`, not like the marquee), and grow/shrink/feather as one
+   pass over the plane.
+5. **`core/maskops`** exists, with shapes in it: `MaskShape` (`rect`, `ellipse`) applied over a `Rect`
+   with a `MaskOp`, and `Mask::op(area, patch, op)` as the seam any producer writes through. Still to
+   arrive in it: flood fill (the wand - seed, tolerance, contiguous or global), feather, morphology,
+   colour-match - the pieces mask painting and the region compiler both want.
 6. **The rest of the `edit` group** (`cut`, `copy`, `paste`) and the first AI command with a region
    compile behind it, in that order. (Undo/redo have been live since the gesture fix; `crop` and
    `flatten` wait on tool UI.) A masked layer is the natural source of an inpaint region: subtracting

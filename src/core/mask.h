@@ -39,10 +39,18 @@ const char* mask_op_name(MaskOp op);
 // "replace, add, subtract" - from the table, so an error cannot list a name that no longer exists.
 std::string mask_op_names();
 
-// What a coverage plane adds up to. `outline` follows the rule stated on `Mask::outline`; `bounds` is
-// tight, which is what a region compiler needs from it.
+// The ends of the coverage scale: no claim on the pixel, and the whole of it. Between is a partial
+// claim, which is what an anti-aliased edge produces and what `restrict_to` paints with.
+inline constexpr std::uint8_t kMaskOut = 0;
+inline constexpr std::uint8_t kMaskIn = 255;
+
+// What a coverage plane adds up to; `bounds` is tight, which is what a region compiler needs.
 struct MaskFacts {
     std::size_t covered = 0;
+    // How much of the canvas the mask claims, in pixels: the sum of every cell over 255. Equal to
+    // `covered` exactly when nothing is partly covered, which is what makes the pair say whether a
+    // shape has an anti-aliased edge.
+    double area = 0.0;
     Rect bounds{};
     // Every boundary edge, each in exactly one run: grouped along its own length, so a horizontal
     // side appears as runs along x and a vertical side as runs along y, and no edge is in both.
@@ -77,6 +85,14 @@ public:
     // Clipped to the mask's own size: a region reaching past the canvas is not an error, it is a
     // rect the caller did not clip, and coverage outside the canvas cannot exist anyway.
     void op(Rect rect, MaskOp op);
+
+    // Coverage over `area`, row-major, combined with what is there by the same rule `op(rect, op)`
+    // uses on full coverage: `replace` makes a cell the patch's value, `add` takes the brighter of
+    // the two, `subtract` takes the patch's claim away. This is the seam a rasterizer writes
+    // through - a shape whose edge covers part of a pixel says how much, in the same units the
+    // plane is already kept in. Cells of `area` outside the mask are dropped. A patch whose length
+    // is not `area.w * area.h` writes nothing and returns false.
+    bool op(Rect area, const std::vector<std::uint8_t>& patch, MaskOp op);
     void invert();
 
     // What a plane amounts to, computed once per content and held by the mask that owns it: a
@@ -86,6 +102,7 @@ public:
 
     // Pixels with any coverage at all, and the tight box holding them (empty when there are none).
     std::size_t covered() const { return facts().covered; }
+    double area() const { return facts().area; }
     Rect bounds() const { return facts().bounds; }
     // The boundary: every edge between a covered pixel and an uncovered one - out-of-bounds counting
     // as uncovered - as runs facing that side. One rule, so a rectangle, a painted blob, a selection

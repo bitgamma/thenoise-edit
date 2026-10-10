@@ -84,6 +84,7 @@ add_library(noise_core STATIC
     src/core/image.cpp
     src/core/layer.cpp
     src/core/mask.cpp
+    src/core/maskops.cpp
     src/core/shortcut.cpp)
 target_include_directories(noise_core PUBLIC src)
 target_link_libraries(noise_core PUBLIC noise_platform nlohmann_json::nlohmann_json Threads::Threads)

@@ -13,10 +13,15 @@
 namespace noise {
 
 const std::vector<ToolInfo> kTools{
-    {"brush", ToolAction::paint, PaintMode::Over, "B", "Paint with the brush tool"},
-    {"eraser", ToolAction::paint, PaintMode::Erase, "E", "Paint with the eraser tool"},
-    {"move", ToolAction::move, std::nullopt, "V", "Move the active layer with the pointer"},
-    {"select", ToolAction::select, std::nullopt, "M", "Select a rectangle with the pointer"},
+    {"brush", ToolAction::paint, PaintMode::Over, std::nullopt, "B", "Paint with the brush tool"},
+    {"eraser", ToolAction::paint, PaintMode::Erase, std::nullopt, "E",
+     "Paint with the eraser tool"},
+    {"move", ToolAction::move, std::nullopt, std::nullopt, "V",
+     "Move the active layer with the pointer"},
+    {"select", ToolAction::select, std::nullopt, MaskShape::rect, "M",
+     "Select a rectangle with the pointer"},
+    {"select_ellipse", ToolAction::select, std::nullopt, MaskShape::ellipse, "Shift+M",
+     "Select an ellipse with the pointer"},
 };
 
 std::string tool_names() {
@@ -52,6 +57,15 @@ double step_brush_fraction(double value, int direction, double low, double high)
     const double steps = std::round((value - low) / kBrushFractionStep) +
                          static_cast<double>(direction);
     return std::clamp(low + steps * kBrushFractionStep, low, high);
+}
+
+std::optional<MaskShape> tool_marquee(const std::string& id) {
+    for (const ToolInfo& tool : kTools) {
+        if (id == tool.id) {
+            return tool.marquee;
+        }
+    }
+    return std::nullopt;
 }
 
 std::optional<PaintMode> tool_mode(const std::string& id) {

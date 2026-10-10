@@ -62,6 +62,9 @@ struct PointerSelection {
     bool active = false;
     Vec2 origin{};
     Rect rect{};
+    // Held from the moment the button goes down rather than read again on every drag: switching
+    // tools mid-marquee must not change the shape of the one already being drawn.
+    MaskShape shape = MaskShape::rect;
 };
 
 struct AppState {

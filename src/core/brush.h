@@ -8,6 +8,7 @@
 
 #include "core/geom.h"
 #include "core/image.h"
+#include "core/maskops.h"
 
 namespace noise {
 
@@ -45,7 +46,7 @@ enum class ToolAction {
     select,  // the marquee becomes the document's selection
 };
 
-// One tool per row: the id a request carries, what it does to the pixels, and the bare key
+// One tool per row: the id a request carries, what it does to the pixels, and the key
 // that selects it. The command table, the pointer and the panels all read this, so a tool
 // that is not here does not exist.
 struct ToolInfo {
@@ -54,6 +55,9 @@ struct ToolInfo {
     // Set only by a row that paints. A tool that moves pixels has no paint mode, and nullopt is
     // how the row says so rather than a mode it happens to ignore.
     std::optional<PaintMode> paint;
+    // Set only by a row whose action is `select`: the shape its marquee puts down. Two marquee
+    // tools are two rows over this one field, so the pointer never has to ask which tool is active.
+    std::optional<MaskShape> marquee;
     const char* select_key;
     const char* title;
 };
@@ -65,6 +69,9 @@ std::optional<PaintMode> tool_mode(const std::string& id);
 
 // nullopt only for an id with no row, which is a request to refuse rather than a tool to guess.
 std::optional<ToolAction> tool_action(const std::string& id);
+
+// The shape a select tool draws, or nullopt for a tool that draws no marquee.
+std::optional<MaskShape> tool_marquee(const std::string& id);
 
 // "brush, eraser" - the tool list as an error message wants it, from the same table.
 std::string tool_names();

@@ -205,13 +205,19 @@ json layers_json_with_checksums(const AppState& state) {
 
 json selection_json(const AppState& state) {
     if (!state.doc.selection()) {
-        return json{{"active", false}, {"bounds", json::array()}, {"covered", 0}};
+        return json{{"active", false},
+                    {"bounds", json::array()},
+                    {"covered", 0},
+                    {"area", 0.0}};
     }
     const Mask& selection = *state.doc.selection();
     const Rect bounds = selection.bounds();
     return json{{"active", true},
                 {"bounds", json::array({bounds.x, bounds.y, bounds.w, bounds.h})},
+                // Pixels the mask touches, and how much of the canvas it claims in pixel units: the
+                // two differ exactly where a shape has an anti-aliased edge.
                 {"covered", selection.covered()},
+                {"area", selection.area()},
                 {"canvas", json::array({selection.size().w, selection.size().h})}};
 }
 
@@ -248,6 +254,9 @@ json stroke_json(const AppState& state) {
                                 ? json::array()
                                 : json::array({state.select.rect.x, state.select.rect.y,
                                                state.select.rect.w, state.select.rect.h})},
+                // Which shape the marquee is drawing, so a screenshot of an elliptical selection can
+                // be told from a rectangular one with the same bounds.
+                {"marquee_shape", mask_shape_name(state.select.shape)},
                 {"provisional_area",
                  json::array({state.doc.provisional_area().x, state.doc.provisional_area().y,
                               state.doc.provisional_area().w, state.doc.provisional_area().h})}};

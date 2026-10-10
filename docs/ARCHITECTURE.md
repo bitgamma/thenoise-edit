@@ -58,19 +58,26 @@ src/
                        renderer uploads the flattened composite, so there is nothing second to
                        match yet.
     mask.{h,cpp}       the coverage plane: one byte per pixel, straight, and the one home of the
-                       rules over it - `op(rect, replace|add|subtract)`, `invert`, and `facts()`
-                       (covered count, tight bbox, and the boundary grouped along **both** axes:
-                       `rows` and `columns` over one `MaskRun`, because a boundary is only drawable
-                       along its own length - an outline of row runs makes a vertical edge a line
-                       that reads as solid in one frame and absent in the next) held by the mask that
-                       owns the bytes and dropped by every write to them. A document's selection is a
-                       `Mask`; a layer mask is a `Mask`; converting between them is a copy, which is
-                       why there is no `selection.{h,cpp}` and no second coverage type.
-                       `restrict_to(mask, …)` is the write-door rule stated below, and
+                       rules over it - `op(rect, replace|add|subtract)`, `op(rect, patch, op)` for
+                       coverage a shape produced, `invert`, and `facts()` (pixels touched, the area
+                       those bytes claim, the tight bbox, and the boundary as `runs()` of `MaskRun`,
+                       which are the **edges** between covered and uncovered pixels labelled with the
+                       side they face: each edge once, consecutive edges of one side as one run).
+                       Edges and not pixel groupings, because a boundary is only drawable along its
+                       own length and a staircase must stay one line, and because rows grouped one
+                       way and columns the other make one corner belong to two lines. Held by the
+                       mask that owns the bytes and dropped by every write to them. A document's
+                       selection is a `Mask`; a layer mask is a `Mask`; converting between them is a
+                       copy, which is why there is no `selection.{h,cpp}` and no second coverage
+                       type. `restrict_to(mask, …)` is the write-door rule stated below, and
                        `scale_by_coverage(mask, …)` the same mix with nothing underneath, which is
                        how a composite reads a layer through its mask.
-    maskops.{h,cpp}    rasterize shapes, flood fill, feather, morphology, colour-match (bbox is here
-                       no longer: `Mask::facts` owns it)
+    maskops.{h,cpp}    coverage producers: `MaskShape` (`rect`, `ellipse`) applied to a `Rect` with a
+                       `MaskOp`, the table `kMaskShapeInfo` naming them (and so naming the commands
+                     and marquee tools built from them). A shape writes the same coverage plane and is
+                       never a mask type of its own, so an added shape costs a row here and nothing in
+                       the document, the composite, the format or the overlay. The ellipse is
+                       anti-aliased by exact vertical strips, 16 samples for the width a pixel straddles.
     heal.{h,cpp}       Telea / Chan fusion inpainting (local, offline)
     command.{h,cpp}    invokable command table: commands, titles and key bindings
     shortcut.{h,cpp}   canonical shortcut text: grammar, vocabulary, normalization
@@ -95,7 +102,9 @@ src/
                        move.cpp (the same gesture, sliding the layer's pixels), select.cpp (the
                        marquee, which becomes the document's selection live during the drag). Which
                        file the pointer talks to is the `action` column of `core::kTools`
-                       (`paint` / `move` / `select`), not a name compared in the caller
+                       (`paint` / `move` / `select`), and which shape a marquee tool drags is its
+                       `marquee` column - read when the button goes down, so switching tools
+                       mid-gesture cannot change the shape already being drawn
     shortcuts.{h,cpp}  platform key event -> canonical shortcut text (the only sokol-aware
                        part of the app layer)
     ui/                panels: layers, generate, journal, jobs, status, prefs
@@ -252,6 +261,14 @@ keep it cheap and honest:
   double-precision scaling of the write, and pins the two ends exactly: coverage 0 leaves the pixel
   untouched, coverage 255 leaves the write whole, and in between alpha is within 1 LSB and colour
   within 2 of scaled arithmetic — two roundings, the blend's and this one's.
+* **Shapes are producers of coverage, never kinds of selection.** `core/maskops` turns a `MaskShape`
+and a `Rect` into coverage bytes and hands them to `Mask::op`, so the rectangle and the anti-aliased
+ellipse go through the same `combined()` arithmetic as everything else that writes a mask. That is why
+the two commands, the two marquee tools and the file format exist at all: a row in `kMaskShapeInfo`
+plus a row in `kTools`, with no new type anywhere. It is also what makes an ellipse's soft edge
+meaningful — a stroke landing half on a half-covered pixel happens half, and `add`/`subtract` compose
+curves and boxes without a case for the pair.
+
 * **A layer mask hides, and never edits.** `Layer` holds `std::optional<Mask>`, and the composite
   reads the layer through it (`scale_by_coverage`, the same premultiplied mix as `restrict_to`, with
   nothing underneath). Painting is unaffected: a mask says what shows, not what exists, so a stroke
@@ -473,11 +490,14 @@ arrive with their milestones.
 `app.state` reports `frame` (frames presented), `frame_ms` (last presented frame), `canvas`
 (origin + size of the canvas content area in framebuffer px) and the view transform
 (`scale`, `origin`, `image`, `fit_pending`), the brush and tool the last stroke ran with, the
-document's `history` depths, and its `selection` (`active`, `bounds`, `covered`, `canvas`, with
-`canvas` present only while one exists, because a sized mask that covers nothing is a real state and
-must not read as no selection). While a pointer gesture is down, `stroke` also reports `marquee` — the
-rectangle the select tool is drawing, live, which is the only way to tell a marquee that tracks the
-pointer from one that appears on release. Enough for a driver to place an image rect on screen, wait
+document's `history` depths, and its `selection` (`active`, `bounds`, `covered`, `area`, `canvas`,
+with `canvas` present only while one exists, because a sized mask that covers nothing is a real state
+and must not read as no selection). `covered` counts pixels touched, `area` adds the coverage bytes
+up: for a rectangle they are equal, for an anti-aliased curve `area` is what the ellipse measures and
+`covered` is the pixels it grazes. While a pointer gesture is down, `stroke` also reports `marquee` —
+the box the select tool is drawing, live, and `marquee_shape`, which of them it is: the only way to
+tell a marquee that tracks the pointer from one that appears on release, and the only way to see which
+tool row a gesture was started with. Enough for a driver to place an image rect on screen, wait
 for the frame that drew it, and tell a stroke from an undo. `doc.get` is the call that hashes
 the pixels and answers with a checksum; `app.state` deliberately does not, because a driver
 polls it every frame. `fit_pending` is true while a fit waits for a

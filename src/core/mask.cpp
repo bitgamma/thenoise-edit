@@ -8,9 +8,6 @@
 namespace noise {
 namespace {
 
-constexpr std::uint8_t kOut = 0;
-constexpr std::uint8_t kIn = 255;
-
 // How far a value travels `coverage` of the way to its target. Rounding is away from zero and never
 // overshoots, so a partial mask cannot move a pixel further than the write did.
 int step_towards(int delta, std::uint8_t coverage) {
@@ -25,7 +22,7 @@ Rect bounds_of(const std::vector<std::uint8_t>& plane, Extent size) {
     int x1 = 0;
     int y1 = 0;
     for (std::size_t index = 0; index < plane.size(); ++index) {
-        if (plane[index] == kOut) {
+        if (plane[index] == kMaskOut) {
             continue;
         }
         const int x = static_cast<int>(index % static_cast<std::size_t>(size.w));
@@ -57,7 +54,7 @@ std::vector<MaskRun> runs_of_side(const std::vector<std::uint8_t>& plane, Extent
             return false;
         }
         return plane[static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) +
-                     static_cast<std::size_t>(x)] != kOut;
+                     static_cast<std::size_t>(x)] != kMaskOut;
     };
     std::vector<MaskRun> runs;
     int run_fixed = -1;
@@ -96,7 +93,8 @@ std::vector<MaskRun> runs_of_side(const std::vector<std::uint8_t>& plane, Extent
 MaskFacts facts_of(const std::vector<std::uint8_t>& plane, Extent size) {
     MaskFacts facts;
     for (const std::uint8_t cell : plane) {
-        facts.covered += cell != kOut ? 1u : 0u;
+        facts.covered += cell != kMaskOut ? 1u : 0u;
+        facts.area += static_cast<double>(cell) / static_cast<double>(kMaskIn);
     }
     facts.bounds = bounds_of(plane, size);
     for (const MaskSide side : kMaskSides) {
@@ -142,7 +140,7 @@ std::string mask_op_names() {
 Mask::Mask(Extent size)
     : size_(size),
       plane_(sized() ? static_cast<std::size_t>(size.w) * static_cast<std::size_t>(size.h) : 0u,
-             kOut) {}
+             kMaskOut) {}
 
 std::optional<Mask> Mask::from_plane(Extent size, std::vector<std::uint8_t> plane) {
     const std::size_t want = static_cast<std::size_t>(size.w) * static_cast<std::size_t>(size.h);
@@ -157,7 +155,7 @@ std::optional<Mask> Mask::from_plane(Extent size, std::vector<std::uint8_t> plan
 
 std::uint8_t Mask::coverage(int x, int y) const {
     if (x < 0 || y < 0 || x >= size_.w || y >= size_.h) {
-        return kOut;
+        return kMaskOut;
     }
     return plane_[static_cast<std::size_t>(y) * static_cast<std::size_t>(size_.w) +
                  static_cast<std::size_t>(x)];
@@ -167,6 +165,25 @@ void Mask::fill(std::uint8_t coverage) {
     std::fill(plane_.begin(), plane_.end(), coverage);
     invalidate();
 }
+
+namespace {
+
+// The one rule a mask operation applies to a pixel. `want` is what the operation claims for the
+// cell in the same units the plane is kept in, so a rectangle that claims everything and the edge of
+// an ellipse that claims a third of a pixel cannot drift apart.
+std::uint8_t combined(std::uint8_t had, std::uint8_t want, MaskOp operation) {
+    switch (operation) {
+        case MaskOp::replace:
+            return want;
+        case MaskOp::add:
+            return static_cast<std::uint8_t>(std::max<int>(had, want));
+        case MaskOp::subtract:
+            return static_cast<std::uint8_t>(had > want ? had - want : 0);
+    }
+    return had;
+}
+
+}  // namespace
 
 void Mask::op(Rect rect, MaskOp operation) {
     const Rect area = intersect(rect, Rect{0, 0, size_.w, size_.h});
@@ -178,25 +195,39 @@ void Mask::op(Rect rect, MaskOp operation) {
         std::uint8_t* row =
             plane_.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(size_.w);
         for (int x = area.x; x < area.right(); ++x) {
-            std::uint8_t& cell = row[x];
-            switch (operation) {
-                case MaskOp::replace:
-                    cell = kIn;
-                    break;
-                case MaskOp::add:
-                    cell = static_cast<std::uint8_t>(std::max<int>(cell, kIn));
-                    break;
-                case MaskOp::subtract:
-                    cell = kOut;
-                    break;
-            }
+            row[x] = combined(row[x], kMaskIn, operation);
         }
     }
 }
 
+bool Mask::op(Rect area, const std::vector<std::uint8_t>& patch, MaskOp operation) {
+    if (area.w <= 0 || area.h <= 0) {
+        return patch.empty();
+    }
+    const std::size_t cells = static_cast<std::size_t>(area.w) * static_cast<std::size_t>(area.h);
+    if (patch.size() != cells) {
+        return false;
+    }
+    const Rect written = intersect(area, Rect{0, 0, size_.w, size_.h});
+    if (written.empty()) {
+        return true;  // nothing written, so nothing derived from the plane went stale
+    }
+    invalidate();
+    for (int y = written.y; y < written.bottom(); ++y) {
+        std::uint8_t* row =
+            plane_.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(size_.w);
+        const std::uint8_t* source =
+            patch.data() + static_cast<std::size_t>(y - area.y) * static_cast<std::size_t>(area.w);
+        for (int x = written.x; x < written.right(); ++x) {
+            row[x] = combined(row[x], source[x - area.x], operation);
+        }
+    }
+    return true;
+}
+
 void Mask::invert() {
     for (std::uint8_t& cell : plane_) {
-        cell = static_cast<std::uint8_t>(kIn - cell);
+        cell = static_cast<std::uint8_t>(kMaskIn - cell);
     }
     invalidate();
 }
@@ -251,7 +282,7 @@ void restrict_to(const Mask& mask, Rect at, const Image& before, Rect before_at,
     for (int y = area.y; y < area.bottom(); ++y) {
         for (int x = area.x; x < area.right(); ++x) {
             const std::uint8_t coverage = mask.coverage(x, y);
-            if (coverage == kIn) {
+            if (coverage == kMaskIn) {
                 continue;
             }
             mix_towards(before.at(x - before_at.x, y - before_at.y), after.at(x, y), coverage);
@@ -271,7 +302,7 @@ void scale_by_coverage(const Mask& mask, Rect at, const Image& layer, Image& out
     // A mask with no pixels makes no claim, which for a mask means the same as it does for a
     // selection: nothing is hidden. Leaving the layer's bytes alone is the identity, and the
     // alternative - a plane that covers nothing because it has no size - would blank the layer.
-    const std::uint8_t whole = kIn;
+    const std::uint8_t whole = kMaskIn;
     for (int y = area.y; y < area.bottom(); ++y) {
         for (int x = area.x; x < area.right(); ++x) {
             std::uint8_t* to = out.at(x, y);

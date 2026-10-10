@@ -15,6 +15,7 @@ add_executable(test_document test_document.cpp)
 add_executable(test_blend test_blend.cpp)
 add_executable(test_mask test_mask.cpp)
 add_executable(test_ants test_ants.cpp)
+add_executable(test_maskops test_maskops.cpp)
 
 foreach(target test_hash test_geom test_command test_wire test_brush test_history)
     target_link_libraries(${target} PRIVATE noise_core noise_dbg)
@@ -38,6 +39,11 @@ add_test(NAME test_blend COMMAND test_blend)
 
 # What a coverage plane does to a write, checked against source-over written out again in the test:
 # the claim that the document can restrict a write after the fact rests on the two being the same.
+target_link_libraries(test_maskops PRIVATE noise_core noise_dbg)
+target_include_directories(test_maskops PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_maskops PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_maskops COMMAND test_maskops)
+
 target_link_libraries(test_mask PRIVATE noise_core noise_dbg)
 target_include_directories(test_mask PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(test_mask PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)

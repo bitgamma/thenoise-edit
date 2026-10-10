@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import math
 import shutil
 import os
 import socket
@@ -416,6 +417,35 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
     print(f"Ctrl+Z after the move: {undone[:12]}")
     if undone != before:
         fails.append("Ctrl+Z did not undo the move")
+
+    # The other marquee tool, through the same real key path: Shift+M has to reach the ellipse row,
+    # and the drag it makes has to produce the curve rather than its box.
+    inj.modified_key(KEY_M, KEY_SHIFT_L)
+    wd.settle(wire)
+    state = wire.call("app.state")
+    if state["brush"]["tool"] != "select_ellipse":
+        fails.append(f"Shift+M selected '{state['brush']['tool']}', expected 'select_ellipse'")
+    doc = wd.document_screen_rect(state)
+    inj.move(doc[0] + doc[2] * 0.2, doc[1] + doc[3] * 0.2)
+    inj.button(1, True)
+    wd.settle(wire)
+    inj.move(doc[0] + doc[2] * 0.55, doc[1] + doc[3] * 0.6)
+    wd.settle(wire)
+    dragging = wire.call("app.state")
+    inj.button(1, False)
+    wd.settle(wire)
+    curve = wire.call("select.get", {})
+    want_curve = math.pi * (curve["bounds"][2] / 2.0) * (curve["bounds"][3] / 2.0)
+    box = curve["bounds"][2] * curve["bounds"][3]
+    print(f"Shift+M drag: shape {dragging['stroke']['marquee_shape']}, bounds {curve['bounds']}, "
+          f"area {curve['area']:.1f} against pi*a*b {want_curve:.1f}, {curve['covered']} of {box} touched")
+    if dragging["stroke"]["marquee_shape"] != "ellipse":
+        fails.append(f"the ellipse tool's drag reported {dragging['stroke']['marquee_shape']}")
+    if abs(curve["area"] - want_curve) > 0.02 * want_curve:
+        fails.append(f"the dragged curve claims {curve['area']:.1f} px, pi*a*b is {want_curve:.1f}")
+    if curve["covered"] >= box:
+        fails.append("the dragged curve filled its own box")
+    wire.call("screenshot", {"name": "ellipse-ants"})
 
     # The select tool: `M`, a marquee drawn by the pointer, and then proof that the selection holds
     # the paint - all of it through events, because what the app does with a real drag is what the

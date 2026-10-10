@@ -58,8 +58,10 @@ Constraints that shape everything (see `AI-BACKEND.md`):
 - rect, ellipse, polygon/lasso (path → scanline fill), magic wand (tolerance,
   contiguous/global, anti-aliased) on composite or active layer
 - new/add/subtract/intersect modifiers; invert; feather; expand/shrink; border
-- **live**: marching ants, `Ctrl+D` clear, save selection ↔ layer mask (and the reverse). Rectangles
-  only for now: no lasso, wand, feather or expand/shrink, and no painting into a mask
+- **live**: marching ants, `Ctrl+D` clear, invert, save selection ↔ layer mask (and the reverse), and
+  two shapes — rectangle (`M`) and the anti-aliased ellipse inscribed in the drag (`Shift+M`), plus
+  `select.rect` / `select.ellipse` with `replace`/`add`/`subtract`. Missing: lasso, wand, feather,
+  expand/shrink, border, and any way to paint into a mask
 
 **AI**
 - `New image from prompt` → new layer, aspect presets at the model's native scale,

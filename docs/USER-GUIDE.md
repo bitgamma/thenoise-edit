@@ -71,7 +71,7 @@ is allowed for 48 px, so an edge is not a wall.
 
 ## Painting
 
-`B` brush, `E` eraser, `V` move, `M` select (see *A selection*). `[` and `]` step the size by x1.25 — the same keystroke means the same
+`B` brush, `E` eraser, `V` move, `M` rectangular select, `Shift+M` elliptical select (see *A selection*). `[` and `]` step the size by x1.25 — the same keystroke means the same
 thing at 4 px and at 400 px. `,` and `.` step **hardness** down and up, `Shift+,` and `Shift+.`
 step **opacity**: the MVP gave four actions to two keys, so the modifier takes the second pair. A
 step lands on the 5 % grid, so pressing `,` from a slider dragged to 0.73 gives 0.70 rather than
@@ -107,11 +107,17 @@ painting on the layer above, it stays where it is.
 
 ## A selection
 
-`M`, then drag. **Every document pixel the rectangle passes over is selected**, and the marching ants
-run along those pixels, so what is outlined is exactly what is writable. The ants are drawn in screen
-pixels, so they stay crisp at any zoom, and every side of the outline — including the edge of a hole
-and a second, separate selection region — marches with the same phase and speed. Dragging past the edge still
+`M` (or `Shift+M` for an ellipse), then drag. **The rectangle takes every document pixel it passes
+over; the ellipse is the ellipse inscribed in the box you drag**, and its edge pixels are partly
+selected in proportion to how much of each one the curve covers. The marching ants run along the
+selected pixels, so what is outlined is exactly what is writable. The ants are drawn in screen pixels,
+so they stay crisp at any zoom, and every side of the outline — including the edge of a hole and a
+second, separate selection region — marches with the same phase and speed. Dragging past the edge still
 selects up to the edge; a click selects one pixel; releasing without a marquee puts the selection down.
+
+A soft edge is not a second kind of selection: a partly covered pixel is the same 8-bit coverage a
+layer mask holds, so painting through an ellipse's edge lays on colour in the same proportion and
+`add`/`subtract` combine curves and rectangles exactly as they combine boxes.
 
 The selection belongs to the document and **limits every write to the pixels it covers**: painting,
 erasing and moving a layer all leave the pixels outside it exactly as they were. A stroke that lands
@@ -124,8 +130,10 @@ canvas is writable, the second blocks every write, and `Ctrl+D` is what puts it 
 the two, so inverting no selection selects the whole canvas and inverting twice returns what you had.
 
 The Brush panel has the same three actions as buttons — **All**, **None**, **Invert** — and reports
-the selection's size and pixel count. `select.rect {rect, mode}` with `mode` one of `replace`, `add`,
-`subtract`, plus `select.all`, `select.clear`, `select.invert` and `select.get`, are the wire
+the selection's size, how many pixels it touches and how much of the canvas it claims (`area`, the
+coverage added up, which is what an ellipse measures). `select.rect {rect, mode}` and
+`select.ellipse {rect, mode}` with `mode` one of `replace`, `add`, `subtract`, plus `select.all`,
+`select.clear`, `select.invert` and `select.get`, are the wire
 spelling, so a driver can put a selection down without a pointer and read back what the canvas window
 agreed to.
 
@@ -266,7 +274,7 @@ stroke and a capture, and the PNG turned up where it said.
 | document | `doc.new` `doc.open` `doc.save` `doc.export` `doc.get` `image.get` |
 | layers | `layer.list` `layer.add` `layer.remove` `layer.select` `layer.set` |
 | paint | `tool.brush` `tool.eraser` `tool.move` `tool.select` (one per tool row) `tool.set` `tool.stroke` `tool.pointer` `brush.larger` `brush.smaller` |
-| selection | `select.rect` `select.all` `select.clear` `select.invert` `select.from_mask` `select.get` `mask.from_selection` |
+| selection | `select.rect` `select.ellipse` `select.all` `select.clear` `select.invert` `select.from_mask` `select.get` `mask.from_selection` |
 | view | `view.fit` `view.set` `view.pan` `view.zoom` |
 | edit | `edit.undo` `edit.redo` |
 | observe | `screenshot` `pixels.compare` |

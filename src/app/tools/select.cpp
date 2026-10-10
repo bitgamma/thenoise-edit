@@ -3,6 +3,9 @@
 
 #include "app/state.h"
 
+#include "core/brush.h"
+#include "core/log.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -19,10 +22,10 @@ Rect marquee(Vec2 from, Vec2 to, Extent canvas) {
 namespace {
 
 // The marquee as a selection of the document's own size. Replaced rather than added to: the gesture
-// draws one rectangle, and the modes that combine shapes are the command's (`select.rect`).
+// draws one shape, and the modes that combine shapes are the command's (`select.rect`).
 void apply_marquee(AppState& state) {
     Mask selection(state.doc.size());
-    selection.op(state.select.rect, MaskOp::replace);
+    op_shape(selection, state.select.shape, state.select.rect, MaskOp::replace);
     state.doc.set_selection(selection);
 }
 
@@ -35,6 +38,16 @@ void select_press(AppState& state, Vec2 document_point) {
     state.select = PointerSelection{};
     state.select.active = true;
     state.select.origin = document_point;
+    // The tool table says what shape this tool draws; a `select` row without one is a table bug, so
+    // the gesture simply has nothing to draw and says so in the log rather than guessing a shape.
+    const std::optional<MaskShape> shape = tool_marquee(state.tool);
+    if (!shape) {
+        log::warn(std::string("tool '") + state.tool +
+                  "' selects but draws no shape, so the marquee was dropped");
+        state.select.active = false;
+        return;
+    }
+    state.select.shape = *shape;
     state.select.rect = marquee(document_point, document_point, state.doc.size());
     apply_marquee(state);
 }
