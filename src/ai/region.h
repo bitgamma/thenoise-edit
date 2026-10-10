@@ -58,8 +58,11 @@ struct RegionPlan {
     bool snapped_width = true;
     bool snapped_height = true;
 
-    // Document pixels per request pixel, and the inverse: a request pixel centre maps back into the
-    // crop, and the four corners of the request map onto the four corners of the crop.
+    // Request pixels to document pixels and back. The map is by the two sizes - the request's and
+    // the crop's - and not by `scale`, because the answer covers the crop and arrives at `requested`
+    // dimensions: the round up to the policy multiple is why those two are not proportional. It is
+    // the same map the result compositor applies when it resamples the whole answer onto the whole
+    // crop, so a point sent through one and back through the other is the point it was.
     Extent request_size() const { return requested; }
     Vec2 to_document(Vec2 request_point) const;
     Vec2 to_request(Vec2 document_point) const;
@@ -73,7 +76,7 @@ std::optional<RegionPlan> plan_region(Extent canvas, const Mask& mask, const Reg
 
 // The bytes that would go on the wire: `plan.crop` taken out of `base` and prepped. `base` is a
 // flattened picture of the region the request covers and must contain `plan.crop`; the returned image
-// is `plan.crop` sized, in the same premultiplied space as `base` - the resample to `requested` and
+// is `plan.crop` sized, in the same straight-alpha space as `base` - the resample to `requested` and
 // the PNG encode are the request builder's business, and keeping them out of here is what lets the
 // prep be checked against the statistics it is supposed to preserve.
 Image prep_region(const Image& base, const RegionPlan& plan, Prep prep, std::uint64_t seed);

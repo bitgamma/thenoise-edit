@@ -17,6 +17,9 @@ add_executable(test_mask test_mask.cpp)
 add_executable(test_ants test_ants.cpp)
 add_executable(test_maskops test_maskops.cpp)
 add_executable(test_region test_region.cpp)
+add_executable(test_blur test_blur.cpp)
+add_executable(test_resample test_resample.cpp)
+add_executable(test_compose test_compose.cpp)
 
 foreach(target test_hash test_geom test_command test_wire test_brush test_history)
     target_link_libraries(${target} PRIVATE noise_core noise_dbg)
@@ -170,3 +173,19 @@ target_link_libraries(test_region PRIVATE noise_ai noise_core noise_dbg)
 target_include_directories(test_region PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(test_region PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
 add_test(NAME test_region COMMAND test_region)
+
+# The two pixel operations the compositor is built out of: a softening that must never invent
+# coverage, and a resample that must never bleed black out of a transparent pixel.
+foreach(target test_blur test_resample)
+    target_link_libraries(${target} PRIVATE noise_core noise_dbg)
+    target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+    add_test(NAME ${target} COMMAND ${target})
+endforeach()
+
+# The result compositor and the invariant it exists for: every byte outside the feathered mask is
+# the byte that was there, diffed over the whole image.
+target_link_libraries(test_compose PRIVATE noise_ai noise_core noise_dbg)
+target_include_directories(test_compose PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_compose PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_compose COMMAND test_compose)

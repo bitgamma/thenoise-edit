@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "ai/region.h"
 
+#include "core/blur.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -11,7 +13,6 @@ namespace noise::ai {
 
 namespace {
 
-constexpr int kChannels = 4;
 // A prep blur is sized off the region, not off the picture: identity has to go at every region size.
 constexpr int kBlurDivisor = 12;
 constexpr int kMinBlurRadiusPx = 1;
@@ -22,9 +23,6 @@ constexpr int kPixelateDivisor = 1;
 // shape, little enough that the mean and the palette the model has to continue are still the ones the
 // picture had.
 constexpr int kNoiseAmplitude = 12;
-// Three box passes approximate the gaussian a recipe asks for. A real gaussian kernel is a refinement
-// for the prep ablation to ask for, not a guess to make now.
-constexpr int kBlurPasses = 3;
 
 int round_up_to(int value, int multiple) {
     if (multiple <= 1 || value <= 0) {
@@ -35,6 +33,16 @@ int round_up_to(int value, int multiple) {
 
 bool is_multiple_of(int value, int multiple) {
     return multiple <= 1 || value % multiple == 0;
+}
+
+// Request pixels per document pixel, and the other way round, on one axis. A crop or a request of
+// zero on an axis is a plan nobody can compose against, so the map degenerates rather than divides.
+double document_per_request_pixel(int request_side, int crop_side) {
+    return request_side > 0 ? static_cast<double>(crop_side) / static_cast<double>(request_side) : 0.0;
+}
+
+double request_per_document_pixel(int request_side, int crop_side) {
+    return crop_side > 0 ? static_cast<double>(request_side) / static_cast<double>(crop_side) : 0.0;
 }
 
 // Grown for context, kept inside the canvas, and snapped on both axes where the canvas is long
@@ -78,39 +86,6 @@ std::array<double, kChannels> mean_of(const std::vector<int>& plane, int cells) 
         mean[static_cast<std::size_t>(c)] = sum / static_cast<double>(cells);
     }
     return mean;
-}
-
-// One box pass along one axis, integer accumulation, edges clamped rather than wrapped: a wrap would
-// pull the far side of the crop into the frame the model is being asked to continue.
-void box_pass(const std::vector<int>& src, std::vector<int>& dst, int w, int h, int radius,
-              bool horizontal) {
-    const int span = 2 * radius + 1;
-    for (int fixed = 0; fixed < (horizontal ? h : w); ++fixed) {
-        for (int cell = 0; cell < (horizontal ? w : h); ++cell) {
-            std::array<int, kChannels> sum{};
-            for (int offset = -radius; offset <= radius; ++offset) {
-                const int other = std::clamp(cell + offset, 0, (horizontal ? w : h) - 1);
-                const int x = horizontal ? other : fixed;
-                const int y = horizontal ? fixed : other;
-                const std::size_t at =
-                    (static_cast<std::size_t>(y) * static_cast<std::size_t>(w) +
-                     static_cast<std::size_t>(x)) *
-                    static_cast<std::size_t>(kChannels);
-                for (int c = 0; c < kChannels; ++c) {
-                    sum[static_cast<std::size_t>(c)] += src[at + static_cast<std::size_t>(c)];
-                }
-            }
-            const std::size_t to =
-                (static_cast<std::size_t>(horizontal ? fixed : cell) *
-                     static_cast<std::size_t>(w) +
-                 static_cast<std::size_t>(horizontal ? cell : fixed)) *
-                static_cast<std::size_t>(kChannels);
-            for (int c = 0; c < kChannels; ++c) {
-                dst[to + static_cast<std::size_t>(c)] =
-                    (sum[static_cast<std::size_t>(c)] + span / 2) / span;
-            }
-        }
-    }
 }
 
 // Deterministic, seeded, and nothing to do with the clock: the same seed must give the same crop, or
@@ -166,14 +141,17 @@ std::string prep_names() {
 }
 
 Vec2 RegionPlan::to_document(Vec2 request_point) const {
-    const double inverse = scale > 0.0 ? 1.0 / scale : 1.0;
-    return Vec2{static_cast<double>(crop.x) + request_point.x * inverse,
-                static_cast<double>(crop.y) + request_point.y * inverse};
+    return Vec2{static_cast<double>(crop.x) +
+                    request_point.x * document_per_request_pixel(requested.w, crop.w),
+                static_cast<double>(crop.y) +
+                    request_point.y * document_per_request_pixel(requested.h, crop.h)};
 }
 
 Vec2 RegionPlan::to_request(Vec2 document_point) const {
-    return Vec2{(document_point.x - static_cast<double>(crop.x)) * scale,
-                (document_point.y - static_cast<double>(crop.y)) * scale};
+    return Vec2{(document_point.x - static_cast<double>(crop.x)) *
+                    request_per_document_pixel(requested.w, crop.w),
+                (document_point.y - static_cast<double>(crop.y)) *
+                    request_per_document_pixel(requested.h, crop.h)};
 }
 
 std::optional<RegionPlan> plan_region(Extent canvas, const Mask& mask, const RegionPolicy& policy) {
@@ -224,12 +202,8 @@ Image prep_region(const Image& base, const RegionPlan& plan, Prep prep, std::uin
     }
 
     if (prep == Prep::blur) {
-        const int radius = prep_blur_radius(crop);
-        std::vector<int> scratch(plane.size());
-        for (int pass = 0; pass < kBlurPasses; ++pass) {
-            box_pass(plane, scratch, crop.w, crop.h, radius, pass % 2 == 0);
-            plane = scratch;
-        }
+        box_blur(plane, Extent{crop.w, crop.h}, kChannels, prep_blur_radius(crop),
+                 kGaussianBoxPasses);
     } else if (prep == Prep::average) {
         const auto mean = mean_of(plane, crop.w * crop.h);
         for (int i = 0; i < crop.w * crop.h; ++i) {

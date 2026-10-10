@@ -175,17 +175,27 @@ void test_the_map_back_lands_where_the_crop_was() {
         CHECK(std::abs(back.y - point.y) < 1e-9);
     }
 
-    // With a fit in play the request is a little larger than the scaled crop, so the far corner maps
-    // past the crop's own corner - by at most one source pixel's worth of rounding.
+    // With a fit in play the request is rounded up to the policy multiple, so it is a little larger
+    // than the scaled crop - and the answer still covers exactly the crop. Mapping by `scale` instead
+    // of by the size that was asked for would land the paste past the pixels it came from, which is
+    // the drift the result compositor would otherwise inherit.
     const Extent huge{4096, 4096};
     const auto fit = plan_region(huge, mask_of(huge, Rect{0, 0, 4000, 3000}), kRegionPolicy).value();
+    CHECK(fit.scale < 1.0);
+    CHECK(fit.requested.w * fit.requested.h <= kRegionPolicy.max_area_px * 2);
     const Vec2 far = fit.to_document(
         Vec2{static_cast<double>(fit.requested.w), static_cast<double>(fit.requested.h)});
-    const double overshoot = 1.0 / fit.scale + 1.0;
-    CHECK(far.x >= static_cast<double>(fit.crop.right()));
-    CHECK(far.x - static_cast<double>(fit.crop.right()) <= overshoot);
-    CHECK(far.y >= static_cast<double>(fit.crop.bottom()));
-    CHECK(far.y - static_cast<double>(fit.crop.bottom()) <= overshoot);
+    CHECK(std::abs(far.x - static_cast<double>(fit.crop.right())) < 1e-9);
+    CHECK(std::abs(far.y - static_cast<double>(fit.crop.bottom())) < 1e-9);
+
+    // Every pixel centre of a fitted request maps back inside the crop it came from.
+    for (const Vec2 point : {Vec2{0.5, 0.5}, Vec2{137.25, 812.75},
+                             Vec2{static_cast<double>(fit.requested.w) - 0.5,
+                                  static_cast<double>(fit.requested.h) - 0.5}}) {
+        const Vec2 back = fit.to_document(point);
+        CHECK(back.x >= static_cast<double>(fit.crop.x) && back.x <= static_cast<double>(fit.crop.right()));
+        CHECK(back.y >= static_cast<double>(fit.crop.y) && back.y <= static_cast<double>(fit.crop.bottom()));
+    }
 }
 
 // Each prep does the one thing it is named for, measured against the statistics it is supposed to

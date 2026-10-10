@@ -76,6 +76,7 @@ add_library(noise_core STATIC
     src/core/hash.cpp
     src/core/base64.cpp
     src/core/blend.cpp
+    src/core/blur.cpp
     src/core/command.cpp
     src/core/brush.cpp
     src/core/document.cpp
@@ -85,6 +86,7 @@ add_library(noise_core STATIC
     src/core/layer.cpp
     src/core/mask.cpp
     src/core/maskops.cpp
+    src/core/resample.cpp
     src/core/shortcut.cpp)
 target_include_directories(noise_core PUBLIC src)
 target_link_libraries(noise_core PUBLIC noise_platform nlohmann_json::nlohmann_json Threads::Threads)
@@ -110,6 +112,8 @@ target_compile_options(noise_io PUBLIC ${LIBPNG_CFLAGS_OTHER})
 # The AI layer: the region compiler and the result compositor are pixels and maths, so they are
 # headless and testable like core; the transport that speaks HTTP lives beside them and links curl.
 add_library(noise_ai STATIC
+    src/ai/colour_match.cpp
+    src/ai/compose.cpp
     src/ai/region.cpp)
 target_include_directories(noise_ai PUBLIC src)
 target_link_libraries(noise_ai PUBLIC noise_core)
@@ -141,7 +145,7 @@ add_library(noise_app STATIC
     src/app/tools/select.cpp
     src/app/view_commands.cpp)
 target_include_directories(noise_app PUBLIC src)
-target_link_libraries(noise_app PUBLIC noise_dbg noise_core noise_io noise_platform)
+target_link_libraries(noise_app PUBLIC noise_ai noise_dbg noise_core noise_io noise_platform)
 
 # The host side of the UI: it needs sokol's event and keycode types, so the key-event
 # translation builds with this target and not with the windowless command table.

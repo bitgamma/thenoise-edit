@@ -15,7 +15,10 @@ inline std::string describe(const T& value) {
         return std::string(value);
     } else if constexpr (std::is_same_v<T, bool>) {
         return value ? "true" : "false";
-    } else if constexpr (requires(const T& v) { v.size(); }) {
+    } else if constexpr (requires(const T& v) {
+                              v.size();
+                              std::begin(v);
+                          }) {
         // Byte buffers and spans are what this project compares most often, and they have no
         // useful `to_string`. Length plus the head of the data is enough to see which side is
         // the odd one out; elements that are not numbers just get the length.
@@ -32,8 +35,12 @@ inline std::string describe(const T& value) {
             }
         }
         return described;
-    } else {
+    } else if constexpr (requires { std::to_string(value); }) {
         return std::to_string(value);
+    } else {
+        // Rect, Extent, Mask and friends: the expression the check printed already names both
+        // sides, which is enough to see which one is the odd one out.
+        return "<not printable>";
     }
 }
 
