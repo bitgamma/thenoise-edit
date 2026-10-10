@@ -130,14 +130,14 @@ src/
   ai/
     server.{h,cpp}     ServerProfile: base URL, bearer key, TLS opts, adaptive timeouts;
                        /v1/health handshake; session-model state; load/pin; latency EMA
-    registry.{h,cpp}   role resolution: `roles.toml` ∩ GET /v1/models → one model per role
+    registry.{h,cpp}   role resolution: `roles.json` ∩ GET /v1/models → one model per role
                        per profile; nothing else in the codebase names a model
     provider.{h,cpp}   request builder; the only place a field can be added (tier-1 always,
                        tier-2 only if the profile opts in)
     profile.{h,cpp}    per-model policy (size multiple/budget, steps, roles, quirks),
                        merged over discovery
     compiler.{h,cpp}   THE region compiler (see AI-BACKEND.md)
-    recipes.{h,cpp}    pre-shipped TOML loading + variable substitution
+    recipes.{h,cpp}    pre-shipped JSON loading + variable substitution
     composite.{h,cpp}  result resample / colour-match / feather blend back
     queue.{h,cpp}      jobs, cancellation, ETA, durable queue
     cache.{h,cpp}      request → blob cache
@@ -597,9 +597,9 @@ The bar for every test in every tier is in `AGENTS.md` §2: a plausible bug must
 | **D7** | Single-file vs directory project | single `.noise` zip; `--unpack/--repack` dev flags for git-friendliness |
 | **D8** | Licence | **Apache-2.0**. One SPDX line per source file. GPL codec libs stay out. |
 | **D9** | Content scope | raster layers only — no text/vector/adjustment layers in the MVP. |
-| **D10** | Recipes | pre-shipped, read-only TOML in the app resource dir. No in-app authoring. |
+| **D10** | Recipes | pre-shipped, read-only JSON in the app resource dir — the format the manifest and the wire already speak, so no second parser. No in-app authoring. |
 | **D11** | Backend scope | Lemonade only, `thenoise` recipe only; N server profiles (LAN/localhost), always keyed. |
 | **D12** | Naming | extension `.noise`, binary `noise-edit`, config dir `~/.config/noise-edit`, MIME `application/x-noise+zip`. |
-| **D13** | Model references | roles only (`generate.photo`, `generate.illustration`, `edit`, `upscale`, `enhance`); one model per role per profile; candidates ranked by quality/speed in `roles.toml`. |
+| **D13** | Model references | roles only (`generate.photo`, `generate.illustration`, `edit`, `upscale`, `enhance`); one model per role per profile; candidates ranked by quality/speed in `roles.json`. |
 | **D14** | Observability | debug wire from M0, dispatched through the UI command table; every feature ships its wire command. |
 | **D15** | Ground rules | `AGENTS.md` is normative and overrides prose elsewhere in this repo. |

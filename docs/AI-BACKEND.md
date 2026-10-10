@@ -31,7 +31,7 @@ already in the data.
    labels (`enhance`), restricted to `downloaded: true`;
 2. narrowed by the role's capability predicate;
 3. the **user's assignment** for that role, if it is still present and downloaded;
-4. else the **app preference order** from `roles.toml` — INT8-ConvRot before bf16, a
+4. else the **app preference order** from `roles.json` — INT8-ConvRot before bf16, a
    KV-cache checkpoint preferred for `edit`, ties broken by smaller download;
 5. else the role is **unresolved**: dependent commands render disabled with the reason and
    the exact `lemonade import` / `lemonade pull` that would fix it. Never fail at click time.
@@ -52,12 +52,13 @@ What the dev box taught this list (`probes/2026-10-09-live-server.md`):
   `POST /images/upscale` served `RealESRGAN-4xplus-TheNoise` fine (512²→2048², 7.4 s). For the
   `upscale` role: discovery picks a preference, the endpoint decides.
 
-`roles.toml` (shipped, and the single source of truth) holds role ids, predicates, style
+`roles.json` (shipped, and the single source of truth — JSON, the format `manifest.json` and the
+wire already speak, so there is exactly one parser in the tree) holds role ids, predicates, style
 class, tier ranks and preference order. **Model ids appear only in that file** — so adding,
 retiring or re-ranking a model is a data change, and the future candidate picker is a UI
 over rows that already exist.
 
-### Reference data (used to author `roles.toml`; nothing in the code reads it)
+### Reference data (used to author `roles.json`; nothing in the code reads it)
 
 | Model id | Roles it can fill | Steps | CFG | Native | Size | Notes |
 |---|---|---|---|---|---|---|
@@ -181,6 +182,12 @@ so a swap is a real event: the first request that followed an unloaded model on 
 
 ## Transport, auth, multi-server
 
+Transport is **libcurl**, found via `pkg_check_modules` like libpng/libjpeg/libwebp already are:
+connect timeout, abort of an in-flight handle for cancel, chunked bodies and TLS verification are the
+things the failure table below branches on, and they are not a slice to reimplement. It enters the
+build with the slice that speaks HTTP (see PLAN's AI order), not before — an unused dependency is a
+second way to reach the network with nothing watching it.
+
 Lemonade is usually remote (LAN), usually with `LEMONADE_API_KEY` set.
 
 ```
@@ -217,7 +224,7 @@ Input: `(document composite, selection mask, recipe)` → one compiled request.
              The engine snaps a request to a multiple of 16 and never refuses an awkward one:
              asking 500x300 answers 512x304. Send multiples of 16 so the crop you planned is the
              crop you get, and expect returned dims != requested dims regardless (the resample
-             below already handles it). The number lives in roles.toml / the recipe policy,
+             below already handles it). The number lives in roles.json / the recipe policy,
              nowhere else
 5. FIT       if area > region_budget (default 1024×1024 equivalent) → uniform scale down;
              record scale. Never upscale a region beyond the source resolution.
@@ -290,25 +297,37 @@ Supporting machinery:
 
 ## Prompt Recipes
 
-Shipped as **read-only TOML files in the app resource directory** (no in-app authoring in
-the MVP). A recipe = prompt template + region policy + prep policy + composite policy.
+Shipped as **read-only JSON files in the app resource directory**, one recipe per file (no in-app
+authoring in the MVP). A recipe = prompt template + region policy + prep policy + composite policy.
 
-```toml
-[inpaint-remove]
-endpoint  = "edits"
-role      = "edit"          # a role, never a model id
-prep      = "blur"
-context   = 0.35            # policy values live here, in the recipe
-enhance   = "never"         # role-based prompt enhancement: declared, off in every MVP recipe
-prompt = """
-Remove the {{target}} from this image.
-Reconstruct the area behind it as a seamless continuation of the surrounding
-{{context_desc}}, matching colour, brightness, light direction, perspective, texture,
-focus and grain.
-Change nothing else in the image.
-"""
-composite = { feather = "auto", colour_match = true, lock_band = 6 }
+JSON has no comments, so a recipe file carries no prose — this document is the prose, and a file that
+fails to parse names the key and where. Two conventions follow from choosing JSON:
+
+* `prompt` is an **array of strings**, joined with `\n` when the template is built, because a JSON
+  string holding five lines of prompt is unreadable in review and unreadable in a diff.
+* policy values are named and explicit (`context.ratio`, `context.min_px`, `composite.lock_band_px`),
+  never bare numbers in the order a parser happens to read them.
+
+```json
+{
+  "id": "inpaint-remove",
+  "endpoint": "edits",
+  "role": "edit",
+  "prep": "blur",
+  "context": { "ratio": 0.35, "min_px": 64 },
+  "enhance": "never",
+  "prompt": [
+    "Remove the {{target}} from this image.",
+    "Reconstruct the area behind it as a seamless continuation of the surrounding",
+    "{{context_desc}}, matching colour, brightness, light direction, perspective, texture,",
+    "focus and grain.",
+    "Change nothing else in the image."
+  ],
+  "composite": { "feather": "auto", "colour_match": true, "lock_band_px": 6 }
+}
 ```
+
+`role`, never a model id; the policy values live here, in the recipe, and nowhere else.
 
 Variables come from the user's instruction, the layer name and the document aspect. The
 `enhance` **role** (one `chat/completions` call on a downscaled crop — *"describe the

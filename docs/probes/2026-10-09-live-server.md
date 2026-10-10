@@ -24,7 +24,8 @@ swap/pin/warm-up UX is built around.
 | `Krea-2-VAE` | `custom,image` | ✓ | 33.0 | steps 8, cfg 1.0, 1024x1024 |
 
 `GET /models?show_all=true` returned 163. Two things follow, and both are load-bearing for
-`roles.toml`:
+`roles.toml` (since renamed `roles.json` — the format decision moved to JSON
+before any such file shipped; the ranking below is what it recorded):
 
 * **The list is what this box holds, today.** The previous session's run on the same URL saw 187
   entries, `Flux-2-Klein-4B-TheNoise` present and `Flux-2-Klein-9B-TheNoise` not — the reverse of

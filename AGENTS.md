@@ -101,9 +101,9 @@ Duplicating values and defaults is the fastest way to make an LLM-maintained cod
   | Concept | Home |
   |---|---|
   | commands + keyboard shortcuts | the command table |
-  | model capabilities & assignment | `roles.toml` + `/v1/models` (resolved in `ai/registry`) |
+  | model capabilities & assignment | `roles.json` + `/v1/models` (resolved in `ai/registry`) |
   | AI request fields allowed | `ai/provider` field policy (the only place a field can be added) |
-  | prompt templates & region/prep/composite policy | `recipes/*.toml` |
+  | prompt templates & region/prep/composite policy | `recipes/*.json` |
   | document model & defaults | `core/document` |
   | blend mode maths | `core/blend` reference (`blend_separable` per channel, one composite rule), checked against the definitions restated in `tests/test_blend`; the GPU pair, when the compositor moves to the GPU, is checked against the same numbers |
   | UI prefs / session state | `io/config`, `manifest.json` |
@@ -137,8 +137,9 @@ comprehensible, and honest about its state.
 - Boring C++20: no macros beyond build/system ones, no template metaprogramming, no CRTP
   ladders, no expression templates, no SFINAE puzzles, no overloading-by-implication.
   Simple code a reader can hold entirely in context beats clever code.
-- Data-driven over control-flow: tables and declarative files (`recipes/*.toml`,
-  `roles.toml`) instead of branching trees. Adding a behaviour should mean adding a row.
+- Data-driven over control-flow: tables and declarative files (`recipes/*.json`,
+  `roles.json`) instead of branching trees. Adding a behaviour should mean adding a row. One
+  format for everything structured — JSON, the reader the manifest and the wire already use.
 - Names are domain terms from the docs (`Document`, `Layer`, `Mask`, `RegionPlan`,
   `Recipe`, `ServerProfile`, `Role`). Never invent a synonym for a documented term.
 - Machine-readable everything observable: state dumps, job records, request previews, logs.

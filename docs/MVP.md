@@ -121,7 +121,7 @@ Drives what the UI enables; the app must degrade honestly rather than error at c
 | **M0.5** | Probe harness `tools/tn_probe.py` (see AI-BACKEND.md): roles dump, generations/edits timing grid, drift pixel-diff, prep ablation, upscale, `n`/multi-image/timeout probes → `docs/probes/*.md`. **Deferred — needs the dev server; run it the moment the box is free** | committed report with *our* numbers; `size_policy`, role default order, ETA seeds and recipe wording updated from it | 2–3 d |
 | **M1** | Paint core: single layer, brush/eraser/undo, zoom/pan, `.noise` v0, status bar | 5000-dab stroke at 2048² without dropped frames, 20× undo | 1–2 wk |
 | **M2** | Layers + masks + selections, blend modes | mask a layer, paint through it, save and reopen with the mask and the stack state intact; a hidden or faded layer composites as shown | 1–2 wk |
-| **M3** | Server layer: profiles + bearer auth, health handshake, **role registry (`roles.toml`)**, role resolution + session model + swap/pin UI, jobs/cache/queue, exact-request preview, `new-image` | connect, resolve roles, generate into a new layer, restart → cached result instant; a `live`-tier test asserts roles resolve and the field policy holds against the real server | 1 wk |
+| **M3** | Server layer: profiles + bearer auth, health handshake, **role registry (`roles.json`)**, role resolution + session model + swap/pin UI, jobs/cache/queue, exact-request preview, `new-image` | connect, resolve roles, generate into a new layer, restart → cached result instant; a `live`-tier test asserts roles resolve and the field policy holds against the real server | 1 wk |
 | **M4** | Mask-less inpainting: region compiler, prep, recipes, local composite, draft/refine, variants tray, A/B wipe, journal | paint over an object → `Remove` → object gone, **everything outside the feather byte-identical** — asserted by `pixels.compare`, hermetically against recorded fixtures and, when `THENOISE_URL` is set, against the real server | 1–2 wk |
 | **M5** | Polish: local `heal`, `upscale`, remaining blend modes, keymap file, prefs, Linux packaging (AppImage), docs | a stranger connects to a LAN server and removes an object in <5 min without opening a terminal | 1 wk |
 
@@ -211,13 +211,13 @@ real) · disabled AI commands always explain why and what to pull.
 | Backend | **Lemonade only**, `recipe: thenoise` only; API keys required; server often remote on LAN; no consent badge (server is user-controlled) |
 | Content model | **raster only** |
 | Canvas | 8192×8192 ceiling, ~512 MB budget |
-| Recipes | pre-shipped, read-only; TOML (JSON also fine) |
+| Recipes | pre-shipped, read-only; JSON, the same reader as the manifest — no second format |
 | Naming | extension **`.noise`**, binary `noise-edit`, MIME `application/x-noise+zip` |
 | Flat formats | **PNG, JPEG and WebP in and out**; read by content, written by extension. A format with no alpha channel composites the export against **white** and reports `discarded_alpha` — it does not refuse, and it does not pretend the transparency survived |
 | Interchange | **no `.ora`/OpenRaster import or export, in the MVP or later.** `.noise` is ours; what leaves the app is a flat PNG/WebP/JPEG. A second layer-stack semantics kept true for another application's file costs more than the interop buys, and provenance has nowhere to go in it |
 | Mask | never sent to the server; applied locally, always |
 | Variations | endpoint not used (unsupported) |
-| Model references | **roles, never model ids** (`generate.photo`, `generate.illustration`, `edit`, `upscale`, `enhance`); one model per role per profile; `roles.toml` ranks candidates by quality/speed |
+| Model references | **roles, never model ids** (`generate.photo`, `generate.illustration`, `edit`, `upscale`, `enhance`); one model per role per profile; `roles.json` ranks candidates by quality/speed |
 | Prompt enhancement | the `enhance` role exists but is **off in every MVP recipe**; later tuning step, never a dependency |
 | Licence | **Apache-2.0**, one SPDX line per source file |
 | Observability | **debug wire from M0**, dispatched through the UI command table; every feature ships its wire command |

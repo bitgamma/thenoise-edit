@@ -652,9 +652,10 @@ needing a decision and the parts needing none do not block each other.
    lock band, clip to layer alpha. Its test is the pixel-lock invariant, whole-image diff, and it must
    be red before the code is written.
 3. **Roles, recipes, field policy** (`ai/registry`, `ai/recipe`, `ai/provider`) over a *recorded*
-   `/v1/models` body: resolution order, `size_policy`, the tier-1 field set and the builder's own value
-   validation (the server answers `200` to `seed: "not-a-number"`, so nobody downstream checks). The
-   recorded backend is the hermetic test tier; the default `ctest` must stay offline.
+   `/v1/models` body: `roles.json` and `recipes/*.json`, read with the JSON reader already in the tree,
+   then resolution order, `size_policy`, the tier-1 field set and the builder's own value validation
+   (the server answers `200` to `seed: "not-a-number"`, so nobody downstream checks). The recorded
+   backend is the hermetic test tier; the default `ctest` must stay offline.
 4. **Transport** (`ai/transport`) - the only piece that needs the outside world: health, models, load,
    edits/generations/upscale, cancel, the adaptive request timeout, the latency EMA that must not learn
    from a server-cache hit, the durable queue, `ai.log`.
@@ -663,22 +664,24 @@ needing a decision and the parts needing none do not block each other.
    rects, revision and the selection fence all behave like any other edit), and the wire commands that
    make each step observable.
 
-**Two dependencies, both asked about before either is added.** The tree vendors sokol, ImGui and
-nlohmann/json plus system libpng/libjpeg/libwebp and ZLIB, and has no HTTP client and no TOML reader.
+**Dependencies: asked, answered, and one of them deleted.** The tree vendors sokol, ImGui and
+nlohmann/json plus system libpng/libjpeg/libwebp and ZLIB.
 
-- *Transport*: `https://` needs TLS. Either the system libcurl (`pkg_check_modules`, proxy/tls/chunked
-  for free, and `AI-BACKEND.md` already assumes a curl handle for cancel) or in-house HTTP/1.1 over the
-  existing `platform/posix_net` shim, which would mean `http://` on a trusted LAN only and no TLS until
-  someone writes it. Recommendation: libcurl - the failure table in `AI-BACKEND.md` is written against
-  things a real client does (connect timeout, handle abort, status and body shapes), and hand-rolling a
-  TLS stack is not a slice.
-- *TOML*: `roles.toml` and `recipes/*.toml` are ours, small and flat, and `ARCHITECTURE.md` makes them
-  the single home for roles, preference order, prompt templates and policy values. Either
-  `tomlplusplus` pinned via FetchContent, or a strict reader for the subset the files actually use -
-  tables, inline tables, strings, numbers, booleans, arrays - that refuses anything else by name and
-  line rather than guessing. Recommendation: the in-house strict reader, because a parser that accepts
-  syntax nothing can write is a wider surface than the files need, and the failure mode of a bad recipe
-  file must be a named key on a named line, which is easier to guarantee over 200 lines of our own.
+- *Roles and recipes*: **JSON, decided by the human** - structured files here are already JSON
+  (`manifest.json`) and the wire already speaks it, so a second format would have bought a second
+  parser for nothing. `roles.json`, `recipes/*.json`. The mentions in `AGENTS.md`, `ARCHITECTURE.md`
+  (module table, D10, D13) and `MVP.md` were changed to match, and nothing in the code had ever read
+  TOML, so there is no migration - only the recorded probe, which says what it recorded. Two
+  conventions JSON forces are written into `AI-BACKEND.md`: no comments, so a recipe file carries no
+  prose and a parse failure names the key and the file; and `prompt` is an **array of lines** joined
+  when the template is built, because one JSON string holding five lines of prompt is unreadable in
+  review and unreadable in a diff. Policy values keep their names (`context.ratio`, `context.min_px`,
+  `composite.lock_band_px`) rather than living in the order a parser happens to read them.
+- *Transport*: **libcurl**, found by `pkg_check_modules` beside libpng and friends - connect timeouts,
+  aborting an in-flight handle for cancel, chunked bodies and TLS verification are exactly what the
+  failure table in `AI-BACKEND.md` branches on, and reimplementing TLS is not a slice. It joins the
+  build with slice 4, the slice that speaks HTTP, and not a commit earlier: an unused dependency is a
+  second route to the network with nothing watching it, and slices 1-3 are hermetic.
 
 The `edit` clipboard group is not in this list; it stays where the previous ordering put it, and the
 user's instruction was to move into AI.
