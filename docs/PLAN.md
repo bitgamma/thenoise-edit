@@ -6,7 +6,9 @@ live wire surface, `AGENTS.md` has the house rules. This file keeps only the rea
 carry, the decisions, and the order the rest goes in.
 
 Gate: `cmake -B build -G Ninja && cmake --build build && xvfb-run -a ctest --test-dir build` →
-**25/25 green in Debug and Release**, warnings are errors. Release tree is `build-release`.
+**26/26 green in Debug and Release**, warnings are errors. Release tree is `build-release`. Every suite
+passes under `xvfb-run`; `test_ai_compose_probe` and the two wire-driven ones need a display and skip
+loudly without one.
 
 ## Where the AI path stands
 
@@ -17,7 +19,8 @@ Built, hermetic, no network in the default `ctest` run:
 | `core/blur`, `core/resample` | the two pixel primitives the AI path needs and the app can reuse: 3-pass odd box blur / `feathered_mask`, and Lanczos-3 over premultiplied alpha | `test_blur` 81, `test_resample` 625 |
 | `ai/region` | the region compiler — geometry (`bbox → grow → clamp → snap → fit`, inverse map) and prep. No document, no request | `test_region` 105 |
 | `ai/compose`, `ai/colour_match` | the result compositor — resample onto the crop, colour-match, feather, lock band, clip to layer alpha | `test_compose` 235 762 |
-| `ai.compose` (wire) | lands a result file on the document through the paint doors, or previews it and reports what the policy resolved to | `test_app` 56 271 |
+| `ai.compose` (wire) | lands a result file on the document through `Document::paint`, or previews it and reports what the policy resolved to | `test_app` 56 273 |
+| `tools/ai_compose_probe.py` | the same, on the running app, with the report checked against the exported pixels | `test_ai_compose_probe` |
 
 In order from here:
 
@@ -81,16 +84,51 @@ app can already reach it through the command table, so slice 5 lands in the same
 around it — the two narrowings found are both on the *request* side (the flatten door, the ring-colour alpha)
 and neither forces a change to what is built. Nothing here is a second representation of an existing idea: the
 coverage is the document's `Mask`, the blend is `restrict_to`, the blur and resampler moved into `core` when a
-second caller appeared (`ai/region` prep and `ai/compose` share `box_blur`).
+second caller appeared (`ai/region` prep and `ai/compose` share `box_blur`). `core` grew exactly one thing for
+this slice, the `PaintFence` argument, and it grew because a second *kind* of writer arrived rather than a
+second writer: a stroke and a composite disagree about the one thing the door used to decide for itself.
 
-**Red-check of the slice.** 24 mutants over `compose`/`blur`/`resample`/`colour_match`: **22 killed**, 0 anchors
-unusable. The 2 survivors are equivalents, and the reason matters more than the count:
+### The one thing that was wrong, and how it was found
+
+The compositor's unit tests were green and its report was a lie. The probe drove the real app — fixture
+scene with a disc in it, the same scene without the disc as the "answer", the document exported before and
+after — and the counts disagreed: 25551 pixels reported changed, 19579 in the document. `Document::paint`
+fenced the write by the **selection**, exactly as a brush needs, and the fence cut the feather off. So the
+soft edge came back hard, and the report described an edit the document had partly thrown away.
+
+`Document::paint` now takes the claim explicitly (`PaintFence::selection` for a stroke,
+`own_coverage` for an edit that arrives with a coverage of its own), because "may this write reach past the
+selection?" is a property of the *edit*, not of the door, and a door that guesses will guess wrong for
+whoever writes next. The undo step was always recorded against `bounds`, so unfencing costs nothing there.
+
+The same looking found `colour_matched`, which reported whether the correction *ran* while sitting one
+letter from the policy flag `colour_match`, which says whether it was *asked*. It is `colour_corrected`
+now: reporting a request as an effect lets a probe believe a match happened when the patch already agreed
+with its ring.
+
+Measured on the live app, worth keeping as the reference numbers for the first recipe: auto feather picked
+8 px for a 140×140 mask and its transition measured ~11 px on each side of the selection edge; the ring
+corrected a deliberate cast from a mean 25.7 units off the true background to 1.7; the exact answer landed
+with a worst-channel error of 0.5. **Open:** a colour step that big still shows a Mach-band edge at an 8 px
+feather, so `kAutoFeatherMaxPx` is a recipe question, not a settled number.
+
+**Red-check of the slice.** 24 mutants over `compose`/`blur`/`resample`/`colour_match`: **22 killed**, 0
+anchors unusable, re-run against the final tree. The 2 survivors are equivalents, and the reason matters
+more than the count:
 
 - dropping the "coverage has no pixels" guard — the empty-bounds refusal fires one line later, so only the
   error *text* changes; a test would pin wording, not behaviour.
 - dropping the "no alpha ⇒ no colour" guard in the resample's down-pass — with alpha 0 the code then divides by
   zero and `lround` of `inf`/`NaN` is unspecified, landing on 0 here. The guard removes arithmetic that is not
   defined, not an observable byte, so a test could only pin this platform's arithmetic.
+
+Four more mutants for the door: fence everything, fence nothing, the composite asking for `selection`, the
+stroke asking for `own_coverage` — all four red, the middle two on `test_document` and `test_app` together.
+
+A timing guard in the same run was alarming on a loaded box and is recalibrated the way the lesson below
+says: it had demanded 50× when the code's real Debug ratio is ~25×, and the walk it guards is bounded — the
+cost is `refresh` re-tallying the rows a write touched. Factor 4 now, with 3× headroom either way, 60 Debug
+runs and 15 under 24-way load clean, the degenerate walk still red.
 
 ## Decisions that stand
 
@@ -135,6 +173,13 @@ unusable. The 2 survivors are equivalents, and the reason matters more than the 
   mask-gesture test had `y = 0`, so a copy that forgot to subtract the destination's own origin survived the
   whole suite and killed the app on the first real drag. Gesture and region tests want a non-zero origin *and*
   a growth event.
+- **A module's own tests cannot see the door in front of it.** The compositor was green, and the document it
+  wrote into was discarding its feather. Anything that crosses a seam needs one check driven through the real
+  app — which is what a probe in `tools/` is for, and why `ai.compose` shipped with one.
+- **Set a timing guard from the gap between implementations, not from the healthy ratio.** A factor that is
+  true on a quiet box alarms on a shared one, and an alarm that is wrong once is a guard nobody reads. Take
+  the fastest call of several on each side, measure the phases separately when one of them allocates megabytes,
+  and say the numbers in the comment.
 - **Our reader accepting our writer proves nothing.** Any new format surface needs a second implementation
   reading it (`tools/container_probe.py`).
 - **"Slower" names a symptom, not a stage.** The reported bug was mask painting; the paint cost 0.01 ms and a
