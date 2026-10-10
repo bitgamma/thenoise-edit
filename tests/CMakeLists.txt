@@ -16,6 +16,7 @@ add_executable(test_blend test_blend.cpp)
 add_executable(test_mask test_mask.cpp)
 add_executable(test_ants test_ants.cpp)
 add_executable(test_maskops test_maskops.cpp)
+add_executable(test_region test_region.cpp)
 
 foreach(target test_hash test_geom test_command test_wire test_brush test_history)
     target_link_libraries(${target} PRIVATE noise_core noise_dbg)
@@ -162,3 +163,10 @@ if(NOISE_LIVE_TESTS AND Python3_Interpreter_FOUND)
                          SKIP_REGULAR_EXPRESSION "SKIP:"
                          TIMEOUT 1800)
 endif()
+
+# The region compiler: geometry that must satisfy a size policy it did not choose, and preps measured
+# against the statistics each one claims to keep or destroy.
+target_link_libraries(test_region PRIVATE noise_ai noise_core noise_dbg)
+target_include_directories(test_region PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_region PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_region COMMAND test_region)

@@ -107,6 +107,13 @@ target_link_libraries(noise_io PUBLIC ${LIBPNG_LIBRARIES} ${LIBJPEG_LIBRARIES}
                         ${LIBWEBP_LIBRARIES} ZLIB::ZLIB)
 target_compile_options(noise_io PUBLIC ${LIBPNG_CFLAGS_OTHER})
 
+# The AI layer: the region compiler and the result compositor are pixels and maths, so they are
+# headless and testable like core; the transport that speaks HTTP lives beside them and links curl.
+add_library(noise_ai STATIC
+    src/ai/region.cpp)
+target_include_directories(noise_ai PUBLIC src)
+target_link_libraries(noise_ai PUBLIC noise_core)
+
 add_library(noise_gfx STATIC
     src/gfx/checker.cpp
     src/gfx/renderer.cpp)
