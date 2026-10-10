@@ -135,6 +135,10 @@ def start_app(args: argparse.Namespace, runtime_dir: Path, width: int, height: i
     env = dict(os.environ)
     env["NOISE_RUNTIME_DIR"] = str(runtime_dir)
     env.pop("NOISE_CONFIG_DIR", None)
+    # The AI tables ship in the tree beside this script, and ctest runs probes from the build directory:
+    # without this the app under probe has no `roles.json`, and an AI command would refuse for a reason
+    # that is about where it was started from rather than about the thing under test.
+    env["NOISE_EDIT_ASSETS"] = str(Path(__file__).resolve().parent.parent / "assets")
     return subprocess.Popen(app_command(args, width, height, open_path), env=env,
                             stderr=app_stderr)
 
