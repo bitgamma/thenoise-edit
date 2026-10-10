@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/ui.h"
 
+#include "app/ants.h"
 #include "app/brush_steps.h"
 #include "app/command_args.h"
 
@@ -35,15 +36,6 @@ constexpr float kToolPanelFraction = 0.36f;
 // the name keeps a slice of its own so a narrow panel still shows which layer is which. The mode
 // dropdown is the width of the name slice, so the two lines read as one record.
 constexpr float kLayerOpacitySliderPx = 88.0f;
-// Marching ants: one-pixel dashes of white on black, marching along the selection's boundary. The
-// phase comes from ImGui's clock - an overlay may read the wall time, and nothing a test can reach
-// may, which is why it is read here rather than passed in as a parameter.
-constexpr float kAntDashPx = 3.0f;
-// One light-dark pair is 6 screen px, so this is one and a third cycles per second - roughly what an
-// editor's ants look like. The first value here was 32 px/s, four cycles, which reads as a blink; the
-// speed is also what a screenshot can measure, since the phase at t and t+0.5 s differs by two thirds
-// of a pattern and a frozen overlay shows almost nothing between the two.
-constexpr float kAntMarchPxPerSecond = 8.0f;
 constexpr ImU32 kAntLight = IM_COL32(255, 255, 255, 255);
 constexpr ImU32 kAntDark = IM_COL32(20, 20, 20, 255);
 constexpr float kLayerNameMinPx = 40.0f;
@@ -55,81 +47,96 @@ constexpr const char* kWindowLayers = "Layers";
 constexpr const char* kWindowLog = "Log";
 constexpr const char* kWindowStatus = "Status";
 
-// Dashes along one run of the boundary, placed in screen space so they stay the same size whatever
-// the zoom, and sharing one phase along the axis so the outline reads as one line rather than as
-// runs that disagree. `line` is the screen coordinate *across* the run, which is where the ants sit
-// relative to the boundary pixel - see `draw_selection`.
-void march(ImDrawList* list, const ImVec2& origin, bool along_x, float from, float to, float line,
-           float phase) {
-    // A period is one light dash and one dark dash, and the dash length is the whole stride: the
-    // pattern alternates colour along the boundary rather than drawing dashes with gaps, because the
-    // movement is the whole point. A gap would leave parts of the boundary unmarked in every frame -
-    // and at the 4 px stride, where one document pixel is barely wider than one dash, it would leave
-    // vertical edges looking solid in one frame and missing in the next.
-    const float period = 2.0f * kAntDashPx;
-    const float first = std::floor((from + phase) / kAntDashPx) * kAntDashPx - phase;
-    for (float at = first; at < to; at += kAntDashPx) {
-        const float dash_from = std::max(at, from);
-        const float dash_to = std::min(at + kAntDashPx, to);
-        if (dash_to <= dash_from) {
+// Hand the dashes to ImGui: one-device-pixel filled rectangles with their ends snapped to whole
+// pixels, never antialiased lines. A line centred on a pixel edge spreads over two rows at partial
+// alpha, and that half-lit row is the difference between a crisp ants line and a fuzzy edge nobody
+// can follow.
+// `axis_limit` is the viewport extent along the run's axis: only the visible part of a run is walked,
+// with the pattern position interpolated to the visible start so clipping never moves the dashes.
+void draw_ants_run(ImDrawList* list, const ImVec2& origin, bool along_x, float line, float axis_from,
+                   float axis_to, float s_from, float s_to, float phase, float axis_limit) {
+    const float first = std::max(axis_from, 0.0f);
+    const float last = std::min(axis_to, axis_limit);
+    if (axis_limit <= 0.0f || axis_to <= axis_from || last <= first) {
+        return;
+    }
+    const auto visible_s = [axis_from, axis_to, s_from, s_to](float axis) {
+        return s_from + (s_to - s_from) * ((axis - axis_from) / (axis_to - axis_from));
+    };
+    const float band = std::floor(line);
+    for (const AntDash& dash : ant_dashes(first, last, visible_s(first), visible_s(last), phase)) {
+        const float a = std::round(dash.from);
+        const float b = std::round(dash.to);
+        if (b <= a) {
             continue;
         }
-        const bool light = std::fmod(std::fabs(at + phase), period) < kAntDashPx;
-        const ImVec2 a = along_x ? ImVec2(dash_from + origin.x, line + origin.y)
-                                 : ImVec2(line + origin.x, dash_from + origin.y);
-        const ImVec2 b = along_x ? ImVec2(dash_to + origin.x, line + origin.y)
-                                 : ImVec2(line + origin.x, dash_to + origin.y);
-        list->AddLine(a, b, light ? kAntLight : kAntDark, 1.0f);
+        const ImVec2 lo = along_x ? ImVec2(a + origin.x, band + origin.y)
+                                  : ImVec2(band + origin.x, a + origin.y);
+        const ImVec2 hi = along_x ? ImVec2(b + origin.x, band + 1.0f + origin.y)
+                                  : ImVec2(band + 1.0f + origin.x, b + origin.y);
+        list->AddRectFilled(lo, hi, dash.light ? kAntLight : kAntDark);
     }
 }
 
-// Which side of a boundary pixel the coverage stops at. A run can in principle have the uncovered
-// neighbour at either end (a selection one pixel thick); the first one found wins, and either is a
-// line the user can read.
-bool uncovered_above(const Mask& selection, const MaskRun& run) {
-    return selection.coverage(run.from, run.fixed - 1) == 0;
+// The selection's boundary, in dashes that march. Runs come from the mask, which reports each edge
+// once and along its own length, so a rectangle, a painted blob, a selection that fills the canvas
+// and a selection with a hole in it are drawn by this one path - and no edge is stroked twice, which
+// matters as much as where the dashes fall: an edge drawn twice, once by a run marching one way and
+// once by a perpendicular run of single pixels, reads as a line that blinks.
+void draw_ants(ImDrawList* list, const AppState& state, const ImVec2& origin, float phase,
+               const Mask& selection) {
+    const AntRing ring{selection.bounds()};
+    const float scale = static_cast<float>(state.view.scale);
+    for (const MaskRun& run : selection.boundary()) {
+        const bool along_x = run.side == MaskSide::up || run.side == MaskSide::down;
+        // The edge itself: coverage ends at `fixed` on the up and left sides and one pixel further on
+        // the down and right ones, so the ants sit between the selected pixel and the unselected one
+        // rather than through the middle of the selected one.
+        const int across = along_x ? state.doc.height() : state.doc.width();
+        const double cross = ant_line(run.side, run.fixed, across);
+        const Vec2 start = along_x ? Vec2{static_cast<double>(run.from), cross}
+                                   : Vec2{cross, static_cast<double>(run.from)};
+        const Vec2 end = along_x ? Vec2{static_cast<double>(run.to), cross}
+                                 : Vec2{cross, static_cast<double>(run.to)};
+        const Vec2 screen_start = state.view.world_to_view(start);
+        const Vec2 screen_end = state.view.world_to_view(end);
+        draw_ants_run(list, origin, along_x,
+                      static_cast<float>(along_x ? screen_start.y : screen_start.x),
+                      static_cast<float>(along_x ? screen_start.x : screen_start.y),
+                      static_cast<float>(along_x ? screen_end.x : screen_end.y),
+                      static_cast<float>(ring.along(run.side, run.from)) * scale,
+                      static_cast<float>(ring.along(run.side, run.to)) * scale, phase,
+                      static_cast<float>(along_x ? state.viewport.w : state.viewport.h));
+    }
 }
 
-bool uncovered_left(const Mask& selection, const MaskRun& run) {
-    return selection.coverage(run.fixed - 1, run.from) == 0;
+// The ant overlay for a debug shot: the same pattern at the requested phases, one band beside the
+// next, so a single capture shows a whole cycle and whether the pattern agrees across the sides.
+void draw_ants_phases(ImDrawList* list, AppState& state, const ImVec2& origin,
+                      const std::vector<float>& phases) {
+    if (!state.doc.selection() || phases.empty()) {
+        return;
+    }
+    const float stride = static_cast<float>(state.doc.width()) + 4.0f;
+    for (std::size_t i = 0; i < phases.size(); ++i) {
+        const ImVec2 band{origin.x + static_cast<float>(i) * stride, origin.y};
+        draw_ants(list, state, band, phases[i], *state.doc.selection());
+    }
 }
 
-// The selection's boundary, in dashes that march. Runs come from the mask, so a rectangle, a painted
-// blob, a selection that fills the canvas and a selection with a hole in it are all drawn by the same
-// code.
-//
-// Both groupings are drawn, because a boundary has to be dashed along its own length: the row runs of
-// a vertical edge are one pixel each, so dashes placed along x make that edge solid or absent and
-// flipping as the pattern moves. Each line is placed on the outer side of its boundary pixel - the
-// side where coverage stops - so the ants fall between the selected pixel and the unselected one
-// instead of through the middle of the selected one.
-void draw_selection(ImDrawList* list, const AppState& state, const ImVec2& origin) {
+// The selection's outline, or the frozen bands a probe asked for. The clock is read here and
+// published: it is the only wall time an overlay may use, and `app.state` has to say what a frame
+// actually drew for a screenshot to be reproducible.
+void draw_selection(ImDrawList* list, AppState& state, const ImVec2& origin) {
+    state.ants.time = ImGui::GetTime();
     if (!state.doc.selection()) {
         return;
     }
-    const Mask& selection = *state.doc.selection();
-    const float phase = static_cast<float>(
-        std::fmod(ImGui::GetTime() * static_cast<double>(kAntMarchPxPerSecond), 2.0 * kAntDashPx));
-    for (const MaskRun& run : selection.rows()) {
-        // The side the coverage stops at, decided once per run: a boundary pixel has an uncovered
-        // neighbour, and which side it is on is where the line belongs.
-        const double edge = uncovered_above(selection, run) ? run.fixed : run.fixed + 1.0;
-        const float line = static_cast<float>(state.view.world_to_view({0.0, edge}).y);
-        const float from = static_cast<float>(
-            state.view.world_to_view({static_cast<double>(run.from), 0.0}).x);
-        const float to = static_cast<float>(
-            state.view.world_to_view({static_cast<double>(run.to), 0.0}).x);
-        march(list, origin, true, from, to, line, phase);
+    if (state.ants.phases.empty()) {
+        draw_ants(list, state, origin, ant_drawn_phase(state.ants), *state.doc.selection());
+        return;
     }
-    for (const MaskRun& run : selection.columns()) {
-        const double edge = uncovered_left(selection, run) ? run.fixed : run.fixed + 1.0;
-        const float line = static_cast<float>(state.view.world_to_view({edge, 0.0}).x);
-        const float from = static_cast<float>(
-            state.view.world_to_view({0.0, static_cast<double>(run.from)}).y);
-        const float to =
-            static_cast<float>(state.view.world_to_view({0.0, static_cast<double>(run.to)}).y);
-        march(list, origin, false, from, to, line, phase);
-    }
+    draw_ants_phases(list, state, origin, state.ants.phases);
 }
 
 void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,

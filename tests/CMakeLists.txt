@@ -14,6 +14,7 @@ add_executable(test_project test_project.cpp)
 add_executable(test_document test_document.cpp)
 add_executable(test_blend test_blend.cpp)
 add_executable(test_mask test_mask.cpp)
+add_executable(test_ants test_ants.cpp)
 
 foreach(target test_hash test_geom test_command test_wire test_brush test_history)
     target_link_libraries(${target} PRIVATE noise_core noise_dbg)
@@ -41,6 +42,11 @@ target_link_libraries(test_mask PRIVATE noise_core noise_dbg)
 target_include_directories(test_mask PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(test_mask PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
 add_test(NAME test_mask COMMAND test_mask)
+
+target_link_libraries(test_ants PRIVATE noise_app noise_core noise_dbg)
+target_include_directories(test_ants PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_ants PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_ants COMMAND test_ants)
 
 # The container reader is a parser for files from elsewhere, so it gets the hostile-input
 # tests: crc, truncation, and a directory that lies.

@@ -43,10 +43,6 @@ bool rect_equal(const Rect& got, const Rect& want) {
     return false;
 }
 
-std::size_t cell(Extent size, int x, int y) {
-    return static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) + static_cast<std::size_t>(x);
-}
-
 Image image_of(Extent size, std::uint32_t seed) {
     Image image = Image::filled(size, 0, 0, 0, 0);
     std::uint32_t state = (seed ^ 0x9e3779b9u) | 1u;
@@ -353,97 +349,176 @@ void test_bounds_are_tight() {
     CHECK(rect_equal(mask.bounds(), Rect{2, 1, 10, 7}));
 }
 
-void test_outline_is_the_covered_edge_and_nothing_else() {
-    for (const Rect selection : {Rect{2, 1, 5, 4}, Rect{0, 0, 16, 9}, Rect{0, 0, 1, 1},
-                                 Rect{15, 8, 1, 1}}) {
+// The boundary as edges, checked against the plane rebuilt pixel by pixel: every edge between a
+// covered pixel and an uncovered one - out-of-bounds uncovered - is in exactly one run, on the side
+// it faces, and nothing else is.
+void test_the_boundary_is_every_edge_between_covered_and_uncovered_once() {
+    // Two rectangles with a gap between them as well as single ones: on a line that holds two
+    // separate stretches of boundary, a run that ran on through the gap would list pixels that are
+    // not edges at all, and a fixture of single rectangles would let it pass.
+    const std::vector<std::vector<Rect>> shapes{
+        {Rect{2, 1, 5, 4}}, {Rect{0, 0, 16, 9}}, {Rect{0, 0, 1, 1}}, {Rect{15, 8, 1, 1}},
+        {Rect{2, 2, 3, 3}, Rect{8, 2, 3, 3}}, {Rect{1, 1, 2, 6}, Rect{6, 3, 8, 2}}};
+    for (const std::vector<Rect>& shape : shapes) {
         const Extent size{16, 9};
         Mask mask(size);
-        mask.op(selection, MaskOp::replace);
+        for (std::size_t i = 0; i < shape.size(); ++i) {
+            mask.op(shape[i], i == 0 ? MaskOp::replace : MaskOp::add);
+        }
 
-        // The set the runs cover, rebuilt independently of how they were produced. The rule is
-        // checked along both axes, because a boundary is one pixel set grouped two ways.
-        const std::vector<MaskRun> rows = mask.rows();
-        const std::vector<MaskRun> columns = mask.columns();
-        for (const std::vector<MaskRun>* runs : {&rows, &columns}) {
-            std::vector<std::uint8_t> listed(
-                static_cast<std::size_t>(size.w) * static_cast<std::size_t>(size.h), 0);
-            int last_fixed = -1;
-            int last_to = -1;
-            for (const MaskRun& run : *runs) {
-                CHECK(run.fixed >= 0 && run.fixed < (runs == &rows ? size.h : size.w));
-                CHECK(run.from < run.to);
-                // Sorted, and maximal: two runs on one line must have a gap between them, or the
-                // outline broke one line into two and a dashed overlay shows it.
-                CHECK(run.fixed > last_fixed ||
-                      (run.fixed == last_fixed && run.from > last_to + 1));
-                last_fixed = run.fixed;
-                last_to = run.to;
-                for (int cell = run.from; cell < run.to; ++cell) {
-                    const int x = runs == &rows ? cell : run.fixed;
-                    const int y = runs == &rows ? run.fixed : cell;
-                    CHECK(mask.coverage(x, y) != 0);
-                    listed[static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) +
-                           static_cast<std::size_t>(x)] = 1;
+        // Counted per (pixel, side), which is what an edge is. A boundary *pixel* set cannot express
+        // this: it would say a corner is one thing when it is two edges meeting.
+        int listed_edges = 0;
+        for (const MaskRun& run : mask.boundary()) {
+            const bool horizontal = run.side == MaskSide::up || run.side == MaskSide::down;
+            CHECK(run.fixed >= 0 && run.fixed < (horizontal ? size.h : size.w));
+            CHECK(run.from < run.to);
+            for (int cell = run.from; cell < run.to; ++cell) {
+                const int x = horizontal ? cell : run.fixed;
+                const int y = horizontal ? run.fixed : cell;
+                const int dx = run.side == MaskSide::left ? -1 : run.side == MaskSide::right ? 1 : 0;
+                const int dy = run.side == MaskSide::up ? -1 : run.side == MaskSide::down ? 1 : 0;
+                CHECK(mask.coverage(x, y) != 0);
+                CHECK(mask.coverage(x + dx, y + dy) == 0);
+                ++listed_edges;
+            }
+        }
+        int actual_edges = 0;
+        for (int y = 0; y < size.h; ++y) {
+            for (int x = 0; x < size.w; ++x) {
+                if (mask.coverage(x, y) == 0) {
+                    continue;
+                }
+                for (const MaskSide side : kMaskSides) {
+                    const int dx = side == MaskSide::left ? -1 : side == MaskSide::right ? 1 : 0;
+                    const int dy = side == MaskSide::up ? -1 : side == MaskSide::down ? 1 : 0;
+                    actual_edges += mask.coverage(x + dx, y + dy) == 0 ? 1 : 0;
                 }
             }
-            for (int y = 0; y < size.h; ++y) {
-                for (int x = 0; x < size.w; ++x) {
-                    if (mask.coverage(x, y) == 0) {
-                        CHECK_EQ(static_cast<int>(listed[cell(size, x, y)]), 0);
+        }
+        CHECK_EQ(listed_edges, actual_edges);
+    }
+}
+
+// Runs are sorted and maximal on their own line: two runs on one line with no gap between them mean
+// one straight edge was broken in two, and a dashed overlay shows the break as a mark that is not on
+// the selection.
+void test_boundary_runs_are_sorted_and_maximal() {
+    const std::vector<std::vector<Rect>> shapes{{Rect{2, 1, 5, 4}}, {Rect{0, 0, 16, 9}},
+                                                {Rect{7, 0, 1, 9}},
+                                                // Two blocks on one row: the line has to break into
+                                                // two runs, and merging them across the gap is the
+                                                // failure this checks for.
+                                                {Rect{2, 2, 3, 3}, Rect{8, 2, 3, 3}},
+                                                {Rect{1, 1, 2, 6}, Rect{6, 3, 8, 2}}};
+    for (const std::vector<Rect>& shape : shapes) {
+        const Extent size{16, 9};
+        Mask mask(size);
+        for (std::size_t i = 0; i < shape.size(); ++i) {
+            mask.op(shape[i], i == 0 ? MaskOp::replace : MaskOp::add);
+        }
+        MaskSide last_side = MaskSide::up;
+        int last_fixed = -1;
+        int last_to = -1;
+        for (const MaskRun& run : mask.boundary()) {
+            const bool same_line = run.side == last_side && run.fixed == last_fixed;
+            // A new line is allowed anywhere; a second run on the same line has to have a gap
+            // between the two, or one straight edge was reported as two.
+            CHECK(!same_line || run.from > last_to + 1);
+            last_side = run.side;
+            last_fixed = run.fixed;
+            last_to = run.to;
+        }
+        // And maximal in the other direction too: walking the plane again, every edge on a line is
+        // in *one* run, so a run that stopped short of a neighbour it could have joined - which
+        // leaves a hairline gap in the outline - is caught here rather than on screen.
+        for (const MaskSide side : kMaskSides) {
+            const bool horizontal = side == MaskSide::up || side == MaskSide::down;
+            const int dx = side == MaskSide::left ? -1 : side == MaskSide::right ? 1 : 0;
+            const int dy = side == MaskSide::up ? -1 : side == MaskSide::down ? 1 : 0;
+            const int lines = horizontal ? size.h : size.w;
+            const int cells = horizontal ? size.w : size.h;
+            for (int fixed = 0; fixed < lines; ++fixed) {
+                int expected = -1;  // end of the stretch of edges being walked
+                for (int cell = 0; cell < cells; ++cell) {
+                    const int x = horizontal ? cell : fixed;
+                    const int y = horizontal ? fixed : cell;
+                    const bool edge =
+                        mask.coverage(x, y) != 0 && mask.coverage(x + dx, y + dy) == 0;
+                    if (!edge) {
+                        expected = -1;
                         continue;
                     }
-                    const bool touches_out =
-                        mask.coverage(x - 1, y) == 0 || mask.coverage(x + 1, y) == 0 ||
-                        mask.coverage(x, y - 1) == 0 || mask.coverage(x, y + 1) == 0;
-                    CHECK_EQ(static_cast<int>(listed[cell(size, x, y)]), touches_out ? 1 : 0);
+                    if (expected < 0) {
+                        // A fresh stretch: exactly one run starts here and ends where the stretch
+                        // does, which the inner walk finds.
+                        int end = cell;
+                        while (end < cells) {
+                            const int ex = horizontal ? end : fixed;
+                            const int ey = horizontal ? fixed : end;
+                            if (!(mask.coverage(ex, ey) != 0 &&
+                                  mask.coverage(ex + dx, ey + dy) == 0)) {
+                                break;
+                            }
+                            ++end;
+                        }
+                        const MaskRun wanted{side, fixed, cell, end};
+                        CHECK(std::find(mask.boundary().begin(), mask.boundary().end(), wanted) !=
+                              mask.boundary().end());
+                        expected = end;
+                    }
                 }
             }
         }
     }
 }
 
-// A vertical edge is the case the row grouping cannot express on its own: every run there is one
-// pixel long, so the overlay has to be given the columns too. The two groupings describe the same
-// boundary, and a rectangle's vertical sides only appear once the columns are there.
-void test_the_boundary_reports_its_vertical_edges_too() {
+// The case a row grouping cannot express on its own: the vertical sides of a rectangle are runs
+// along y, one per side, as long as the rectangle is tall. Report the boundary as covered pixels
+// grouped by rows and those sides vanish - which is exactly how the ants came to be drawn as a
+// blinking frame, the pixels of one vertical edge stroked across it once per row.
+void test_a_rectangles_vertical_sides_are_runs_of_their_own() {
     const Extent size{16, 9};
     Mask mask(size);
     mask.op(Rect{4, 2, 6, 5}, MaskOp::replace);
 
-    std::vector<std::uint8_t> from_rows(
-        static_cast<std::size_t>(size.w) * static_cast<std::size_t>(size.h), 0);
-    std::vector<std::uint8_t> from_columns(from_rows);
-    for (const MaskRun& run : mask.rows()) {
-        for (int x = run.from; x < run.to; ++x) {
-            from_rows[cell(size, x, run.fixed)] = 1;
-        }
+    for (const MaskRun& wanted : {MaskRun{MaskSide::up, 2, 4, 10}, MaskRun{MaskSide::down, 6, 4, 10},
+                                  MaskRun{MaskSide::left, 4, 2, 7},
+                                  MaskRun{MaskSide::right, 9, 2, 7}}) {
+        CHECK(std::find(mask.boundary().begin(), mask.boundary().end(), wanted) !=
+              mask.boundary().end());
     }
-    for (const MaskRun& run : mask.columns()) {
-        for (int y = run.from; y < run.to; ++y) {
-            from_columns[cell(size, run.fixed, y)] = 1;
-        }
-    }
-    CHECK(from_rows == from_columns);
+    // Four runs, and that is the whole boundary: no edge of the rectangle is reported twice, which is
+    // what an overlay stroking each run along its length depends on.
+    CHECK_EQ(mask.boundary().size(), 4u);
 
-    // The left side of the rectangle is a column of its own, spanning the rectangle's height: a
-    // grouping that only did rows would leave nothing to draw there.
-    const MaskRun left_edge{4, 2, 7};
-    CHECK(std::any_of(mask.columns().begin(), mask.columns().end(),
-                      [left_edge](const MaskRun& run) { return run == left_edge; }));
     mask.invert();
-    // Inverted, the boundary is the canvas frame *and* the ring of covered pixels around the hole.
-    // The hole's left and right sides are columns 5 pixels tall, its top and bottom sides rows 6
-    // pixels long: the same edge reported in both groupings, which is what lets the overlay dash a
-    // hole in a selection instead of drawing its sides solid.
-    for (const MaskRun& wanted : {MaskRun{3, 2, 7}, MaskRun{10, 2, 7}}) {
-        CHECK(std::find(mask.columns().begin(), mask.columns().end(), wanted) !=
-              mask.columns().end());
+    // Inverted, the boundary is the canvas frame and the ring around the hole. The covered region is
+    // now everywhere but the rectangle, so the hole's edge is the ring of pixels just outside it:
+    // the up side of that ring is row 1 (the pixel above it, row 0, is covered; row 2 is the hole),
+    // and so on - all four sides, so an overlay dashes a hole instead of drawing its sides solid.
+    const std::vector<MaskRun> canvas_frame{
+        MaskRun{MaskSide::up, 0, 0, 16}, MaskRun{MaskSide::down, 8, 0, 16},
+        MaskRun{MaskSide::left, 0, 0, 9}, MaskRun{MaskSide::right, 15, 0, 9}};
+    for (const MaskRun& wanted : canvas_frame) {
+        CHECK(std::find(mask.boundary().begin(), mask.boundary().end(), wanted) !=
+              mask.boundary().end());
     }
-    for (const MaskRun& wanted : {MaskRun{1, 4, 10}, MaskRun{7, 4, 10}}) {
-        CHECK(std::find(mask.rows().begin(), mask.rows().end(), wanted) != mask.rows().end());
+    // The hole's own four sides. Each faces the hole from the covered ring around it: the pixel above
+    // the hole's top row is row 1 and faces *down* into it, the pixel left of its left column is
+    // column 3 and faces *right*, and so on. Getting this backwards puts the ants on the far side of
+    // the hole, one pixel out.
+    const std::vector<MaskRun> hole{MaskRun{MaskSide::down, 1, 4, 10},
+                                    MaskRun{MaskSide::up, 7, 4, 10},
+                                    MaskRun{MaskSide::right, 3, 2, 7},
+                                    MaskRun{MaskSide::left, 10, 2, 7}};
+    for (const MaskRun& wanted : hole) {
+        CHECK(std::find(mask.boundary().begin(), mask.boundary().end(), wanted) !=
+              mask.boundary().end());
     }
+    // Nothing else: the frame and the hole are the whole boundary of an inverted rectangle.
+    CHECK_EQ(mask.boundary().size(), canvas_frame.size() + hole.size());
 }
-
 
 // The facts a mask reports - how much it covers, where, and its outline - are held by the mask and
 // dropped by every write. A cache that outlived the coverage would show the ants in the old place
@@ -454,21 +529,21 @@ void test_the_facts_follow_every_write() {
     mask.op(Rect{1, 1, 3, 2}, MaskOp::replace);
     CHECK_EQ(mask.covered(), 6u);
     CHECK(mask.bounds() == Rect{1, 1, 3, 2});
-    CHECK(!mask.rows().empty());
+    CHECK(!mask.boundary().empty());
     // Reading them twice hands back the same computed values, which is what a per-frame overlay needs.
     CHECK(&mask.facts() == &mask.facts());
 
     mask.op(Rect{1, 1, 3, 2}, MaskOp::subtract);
     CHECK_EQ(mask.covered(), 0u);
     CHECK(mask.bounds().empty());
-    CHECK(mask.rows().empty());
+    CHECK(mask.boundary().empty());
 
     mask.fill(255);
     CHECK_EQ(mask.covered(), 48u);
     CHECK(mask.bounds() == Rect{0, 0, 8, 6});
     mask.invert();
     CHECK_EQ(mask.covered(), 0u);
-    CHECK(mask.rows().empty());
+    CHECK(mask.boundary().empty());
     mask.invert();
     CHECK_EQ(mask.covered(), 48u);
 }
@@ -594,8 +669,9 @@ int main() {
     test_from_plane_refuses_a_plane_of_another_size();
     test_a_write_past_the_mask_is_left_alone();
     test_bounds_are_tight();
-    test_outline_is_the_covered_edge_and_nothing_else();
-    test_the_boundary_reports_its_vertical_edges_too();
+    test_the_boundary_is_every_edge_between_covered_and_uncovered_once();
+    test_boundary_runs_are_sorted_and_maximal();
+    test_a_rectangles_vertical_sides_are_runs_of_their_own();
     test_the_facts_follow_every_write();
     test_a_layer_through_a_mask_keeps_its_colour_and_its_amount();
     test_a_mask_hides_what_it_does_not_cover_and_leaves_nothing_behind();

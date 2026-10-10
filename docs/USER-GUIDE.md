@@ -108,7 +108,9 @@ painting on the layer above, it stays where it is.
 ## A selection
 
 `M`, then drag. **Every document pixel the rectangle passes over is selected**, and the marching ants
-run along those pixels, so what is outlined is exactly what is writable. Dragging past the edge still
+run along those pixels, so what is outlined is exactly what is writable. The ants are drawn in screen
+pixels, so they stay crisp at any zoom, and every side of the outline — including the edge of a hole
+and a second, separate selection region — marches with the same phase and speed. Dragging past the edge still
 selects up to the edge; a click selects one pixel; releasing without a marquee puts the selection down.
 
 The selection belongs to the document and **limits every write to the pixels it covers**: painting,

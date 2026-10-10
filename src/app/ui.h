@@ -15,6 +15,7 @@ namespace noise::app {
 // frame's real demand, and the golden driver fails well before it.
 inline constexpr int kUiVertexLimit = 131072;
 
+
 // The UI owns no behaviour of its own: widgets dispatch through `commands`, the
 // same table the debug wire drives. The canvas texture is GPU state the caller
 // owns, so that `AppState` stays windowless and testable.

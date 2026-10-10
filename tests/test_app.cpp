@@ -1075,6 +1075,39 @@ void test_a_project_round_trips_and_an_export_is_not_a_save() {
 // specification and not against itself: for every pixel, `after(x, y)` is `before(x - dx, y - dy)`
 // or transparent when that falls outside the canvas. Nothing about the brush, the dabs or the
 // gesture shape appears in the assertion, only what the tool claims to do.
+void test_the_overlay_reports_the_phase_it_draws_and_freezes_on_request() {
+    Harness h;
+    h.value("doc.new", json{{"width", 24}, {"height", 16}, {"fill", json::array({0, 0, 0, 255})}});
+    h.value("select.all", json::object());
+
+    const json live = h.value("app.state", json::object())["ants"];
+    const double dash = live["dash_px"].get<double>();
+    CHECK(dash > 0.0);
+    // The reported phase sits in the one period the pattern has, whatever the clock said.
+    CHECK(live["phase_px"].get<double>() >= 0.0);
+    CHECK(live["phase_px"].get<double>() < 2.0 * dash);
+    CHECK(live["speed_px_per_second"].get<double>() > 0.0);
+    CHECK(live["frozen_phases"].empty());
+
+    // Freezing is honoured by the number the overlay draws from, not just remembered: a screenshot
+    // probe asks for a phase and this is the only value that says what was on screen.
+    const json frozen = h.value("ants.freeze", json{{"phases", json::array({4.5})}});
+    CHECK(frozen["phases"].size() == 1);
+    const json held = h.value("app.state", json::object())["ants"];
+    CHECK_EQ(held["phase_px"].get<double>(), 4.5);
+    CHECK_EQ(held["frozen_phases"].size(), 1u);
+
+    // An empty list hands the clock back.
+    h.value("ants.freeze", json{{"phases", json::array()}});
+    const json again = h.value("app.state", json::object())["ants"];
+    CHECK(again["frozen_phases"].empty());
+    CHECK(again["phase_px"].get<double>() < 2.0 * dash);
+
+    const CommandResult junk = h.run("ants.freeze", json{{"phases", json::array({"fast"})}});
+    CHECK(!junk.ok);
+    CHECK(junk.error.find("phases") != std::string::npos);
+}
+
 void test_the_move_tool_slides_the_layer_and_undoes_it_exactly() {
     constexpr int kWidth = 64;
     constexpr int kHeight = 48;
@@ -1744,6 +1777,7 @@ int main() {
     test_the_select_gesture_draws_and_puts_down_the_selection();
     test_a_selection_becomes_a_mask_and_a_mask_becomes_a_selection();
     test_a_layer_mask_costs_no_undo_step_and_reaches_the_file();
+    test_the_overlay_reports_the_phase_it_draws_and_freezes_on_request();
     test_the_move_tool_slides_the_layer_and_undoes_it_exactly();
     test_a_move_that_never_left_its_pixel_is_not_an_edit();
     test_a_move_slides_the_active_layer_and_no_other();

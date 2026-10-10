@@ -44,12 +44,9 @@ std::string mask_op_names();
 struct MaskFacts {
     std::size_t covered = 0;
     Rect bounds{};
-    // The same boundary pixels, grouped both ways: `rows` along x and `columns` along y. Two
-    // groupings because a run is only drawable along its own length - a vertical edge is one pixel
-    // per row, so dashes placed along x turn it into a line that is either solid or absent, and it
-    // flips as the dashes march.
-    std::vector<MaskRun> rows{};
-    std::vector<MaskRun> columns{};
+    // Every boundary edge, each in exactly one run: grouped along its own length, so a horizontal
+    // side appears as runs along x and a vertical side as runs along y, and no edge is in both.
+    std::vector<MaskRun> boundary{};
 };
 
 // Coverage of one pixel: 0 is out, 255 is in, between is a partial claim on it. Straight rather
@@ -90,11 +87,13 @@ public:
     // Pixels with any coverage at all, and the tight box holding them (empty when there are none).
     std::size_t covered() const { return facts().covered; }
     Rect bounds() const { return facts().bounds; }
-    // The boundary: the covered pixels that touch an uncovered one, out-of-bounds counting as
-    // uncovered, grouped along each axis. One rule, so a rectangle, a painted blob and a selection
-    // that fills the canvas all get an outline without any of them being special-cased.
-    const std::vector<MaskRun>& rows() const { return facts().rows; }
-    const std::vector<MaskRun>& columns() const { return facts().columns; }
+    // The boundary: every edge between a covered pixel and an uncovered one - out-of-bounds counting
+    // as uncovered - as runs facing that side. One rule, so a rectangle, a painted blob, a selection
+    // filling the canvas and a selection with a hole in it all get an outline without any of them
+    // being special-cased, and each edge is reported once: grouping boundary *pixels* instead would
+    // report the pixels of a vertical edge once per row, which an overlay stroking along the row
+    // paints as a solid line.
+    const std::vector<MaskRun>& boundary() const { return facts().boundary; }
 
     bool operator==(const Mask& other) const;
 

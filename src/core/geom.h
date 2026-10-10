@@ -43,18 +43,30 @@ inline bool operator==(const Rect& a, const Rect& b) {
     return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
 }
 
-// A run of consecutive boundary pixels, half-open like every other region here: `from` is included,
-// `to` is not. One type serves both directions because a boundary is one idea - `rows` hold it with
-// `fixed` as the row and `from..to` along x, `columns` with `fixed` as the column and `from..to`
-// along y - and an outline drawn along one axis only cannot show an edge that runs the other way.
+// The side of a covered pixel where coverage stops. A boundary is a shared edge between a covered
+// pixel and an uncovered one, so it is only fully described once the side is known: the pixel alone
+// says where the boundary is, the side says which way it faces and therefore which axis it runs
+// along.
+enum class MaskSide { up, down, left, right };
+
+// Every side, in the order a boundary is scanned. A `switch` over `MaskSide` that forgets one is a
+// build error; this table is for the loops that walk all four.
+inline constexpr MaskSide kMaskSides[]{MaskSide::up, MaskSide::down, MaskSide::left,
+                                       MaskSide::right};
+
+// One straight stretch of boundary, half-open like every other region here: `from` is included, `to`
+// is not. `fixed` is the row for a horizontal side and the column for a vertical one, and the run
+// extends along the other axis. The edge itself sits at `fixed` on the up and left sides and at
+// `fixed + 1` on the down and right ones, which is where coverage ends.
 struct MaskRun {
+    MaskSide side = MaskSide::up;
     int fixed = 0;
     int from = 0;
     int to = 0;
 };
 
 inline bool operator==(const MaskRun& a, const MaskRun& b) {
-    return a.fixed == b.fixed && a.from == b.from && a.to == b.to;
+    return a.side == b.side && a.fixed == b.fixed && a.from == b.from && a.to == b.to;
 }
 
 // Canvas (world) -> viewport transform: view = (world - origin) * scale.

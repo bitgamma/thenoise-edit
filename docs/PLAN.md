@@ -237,18 +237,47 @@ real, and the second one was an architecture error in `MaskFacts`, not a drawing
 - **The boundary was only grouped along rows.** A vertical edge is then one run per row, each one
   pixel long, and dashes placed along x on a 1-pixel run make that edge *solid or absent* - and it
   flips as the pattern moves, because whether the single pixel lands inside a dash depends on the
-  phase. Dashing had to happen along the run's own length, which meant the mask had to report the
-  boundary grouped both ways. `MaskFacts.outline` became `rows` + `columns` over one `MaskRun`
-  (`fixed`, `from`, `to`), computed by one function over the same boundary set; the type has one
-  meaning and the two groupings cannot disagree, which `test_the_boundary_reports_its_vertical_edges_too`
-  pins by requiring both groupings to cover the same pixel set and a hole's four sides to be there
-  after an invert.
+  phase. The first repair grouped the *pixels* both ways (`rows` + `columns`). That was still wrong,
+  and the report came back: *"it is basically a barely visible blinking dashed frame."* Grouping
+  pixels on a boundary by row and again by column double-reports every corner and reports a diagonal
+  staircase as dozens of 1-pixel runs; what the overlay actually wants is neither.
+- **The mask now reports boundary edges, once each, labelled with the side they face.**
+  `MaskSide {up, down, left, right}` and `MaskRun {side, fixed, from, to}` in `core/geom.h`;
+  `Mask::boundary()` in place of `rows()`/`columns()`. An edge is a covered pixel's neighbour step in
+  one direction, so a horizontal edge is one run along x, a vertical edge is one run along y, a
+  rectangle yields exactly four runs, and a hole yields four more - all asserted by walking the plane
+  and requiring each edge to appear once and each maximal stretch to appear as exactly one run. The
+  second shape family in that test - two rectangles with a gap on one line - is what kills a run that
+  runs on through the gap. This is also the first representation that a future lasso or wand can
+  feed: they produce coverage, and coverage produces edges.
 - **"Blinks very fast" was the march speed**: 32 px/s over an 8 px light-dark pair is four pattern
-  cycles a second. It is now 8 px/s over a 6 px pair - one and a third cycles. The speed is now
-  measurable from screenshots, which is the only way to test a phase at all: shots 0.25 s apart differ
-  on 2 606 of the ~2 871 ant pixels, and a phase frozen at a multiple of the pattern makes that number
-  collapse - which is exactly what the aliasing at 0.125 s (0 pixels changed, phase shift of exactly 1
-  px against a 6 px pattern) demonstrates about why one number cannot be the whole test.
+  cycles a second. It is now 8 px/s over a 6 px pair - one and a third cycles - and dash length is
+  measured in **screen** pixels, so zooming changes how much selection a dash covers and never how
+  crisp the ants are.
+- **Different sides moved at different rates, and the reason was the parametrization.** Placing the
+  pattern by screen coordinate, anchored per run, makes a side that the outline traverses backwards
+  march the other way; sampling the colour *on* a cut makes neighbouring dashes the same colour; and
+  rounding cuts in screen space at a non-integer zoom makes them collapse onto one pixel. So the dash
+  pattern is now a function of one coordinate shared by the whole outline: distance travelled along
+  the bounding-box ring, `AntRing::along(side, axis)` - up from the left, right down the right side,
+  down from the right, left up the left side, all with unit slope. `ant_dashes()` solves for the cuts
+  on that coordinate (walking the multiples in the run's own direction, because the `up`/`left` sides
+  run backwards against the axis) and returns `{from, to, light}` in screen pixels. Every side, hole
+  and disjoint piece therefore inherits one phase, one speed and one direction.
+- **The pattern logic left `ui.cpp`.** It is `app/ants.{h,cpp}` - headless, no Sokol, no ImGui -
+  because none of the above is testable through a frame and all of it was previously invisible.
+  `test_ants` (14 467 checks) covers: dashes tile a run with no gap and no overlap; colours alternate;
+  dash length is exactly 3 screen px at any zoom, including the worst case where one doc px is
+  0.025 screen px; and marching a phase by the speed for one second moves a given screen point by
+  exactly one pattern period (measured on *every* doc pixel of a selection, not sampled).
+  `app.state.ants` reports `phase_px`, `time_s`, `dash_px`, `speed_px_per_second`, `frozen_phases`,
+  and `ants.freeze {"phases":[p,...]}` draws bands at fixed phases side by side so a screenshot can
+  be measured against arithmetic.
+- **Two arithmetic bugs the tests found**, worth naming because neither was visible in a screenshot:
+  the colour of a dash was taken from its end point, which is a cut, where the wrap puts it in
+  whichever band it likes - so two neighbouring dashes came out the same colour (fixed by sampling the
+  middle); and the multiplier walk had to follow the run's own direction (fixed by `step`). Both are
+  mutation-checked.
 - **One thing that looked wrong and was not**: at a stride of 4 device px, light coverage measured on
   the ant line came out at 43 %, which reads as "43 % of the boundary is missing". It is not -
   light and dark dashes tile the boundary with no gap, so every boundary pixel is marked in every
@@ -258,9 +287,17 @@ real, and the second one was an architecture error in `MaskFacts`, not a drawing
 - **What the previous verification had missed**, and why: the earlier check was a whole-image diff with
   a bounding box. It proved the ants were *on the selection* and proved nothing about their pattern,
   because a bounding box is insensitive to whether the four sides are drawn the same way. The
-  replacement asks per edge: light coverage on the top line and on the left line, and the phase change
-  between frames. A test that summarizes cannot catch a defect that is different per side - which is
-  what the report was.
+  replacement asks per edge. Measured on the live app at 3.67 px/doc px, dark coverage per side of a
+  60x40 rectangle (expected 180 device px each at 3 of every 6): top 90, bottom 87, left 93,
+  right 91 - each side within one dash of its neighbour, and the whole outline at 366 dark against
+  367 computed. Same probe for an inverted selection, a 1-px-wide selection, two overlapping
+  rectangles and a selection in the canvas corner: all within ~1 % of the arithmetic, including the
+  canvas-edge case where the band is nudged one pixel inside so it cannot be clipped away. A test that
+  summarizes cannot catch a defect that is different per side - which is what both reports were.
+- **No test may hang, and one could.** `ant_dashes()` walked its multiples in a `while` over floats;
+  it is now a counted walk bounded by the run's own length in dash widths, with a non-finite guard,
+  and the overlay only walks the part of a run inside the viewport (with the phase interpolated to the
+  visible start, so clipping does not move the dashes).
 
 ### Layer masks and the two conversions, as built (observed, not assumed)
 

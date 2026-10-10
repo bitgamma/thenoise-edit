@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "app/ants.h"
+
 #include "core/brush.h"
 #include "core/document.h"
 #include "io/zip.h"
@@ -9,6 +11,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace noise {
 
@@ -99,6 +102,7 @@ struct AppState {
     // Vertices the last frame's UI demanded, against the ceiling it was staged into.
     // Past the ceiling ImGui drops draw commands, so this is what to read when the screen
     // is missing pieces rather than broken.
+    app::AntOverlay ants;
     std::uint64_t ui_vertices = 0;
     std::uint64_t ui_vertex_limit = 0;
 

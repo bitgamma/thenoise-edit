@@ -41,11 +41,17 @@ Rect bounds_of(const std::vector<std::uint8_t>& plane, Extent size) {
     return Rect{x0, y0, x1 - x0, y1 - y0};
 }
 
-// The covered pixels that touch an uncovered one, as runs along one axis. Out-of-bounds counts as
+// Every boundary edge of one side, as runs along that side's own axis. Out-of-bounds counts as
 // uncovered, so a selection that fills the document still has a boundary: the edge the user sees is
-// where coverage stops, wherever that is. `along_x` picks which axis the runs run along; the pixel
-// set is the same either way.
-std::vector<MaskRun> runs_of(const std::vector<std::uint8_t>& plane, Extent size, bool along_x) {
+// where coverage stops, wherever that is.
+std::vector<MaskRun> runs_of_side(const std::vector<std::uint8_t>& plane, Extent size,
+                                  MaskSide side) {
+    const bool horizontal = side == MaskSide::up || side == MaskSide::down;
+    const int across = horizontal ? size.h : size.w;
+    const int along = horizontal ? size.w : size.h;
+    // How far, and in which direction, a covered pixel's neighbour lies on the side being scanned.
+    const int dx = side == MaskSide::left ? -1 : side == MaskSide::right ? 1 : 0;
+    const int dy = side == MaskSide::up ? -1 : side == MaskSide::down ? 1 : 0;
     auto covered = [&](int x, int y) {
         if (x < 0 || y < 0 || x >= size.w || y >= size.h) {
             return false;
@@ -53,30 +59,27 @@ std::vector<MaskRun> runs_of(const std::vector<std::uint8_t>& plane, Extent size
         return plane[static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) +
                      static_cast<std::size_t>(x)] != kOut;
     };
-    const int lines = along_x ? size.h : size.w;
-    const int cells = along_x ? size.w : size.h;
     std::vector<MaskRun> runs;
     int run_fixed = -1;
     int run_from = 0;
     int run_to = 0;
-    auto flush = [&runs, &run_fixed, &run_from, &run_to] {
+    auto flush = [&runs, &run_fixed, &run_from, &run_to, side] {
         if (run_fixed >= 0) {
-            runs.push_back(MaskRun{run_fixed, run_from, run_to});
+            runs.push_back(MaskRun{side, run_fixed, run_from, run_to});
             run_fixed = -1;
         }
     };
-    for (int fixed = 0; fixed < lines; ++fixed) {
-        for (int cell = 0; cell < cells; ++cell) {
-            const int x = along_x ? cell : fixed;
-            const int y = along_x ? fixed : cell;
-            const bool touches_out =
-                covered(x, y) && (!covered(x - 1, y) || !covered(x + 1, y) ||
-                                  !covered(x, y - 1) || !covered(x, y + 1));
-            if (!touches_out) {
+    for (int fixed = 0; fixed < across; ++fixed) {
+        for (int cell = 0; cell < along; ++cell) {
+            const int x = horizontal ? cell : fixed;
+            const int y = horizontal ? fixed : cell;
+            if (!covered(x, y) || covered(x + dx, y + dy)) {
                 flush();
                 continue;
             }
-            if (run_fixed == fixed && run_to == cell) {
+            // Consecutive edge cells on one line are contiguous: the scan only leaves the run when a
+            // cell stops being an edge, and that flushes it.
+            if (run_fixed == fixed) {
                 run_to = cell + 1;
                 continue;
             }
@@ -96,8 +99,10 @@ MaskFacts facts_of(const std::vector<std::uint8_t>& plane, Extent size) {
         facts.covered += cell != kOut ? 1u : 0u;
     }
     facts.bounds = bounds_of(plane, size);
-    facts.rows = runs_of(plane, size, true);
-    facts.columns = runs_of(plane, size, false);
+    for (const MaskSide side : kMaskSides) {
+        const std::vector<MaskRun> runs = runs_of_side(plane, size, side);
+        facts.boundary.insert(facts.boundary.end(), runs.begin(), runs.end());
+    }
     return facts;
 }
 

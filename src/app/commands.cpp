@@ -3,6 +3,7 @@
 
 #include "app/command_args.h"
 #include "app/command_groups.h"
+#include "app/state.h"
 
 #include "core/base64.h"
 #include "core/log.h"
@@ -46,6 +47,13 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                {"brush", brush_json(state)},
                                {"stroke", stroke_json(state)},
                                {"view", view_json(state)},
+                               // What the ant overlay drew, as much as what it was asked to draw:
+                               // the rate is only checkable against the clock the frame used.
+                               {"ants", json{{"phase_px", ant_drawn_phase(state.ants)},
+                                             {"time_s", state.ants.time},
+                                             {"dash_px", kAntDashPx},
+                                             {"speed_px_per_second", kAntMarchPxPerSecond},
+                                             {"frozen_phases", state.ants.phases}}},
                                {"wire_port", wire.port()}});
     });
 
@@ -191,6 +199,28 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                {"height", a.size().h},
                                {"differing_bytes", differing},
                                {"max_channel_delta", max_delta}});
+    });
+
+    // The one place the ants' clock may be stopped. Animating them needs wall time and wall time is
+    // the only input a screenshot cannot pin down, so a probe that wants to see the pattern - which
+    // side of the boundary is lit at a given offset, whether the four sides agree - asks for the
+    // phases to draw and gets the overlay frozen at those offsets. With an empty list the overlay
+    // animates again.
+    table.add("ants.freeze", "Draw the marching ants at fixed phases instead of animating",
+              {}, {"phases"}, [&state](const json& args) -> CommandResult {
+        state.ants.phases.clear();
+        if (args.contains("phases")) {
+            if (!args.at("phases").is_array()) {
+                return fail("ants.freeze", "'phases' must be an array of numbers");
+            }
+            for (const json& value : args.at("phases")) {
+                if (!value.is_number()) {
+                    return fail("ants.freeze", "'phases' must be an array of numbers");
+                }
+                state.ants.phases.push_back(value.get<float>());
+            }
+        }
+        return command_ok(json{{"phases", state.ants.phases}});
     });
 
     table.add("wire.info", "Report debug wire status", {}, {}, [&wire](const json&) -> CommandResult {
