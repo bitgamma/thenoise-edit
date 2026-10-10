@@ -5,7 +5,10 @@
 #include "core/mask.h"
 #include "core/maskops.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <vector>
@@ -509,6 +512,90 @@ void test_the_document_checksum_sees_a_layer_mask() {
 
     CHECK(doc.set_layer_mask(0, std::nullopt));
     CHECK_EQ(doc.checksum(), unmasked);
+}
+
+// A correctness test cannot see the composite's two shortcuts, so compare work: repairing the same
+// rectangle on a layer with a wholly shown mask against the same repair with no mask at all, on the
+// same document. The copy the mask would need is pure waste, so the masked repair must cost about
+// what the unmasked one does. Relative, so a slower machine is not a failure - measured here the two
+// are within 1.2x of each other, and about 4x apart with the questions taken out of `composite()`.
+void test_a_wholly_shown_mask_costs_the_composite_nothing(
+    const std::function<double()>& now_ms) {
+    constexpr Extent size{1024, 1024};
+    const Rect repair{300, 300, 300, 300};
+    Document doc;
+    doc.reset(stack({{"base", Image::filled(size, 10, 20, 30, 255)},
+                     {"top", Image::filled(size, 200, 40, 60, 255)}}),
+              std::nullopt, "x.noise");
+
+    double unmasked = 0.0;
+    for (int round = 0; round < 20; ++round) {
+        paint_on(doc, repair, static_cast<std::uint8_t>(round + 1));
+        const double before = now_ms();
+        doc.composite();
+        unmasked = std::max(unmasked, now_ms() - before);
+    }
+
+    Mask shown(size);
+    shown.fill(kMaskIn);
+    CHECK(doc.set_layer_mask(1, shown));
+    double masked = 0.0;
+    for (int round = 0; round < 20; ++round) {
+        paint_on(doc, repair, static_cast<std::uint8_t>(round + 200));
+        const double before = now_ms();
+        doc.composite();
+        masked = std::max(masked, now_ms() - before);
+    }
+    if (!(masked < unmasked * 1.6)) {
+        noise::test::report("a wholly shown mask costs about nothing", __FILE__, __LINE__,
+                            "masked " + std::to_string(masked) + " ms, unmasked " +
+                                std::to_string(unmasked) + " ms");
+    }
+}
+
+// What a mask owes the picture, in the two cases the composite answers from the counts instead of a
+// pass over the layer. Both are pixel claims: a wholly shown mask leaves every byte as the unmasked
+// stack had it, and a wholly hidden one takes that layer out of the picture. A shortcut that lied
+// would otherwise surface as a stroke half-hidden, somewhere far from here.
+void test_a_wholly_shown_mask_hides_nothing_and_a_wholly_hidden_one_hides_everything() {
+    const Extent size{12, 9};
+    Document doc;
+    doc.reset(stack({{"base", Image::filled(size, 10, 20, 30, 255)},
+                     {"top", Image::filled(size, 200, 40, 60, 255)}}),
+              std::nullopt, "x.noise");
+    const std::string unmasked = doc.composite().checksum_hex();
+
+    Mask shown(size);
+    shown.fill(kMaskIn);
+    CHECK(doc.set_layer_mask(1, shown));
+    CHECK_EQ(doc.composite().checksum_hex(), unmasked);
+    composite_matches_scratch(doc, "wholly shown mask");
+
+    Mask hidden(size);
+    hidden.fill(kMaskOut);
+    CHECK(doc.set_layer_mask(1, hidden));
+    CHECK_EQ(doc.composite().checksum_hex(), Image::filled(size, 10, 20, 30, 255).checksum_hex());
+    composite_matches_scratch(doc, "wholly hidden mask");
+
+    // One layer under a wholly shown mask is still the layer itself, which is the case the cheapest
+    // answer covers: no scratch, no pass, the layer's own bytes.
+    Document one;
+    one.reset(stack({{"only", Image::filled(size, 7, 8, 9, 255)}}), std::nullopt, "x.noise");
+    const std::string bare = one.composite().checksum_hex();
+    CHECK(one.set_layer_mask(0, shown));
+    CHECK_EQ(one.composite().checksum_hex(), bare);
+
+    // And one row taken off it is one row gone from the picture, with the rest untouched.
+    Mask holed(size);
+    holed.fill(kMaskIn);
+    holed.op(Rect{0, 0, size.w, 1}, MaskOp::subtract);
+    CHECK(one.set_layer_mask(0, holed));
+    const Image& punched = one.composite();
+    for (int x = 0; x < size.w; ++x) {
+        CHECK_EQ(static_cast<int>(punched.at(x, 0)[3]), 0);
+        CHECK_EQ(static_cast<int>(punched.at(x, 1)[3]), 255);
+    }
+    composite_matches_scratch(one, "one row of a mask subtracted");
 }
 
 // The selection is a claim about *writable pixels*, so the two empty-looking states must differ: no
@@ -1141,6 +1228,12 @@ int main() {
     test_names_are_generated_from_the_stack_size();
     test_the_document_checksum_follows_the_stack();
     test_the_document_checksum_sees_a_layer_mask();
+    test_a_wholly_shown_mask_hides_nothing_and_a_wholly_hidden_one_hides_everything();
+    test_a_wholly_shown_mask_costs_the_composite_nothing([] {
+        static const auto epoch = std::chrono::steady_clock::now();
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - epoch)
+            .count();
+    });
     test_no_selection_and_an_empty_selection_are_different_things();
     test_a_selection_holds_every_write_inside_it();
     test_a_partly_covered_selection_paints_partly();

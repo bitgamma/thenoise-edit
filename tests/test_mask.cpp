@@ -5,9 +5,11 @@
 #include "core/mask.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <vector>
 
 using namespace noise;
@@ -280,6 +282,217 @@ void test_mask_ops() {
     CHECK(original == *copy);
 }
 
+// The counts are kept per row now, so a door that forgets the rows it wrote is a stale number rather
+// than a stale pixel - and a stale number is what the panel shows and what the composite decides
+// from. One script of writes of every kind, each followed by the same question answered from the
+// bytes themselves.
+void test_every_door_leaves_the_counts_describing_the_plane() {
+    const Extent size{9, 7};
+    Mask mask = Mask::from_plane(size, plane_of(size, 7u)).value();
+    int step = 0;
+    const auto expect_counts = [&mask, &step, size] {
+        std::size_t covered = 0;
+        std::uint64_t sum = 0;
+        Rect bounds{};
+        for (int y = 0; y < size.h; ++y) {
+            for (int x = 0; x < size.w; ++x) {
+                const std::uint8_t cell = mask.coverage(x, y);
+                covered += cell != kMaskOut ? 1u : 0u;
+                sum += cell;
+                if (cell != kMaskOut) {
+                    bounds = bounds.empty() ? Rect{x, y, 1, 1} : unite(bounds, Rect{x, y, 1, 1});
+                }
+            }
+        }
+        const std::string where = "after write " + std::to_string(step++);
+        if (mask.covered() != covered) {
+            noise::test::report("covered", __FILE__, __LINE__, where + ": got " +
+                                                            std::to_string(mask.covered()) +
+                                                            ", want " + std::to_string(covered));
+        }
+        if (!(mask.bounds() == bounds)) {
+            noise::test::report("bounds", __FILE__, __LINE__, where);
+        }
+        const double want = static_cast<double>(sum) / 255.0;
+        if (std::abs(mask.area() - want) > 1e-9) {
+            noise::test::report("area", __FILE__, __LINE__, where);
+        }
+        // The boundary is a scan of its own and must follow the plane too, or the ants outline a
+        // shape that is no longer there.
+        std::size_t edges = 0;
+        for (const MaskRun& run : mask.boundary()) {
+            edges += static_cast<std::size_t>(run.to - run.from);
+        }
+        std::size_t want_edges = 0;
+        for (int y = 0; y < size.h; ++y) {
+            for (int x = 0; x < size.w; ++x) {
+                const bool here = mask.coverage(x, y) != kMaskOut;
+                want_edges += here && mask.coverage(x, y - 1) == kMaskOut ? 1u : 0u;
+                want_edges += here && mask.coverage(x, y + 1) == kMaskOut ? 1u : 0u;
+                want_edges += here && mask.coverage(x - 1, y) == kMaskOut ? 1u : 0u;
+                want_edges += here && mask.coverage(x + 1, y) == kMaskOut ? 1u : 0u;
+            }
+        }
+        if (edges != want_edges) {
+            noise::test::report("boundary length", __FILE__, __LINE__,
+                                where + ": got " + std::to_string(edges) + ", want " +
+                                    std::to_string(want_edges));
+        }
+    };
+
+    expect_counts();
+    mask.paint(Rect{2, 3, 4, 2}, std::vector<std::uint8_t>(8, 200), MaskInk::reveal);
+    expect_counts();
+    mask.paint(Rect{1, 0, 3, 2}, std::vector<std::uint8_t>(6, 255), MaskInk::hide);
+    expect_counts();
+    mask.op(Rect{0, 6, 5, 1}, MaskOp::add);
+    expect_counts();
+    const std::vector<std::uint8_t> patch = {10, 20, 30, 40};
+    mask.op(Rect{7, 4, 2, 2}, patch, MaskOp::replace);
+    expect_counts();
+    // The selection fence, seen from the coverage side: a write reaches everywhere, and the cells the
+    // selection does not cover are pulled back.
+    Mask fence(size);
+    fence.op(Rect{0, 0, 4, 4}, MaskOp::replace);
+    const Mask before = mask.region(Rect{0, 0, 5, 5});
+    mask.paint(Rect{0, 0, 5, 5}, std::vector<std::uint8_t>(25, 0), MaskInk::hide);
+    mask.restrict_to(fence, Rect{0, 0, 5, 5}, before, Rect{0, 0, 5, 5});
+    expect_counts();
+    mask.row(5)[5] = 123;  // the door history's undo pastes through
+    expect_counts();
+    mask.invert();
+    expect_counts();
+    mask.fill(kMaskIn);
+    expect_counts();
+}
+
+// The two questions the composite asks are answered per row, so they are conservative in one
+// direction only, and the direction matters: a false "no" costs a pass over pixels that were already
+// right, and a false "yes" would show pixels the mask hides.
+void test_a_mask_only_says_it_covers_a_whole_row() {
+    const Extent size{6, 5};
+    Mask shown(size);
+    shown.fill(kMaskIn);
+    CHECK(shown.covers_all(Rect{0, 0, size.w, size.h}));
+    CHECK(shown.covers_all(Rect{2, 2, 1, 1}));
+    CHECK(!shown.covers_nothing(Rect{0, 0, size.w, size.h}));
+
+    Mask hidden(size);
+    CHECK(hidden.covers_nothing(Rect{0, 0, size.w, size.h}));
+    CHECK(!hidden.covers_all(Rect{2, 2, 1, 1}));
+
+    hidden.op(Rect{2, 3, 1, 1}, MaskOp::replace);
+    CHECK(!hidden.covers_nothing(Rect{0, 0, size.w, size.h}));
+    CHECK(!hidden.covers_all(Rect{0, 0, size.w, size.h}));
+    CHECK(hidden.covers_nothing(Rect{0, 0, size.w, 3}));  // the rows above the dot are untouched
+
+    // The counts are per row over the whole width, so a row with one bare cell cannot vouch for any
+    // box, not even a box that is genuinely covered. Wrong in this direction costs a pass; wrong in
+    // the other would show pixels the mask hides.
+    Mask holed(size);
+    holed.fill(kMaskIn);
+    holed.op(Rect{0, 2, 1, 1}, MaskOp::subtract);
+    CHECK(holed.covers_all(Rect{0, 0, size.w, 2}));
+    CHECK(!holed.covers_all(Rect{0, 0, size.w, size.h}));
+    CHECK(!holed.covers_all(Rect{1, 2, size.w - 1, 1}));
+
+    Mask bare(size);
+    bare.op(Rect{0, 3, size.w, 2}, MaskOp::replace);  // rows 3 and 4 covered, 0 to 2 bare
+    CHECK(bare.covers_nothing(Rect{0, 0, size.w, 3}));
+    CHECK(bare.covers_all(Rect{0, 3, size.w, 2}));
+    CHECK(!bare.covers_nothing(Rect{0, 0, size.w, size.h}));
+    CHECK(!bare.covers_all(Rect{0, 0, size.w, size.h}));
+
+    // A mask with no plane makes no claim, which is the same identity it has everywhere else.
+    Mask none;
+    CHECK(none.covers_all(Rect{0, 0, 4, 4}));
+    CHECK(!none.covers_nothing(Rect{0, 0, 4, 4}));
+}
+
+// The ants ask for the boundary every frame a marquee is dragged, and a marquee covers a fraction of
+// the canvas, so the walk has to cost the shape rather than the plane. Relative again: the reference
+// is the same boundary computed the way it was computed before bounds were consulted, over a copy of
+// the whole plane. Measured here the walk is about 1/600 of the reference and about equal to it with
+// the window taken out - which, at 2048², was 88 ms per pointer event against 3.5 ms for the stroke
+// sharing the frame.
+void test_the_boundary_of_a_small_shape_costs_the_shape_not_the_plane(
+    const std::function<double()>& now_ms) {
+    constexpr Extent size{2048, 2048};
+    Mask mask(size);
+    mask.op(Rect{1000, 1000, 40, 30}, MaskOp::replace);
+    CHECK_EQ(mask.boundary().size(), 4u);
+
+    double walk = 0.0;
+    double reference = 0.0;
+    for (int round = 0; round < 3; ++round) {
+        // Re-write the same coverage, which drops the caches without changing the shape.
+        mask.op(Rect{1000, 1000, 40, 30}, MaskOp::replace);
+        double before = now_ms();
+        const std::size_t edges = mask.boundary().size();
+        walk = std::max(walk, now_ms() - before);
+        if (edges != 4u) {
+            noise::test::report("boundary of the blob", __FILE__, __LINE__,
+                                "got " + std::to_string(edges) + ", want 4");
+        }
+
+        before = now_ms();
+        const Mask whole = mask.region(Rect{0, 0, size.w, size.h});
+        const std::size_t same_edges = whole.boundary().size();
+        reference += now_ms() - before;
+        if (same_edges != edges) {
+            noise::test::report("boundary the whole-plane way", __FILE__, __LINE__,
+                                "got " + std::to_string(same_edges) + ", want " +
+                                    std::to_string(edges));
+        }
+    }
+    if (!(walk * 50.0 < reference)) {
+        noise::test::report("the boundary walk costs the shape", __FILE__, __LINE__,
+                            "walk " + std::to_string(walk) + " ms, whole-plane " +
+                                std::to_string(reference) + " ms");
+    }
+}
+
+// A correctness test cannot see a fast path, so compare work: reading the counts after a small write
+// against a pass over the same plane's bytes. Relative, so a slower machine is not a failure -
+// measured here the counts are about 1000x cheaper and about 1x with the per-row counts switched off,
+// which is the regression this catches. The 32 ms per pointer event that cost is what made a mask
+// stroke feel slower than a colour one on a 2048² canvas.
+void test_counts_after_a_small_write_cost_the_rows_they_touched(
+    const std::function<double()>& now_ms) {
+    constexpr Extent size{2048, 2048};
+    Mask mask(size);
+    mask.fill(kMaskIn);
+    mask.covered();  // the fill dirties every row; that scan is not what is being measured here
+    const std::vector<std::uint8_t> ink(16, 0);
+
+    double counts_cost = 0.0;
+    double pass_cost = 0.0;
+    for (int round = 0; round < 5; ++round) {
+        mask.paint(Rect{1000, 1000, 4, 4}, ink, MaskInk::reveal);
+        double before = now_ms();
+        const std::size_t covered = mask.covered() + static_cast<std::size_t>(mask.area());
+        const Rect bounds = mask.bounds();
+        counts_cost = std::max(counts_cost, now_ms() - before);
+        if (covered == 0u || bounds.empty()) {
+            noise::test::report("counts read", __FILE__, __LINE__, "the plane is not empty");
+        }
+
+        // The reference: the same numbers derived from scratch, which is a pass over every byte.
+        before = now_ms();
+        const Mask copied = mask.region(Rect{0, 0, size.w, size.h});
+        const std::size_t from_scratch = copied.covered();
+        pass_cost = std::max(pass_cost, now_ms() - before);
+        if (copied.size().w != size.w || from_scratch != mask.covered()) {
+            noise::test::report("copy of the plane", __FILE__, __LINE__, "not the same coverage");
+        }
+    }
+    if (!(counts_cost < pass_cost)) {
+        noise::test::report("counts cheaper than a pass over the plane", __FILE__, __LINE__,
+                            "counts " + std::to_string(counts_cost) +
+                                " ms, a pass " + std::to_string(pass_cost) + " ms");
+    }
+}
+
 void test_from_plane_refuses_a_plane_of_another_size() {
     CHECK(!Mask::from_plane(Extent{4, 4}, std::vector<std::uint8_t>(15, 255)).has_value());
     CHECK(!Mask::from_plane(Extent{4, 4}, std::vector<std::uint8_t>(17, 255)).has_value());
@@ -356,11 +569,23 @@ void test_the_boundary_is_every_edge_between_covered_and_uncovered_once() {
     // Two rectangles with a gap between them as well as single ones: on a line that holds two
     // separate stretches of boundary, a run that ran on through the gap would list pixels that are
     // not edges at all, and a fixture of single rectangles would let it pass.
-    const std::vector<std::vector<Rect>> shapes{
-        {Rect{2, 1, 5, 4}}, {Rect{0, 0, 16, 9}}, {Rect{0, 0, 1, 1}}, {Rect{15, 8, 1, 1}},
-        {Rect{2, 2, 3, 3}, Rect{8, 2, 3, 3}}, {Rect{1, 1, 2, 6}, Rect{6, 3, 8, 2}}};
-    for (const std::vector<Rect>& shape : shapes) {
-        const Extent size{16, 9};
+    // Small planes, and a plane far larger than the coverage: an overlay that looks only where the
+    // mask has coverage must still list every edge, and shapes away from the origin in both axes are
+    // what tells a bound from a corner.
+    const std::vector<std::pair<Extent, std::vector<Rect>>> shapes{
+        {Extent{16, 9}, {Rect{2, 1, 5, 4}}},
+        {Extent{16, 9}, {Rect{0, 0, 16, 9}}},
+        {Extent{16, 9}, {Rect{0, 0, 1, 1}}},
+        {Extent{16, 9}, {Rect{15, 8, 1, 1}}},
+        {Extent{16, 9}, {Rect{2, 2, 3, 3}, Rect{8, 2, 3, 3}}},
+        {Extent{16, 9}, {Rect{1, 1, 2, 6}, Rect{6, 3, 8, 2}}},
+        {Extent{64, 48}, {Rect{40, 30, 5, 4}}},
+        {Extent{64, 48}, {Rect{63, 47, 1, 1}}},
+        {Extent{64, 48}, {Rect{10, 20, 3, 3}, Rect{55, 5, 4, 7}}},
+        {Extent{64, 48}, {Rect{0, 40, 64, 8}}}};
+    for (const std::pair<Extent, std::vector<Rect>>& fixture : shapes) {
+        const Extent size = fixture.first;
+        const std::vector<Rect>& shape = fixture.second;
         Mask mask(size);
         for (std::size_t i = 0; i < shape.size(); ++i) {
             mask.op(shape[i], i == 0 ? MaskOp::replace : MaskOp::add);
@@ -765,6 +990,9 @@ void test_a_region_is_the_same_coverage_indexed_from_zero() {
     const Extent size{7, 5};
     Mask mask = Mask::from_plane(size, plane_of(size, 7u)).value();
     const Rect area{2, 1, 4, 3};
+    // Ask the parent first: a region handed the parent's counts instead of its own would only be
+    // wrong once somebody had looked at the parent, which is every frame the panel is open.
+    CHECK(mask.covered() > 0u);
     const Mask cut = mask.region(area);
     CHECK_EQ(cut.size().w, area.w);
     CHECK_EQ(cut.size().h, area.h);
@@ -783,6 +1011,18 @@ void test_a_region_is_the_same_coverage_indexed_from_zero() {
     }
     CHECK_EQ(cut.covered(), covered);
     CHECK_NEAR(cut.area(), want_area, 1e-9);
+    Rect want_bounds{};
+    for (int y = 0; y < area.h; ++y) {
+        for (int x = 0; x < area.w; ++x) {
+            if (cut.coverage(x, y) == kMaskOut) {
+                continue;
+            }
+            want_bounds = want_bounds.empty()
+                              ? Rect{x, y, 1, 1}
+                              : unite(want_bounds, Rect{x, y, 1, 1});
+        }
+    }
+    CHECK(cut.bounds() == want_bounds);
 
     // A region reaching outside the plane is no plane at all, rather than a padded one.
     CHECK_EQ(mask.region(Rect{5, 5, 4, 4}).size().w, 0);
@@ -801,6 +1041,22 @@ int main() {
     test_ink_of_another_length_is_refused();
     test_a_selection_reaches_a_coverage_write_as_far_as_it_covers();
     test_a_region_is_the_same_coverage_indexed_from_zero();
+    test_every_door_leaves_the_counts_describing_the_plane();
+    test_a_mask_only_says_it_covers_a_whole_row();
+    test_the_boundary_of_a_small_shape_costs_the_shape_not_the_plane(
+        [] {
+            static const auto epoch = std::chrono::steady_clock::now();
+            return std::chrono::duration<double, std::milli>(
+                       std::chrono::steady_clock::now() - epoch)
+                .count();
+        });
+    test_counts_after_a_small_write_cost_the_rows_they_touched(
+        [] {
+            static const auto epoch = std::chrono::steady_clock::now();
+            return std::chrono::duration<double, std::milli>(
+                       std::chrono::steady_clock::now() - epoch)
+                .count();
+        });
     test_from_plane_refuses_a_plane_of_another_size();
     test_a_write_past_the_mask_is_left_alone();
     test_bounds_are_tight();

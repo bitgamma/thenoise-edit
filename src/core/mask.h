@@ -57,9 +57,6 @@ struct MaskFacts {
     // shape has an anti-aliased edge.
     double area = 0.0;
     Rect bounds{};
-    // Every boundary edge, each in exactly one run: grouped along its own length, so a horizontal
-    // side appears as runs along x and a vertical side as runs along y, and no edge is in both.
-    std::vector<MaskRun> boundary{};
 };
 
 // Coverage of one pixel: 0 is out, 255 is in, between is a partial claim on it. Straight rather
@@ -130,10 +127,17 @@ public:
     void restrict_to(const Mask& selection, Rect at, const Mask& before, Rect before_at);
     void invert();
 
-    // What a plane amounts to, computed once per content and held by the mask that owns it: a
-    // per-frame overlay and a wire report read the same values without either scanning again. Every
-    // mutator drops the cache, so it cannot outlive the coverage it describes.
+    // What a plane amounts to. Recomputed only for the rows a write touched - see `RowFacts` - so a
+    // panel reading these every frame while a stroke runs costs the stroke's rows, not the plane.
     const MaskFacts& facts() const;
+
+    // Whether every cell of `region` is at full coverage, or none of them is. The composite asks, to
+    // skip a pass it would otherwise do for nothing: a wholly shown mask leaves the layer exactly as it
+    // is, and a mask that reaches nowhere in the region contributes nothing to it. Conservative in the
+    // direction that costs a pass and never one that lies: a mask that is full only inside `region`
+    // still answers false, because the counts it keeps are per row.
+    bool covers_all(Rect region) const;
+    bool covers_nothing(Rect region) const;
 
     // Pixels with any coverage at all, and the tight box holding them (empty when there are none).
     // No coverage at all, including a mask that was never given a plane.
@@ -148,16 +152,37 @@ public:
     // being special-cased, and each edge is reported once: grouping boundary *pixels* instead would
     // report the pixels of a vertical edge once per row, which an overlay stroking along the row
     // paints as a solid line.
-    const std::vector<MaskRun>& boundary() const { return facts().boundary; }
+    const std::vector<MaskRun>& boundary() const;
 
     bool operator==(const Mask& other) const;
 
 private:
-    void invalidate() const { facts_.reset(); }
+    // What one row of the plane contributes: cells with any coverage, cells at full coverage, the sum
+    // of the bytes, and the first and last covered cell. Every number in `MaskFacts` is a sum over
+    // these, which is what lets a write to a handful of rows cost a handful of rows. Without it a
+    // stroke costs a scan of the whole plane per event, because the panel asks for the counts every
+    // frame: measured at 32 ms per frame on a 2048² mask, which is the difference between a brush that
+    // tracks the pointer and one that does not.
+    struct RowFacts {
+        std::uint32_t any = 0;
+        std::uint32_t full = 0;
+        std::uint32_t sum = 0;
+        int from = 1;  // an empty row spans nothing, which is `from > to`
+        int to = 0;
+    };
+
+    void invalidate() const;
+    // Rows [from, to] in plane coordinates, clamped: the cheap half of `invalidate`.
+    void touch_rows(int from, int to) const;
+    void refresh() const;
 
     Extent size_{};
     std::vector<std::uint8_t> plane_;
-    mutable std::optional<MaskFacts> facts_;
+    mutable std::vector<RowFacts> rows_;
+    mutable std::vector<bool> row_dirty_;
+    mutable MaskFacts facts_{};
+    mutable bool facts_ready_ = false;
+    mutable std::optional<std::vector<MaskRun>> boundary_;
 };
 
 // Pulls what a write produced back towards what was there, in proportion to the mask: the result at
