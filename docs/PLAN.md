@@ -633,6 +633,56 @@ able to fail the suite on both.
 10. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
    outlive the session).
 
+### AI integration, and the order it goes in
+
+`src/ai/` does not exist yet: `AI-BACKEND.md` has been the design, `tn_probe.py` and
+`probes/2026-10-09-live-server.md` have been the contact with a real server, and nothing in the app
+has spoken to one. The design is settled; what follows is the build order, chosen so that the parts
+needing a decision and the parts needing none do not block each other.
+
+1. **The region compiler** (`ai/region`) - pure pixel and arithmetic work, no network, no new
+   dependency, and it is where every spatial claim in `AI-BACKEND.md` becomes real: `bbox → grow →
+   clamp → snap to 16 → fit under budget → crop → prep → size`, with the inverse map recorded so the
+   result lands back on the pixels it came from. Tested the way the doc's two named properties say:
+   compile/inverse-map exactness over arbitrary crops and off-canvas masks, and output dims always
+   satisfying the size policy. `Document` grows one door for it - a flatten over a *rectangle* of the
+   visible layers at or below the active one, because the composite of everything visible would bake a
+   layer above into the patch and then write that back into the layer below.
+2. **The result compositor** (`ai/compose`) - resample, feather, `orig*(1-m) + result*m`, colour match,
+   lock band, clip to layer alpha. Its test is the pixel-lock invariant, whole-image diff, and it must
+   be red before the code is written.
+3. **Roles, recipes, field policy** (`ai/registry`, `ai/recipe`, `ai/provider`) over a *recorded*
+   `/v1/models` body: resolution order, `size_policy`, the tier-1 field set and the builder's own value
+   validation (the server answers `200` to `seed: "not-a-number"`, so nobody downstream checks). The
+   recorded backend is the hermetic test tier; the default `ctest` must stay offline.
+4. **Transport** (`ai/transport`) - the only piece that needs the outside world: health, models, load,
+   edits/generations/upscale, cancel, the adaptive request timeout, the latency EMA that must not learn
+   from a server-cache hit, the durable queue, `ai.log`.
+5. **The first command end to end** - `inpaint-remove` against the recorded backend and, once the
+   transport exists, against the dev box: preview, apply through the document doors (so undo, dirty
+   rects, revision and the selection fence all behave like any other edit), and the wire commands that
+   make each step observable.
+
+**Two dependencies, both asked about before either is added.** The tree vendors sokol, ImGui and
+nlohmann/json plus system libpng/libjpeg/libwebp and ZLIB, and has no HTTP client and no TOML reader.
+
+- *Transport*: `https://` needs TLS. Either the system libcurl (`pkg_check_modules`, proxy/tls/chunked
+  for free, and `AI-BACKEND.md` already assumes a curl handle for cancel) or in-house HTTP/1.1 over the
+  existing `platform/posix_net` shim, which would mean `http://` on a trusted LAN only and no TLS until
+  someone writes it. Recommendation: libcurl - the failure table in `AI-BACKEND.md` is written against
+  things a real client does (connect timeout, handle abort, status and body shapes), and hand-rolling a
+  TLS stack is not a slice.
+- *TOML*: `roles.toml` and `recipes/*.toml` are ours, small and flat, and `ARCHITECTURE.md` makes them
+  the single home for roles, preference order, prompt templates and policy values. Either
+  `tomlplusplus` pinned via FetchContent, or a strict reader for the subset the files actually use -
+  tables, inline tables, strings, numbers, booleans, arrays - that refuses anything else by name and
+  line rather than guessing. Recommendation: the in-house strict reader, because a parser that accepts
+  syntax nothing can write is a wider surface than the files need, and the failure mode of a bad recipe
+  file must be a named key on a named line, which is easier to guarantee over 200 lines of our own.
+
+The `edit` clipboard group is not in this list; it stays where the previous ordering put it, and the
+user's instruction was to move into AI.
+
 **Answered and implemented since:** the table now refuses an argument its command does not declare
 (`CommandTable::add` takes the accepted names, `invoke` rejects the rest naming the key, the command
 and what would have worked; `command.list` reports `args`). Asked of the human because it changes the
