@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <optional>
 #include <string>
 #include <vector>
@@ -44,6 +45,10 @@ std::string mask_op_names();
 inline constexpr std::uint8_t kMaskOut = 0;
 inline constexpr std::uint8_t kMaskIn = 255;
 
+// Which end a stroke is driving coverage towards. The coverage-plane statement of `PaintMode`:
+// a mask holds no colour, so the two ends are the only choices and the brush's colour plays no part.
+enum class MaskInk { reveal, hide };
+
 // What a coverage plane adds up to; `bounds` is tight, which is what a region compiler needs.
 struct MaskFacts {
     std::size_t covered = 0;
@@ -81,6 +86,17 @@ public:
     std::uint8_t coverage(int x, int y) const;
     const std::vector<std::uint8_t>& plane() const { return plane_; }
 
+    // The snapshot of `area` as a plane of its own, indexed from zero. `area` must lie inside the
+    // mask; the derived facts come along only if they were already computed.
+    Mask region(Rect area) const;
+
+    // One row's bytes, for a caller copying between two planes that are each addressed from their own
+    // corner - the held-aside snapshot of a gesture against the live layer, for instance. The mutable
+    // form drops the derived facts whatever the caller actually writes, because a row is a write as
+    // far as the mask can see.
+    std::span<std::uint8_t> row(int y);
+    std::span<const std::uint8_t> row(int y) const;
+
     void fill(std::uint8_t coverage);
     // Clipped to the mask's own size: a region reaching past the canvas is not an error, it is a
     // rect the caller did not clip, and coverage outside the canvas cannot exist anyway.
@@ -93,6 +109,25 @@ public:
     // plane is already kept in. Cells of `area` outside the mask are dropped. A patch whose length
     // is not `area.w * area.h` writes nothing and returns false.
     bool op(Rect area, const std::vector<std::uint8_t>& patch, MaskOp op);
+
+    // A stroke's ink: each cell moves `ink / 255` of the way from what it holds towards `kMaskIn`
+    // (`reveal`) or `kMaskOut` (`hide`). `ink` must hold `area.w * area.h` bytes, cells of `area`
+    // outside the plane are dropped, and a patch of another length writes nothing and returns false.
+    //
+    // Mixing rather than maxing is the whole point: two passes at half strength come to three
+    // quarters, which is what the same brush does to colour. `op(..., add)` cannot say that, because
+    // a union of two claims is not two coats of paint.
+    bool paint(Rect area, const std::vector<std::uint8_t>& ink, MaskInk ink_mode);
+
+    // Pull this plane's cells back towards what `before` held wherever `selection` does not reach:
+    // the write-door rule, stated for coverage. `at` is where this plane sits in document pixels and
+    // must lie inside `before_at`; a selection with no pixels restricts nothing, so the call is
+    // skipped.
+    //
+    // Straight bytes here where `restrict_to` is premultiplied, and that is not an inconsistency: the
+    // premultiplication exists to keep a *colour* still while the amount of paint changes, and a
+    // coverage plane holds no colour that could move.
+    void restrict_to(const Mask& selection, Rect at, const Mask& before, Rect before_at);
     void invert();
 
     // What a plane amounts to, computed once per content and held by the mask that owns it: a
@@ -148,5 +183,6 @@ void restrict_to(const Mask& mask, Rect at, const Image& before, Rect before_at,
 // premultiplied, colour-preserving, within 1 LSB of alpha and 2 of colour of scaled arithmetic.
 // Masking straight-alpha channels instead would turn a half-masked red pixel into a darker red one.
 void scale_by_coverage(const Mask& mask, Rect at, const Image& layer, Image& out);
+
 
 }  // namespace noise

@@ -658,6 +658,137 @@ void test_a_mask_hides_what_it_does_not_cover_and_leaves_nothing_behind() {
     CHECK(untouched.empty() || untouched.checksum_hex() == layer.checksum_hex());
 }
 
+// Coverage ink travels towards one end of the scale rather than maxing against it: two coats at half
+// strength come to three quarters, which is what the same brush does to colour and what a union of two
+// claims would not. The ends are exact, and no ink means no move.
+void test_ink_lays_coverage_in_coats() {
+    Mask mask(Extent{2, 1});
+    mask.fill(kMaskOut);
+
+    CHECK(mask.paint(Rect{0, 0, 2, 1}, std::vector<std::uint8_t>(2, 128), MaskInk::reveal));
+    CHECK_NEAR(static_cast<int>(mask.coverage(0, 0)), 128, 1);
+    CHECK_EQ(mask.coverage(1, 0), mask.coverage(0, 0));
+    const int first = mask.coverage(0, 0);
+    CHECK(mask.paint(Rect{0, 0, 2, 1}, std::vector<std::uint8_t>(2, 128), MaskInk::reveal));
+    const int second = mask.coverage(0, 0);
+    CHECK_NEAR(second, first + (255 - first) * 128 / 255, 1);
+    CHECK(second > first);
+
+    // A whole ink is exact at the far end, and no ink is exact where it started.
+    CHECK(mask.paint(Rect{0, 0, 2, 1}, std::vector<std::uint8_t>(2, kMaskIn), MaskInk::reveal));
+    CHECK_EQ(static_cast<int>(mask.coverage(0, 0)), kMaskIn);
+    CHECK(mask.paint(Rect{0, 0, 2, 1}, std::vector<std::uint8_t>(2, kMaskOut), MaskInk::reveal));
+    CHECK_EQ(static_cast<int>(mask.coverage(0, 0)), kMaskIn);
+
+    // Hiding travels the other way, coat by coat, and is exact at both ends.
+    CHECK(mask.paint(Rect{0, 0, 2, 1}, std::vector<std::uint8_t>(2, 128), MaskInk::hide));
+    CHECK_NEAR(static_cast<int>(mask.coverage(0, 0)), 127, 1);
+    CHECK(mask.paint(Rect{0, 0, 2, 1}, std::vector<std::uint8_t>(2, kMaskIn), MaskInk::hide));
+    CHECK_EQ(static_cast<int>(mask.coverage(0, 0)), kMaskOut);
+    CHECK(mask.paint(Rect{0, 0, 2, 1}, std::vector<std::uint8_t>(2, kMaskIn), MaskInk::hide));
+    CHECK_EQ(static_cast<int>(mask.coverage(0, 0)), kMaskOut);
+
+    // The derived facts followed the ink, in both directions.
+    CHECK_NEAR(mask.area(), 0.0, 1e-9);
+    CHECK(mask.paint(Rect{0, 0, 1, 1}, std::vector<std::uint8_t>(1, kMaskIn), MaskInk::reveal));
+    CHECK_NEAR(mask.area(), 1.0, 1e-9);
+    CHECK(mask.bounds() == Rect{0, 0, 1, 1});
+}
+
+// A patch that does not describe the rectangle it is offered for writes nothing at all: half a stroke
+// landing on the plane would be a coverage nobody painted.
+void test_ink_of_another_length_is_refused() {
+    Mask mask(Extent{4, 4});
+    mask.fill(kMaskIn);
+    CHECK(!mask.paint(Rect{1, 1, 2, 2}, std::vector<std::uint8_t>(3, kMaskOut), MaskInk::hide));
+    CHECK(!mask.paint(Rect{1, 1, 2, 2}, std::vector<std::uint8_t>(5, kMaskOut), MaskInk::hide));
+    CHECK_EQ(static_cast<int>(mask.coverage(1, 1)), kMaskIn);
+    // An empty rectangle with an empty patch is the nothing the caller asked for, not an error.
+    CHECK(mask.paint(Rect{1, 1, 0, 0}, std::vector<std::uint8_t>{}, MaskInk::hide));
+    // Past the plane there is no cell to write, and that is not an error either.
+    CHECK(mask.paint(Rect{10, 10, 2, 2}, std::vector<std::uint8_t>(4, kMaskOut), MaskInk::hide));
+    CHECK_EQ(static_cast<int>(mask.coverage(0, 0)), kMaskIn);
+}
+
+// The selection fences a coverage write the same way it fences a colour one: exact at the ends of the
+// scale, and within one step of the arithmetic `coverage / 255` of the way.
+void test_a_selection_reaches_a_coverage_write_as_far_as_it_covers() {
+    const Extent size{6, 3};
+    std::vector<std::uint8_t> below;
+    std::vector<std::uint8_t> written;
+    std::vector<std::uint8_t> selection;
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const std::uint8_t start = static_cast<std::uint8_t>(30 + x * 30);
+            below.push_back(start);
+            written.push_back(x < 3 ? kMaskIn : kMaskOut);  // a write that both reveals and hides
+            selection.push_back(x == 0   ? kMaskOut
+                                  : (x == 5 ? kMaskIn
+                                            : static_cast<std::uint8_t>(40 + x * 35)));
+        }
+    }
+    const Mask before = Mask::from_plane(size, below).value();
+    const Mask after = Mask::from_plane(size, written).value();
+    const Mask selection_mask = Mask::from_plane(size, selection).value();
+    Mask result = after;
+    result.restrict_to(selection_mask, Rect{0, 0, size.w, size.h}, before,
+                       Rect{0, 0, size.w, size.h});
+
+    for (int x = 0; x < size.w; ++x) {
+        for (int y = 0; y < size.h; ++y) {
+            const int had = before.coverage(x, y);
+            const int wrote = after.coverage(x, y);
+            const int reach = selection_mask.coverage(x, y);
+            const int want = reach == kMaskIn   ? wrote
+                             : (reach == kMaskOut ? had
+                                                  : had + (wrote - had) * reach / 255);
+            if (reach == kMaskIn || reach == kMaskOut) {
+                CHECK_EQ(static_cast<int>(result.coverage(x, y)), want);
+            } else {
+                CHECK_NEAR(static_cast<int>(result.coverage(x, y)), want, 1);
+            }
+            // The rule that matters more than the rounding: a partial selection never carries a pixel
+            // further than the write itself went.
+            CHECK(result.coverage(x, y) <= std::max(had, wrote));
+            CHECK(result.coverage(x, y) >= std::min(had, wrote));
+        }
+    }
+    // No selection size means no claim, so the write stands whole.
+    Mask whole = after;
+    whole.restrict_to(Mask{}, Rect{0, 0, size.w, size.h}, before, Rect{0, 0, size.w, size.h});
+    CHECK(whole == after);
+}
+
+// A snapshot of a region is the same coverage, addressed from its own corner, and the rows are the
+// plane's own bytes - which is what lets a gesture's held-aside copy be moved without a re-scan.
+void test_a_region_is_the_same_coverage_indexed_from_zero() {
+    const Extent size{7, 5};
+    Mask mask = Mask::from_plane(size, plane_of(size, 7u)).value();
+    const Rect area{2, 1, 4, 3};
+    const Mask cut = mask.region(area);
+    CHECK_EQ(cut.size().w, area.w);
+    CHECK_EQ(cut.size().h, area.h);
+    for (int y = 0; y < area.h; ++y) {
+        CHECK(std::equal(cut.row(y).begin(), cut.row(y).end(), mask.row(area.y + y).begin() + area.x));
+    }
+    double want_area = 0.0;
+    std::size_t covered = 0;
+    for (int y = 0; y < area.h; ++y) {
+        for (int x = 0; x < area.w; ++x) {
+            covered += cut.coverage(x, y) > 0 ? 1u : 0u;
+            want_area += static_cast<double>(cut.coverage(x, y)) / 255.0;
+            CHECK_EQ(static_cast<int>(cut.coverage(x, y)),
+                     static_cast<int>(mask.coverage(area.x + x, area.y + y)));
+        }
+    }
+    CHECK_EQ(cut.covered(), covered);
+    CHECK_NEAR(cut.area(), want_area, 1e-9);
+
+    // A region reaching outside the plane is no plane at all, rather than a padded one.
+    CHECK_EQ(mask.region(Rect{5, 5, 4, 4}).size().w, 0);
+    CHECK_EQ(mask.region(Rect{5, 5, 4, 4}).size().h, 0);
+}
+
 }  // namespace
 
 int main() {
@@ -666,6 +797,10 @@ int main() {
     test_restrict_never_moves_a_pixel_further_than_the_write();
     test_a_mask_only_restricts_its_own_region();
     test_mask_ops();
+    test_ink_lays_coverage_in_coats();
+    test_ink_of_another_length_is_refused();
+    test_a_selection_reaches_a_coverage_write_as_far_as_it_covers();
+    test_a_region_is_the_same_coverage_indexed_from_zero();
     test_from_plane_refuses_a_plane_of_another_size();
     test_a_write_past_the_mask_is_left_alone();
     test_bounds_are_tight();

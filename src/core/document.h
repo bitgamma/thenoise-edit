@@ -5,6 +5,7 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <variant>
 #include <string>
 #include <vector>
 
@@ -118,18 +119,30 @@ public:
     // changed records no step, marks nothing dirty and bumps no revision.
     void paint(Rect bounds, const std::function<void(Image&)>& edit);
 
+    // The same door over the active layer's coverage instead of its colour: `bounds` recorded, the
+    // selection applied to it, no step for a write that changed nothing. False when there is no
+    // canvas or no mask to write - a stroke does not put a mask down, because a mask appearing under
+    // the brush would change what the document holds without anyone asking. True when the write was
+    // attempted, including when the selection stopped every byte of it.
+    bool paint_mask(Rect bounds, const std::function<void(Mask&)>& edit);
+
     // A gesture that is still going - a pointer stroke - shows its result before it ends, on
-    // the layer that was active when it began. The pixels under `area` are held aside, every
+    // the layer that was active when it began. The bytes under `area` are held aside, every
     // repaint starts from them, and `commit` records them as one undo step. Without this a live
     // stroke would either compound its own opacity once per frame or push an undo step per
     // frame. Calling `begin_provisional` again widens the held-aside area, which costs nothing
     // per event: the buffer grows by a factor, and pixels outside what is already held aside
     // have not been written, so the layer still shows what the gesture found there.
-    void begin_provisional(Rect area);
-    // Restores `dirty` from the held-aside pixels and calls `paint` for that rectangle only. The
+    //
+    // The plane is named because one gesture writes exactly one of them. False when there is nothing
+    // of that plane to write - no canvas, or a `mask` gesture on a layer with no mask.
+    bool begin_provisional(Rect area, LayerPlane plane);
+    // Restores `dirty` from the held-aside bytes and calls `paint` for that rectangle only. The
     // rectangle is an argument because repainting the whole held-aside area per event is what
     // made a drag cost more with every event: 2.9 ms to 108 ms over one 40-event stroke at 2048².
+    // Each one writes the plane its gesture began on; the other is refused in the log.
     void repaint_provisional(Rect dirty, const std::function<void(Image&, Rect)>& paint);
+    void repaint_provisional_mask(Rect dirty, const std::function<void(Mask&, Rect)>& paint);
     void commit_provisional();
     void discard_provisional();
     bool in_provisional() const;
@@ -144,18 +157,28 @@ public:
 private:
     struct Provisional {
         std::uint64_t layer;
+        LayerPlane plane;
         Rect rect;
-        Image pixels;
+        // The bytes the gesture found at `rect`, in the units of the plane it names: four per pixel of
+        // colour, one per pixel of coverage. A variant rather than two members because only one of
+        // them can be true at a time, and a plane that switched mid-gesture would restore the other's
+        // bytes over it.
+        std::variant<Image, Mask> held;
     };
 
     Image* layer_pixels(std::uint64_t id);
+    Mask* layer_mask(std::uint64_t id);
     // `dst_at` and `src_at` say where each image sits in document coordinates.
     void copy_rows(Image& dst, Rect dst_at, const Image& src, Rect src_at, Rect area) const;
+    // `copy_rows` over coverage planes: same rule, one byte per pixel.
+    void copy_coverage_rows(Mask& dst, Rect dst_at, const Mask& src, Rect src_at, Rect area) const;
     // The pristine bytes the gesture found inside `absolute`, taken out of the held-aside
     // snapshot, as an image of `absolute`'s own size.
     Image held_aside(Rect absolute) const;
+    Mask held_aside_coverage(Rect absolute) const;
     // True when `region` of `after` still holds exactly what `before` did, row by row.
     bool unchanged(const Image& before, const Image& after, Rect region) const;
+    bool unchanged(const Mask& before, const Mask& after, Rect region) const;
 
     // What the layers changed since `composite_` was last repaired. Accumulated by every pixel
     // change, emptied by the repair; structural changes widen it to the whole canvas.

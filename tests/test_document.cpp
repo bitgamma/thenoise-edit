@@ -473,6 +473,42 @@ void test_the_document_checksum_follows_the_stack() {
     CHECK_NE(two.checksum(), three.checksum());
 }
 
+// A layer mask is document content, so a stack that hides pixels has to differ from one that does
+// not - and from a stack hidden the other way. A round trip that dropped `mask.m8`, or a mask that
+// lost its coverage, has to be visible here rather than only in a panel.
+void test_the_document_checksum_sees_a_layer_mask() {
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(Extent{8, 8}, 1, 1, 1, 255)},
+                     {"B", Image::filled(Extent{8, 8}, 2, 2, 2, 255)}}),
+              std::nullopt, "x.noise");
+    const std::string unmasked = doc.checksum();
+
+    Mask shown(Extent{8, 8});
+    shown.fill(kMaskIn);
+    CHECK(doc.set_layer_mask(1, shown));
+    const std::string with_mask = doc.checksum();
+    CHECK_NE(with_mask, unmasked);
+
+    Mask hidden(Extent{8, 8});
+    hidden.fill(kMaskOut);
+    CHECK(doc.set_layer_mask(1, hidden));
+    const std::string inverted = doc.checksum();
+    CHECK_NE(inverted, with_mask);
+
+    // Same content, same hash: the checksum is a fact about the document, not about what happened
+    // to it - otherwise the round trip below could not be compared against anything.
+    CHECK(doc.set_layer_mask(1, shown));
+    CHECK_EQ(doc.checksum(), with_mask);
+
+    // The same coverage on a different layer is a different document.
+    CHECK(doc.set_layer_mask(1, std::nullopt));
+    CHECK(doc.set_layer_mask(0, shown));
+    CHECK_NE(doc.checksum(), with_mask);
+
+    CHECK(doc.set_layer_mask(0, std::nullopt));
+    CHECK_EQ(doc.checksum(), unmasked);
+}
+
 // The selection is a claim about *writable pixels*, so the two empty-looking states must differ: no
 // selection lets everything through, a mask that covers nothing stops everything.
 void test_no_selection_and_an_empty_selection_are_different_things() {
@@ -594,7 +630,7 @@ void test_a_gesture_clips_to_the_selection_and_undoes_exactly() {
     // reaches the document. The last rectangle overlaps the earlier ones, so a writer that
     // compounded its own work instead of starting from the held-aside pixels would show up.
     for (const Rect event : {Rect{0, 0, 6, 5}, Rect{3, 0, 6, 5}, Rect{8, 0, 8, 5}}) {  // third is past the selection
-        doc.begin_provisional(event);
+        doc.begin_provisional(event, LayerPlane::pixels);
         doc.repaint_provisional(event, [event](Image& image, Rect area) {
             const std::uint8_t stroke_rgba[4] = {240, 10, 10, 255};
             image.fill_rect(intersect(area, event), stroke_rgba);
@@ -630,7 +666,7 @@ void test_a_gesture_clips_to_the_selection_and_undoes_exactly() {
     corner.op(Rect{12, 0, 4, 5}, MaskOp::replace);
     CHECK(doc.set_selection(corner));
     const int steps = doc.history().undo_depth;
-    doc.begin_provisional(Rect{0, 0, 6, 5});
+    doc.begin_provisional(Rect{0, 0, 6, 5}, LayerPlane::pixels);
     doc.repaint_provisional(Rect{0, 0, 6, 5}, [](Image& image, Rect area) {
         const std::uint8_t stroke_rgba[4] = {0, 255, 0, 255};
         image.fill_rect(area, stroke_rgba);
@@ -645,6 +681,200 @@ void test_a_gesture_clips_to_the_selection_and_undoes_exactly() {
 }
 
 // A mask of another size is a claim about pixels this document does not have.
+// A mask is a writable plane, so a gesture over it has to earn the same guarantees as a gesture over
+// colour: the composite follows it frame by frame, the whole drag is one undo step, and undo puts
+// every coverage byte back - not approximately, and not the pixels with it.
+void test_painting_a_mask_is_one_undo_step_that_hides_and_shows() {
+    const Extent size{16, 5};
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(size, 4, 5, 6, 255)},
+                     {"B", Image::filled(size, 200, 30, 30, 255)}}),
+              std::nullopt, "x.noise");
+    Mask shown(size);
+    shown.fill(kMaskIn);
+    CHECK(doc.set_layer_mask(1, shown));
+    doc.mark_saved();
+    const std::string start = doc.checksum();
+    const std::string pixels = doc.layer(1).pixels.checksum_hex();
+    CHECK_EQ(doc.history().undo_depth, 0);
+
+    // Three events of one drag, each repainting its own rectangle: the last overlaps the second, so a
+    // gesture that compounded its own work instead of starting from the held-aside coverage would
+    // come back darker rather than identical.
+    for (const Rect event : {Rect{0, 0, 6, 5}, Rect{3, 0, 6, 5}, Rect{8, 0, 4, 5}}) {
+        CHECK(doc.begin_provisional(event, LayerPlane::mask));
+        doc.repaint_provisional_mask(event, [event](Mask& mask, Rect area) {
+            mask.op(intersect(area, event), MaskOp::subtract);
+        });
+    }
+    // Hidden where the drag reached (x 0..11 inclusive), shown where it did not.
+    for (int x = 0; x < size.w; ++x) {
+        const std::uint8_t want = x < 12 ? kMaskOut : kMaskIn;
+        for (int y = 0; y < size.h; ++y) {            CHECK_EQ(static_cast<int>(doc.layer(1).mask->coverage(x, y)),
+                       static_cast<int>(want));
+        }
+    }
+    // The canvas shows it, through the repaired composite rather than a rebuilt one.
+    CHECK_EQ(doc.composite().at(0, 0)[0], 4);
+    CHECK_EQ(doc.composite().at(15, 0)[0], 200);
+    CHECK(doc.layer(1).mask->bounds() == Rect{12, 0, 4, 5});
+
+    CHECK(doc.in_provisional());
+    doc.commit_provisional();
+    CHECK(!doc.in_provisional());
+    CHECK_EQ(doc.history().undo_depth, 1);
+    CHECK(doc.dirty());
+    const std::string painted = doc.checksum();
+    CHECK_NE(painted, start);
+    CHECK_EQ(doc.layer(1).pixels.checksum_hex(), pixels);  // the write was coverage only
+
+    CHECK(doc.undo());
+    CHECK_EQ(doc.checksum(), start);
+    CHECK_EQ(doc.layer(1).mask->covered(), static_cast<std::size_t>(size.w * size.h));
+    // Nothing left to undo: putting the mask down was never a step, so the timeline holds exactly the
+    // stroke.
+    CHECK(!doc.undo());
+    CHECK(!doc.can_undo());
+    CHECK(doc.redo());
+    CHECK_EQ(doc.checksum(), painted);
+}
+
+// The selection fences every write, and a mask write is one: what a stroke did to coverage happens
+// only as far as the selection reaches, and a partly covered pixel is partly changed.
+void test_the_selection_fences_a_mask_stroke_too() {
+    const Extent size{8, 4};
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(size, 10, 10, 10, 255)}}), std::nullopt, "x.noise");
+    Mask shown(size);
+    shown.fill(kMaskIn);
+    CHECK(doc.set_layer_mask(0, shown));
+
+    std::vector<std::uint8_t> coverage;
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            coverage.push_back(x < 2 ? kMaskOut
+                                     : (x < 4 ? kMaskIn
+                                              : (x == 4 ? static_cast<std::uint8_t>(128) : kMaskOut)));
+        }
+    }
+    const Mask selection = Mask::from_plane(size, coverage).value();
+    CHECK(doc.set_selection(selection));
+
+    // Hide the whole canvas: only the selected columns move, and the half-selected one moves
+    // half way - 255 of coverage travelling to 0 by 128/255 is 127, which is the byte the door's own
+    // rounding gives and is why the ends are pinned exactly rather than the middle.
+    CHECK(doc.paint_mask(Rect{0, 0, size.w, size.h}, [](Mask& mask) { mask.fill(kMaskOut); }));
+    for (int x = 0; x < size.w; ++x) {
+        for (int y = 0; y < size.h; ++y) {
+            const std::uint8_t want = x < 2 ? kMaskIn
+                                            : (x < 4 ? kMaskOut
+                                                     : (x == 4 ? static_cast<std::uint8_t>(127)
+                                                               : kMaskIn));
+            CHECK_EQ(static_cast<int>(doc.layer(0).mask->coverage(x, y)), static_cast<int>(want));
+        }
+    }
+    CHECK_EQ(doc.history().undo_depth, 1);
+    CHECK(doc.undo());
+    CHECK_EQ(doc.layer(0).mask->covered(), static_cast<std::size_t>(size.w * size.h));
+}
+
+// A stroke that changed no coverage is not an edit: no step, no dirty mark, no revision, exactly as
+// for pixels - otherwise dragging over an already-hidden part of a mask would spend the undo budget.
+void test_a_mask_stroke_that_changed_nothing_costs_nothing() {
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(Extent{6, 6}, 1, 1, 1, 255)}}), std::nullopt, "x.noise");
+    Mask hidden(Extent{6, 6});
+    hidden.fill(kMaskOut);
+    CHECK(doc.set_layer_mask(0, hidden));
+    doc.mark_saved();
+    const std::uint64_t revision = doc.revision();
+
+    CHECK(doc.paint_mask(Rect{0, 0, 6, 6}, [](Mask& mask) { mask.fill(kMaskOut); }));
+    CHECK_EQ(doc.history().undo_depth, 0);
+    CHECK(!doc.dirty());
+    CHECK_EQ(doc.revision(), revision);
+
+    // The same through the gesture door: a press and release that reached nothing.
+    CHECK(doc.begin_provisional(Rect{1, 1, 2, 2}, LayerPlane::mask));
+    doc.repaint_provisional_mask(Rect{1, 1, 2, 2}, [](Mask& mask, Rect area) {
+        mask.op(area, MaskOp::subtract);
+    });
+    doc.commit_provisional();
+    // A live repaint moves the revision whatever it wrote - that is how the canvas keeps up with a
+    // drag - so what a gesture that changed nothing must not leave behind is a step or the unsaved
+    // mark.
+    CHECK_EQ(doc.history().undo_depth, 0);
+    CHECK(!doc.dirty());
+}
+
+// A layer with no mask has no coverage to write: the refusal is the answer, and no mask appears under
+// the brush.
+void test_painting_a_layer_with_no_mask_is_refused() {
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(Extent{4, 4}, 9, 9, 9, 255)}}), std::nullopt, "x.noise");
+    CHECK(!doc.paint_mask(Rect{0, 0, 4, 4}, [](Mask& mask) { mask.fill(kMaskOut); }));
+    CHECK(!doc.layer(0).mask.has_value());
+    CHECK(!doc.begin_provisional(Rect{0, 0, 4, 4}, LayerPlane::mask));
+    CHECK(!doc.in_provisional());
+}
+
+// One gesture writes one plane. A stroke that started on colour cannot start writing coverage while
+// the button is down - the held-aside bytes are colour's, and committing them over coverage would
+// restore something the gesture never touched.
+void test_a_gesture_holds_one_plane() {
+    const Extent size{8, 2};
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(size, 3, 3, 3, 255)}}), std::nullopt, "x.noise");
+    Mask shown(size);
+    shown.fill(kMaskIn);
+    CHECK(doc.set_layer_mask(0, shown));
+
+    CHECK(doc.begin_provisional(Rect{0, 0, 4, 2}, LayerPlane::pixels));
+    CHECK(!doc.begin_provisional(Rect{0, 0, 8, 2}, LayerPlane::mask));
+    doc.repaint_provisional_mask(Rect{0, 0, 8, 2}, [](Mask& mask, Rect area) {
+        mask.op(area, MaskOp::subtract);
+    });
+    CHECK_EQ(doc.layer(0).mask->covered(), static_cast<std::size_t>(size.w * size.h));
+    doc.commit_provisional();
+    CHECK_EQ(doc.history().undo_depth, 0);  // and it painted nothing either
+
+    // The other way round still works: a coverage gesture writes coverage.
+    CHECK(doc.begin_provisional(Rect{0, 0, 4, 2}, LayerPlane::mask));
+    doc.repaint_provisional_mask(Rect{0, 0, 4, 2}, [](Mask& mask, Rect area) {
+        mask.op(area, MaskOp::subtract);
+    });
+    CHECK_EQ(doc.layer(0).mask->covered(), 8u);
+    doc.commit_provisional();
+    CHECK_EQ(doc.history().undo_depth, 1);
+}
+
+// Taking the mask off ends a gesture that holds it, and drops the steps that name coverage: there is
+// nothing left to restore them into. The colour steps of the same layer survive.
+void test_taking_a_mask_off_ends_a_gesture_and_its_steps() {
+    const Extent size{6, 6};
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(size, 7, 7, 7, 255)}}), std::nullopt, "x.noise");
+    Mask shown(size);
+    shown.fill(kMaskIn);
+    CHECK(doc.set_layer_mask(0, shown));
+    paint_on(doc, Rect{0, 0, 2, 2}, 190);            // a colour step to keep
+    const std::string painted = doc.layer(0).pixels.checksum_hex();
+
+    CHECK(doc.begin_provisional(Rect{1, 1, 3, 3}, LayerPlane::mask));
+    doc.repaint_provisional_mask(Rect{1, 1, 3, 3}, [](Mask& mask, Rect area) {
+        mask.op(area, MaskOp::subtract);
+    });
+    CHECK_EQ(doc.layer(0).mask->covered(), static_cast<std::size_t>(size.w * size.h) - 9u);
+
+    CHECK(doc.set_layer_mask(0, std::nullopt));
+    CHECK(!doc.in_provisional());
+    CHECK_EQ(doc.layer(0).pixels.checksum_hex(), painted);
+    // Undo now walks back the colour step and stops: the coverage step is gone with the plane.
+    CHECK(doc.undo());
+    CHECK_NE(doc.layer(0).pixels.checksum_hex(), painted);
+    CHECK(!doc.can_undo());
+}
+
 void test_a_selection_of_another_size_is_refused() {
     Document doc;
     doc.reset(stack({{"A", Image::filled(Extent{4, 4}, 0, 0, 0, 0)}}), std::nullopt, "x.noise");
@@ -844,10 +1074,17 @@ int main() {
     test_the_stack_keeps_a_usable_selection();
     test_names_are_generated_from_the_stack_size();
     test_the_document_checksum_follows_the_stack();
+    test_the_document_checksum_sees_a_layer_mask();
     test_no_selection_and_an_empty_selection_are_different_things();
     test_a_selection_holds_every_write_inside_it();
     test_a_partly_covered_selection_paints_partly();
     test_a_gesture_clips_to_the_selection_and_undoes_exactly();
+    test_painting_a_mask_is_one_undo_step_that_hides_and_shows();
+    test_the_selection_fences_a_mask_stroke_too();
+    test_a_mask_stroke_that_changed_nothing_costs_nothing();
+    test_painting_a_layer_with_no_mask_is_refused();
+    test_a_gesture_holds_one_plane();
+    test_taking_a_mask_off_ends_a_gesture_and_its_steps();
     test_a_selection_of_another_size_is_refused();
     test_a_selection_change_is_a_document_change();
     test_a_layer_mask_hides_without_editing_the_layer();

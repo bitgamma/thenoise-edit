@@ -537,22 +537,23 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
     # own bytes do not, and neither direction costs an undo step. The composite is only visible
     # through a written image, so that is what is compared - hashed, because "different" has to mean
     # different bytes rather than a different filename.
-    def composite_hash() -> str:
-        import hashlib
-
-        return hashlib.sha256(Path(wire.call("image.get", {})["png_path"]).read_bytes()).hexdigest()
+    # `layer.list` is the command that reports a layer's own pixel digest, which is the claim being
+    # made here: the document digest counts mask bytes on purpose, so comparing that would say
+    # "something changed" without saying whether the pixels moved.
+    def view() -> tuple[str, str]:
+        listed = wire.call("layer.list", {})
+        active = listed["layers"][listed["active"]]
+        return active["checksum"], listed["composite_checksum"]
 
     wire.call("select.rect", {"rect": [6, 4, 18, 12], "mode": "replace"})
-    pixels_before = wire.call("doc.get", {})["checksum"]
-    shown_before = composite_hash()
+    pixels_before, shown_before = view()
     steps_before = wire.call("app.state")["document"]["history"]["undo_depth"]
     masked = wire.call("mask.from_selection", {})
-    shown_masked = composite_hash()
-    pixels_after = wire.call("doc.get", {})["checksum"]
+    pixels_after, shown_masked = view()
     steps_after = wire.call("app.state")["document"]["history"]["undo_depth"]
     print(f"mask.from_selection: {masked['covered']} px shown, composite "
-          f"{shown_before[:8]} -> {shown_masked[:8]}, layer {pixels_after[:12] == pixels_before[:12]}, "
-          f"{steps_before} -> {steps_after} steps")
+          f"{shown_before[:8]} -> {shown_masked[:8]}, layer bytes unchanged "
+          f"{pixels_after == pixels_before}, {steps_before} -> {steps_after} steps")
     if masked["covered"] == 0:
         fails.append("the mask covers nothing, so the composite check proved nothing")
     if shown_before == shown_masked:

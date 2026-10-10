@@ -108,7 +108,7 @@ void move_drag(AppState& state, Vec2 document_point) {
         state.move.dy = dy;
         return;
     }
-    state.doc.begin_provisional(area);
+    state.doc.begin_provisional(area, LayerPlane::pixels);
     state.move.dx = dx;
     state.move.dy = dy;
     state.move.steps += 1;

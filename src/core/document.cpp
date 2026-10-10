@@ -7,6 +7,7 @@
 
 #include "core/blend.h"
 #include "core/hash.h"
+#include "core/log.h"
 
 namespace noise {
 
@@ -119,6 +120,14 @@ bool Document::set_layer_mask(int index, std::optional<Mask> mask) {
     if (layer.mask == mask) {
         return true;
     }
+    // A gesture holding this layer's coverage ends here rather than writing over a plane that has
+    // since been replaced: it is restored as it was, and not committed.
+    discard_provisional();
+    if (!mask) {
+        // Steps naming coverage that is gone cannot be put back, so they leave the timeline. The
+        // steps naming the same layer's colour stay, as they do when a whole layer is deleted.
+        history_.drop_mask(layer.id);
+    }
     // The whole canvas, not a box: a mask hides what is *outside* its bounds as much as what is
     // inside, so the pixels that changed are where two coverages differ - which is not a rectangle,
     // and a pending region taken from either mask's bounds would leave the composite showing the
@@ -174,6 +183,15 @@ std::string Document::checksum() const {
         seed.append(raw, sizeof(layer.opacity));  // the bytes, so two opacities never collide
         seed += blend_mode_name(layer.mode);
         seed += layer.pixels.checksum_hex();
+        // A layer mask is part of what the layer holds, so two stacks differing only in what they
+        // hide are different documents: `n` for no mask, `m` plus the coverage's own hash otherwise.
+        // Its extent is implicit in the byte count, as it is for the pixels above.
+        if (layer.mask) {
+            seed += 'm';
+            seed += sha256_hex(layer.mask->plane());
+        } else {
+            seed += 'n';
+        }
     }
     return sha256_hex(seed);
 }
@@ -263,11 +281,40 @@ void Document::paint(Rect bounds, const std::function<void(Image&)>& edit) {
         return;
     }
     const std::span<const std::uint8_t> bytes = before.pixels();
-    history_.record(layers_[static_cast<std::size_t>(active_)].id, touched,
+    history_.record(layers_[static_cast<std::size_t>(active_)].id, LayerPlane::pixels, touched,
                     {bytes.begin(), bytes.end()});
     pending_ = unite(pending_, touched);
     dirty_ = true;
     ++revision_;
+}
+
+bool Document::paint_mask(Rect bounds, const std::function<void(Mask&)>& edit) {
+    if (empty()) {
+        return false;
+    }
+    Layer& target = layers_[static_cast<std::size_t>(active_)];
+    if (!target.mask) {
+        return false;
+    }
+    const Rect touched = intersect(bounds, Rect{0, 0, width(), height()});
+    if (touched.empty()) {
+        return true;
+    }
+    const Mask before = target.mask->region(touched);
+    edit(*target.mask);
+    // A mask is a write like any other, so the selection fences it too: painting coverage into the
+    // part of a layer that has been selected out is not what a selection means.
+    if (selection_) {
+        target.mask->restrict_to(*selection_, touched, before, touched);
+    }
+    if (unchanged(before, *target.mask, touched)) {
+        return true;
+    }
+    history_.record(target.id, LayerPlane::mask, touched, before.plane());
+    pending_ = unite(pending_, touched);
+    dirty_ = true;
+    ++revision_;
+    return true;
 }
 
 bool Document::set_selection(std::optional<Mask> selection) {
@@ -292,32 +339,77 @@ bool Document::unchanged(const Image& before, const Image& after, Rect region) c
     return true;
 }
 
-void Document::begin_provisional(Rect area) {
+bool Document::unchanged(const Mask& before, const Mask& after, Rect region) const {
+    for (int y = 0; y < region.h; ++y) {
+        if (std::memcmp(before.row(y).data(), after.row(region.y + y).data() + region.x,
+                        static_cast<std::size_t>(region.w)) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void Document::copy_coverage_rows(Mask& dst, Rect dst_at, const Mask& src, Rect src_at,
+                                  Rect area) const {
+    if (area.empty()) {
+        return;
+    }
+    const std::size_t row = static_cast<std::size_t>(area.w);
+    for (int y = 0; y < area.h; ++y) {
+        std::memcpy(dst.row(area.y + y).data() + (area.x - dst_at.x),
+                    src.row(area.y + y).data() + (area.x - src_at.x), row);
+    }
+}
+
+bool Document::begin_provisional(Rect area, LayerPlane plane) {
     if (empty()) {
-        return;
+        return false;
     }
-    Image& target = layers_[static_cast<std::size_t>(active_)].pixels;
-    const Rect want = intersect(area, Rect{0, 0, target.size().w, target.size().h});
+    Layer& target = layers_[static_cast<std::size_t>(active_)];
+    if (plane == LayerPlane::mask && !target.mask) {
+        return false;
+    }
+    const Extent canvas = plane == LayerPlane::pixels ? target.pixels.size() : target.mask->size();
+    const Rect want = intersect(area, Rect{0, 0, canvas.w, canvas.h});
     if (want.empty()) {
-        return;
+        return false;
     }
-    const std::uint64_t id = layers_[static_cast<std::size_t>(active_)].id;
     if (!provisional_) {
-        provisional_ = Provisional{id, want, target.region(want)};
+        provisional_ = Provisional{
+            target.id, plane, want,
+            plane == LayerPlane::pixels ? std::variant<Image, Mask>(target.pixels.region(want))
+                                        : std::variant<Image, Mask>(target.mask->region(want))};
         painted_ = Rect{};
-        return;
+        return true;
     }
-    const Rect grown = grown_rect(provisional_->rect, want, target.size(), kBufferGrowthFactor);
+    if (provisional_->layer != target.id || provisional_->plane != plane) {
+        // One gesture, one plane of one layer: what is held aside belongs to what the button found,
+        // and widening it with another plane's bytes would restore the wrong ones on commit.
+        log::error(std::string("a gesture already holds ") +
+                   layer_plane_name(provisional_->plane) + ", so " + layer_plane_name(plane) +
+                   " was not added to it");
+        return false;
+    }
+    const Rect grown = grown_rect(provisional_->rect, want, canvas, kBufferGrowthFactor);
     if (grown == provisional_->rect) {
-        return;
+        return true;
     }
     // No restore-and-resnapshot: everything outside what is already held aside has never been
     // written by this gesture, so the layer still holds its pristine bytes there. Widen from the
     // layer, then copy the held-aside part back over the overlap.
-    Image wider = target.region(grown);
-    copy_rows(wider, grown, provisional_->pixels, provisional_->rect, provisional_->rect);
-    provisional_->pixels = std::move(wider);
+    if (plane == LayerPlane::pixels) {
+        Image wider = target.pixels.region(grown);
+        copy_rows(wider, grown, std::get<Image>(provisional_->held), provisional_->rect,
+                  provisional_->rect);
+        provisional_->held = std::move(wider);
+    } else {
+        Mask wider = target.mask->region(grown);
+        copy_coverage_rows(wider, grown, std::get<Mask>(provisional_->held), provisional_->rect,
+                           provisional_->rect);
+        provisional_->held = std::move(wider);
+    }
     provisional_->rect = grown;
+    return true;
 }
 
 void Document::repaint_provisional(Rect dirty, const std::function<void(Image&, Rect)>& paint) {
@@ -329,16 +421,53 @@ void Document::repaint_provisional(Rect dirty, const std::function<void(Image&, 
         provisional_.reset();
         return;
     }
+    if (provisional_->plane != LayerPlane::pixels) {
+        log::error("repaint_provisional ran against a gesture holding coverage");
+        return;
+    }
     const Rect area = intersect(dirty, provisional_->rect);
     if (area.empty()) {
         return;
     }
-    copy_rows(*target, whole(*target), provisional_->pixels, provisional_->rect, area);
+    const Image& held = std::get<Image>(provisional_->held);
+    copy_rows(*target, whole(*target), held, provisional_->rect, area);
     paint(*target, area);
     if (selection_) {
         // The held-aside snapshot is the `before` this write started from, so restricting costs no
         // extra copy: the gesture's own buffer is what a pixel outside the selection returns to.
-        restrict_to(*selection_, area, provisional_->pixels, provisional_->rect, *target);
+        restrict_to(*selection_, area, held, provisional_->rect, *target);
+    }
+    painted_ = unite(painted_, area);
+    pending_ = unite(pending_, area);
+    ++revision_;
+}
+
+void Document::repaint_provisional_mask(Rect dirty,
+                                        const std::function<void(Mask&, Rect)>& paint) {
+    if (!provisional_) {
+        return;
+    }
+    if (provisional_->plane != LayerPlane::mask) {
+        log::error("repaint_provisional_mask ran against a gesture holding pixels");
+        return;
+    }
+    Mask* target = layer_mask(provisional_->layer);
+    if (!target) {
+        provisional_.reset();
+        return;
+    }
+    const Rect area = intersect(dirty, provisional_->rect);
+    if (area.empty()) {
+        return;
+    }
+    const Mask& held = std::get<Mask>(provisional_->held);
+    copy_coverage_rows(*target, Rect{0, 0, target->size().w, target->size().h}, held,
+                       provisional_->rect, area);
+    paint(*target, area);
+    if (selection_) {
+        // The gesture's own buffer is what a pixel outside the selection returns to, exactly as for
+        // colour, so a masked stroke costs no extra copy.
+        target->restrict_to(*selection_, area, held, provisional_->rect);
     }
     painted_ = unite(painted_, area);
     pending_ = unite(pending_, area);
@@ -352,17 +481,30 @@ void Document::commit_provisional() {
     if (!painted_.empty()) {
         // The step covers what was painted, not the buffer that grew around it: the bytes
         // history stores are paid for by the user's undo budget.
-        const Image before = held_aside(painted_);
-        Image* target = layer_pixels(provisional_->layer);
-        if (target == nullptr || unchanged(before, *target, painted_)) {
-            // A gesture the selection stopped, or a stroke that painted the colour that was
-            // already there, has nothing to put back.
-            provisional_.reset();
-            painted_ = Rect{};
-            return;
+        const bool coverage = provisional_->plane == LayerPlane::mask;
+        if (coverage) {
+            const Mask before = held_aside_coverage(painted_);
+            Mask* target = layer_mask(provisional_->layer);
+            if (target == nullptr || unchanged(before, *target, painted_)) {
+                provisional_.reset();
+                painted_ = Rect{};
+                return;
+            }
+            history_.record(provisional_->layer, LayerPlane::mask, painted_, before.plane());
+        } else {
+            const Image before = held_aside(painted_);
+            Image* target = layer_pixels(provisional_->layer);
+            if (target == nullptr || unchanged(before, *target, painted_)) {
+                // A gesture the selection stopped, or a stroke that painted the colour that was
+                // already there, has nothing to put back.
+                provisional_.reset();
+                painted_ = Rect{};
+                return;
+            }
+            const std::span<const std::uint8_t> bytes = before.pixels();
+            history_.record(provisional_->layer, LayerPlane::pixels, painted_,
+                            {bytes.begin(), bytes.end()});
         }
-        const std::span<const std::uint8_t> bytes = before.pixels();
-        history_.record(provisional_->layer, painted_, {bytes.begin(), bytes.end()});
         dirty_ = true;
     }
     provisional_.reset();
@@ -373,8 +515,16 @@ void Document::discard_provisional() {
     if (!provisional_) {
         return;
     }
-    if (Image* target = layer_pixels(provisional_->layer)) {
-        copy_rows(*target, whole(*target), provisional_->pixels, provisional_->rect, painted_);
+    if (provisional_->plane == LayerPlane::pixels) {
+        if (Image* target = layer_pixels(provisional_->layer)) {
+            copy_rows(*target, whole(*target), std::get<Image>(provisional_->held),
+                      provisional_->rect, painted_);
+            pending_ = unite(pending_, painted_);
+            ++revision_;
+        }
+    } else if (Mask* target = layer_mask(provisional_->layer)) {
+        copy_coverage_rows(*target, Rect{0, 0, target->size().w, target->size().h},
+                           std::get<Mask>(provisional_->held), provisional_->rect, painted_);
         pending_ = unite(pending_, painted_);
         ++revision_;
     }
@@ -385,6 +535,15 @@ void Document::discard_provisional() {
 bool Document::in_provisional() const { return provisional_.has_value(); }
 
 Rect Document::provisional_area() const { return provisional_ ? provisional_->rect : Rect{}; }
+
+Mask* Document::layer_mask(std::uint64_t id) {
+    for (Layer& layer : layers_) {
+        if (layer.id == id) {
+            return layer.mask ? &*layer.mask : nullptr;
+        }
+    }
+    return nullptr;
+}
 
 Image* Document::layer_pixels(std::uint64_t id) {
     for (Layer& layer : layers_) {
@@ -414,7 +573,15 @@ void Document::copy_rows(Image& dst, Rect dst_at, const Image& src, Rect src_at,
 Image Document::held_aside(Rect absolute) const {
     Image out = Image::filled(Extent{absolute.w, absolute.h}, 0, 0, 0, 0);
     // `out` sits at `absolute` in document coordinates, which is what makes it index from zero.
-    copy_rows(out, absolute, provisional_->pixels, provisional_->rect, absolute);
+    copy_rows(out, absolute, std::get<Image>(provisional_->held), provisional_->rect, absolute);
+    return out;
+}
+
+Mask Document::held_aside_coverage(Rect absolute) const {
+    Mask out(Extent{absolute.w, absolute.h});
+    // `out` sits at `absolute` in document coordinates, which is what makes it index from zero.
+    copy_coverage_rows(out, absolute, std::get<Mask>(provisional_->held), provisional_->rect,
+                       absolute);
     return out;
 }
 

@@ -161,6 +161,34 @@ std::uint8_t Mask::coverage(int x, int y) const {
                  static_cast<std::size_t>(x)];
 }
 
+Mask Mask::region(Rect area) const {
+    Mask out;
+    if (area.w <= 0 || area.h <= 0 || !area.inside(size_)) {
+        return out;
+    }
+    out.size_ = Extent{area.w, area.h};
+    out.plane_.resize(static_cast<std::size_t>(area.w) * static_cast<std::size_t>(area.h));
+    for (int y = 0; y < area.h; ++y) {
+        std::copy_n(row(area.y + y).begin() + static_cast<std::ptrdiff_t>(area.x),
+                    static_cast<std::size_t>(area.w), out.row(y).begin());
+    }
+    out.facts_ = facts_;  // the same coverage, so the same facts
+    return out;
+}
+
+std::span<std::uint8_t> Mask::row(int y) {
+    invalidate();
+    return std::span<std::uint8_t>(
+        plane_.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(size_.w),
+        static_cast<std::size_t>(size_.w));
+}
+
+std::span<const std::uint8_t> Mask::row(int y) const {
+    return std::span<const std::uint8_t>(
+        plane_.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(size_.w),
+        static_cast<std::size_t>(size_.w));
+}
+
 void Mask::fill(std::uint8_t coverage) {
     std::fill(plane_.begin(), plane_.end(), coverage);
     invalidate();
@@ -223,6 +251,65 @@ bool Mask::op(Rect area, const std::vector<std::uint8_t>& patch, MaskOp operatio
         }
     }
     return true;
+}
+
+bool Mask::paint(Rect area, const std::vector<std::uint8_t>& ink, MaskInk ink_mode) {
+    if (area.w <= 0 || area.h <= 0) {
+        return ink.empty();
+    }
+    const std::size_t cells = static_cast<std::size_t>(area.w) * static_cast<std::size_t>(area.h);
+    if (ink.size() != cells) {
+        return false;
+    }
+    const Rect written = intersect(area, Rect{0, 0, size_.w, size_.h});
+    if (written.empty()) {
+        return true;  // nothing written, so nothing derived from the plane went stale
+    }
+    invalidate();
+    const std::uint8_t target = ink_mode == MaskInk::reveal ? kMaskIn : kMaskOut;
+    for (int y = written.y; y < written.bottom(); ++y) {
+        std::uint8_t* row =
+            plane_.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(size_.w);
+        const std::uint8_t* source =
+            ink.data() + static_cast<std::size_t>(y - area.y) * static_cast<std::size_t>(area.w);
+        for (int x = written.x; x < written.right(); ++x) {
+            const std::uint8_t had = row[x];
+            row[x] = static_cast<std::uint8_t>(
+                static_cast<int>(had) + step_towards(static_cast<int>(target) - static_cast<int>(had),
+                                                     source[x - area.x]));
+        }
+    }
+    return true;
+}
+
+void Mask::restrict_to(const Mask& selection, Rect at, const Mask& before, Rect before_at) {
+    if (!selection.sized() || at.empty() || plane_.empty()) {
+        return;
+    }
+    // The caller's guarantee, checked rather than trusted: outside the overlap there is no original
+    // byte to fall back to.
+    const Rect area = intersect(at, intersect(before_at, Rect{0, 0, size_.w, size_.h}));
+    if (area.empty()) {
+        return;
+    }
+    invalidate();
+    for (int y = area.y; y < area.bottom(); ++y) {
+        std::uint8_t* row =
+            plane_.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(size_.w);
+        for (int x = area.x; x < area.right(); ++x) {
+            const std::uint8_t coverage = selection.coverage(x, y);
+            if (coverage == kMaskIn) {
+                continue;
+            }
+            const std::uint8_t* below = before.plane_.data() +
+                                        static_cast<std::size_t>(y - before_at.y) *
+                                            static_cast<std::size_t>(before.size_.w) +
+                                        static_cast<std::size_t>(x - before_at.x);
+            row[x] = static_cast<std::uint8_t>(
+                static_cast<int>(*below) +
+                step_towards(static_cast<int>(row[x]) - static_cast<int>(*below), coverage));
+        }
+    }
 }
 
 void Mask::invert() {

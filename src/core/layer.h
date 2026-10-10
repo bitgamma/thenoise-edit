@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,27 @@ namespace noise {
 inline constexpr const char* kLayerNamePrefix = "Layer";
 
 std::string default_layer_name(std::size_t index);
+
+// The two byte planes a layer holds, named so a write can say which one it lands on: the layer's own
+// colour, or the coverage that hides it. A gesture writes exactly one of them per press, so this is
+// what a stroke carries along with its brush - not a second kind of layer or a second kind of mask.
+enum class LayerPlane { pixels, mask };
+
+struct LayerPlaneInfo {
+    LayerPlane plane;
+    const char* name;
+};
+
+// The rows the commands, the reports and the errors read: a plane is added here and nowhere else.
+inline constexpr LayerPlaneInfo kLayerPlanes[]{
+    {LayerPlane::pixels, "pixels"},
+    {LayerPlane::mask, "mask"},
+};
+
+std::optional<LayerPlane> layer_plane_from_name(const std::string& name);
+const char* layer_plane_name(LayerPlane plane);
+// "pixels, mask" - from the table, so an error cannot list a plane that no longer exists.
+std::string layer_plane_names();
 
 // A new layer starts empty: an opaque one would hide everything under it, which is never what
 // "add a layer" means.

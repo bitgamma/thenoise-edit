@@ -47,6 +47,23 @@ void fill(Document& doc, Rect rect, std::uint8_t grey) {
     doc.paint(rect, [rect, grey](Image& image) { paint_rect(image, rect, grey); });
 }
 
+// A layer holding both planes, so an entry naming one of them can be shown not to touch the other.
+std::vector<Layer> one_layer_masked(std::uint8_t coverage) {
+    std::vector<Layer> layers = one_layer(Image::filled(Extent{8, 8}, 200, 10, 10, 255));
+    Mask mask(Extent{8, 8});
+    mask.fill(coverage);
+    layers.front().mask = mask;
+    return layers;
+}
+
+std::size_t differing_coverage(const Mask& a, const Mask& b) {
+    std::size_t changed = 0;
+    for (std::size_t i = 0; i < a.plane().size(); ++i) {
+        changed += a.plane()[i] != b.plane()[i] ? 1u : 0u;
+    }
+    return changed;
+}
+
 std::size_t differing_pixels(const Image& a, const Image& b) {
     std::size_t changed = 0;
     for (std::size_t i = 0; i < a.pixels().size(); ++i) {
@@ -164,7 +181,8 @@ void test_the_budget_drops_whole_steps_oldest_first() {
     CHECK_EQ(history.stats().bytes, 0u);
 
     for (const std::uint8_t grey : {std::uint8_t{10}, std::uint8_t{20}, std::uint8_t{30}}) {
-        history.record(only, Rect{0, 0, 8, 8}, std::vector<std::uint8_t>(entry_bytes, grey));
+        history.record(only, LayerPlane::pixels, Rect{0, 0, 8, 8},
+                     std::vector<std::uint8_t>(entry_bytes, grey));
         paint_rect(image, Rect{0, 0, 8, 8}, grey);
     }
     CHECK_EQ(history.stats().undo_depth, 2);
@@ -246,6 +264,70 @@ void test_deleting_a_layer_drops_only_its_own_steps() {
 
 // A history naming a layer that was lost without `drop_layer` is a lie about where bytes go:
 // it is dropped whole rather than written somewhere plausible.
+// An entry names a plane as well as a rectangle: coverage goes back to the mask and not to the
+// pixels, and the plane it did not name is left byte for byte as it stands.
+void test_a_coverage_step_restores_the_mask_and_not_the_pixels() {
+    std::vector<Layer> layers = one_layer_masked(kMaskIn);
+    Layer& layer = layers.front();
+    const std::uint64_t only = layer.id;
+    const std::string pixels_before = layer.pixels.checksum_hex();
+    History history(1u << 20);
+
+    // The way a paint door uses it: record what was there, then change it.
+    history.record(only, LayerPlane::mask, Rect{2, 2, 4, 4},
+                   std::vector<std::uint8_t>(16, kMaskIn));
+    layer.mask->op(Rect{2, 2, 4, 4}, MaskOp::subtract);
+    CHECK_EQ(differing_coverage(*layer.mask, *one_layer_masked(kMaskIn).front().mask), 16u);
+
+    const History::Applied undone = history.undo(layers).value();
+    CHECK_EQ(undone.layer, only);
+    CHECK_EQ(undone.rect.w * undone.rect.h, 16);
+    CHECK_EQ(differing_coverage(*layer.mask, *one_layer_masked(kMaskIn).front().mask), 0u);
+    CHECK_EQ(layer.pixels.checksum_hex(), pixels_before);
+
+    // And redo puts the hidden square back, still without touching a pixel.
+    history.redo(layers);
+    CHECK_EQ(layer.mask->coverage(2, 2), kMaskOut);
+    CHECK_EQ(layer.mask->coverage(1, 1), kMaskIn);
+    CHECK_EQ(layer.pixels.checksum_hex(), pixels_before);
+}
+
+// Taking a mask off leaves nothing for a coverage entry to restore, so those entries go - and the
+// colour steps of the same layer stay, because losing an unrelated undo is worse.
+void test_taking_a_mask_off_drops_only_its_coverage_steps() {
+    std::vector<Layer> layers = one_layer_masked(kMaskIn);
+    Layer& layer = layers.front();
+    const std::uint64_t only = layer.id;
+    History history(1u << 20);
+
+    history.record(only, LayerPlane::pixels, Rect{0, 0, 2, 2},
+                   std::vector<std::uint8_t>(2u * 2u * 4u, 7));
+    history.record(only, LayerPlane::mask, Rect{4, 4, 2, 2},
+                   std::vector<std::uint8_t>(4, kMaskIn));
+    CHECK_EQ(history.stats().undo_depth, 2);
+
+    history.drop_mask(only);
+    CHECK_EQ(history.stats().undo_depth, 1);
+    layer.mask = std::nullopt;
+    // The colour step still works: it was never about the mask.
+    CHECK(history.undo(layers).has_value());
+    CHECK_EQ(history.stats().undo_depth, 0);
+}
+
+// A coverage entry whose rectangle no longer fits is the same class of lie as a resized layer: the
+// whole timeline goes rather than half restoring a document.
+void test_a_coverage_step_that_no_longer_fits_drops_the_timeline() {
+    std::vector<Layer> layers = one_layer_masked(kMaskIn);
+    const std::uint64_t only = layers.front().id;
+    History history(1u << 20);
+    history.record(only, LayerPlane::mask, Rect{4, 4, 2, 2},
+                   std::vector<std::uint8_t>(4, kMaskIn));
+    layers.front().mask = Mask(Extent{4, 4});   // a mask for a smaller canvas
+    CHECK(!history.undo(layers).has_value());
+    CHECK(!history.can_undo());
+    CHECK(!history.can_redo());
+}
+
 void test_a_history_that_no_longer_fits_its_layers_is_dropped() {
     Document doc;
     doc.reset(one_layer(make_pattern(Extent{16, 16})), std::nullopt, "pattern.png");
@@ -270,6 +352,9 @@ int main() {
     test_a_change_outside_the_pixels_is_not_a_step();
     test_the_revision_moves_with_every_undoable_change();
     test_the_budget_drops_whole_steps_oldest_first();
+    test_a_coverage_step_restores_the_mask_and_not_the_pixels();
+    test_taking_a_mask_off_drops_only_its_coverage_steps();
+    test_a_coverage_step_that_no_longer_fits_drops_the_timeline();
     test_undo_restores_one_layer_and_leaves_the_others_alone();
     test_each_layer_undoes_independently_and_in_order();
     test_deleting_a_layer_drops_only_its_own_steps();

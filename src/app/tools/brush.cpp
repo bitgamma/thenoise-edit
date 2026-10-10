@@ -30,7 +30,7 @@ void add_dabs(AppState& state, const std::vector<Vec2>& path) {
     // the coverage lives in is deliberately larger than what changed, and painting the buffer
     // rather than the dabs is what made each event cost the whole stroke so far.
     const Rect touched = scratch_stamp(state.stroke.scratch, dabs, state.brush, state.doc.size());
-    state.doc.begin_provisional(touched);
+    state.doc.begin_provisional(touched, LayerPlane::pixels);
     state.stroke.dabs += dabs.size();
     state.doc.repaint_provisional(touched, [&state](Image& image, Rect region) {
         scratch_composite(image, state.stroke.scratch, state.color, state.brush, mode_of(state),

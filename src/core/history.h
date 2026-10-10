@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -12,8 +13,8 @@
 
 namespace noise {
 
-// What one undo step can put back is the rectangle an operation declared, the layer it was on,
-// and the bytes it held there; the stacks themselves are private to History.
+// What one undo step can put back is the rectangle an operation declared, the plane of the layer it
+// was on, and the bytes it held there; the stacks themselves are private to History.
 struct HistoryStats {
     int undo_depth = 0;
     int redo_depth = 0;
@@ -28,10 +29,11 @@ class History {
 public:
     explicit History(std::size_t budget_bytes);
 
-    // `before` must be the bytes of `rect` in layer `layer_id` as it was before the change.
-    // Records nothing for an empty rectangle and clears the redo stack, because the timeline
-    // has forked.
-    void record(std::uint64_t layer_id, Rect rect, std::vector<std::uint8_t> before_rgba);
+    // `before` must be the bytes of `rect` in `layer_id`'s `plane`, in that plane's own units: four
+    // bytes per pixel of colour, one per pixel of coverage. Records nothing for an empty rectangle and
+    // clears the redo stack, because the timeline has forked.
+    void record(std::uint64_t layer_id, LayerPlane plane, Rect rect,
+                std::vector<std::uint8_t> before);
 
     struct Applied {
         std::uint64_t layer;
@@ -51,6 +53,9 @@ public:
     // step, stays, because losing an unrelated layer's undo is worse than losing one that is
     // impossible.
     void drop_layer(std::uint64_t layer_id);
+    // The same for a layer's mask: entries naming coverage that is gone cannot be restored, so they
+    // leave both stacks while the rest of the timeline stays.
+    void drop_mask(std::uint64_t layer_id);
 
     bool can_undo() const;
     bool can_redo() const;
@@ -60,8 +65,9 @@ public:
 private:
     struct Stacked {
         std::uint64_t layer;
+        LayerPlane plane;
         Rect rect;
-        std::vector<std::uint8_t> rgba;
+        std::vector<std::uint8_t> bytes;
         int step;  // entries sharing it are undone and redone together
     };
 
@@ -70,8 +76,14 @@ private:
     std::optional<Applied> step_back(std::vector<Stacked>& from, std::vector<Stacked>& into,
                                      std::vector<Layer>& layers);
     void drop_oldest_until_within_budget();
+    // Both stacks, entries the predicate names. Whole steps are dropped by
+    // `drop_oldest_until_within_budget`, not by this: what is removed here cannot be restored at all.
+    void drop_entries(const std::function<bool(const Stacked&)>& names);
+    void drop_where(std::vector<Layer>& nothing, const std::function<bool(const Stacked&)>& names);
 
-    static Image* layer_of(std::vector<Layer>& layers, std::uint64_t id);
+    static Layer* layer_of(std::vector<Layer>& layers, std::uint64_t id);
+    // True when the entry's rectangle still fits the plane it names.
+    static bool fits(const Layer& layer, const Stacked& entry);
 
     std::size_t budget_bytes_;
     std::vector<Stacked> undo_stack_;
