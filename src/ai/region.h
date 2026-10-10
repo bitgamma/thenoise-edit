@@ -10,9 +10,10 @@
 
 namespace noise::ai {
 
-// What a region compile grows for, snaps to and stays under. A recipe states these and the request
-// carries what the recipe said; this is the only place the values exist until `recipes/*.json` are
-// loaded, and it stays the fallback rather than a second copy of them.
+// What a region compile grows for, snaps to and stays under. `roles.json` carries the size policy and
+// the default context, a recipe may name its own context, and the app assembles the two into this:
+// nothing here states a number of its own, because a compile that disagreed with the table would be a
+// compile whose output the server then snaps to something nobody planned.
 struct RegionPolicy {
     // Each side of the mask's box grows by `max(ratio * extent_of_that_axis, min_context_px)`:
     // context is what lets the model match a surface instead of inventing one.
@@ -26,8 +27,6 @@ struct RegionPolicy {
     // than truncated, and never scaled up: the source has no detail to give.
     int max_area_px;
 };
-
-inline constexpr RegionPolicy kRegionPolicy{0.35, 64, 16, 1024 * 1024};
 
 // What destroys the target's identity in the uploaded crop while keeping the scene's statistics. The
 // whole point of PREP: a blurry copy says where the light comes from without saying what stood there.
@@ -80,6 +79,17 @@ std::optional<RegionPlan> plan_region(Extent canvas, const Mask& mask, const Reg
 // the PNG encode are the request builder's business, and keeping them out of here is what lets the
 // prep be checked against the statistics it is supposed to preserve.
 Image prep_region(const Image& base, const RegionPlan& plan, Prep prep, std::uint64_t seed);
+
+// Step 6, the half `prep_region` does not do: a crop with alpha flattened over a colour drawn from the
+// ring the coverage does not reach, rather than over black or white. Uploading a partly transparent crop
+// over black tells the model the scene goes dark at the edges of the region and it obliges, which is a
+// colour cast in the answer before any editing happens.
+//
+// The ring is the pixels in `crop` the coverage does not reach and where the base has alpha; no ring
+// (a full-frame compile, or a base that is empty outside the mask) falls back to the mean of what the
+// base does hold, and an entirely empty base to mid grey, which is the least wrong colour to invent.
+// The result is opaque: the request carries no alpha, because the engine has no alpha.
+Image flatten_over_ring(const Image& crop, const Mask& coverage_in_crop);
 
 // The blur radius a prep uses, from the region it blurs: fine enough to remove a face at any region
 // size, coarse enough that a small crop still loses its identity.

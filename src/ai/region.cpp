@@ -158,6 +158,11 @@ std::optional<RegionPlan> plan_region(Extent canvas, const Mask& mask, const Reg
     if (canvas.w <= 0 || canvas.h <= 0 || mask.empty() || mask.bounds().empty()) {
         return std::nullopt;
     }
+    // A policy with no multiple cannot snap anything, and dividing by it would crash rather than refuse.
+    // This is what a table that failed to load looks like from here, and a compile is refused instead.
+    if (policy.size_multiple <= 0 || policy.max_area_px <= 0) {
+        return std::nullopt;
+    }
     RegionPlan plan;
     plan.mask_bounds = mask.bounds();
     plan.crop = grown_crop(plan.mask_bounds, canvas, policy);
@@ -282,6 +287,56 @@ Image prep_region(const Image& base, const RegionPlan& plan, Prep prep, std::uin
                 to[c] = static_cast<std::uint8_t>(
                     std::clamp(plane[at + static_cast<std::size_t>(c)], 0, 255));
             }
+        }
+    }
+    return out;
+}
+
+
+Image flatten_over_ring(const Image& crop, const Mask& coverage_in_crop) {
+    if (crop.empty()) {
+        return Image{};
+    }
+    // One pass collects both means: the ring first, everything with alpha as the fallback. Summing in
+    // int keeps this exact for 8-bit channels at any crop size.
+    long ring_r = 0, ring_g = 0, ring_b = 0, ring_n = 0;
+    long all_r = 0, all_g = 0, all_b = 0, all_n = 0;
+    for (int y = 0; y < crop.size().h; ++y) {
+        for (int x = 0; x < crop.size().w; ++x) {
+            const std::uint8_t* pixel = &crop.at(x, y)[0];
+            if (pixel[3] == 0) {
+                continue;  // no colour to take, whatever the bytes say
+            }
+            all_r += pixel[0];
+            all_g += pixel[1];
+            all_b += pixel[2];
+            ++all_n;
+            if (coverage_in_crop.coverage(x, y) == 0) {
+                ring_r += pixel[0];
+                ring_g += pixel[1];
+                ring_b += pixel[2];
+                ++ring_n;
+            }
+        }
+    }
+    const bool have_ring = ring_n > 0;
+    const long n = have_ring ? ring_n : all_n;
+    // Mid grey when there is nothing at all: a fully transparent document has no scene to sample, and
+    // 0 or 255 would bias every colour the model then invents.
+    const int back_r = n > 0 ? static_cast<int>((have_ring ? ring_r : all_r) / n) : 128;
+    const int back_g = n > 0 ? static_cast<int>((have_ring ? ring_g : all_g) / n) : 128;
+    const int back_b = n > 0 ? static_cast<int>((have_ring ? ring_b : all_b) / n) : 128;
+
+    Image out = Image::filled(crop.size(), 0, 0, 0, 255);
+    for (int y = 0; y < crop.size().h; ++y) {
+        for (int x = 0; x < crop.size().w; ++x) {
+            const std::uint8_t* pixel = &crop.at(x, y)[0];
+            const int alpha = pixel[3];
+            std::uint8_t* write = &out.at(x, y)[0];
+            write[0] = static_cast<std::uint8_t>((pixel[0] * alpha + back_r * (255 - alpha)) / 255);
+            write[1] = static_cast<std::uint8_t>((pixel[1] * alpha + back_g * (255 - alpha)) / 255);
+            write[2] = static_cast<std::uint8_t>((pixel[2] * alpha + back_b * (255 - alpha)) / 255);
+            write[3] = 255;
         }
     }
     return out;

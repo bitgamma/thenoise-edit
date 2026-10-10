@@ -10,7 +10,7 @@
 #include <vector>
 
 using namespace noise;
-using noise::ai::kRegionPolicy;
+
 using noise::ai::Prep;
 using noise::ai::RegionPlan;
 using noise::ai::RegionPolicy;
@@ -18,6 +18,15 @@ using noise::ai::prep_blur_radius;
 using noise::ai::prep_from_name;
 using noise::ai::prep_name;
 using noise::ai::prep_names;
+
+// The test's own region policy, chosen so the numbers in the assertions are the test's rather than the
+// shipped table's: a compile is checked against the policy it was handed, and `test_roles` is what checks
+// the table's values.
+constexpr noise::ai::RegionPolicy kPolicy{0.25, 8, 16, 4096 * 4096};
+// A budget these tests fit against: under a 4000x3000 region and over the sizes the map-back checks use.
+// The shipped budget belongs to `roles.json` and is checked in `test_roles`, not here.
+constexpr int kFitAreaPx = 1024 * 1024;
+
 
 namespace {
 
@@ -70,11 +79,11 @@ int round_up(int value, int multiple) {
 // whole picture because a box had no contents.
 void test_a_mask_with_no_coverage_compiles_to_nothing() {
     const Extent canvas{256, 256};
-    CHECK(!plan_region(canvas, Mask(canvas), kRegionPolicy).has_value());
+    CHECK(!plan_region(canvas, Mask(canvas), kPolicy).has_value());
     Mask empty_covering_nothing(canvas);
     empty_covering_nothing.op(Rect{10, 10, 0, 5}, MaskOp::replace);
-    CHECK(!plan_region(canvas, empty_covering_nothing, kRegionPolicy).has_value());
-    CHECK(!plan_region(Extent{0, 0}, mask_of(canvas, Rect{10, 10, 8, 8}), kRegionPolicy).has_value());
+    CHECK(!plan_region(canvas, empty_covering_nothing, kPolicy).has_value());
+    CHECK(!plan_region(Extent{0, 0}, mask_of(canvas, Rect{10, 10, 8, 8}), kPolicy).has_value());
 }
 
 // The crop is grown by the policy, kept inside the canvas, and contains the mask. Every claim here is
@@ -82,22 +91,22 @@ void test_a_mask_with_no_coverage_compiles_to_nothing() {
 void test_the_crop_grows_for_context_and_stays_on_the_canvas() {
     const Extent canvas{1024, 768};
     const Rect bounds{500, 300, 40, 30};
-    const auto plan = plan_region(canvas, mask_of(canvas, bounds), kRegionPolicy).value();
+    const auto plan = plan_region(canvas, mask_of(canvas, bounds), kPolicy).value();
 
-    const int grow_x = std::max(static_cast<int>(std::lround(bounds.w * kRegionPolicy.context_ratio)),
-                                kRegionPolicy.min_context_px);
-    const int grow_y = std::max(static_cast<int>(std::lround(bounds.h * kRegionPolicy.context_ratio)),
-                                kRegionPolicy.min_context_px);
-    CHECK_EQ(plan.crop.w, round_up(bounds.w + 2 * grow_x, kRegionPolicy.size_multiple));
-    CHECK_EQ(plan.crop.h, round_up(bounds.h + 2 * grow_y, kRegionPolicy.size_multiple));
+    const int grow_x = std::max(static_cast<int>(std::lround(bounds.w * kPolicy.context_ratio)),
+                                kPolicy.min_context_px);
+    const int grow_y = std::max(static_cast<int>(std::lround(bounds.h * kPolicy.context_ratio)),
+                                kPolicy.min_context_px);
+    CHECK_EQ(plan.crop.w, round_up(bounds.w + 2 * grow_x, kPolicy.size_multiple));
+    CHECK_EQ(plan.crop.h, round_up(bounds.h + 2 * grow_y, kPolicy.size_multiple));
     const Rect wanted{bounds.x - grow_x, bounds.y - grow_y, bounds.w + 2 * grow_x,
                       bounds.h + 2 * grow_y};
     CHECK(plan.crop.contains(wanted.x, wanted.y) &&
           plan.crop.contains(wanted.right() - 1, wanted.bottom() - 1));
     CHECK(plan.mask_bounds == bounds);
     CHECK(plan.crop.inside(canvas));
-    CHECK(plan.crop.w % kRegionPolicy.size_multiple == 0);
-    CHECK(plan.crop.h % kRegionPolicy.size_multiple == 0);
+    CHECK(plan.crop.w % kPolicy.size_multiple == 0);
+    CHECK(plan.crop.h % kPolicy.size_multiple == 0);
     CHECK_EQ(plan.scale, 1.0);
     CHECK(plan.snapped_width);
     CHECK(plan.snapped_height);
@@ -105,17 +114,17 @@ void test_the_crop_grows_for_context_and_stays_on_the_canvas() {
     // Against an edge the growth has nowhere to go, so the crop slides inward rather than hanging off
     // the canvas: the size the policy asked for, a different origin.
     const Rect near_corner{1010, 760, 10, 8};
-    const auto corner = plan_region(canvas, mask_of(canvas, near_corner), kRegionPolicy).value();
+    const auto corner = plan_region(canvas, mask_of(canvas, near_corner), kPolicy).value();
     const int corner_grow_x =
-        std::max(static_cast<int>(std::lround(near_corner.w * kRegionPolicy.context_ratio)),
-                 kRegionPolicy.min_context_px);
+        std::max(static_cast<int>(std::lround(near_corner.w * kPolicy.context_ratio)),
+                 kPolicy.min_context_px);
     const int corner_grow_y =
-        std::max(static_cast<int>(std::lround(near_corner.h * kRegionPolicy.context_ratio)),
-                 kRegionPolicy.min_context_px);
+        std::max(static_cast<int>(std::lround(near_corner.h * kPolicy.context_ratio)),
+                 kPolicy.min_context_px);
     CHECK_EQ(corner.crop.w,
-             round_up(near_corner.w + 2 * corner_grow_x, kRegionPolicy.size_multiple));
+             round_up(near_corner.w + 2 * corner_grow_x, kPolicy.size_multiple));
     CHECK_EQ(corner.crop.h,
-             round_up(near_corner.h + 2 * corner_grow_y, kRegionPolicy.size_multiple));
+             round_up(near_corner.h + 2 * corner_grow_y, kPolicy.size_multiple));
     CHECK(corner.crop.inside(canvas));
     CHECK(corner.crop.contains(near_corner.x, near_corner.y) &&
           corner.crop.contains(near_corner.right() - 1, near_corner.bottom() - 1));
@@ -123,7 +132,7 @@ void test_the_crop_grows_for_context_and_stays_on_the_canvas() {
     // A canvas shorter than one multiple cannot be snapped; the plan says so instead of lying about
     // the policy it kept.
     const Extent tiny{20, 20};
-    const auto small = plan_region(tiny, mask_of(tiny, Rect{9, 9, 2, 2}), kRegionPolicy).value();
+    const auto small = plan_region(tiny, mask_of(tiny, Rect{9, 9, 2, 2}), kPolicy).value();
     CHECK_EQ(small.crop.w, tiny.w);
     CHECK_EQ(small.crop.h, tiny.h);
     CHECK(!small.snapped_width);
@@ -133,12 +142,12 @@ void test_the_crop_grows_for_context_and_stays_on_the_canvas() {
 // The size sent is always a multiple of the policy's, never smaller than the crop it came from, and
 // never an upscale.
 void test_the_requested_size_honours_the_policy_and_the_budget() {
-    const int multiple = kRegionPolicy.size_multiple;
+    const int multiple = kPolicy.size_multiple;
     const std::vector<Rect> boxes{Rect{4, 4, 1, 1}, Rect{500, 500, 60, 60},
                                   Rect{0, 0, 1024, 1024}, Rect{100, 100, 900, 700}};
     for (const Rect box : boxes) {
         const Extent canvas{1024, 1024};
-        const auto plan = plan_region(canvas, mask_of(canvas, box), kRegionPolicy).value();
+        const auto plan = plan_region(canvas, mask_of(canvas, box), kPolicy).value();
         CHECK(plan.requested.w % multiple == 0);
         CHECK(plan.requested.h % multiple == 0);
         CHECK(plan.requested.w >= plan.crop.w);
@@ -149,20 +158,21 @@ void test_the_requested_size_honours_the_policy_and_the_budget() {
 
     // A region over budget comes down to it: the area asked for is inside the budget plus the slack
     // the snap to a multiple has to allow for, and no pixel is invented.
+    RegionPolicy budget = kPolicy;
+    budget.max_area_px = kFitAreaPx;
     const Extent canvas{4096, 4096};
-    const auto big = plan_region(canvas, mask_of(canvas, Rect{0, 0, 4000, 3000}), kRegionPolicy)
-                         .value();
+    const auto big = plan_region(canvas, mask_of(canvas, Rect{0, 0, 4000, 3000}), budget).value();
     CHECK(big.scale < 1.0);
     const double slack = static_cast<double>(2 * multiple) * static_cast<double>(4096) * 2.0;
     CHECK(static_cast<double>(big.requested.w) * static_cast<double>(big.requested.h) <=
-          static_cast<double>(kRegionPolicy.max_area_px) + slack);
+          static_cast<double>(budget.max_area_px) + slack);
 }
 
 // The map back has to be exact where nothing was rescaled, and inside the crop where something was:
 // the result lands on the pixels it came from or the edit is in the wrong place.
 void test_the_map_back_lands_where_the_crop_was() {
     const Extent canvas{1024, 1024};
-    const auto plan = plan_region(canvas, mask_of(canvas, Rect{400, 300, 120, 90}), kRegionPolicy)
+    const auto plan = plan_region(canvas, mask_of(canvas, Rect{400, 300, 120, 90}), kPolicy)
                           .value();
     const Vec2 origin = plan.to_document(Vec2{0.0, 0.0});
     CHECK(std::abs(origin.x - static_cast<double>(plan.crop.x)) < 1e-9);
@@ -179,10 +189,12 @@ void test_the_map_back_lands_where_the_crop_was() {
     // than the scaled crop - and the answer still covers exactly the crop. Mapping by `scale` instead
     // of by the size that was asked for would land the paste past the pixels it came from, which is
     // the drift the result compositor would otherwise inherit.
+    RegionPolicy budget = kPolicy;
+    budget.max_area_px = kFitAreaPx;
     const Extent huge{4096, 4096};
-    const auto fit = plan_region(huge, mask_of(huge, Rect{0, 0, 4000, 3000}), kRegionPolicy).value();
+    const auto fit = plan_region(huge, mask_of(huge, Rect{0, 0, 4000, 3000}), budget).value();
     CHECK(fit.scale < 1.0);
-    CHECK(fit.requested.w * fit.requested.h <= kRegionPolicy.max_area_px * 2);
+    CHECK(fit.requested.w * fit.requested.h <= budget.max_area_px * 2);
     const Vec2 far = fit.to_document(
         Vec2{static_cast<double>(fit.requested.w), static_cast<double>(fit.requested.h)});
     CHECK(std::abs(far.x - static_cast<double>(fit.crop.right())) < 1e-9);

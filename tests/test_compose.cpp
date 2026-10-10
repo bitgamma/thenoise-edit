@@ -30,11 +30,17 @@ using noise::ai::CompositePolicy;
 using noise::ai::kAutoFeatherMaxPx;
 using noise::ai::kAutoFeatherMinPx;
 using noise::ai::kCompositePolicy;
-using noise::ai::kRegionPolicy;
+
 using noise::ai::mean_thickness_px;
 using noise::ai::plan_region;
 using noise::ai::RegionPlan;
 using noise::ai::RegionPolicy;
+
+// The test's own region policy, chosen so the numbers in the assertions are the test's rather than the
+// shipped table's: a compile is checked against the policy it was handed, and `test_roles` is what checks
+// the table's values.
+constexpr noise::ai::RegionPolicy kPolicy{0.35, 64, 16, 4096 * 4096};
+
 
 namespace {
 
@@ -88,7 +94,7 @@ Mask selection() {
 struct Fixture {
     Image source = source_layer();
     Mask coverage = selection();
-    RegionPlan plan = plan_region(kCanvas, coverage, kRegionPolicy).value();
+    RegionPlan plan = plan_region(kCanvas, coverage, kPolicy).value();
 };
 
 // An answer that has nothing to do with the document, so nothing about it can be mistaken for the
@@ -484,9 +490,13 @@ void test_an_answer_lands_on_the_crop_it_came_from() {
     // Fitted: the plan scaled the crop down to fit the budget, so the answer is smaller than the
     // crop and every pixel of it is a resample.
     {
+        // A budget the test fits against, so the resample below is a real shrink rather than a 1:1
+        // pass. The shipped limit belongs to `roles.json` and is checked in `test_roles`.
+        RegionPolicy budget = kPolicy;
+        budget.max_area_px = 1024 * 1024;
         const Extent canvas{1600, 1200};
         const Mask coverage = blob(canvas, Rect{50, 50, 1400, 1000});
-        const RegionPlan plan = plan_region(canvas, coverage, kRegionPolicy).value();
+        const RegionPlan plan = plan_region(canvas, coverage, budget).value();
         CHECK(plan.scale < 1.0);
         CHECK(plan.requested != Extent{plan.crop.w, plan.crop.h});
 
