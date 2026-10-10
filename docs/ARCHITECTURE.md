@@ -57,7 +57,15 @@ src/
                        checked against the reference when the GPU starts blending; today the
                        renderer uploads the flattened composite, so there is nothing second to
                        match yet.
-    maskops.{h,cpp}    rasterize shapes, flood fill, feather, morphology, bbox, colour-match
+    mask.{h,cpp}       the coverage plane: one byte per pixel, straight, and the one home of the
+                       rules over it - `op(rect, replace|add|subtract)`, `invert`, and `facts()`
+                       (covered count, tight bbox, boundary runs) held by the mask that owns the
+                       bytes and dropped by every write to them. A document's selection is a `Mask`;
+                       a layer mask will be a `Mask`; converting between them is a copy, which is why
+                       there is no `selection.{h,cpp}` and no second coverage type.
+                       `restrict_to(mask, …)` is the write-door rule stated below.
+    maskops.{h,cpp}    rasterize shapes, flood fill, feather, morphology, colour-match (bbox is here
+                       no longer: `Mask::facts` owns it)
     heal.{h,cpp}       Telea / Chan fusion inpainting (local, offline)
     command.{h,cpp}    invokable command table: commands, titles and key bindings
     shortcut.{h,cpp}   canonical shortcut text: grammar, vocabulary, normalization
@@ -79,13 +87,14 @@ src/
     paint_commands.cpp tool.stroke/pointer/set, tool.<name>, the brush step commands, edit.undo/redo
     view_commands.cpp  view.*, and the fit that waits for a real canvas area
     tools/             one file per tool: brush.cpp (press/drag/release over the provisional edit),
-                       move.cpp (the same gesture, sliding the layer's pixels). Which file the
-                       pointer talks to is the `action` column of `core::kTools`, not a name
-                       compared in the caller
+                       move.cpp (the same gesture, sliding the layer's pixels), select.cpp (the
+                       marquee, which becomes the document's selection live during the drag). Which
+                       file the pointer talks to is the `action` column of `core::kTools`
+                       (`paint` / `move` / `select`), not a name compared in the caller
     shortcuts.{h,cpp}  platform key event -> canonical shortcut text (the only sokol-aware
                        part of the app layer)
     ui/                panels: layers, generate, journal, jobs, status, prefs
-    selection.{h,cpp}  document-level floating selection + editing modes
+    select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
   ai/
     server.{h,cpp}     ServerProfile: base URL, bearer key, TLS opts, adaptive timeouts;
                        /v1/health handshake; session-model state; load/pin; latency EMA
@@ -226,6 +235,21 @@ keep it cheap and honest:
   output byte for byte against the reference path - a fast path that quietly changed a colour by one
   step would turn the pixel tests red before anybody saw it.
 
+* **A selection limits writes, at the door, and mixes in premultiplied space.** The document holds
+  its selection as a `Mask` and applies `restrict_to` inside `paint` and `repaint_provisional`: the
+  result is pulled back towards the pixels held before by the coverage of the mask, so a brush, a
+  move, a fill or an AI composite cannot write outside it without each one carrying the rule, and a
+  writer cannot forget it. Mixing *premultiplied* rather than straight RGBA is what makes partial
+  coverage mean "part of this stroke happened": straight-alpha mixing changes a pixel's colour when
+  only its coverage was meant to change. `test_mask` compares the result against a separate
+  double-precision scaling of the write, and pins the two ends exactly: coverage 0 leaves the pixel
+  untouched, coverage 255 leaves the write whole, and in between alpha is within 1 LSB and colour
+  within 2 of scaled arithmetic — two roundings, the blend's and this one's.
+* **An edit that changes nothing is not an edit.** A stroke the selection stopped entirely writes no
+  bytes, so it marks nothing dirty, bumps no revision and costs no undo step — otherwise painting
+  against a small selection would spend the history restoring bytes that already match, and the undo
+  depth would stop meaning "edits".
+
 * **A repair rebuilds its region from transparent** rather than patching it, so the number of
   layers that came and went since the region was last correct is irrelevant. A structural change
   widens the pending region to the whole canvas, because nothing is known correct.
@@ -298,7 +322,7 @@ variants/<op>/<i>.png          kept AI variants not committed to a layer
 Thumbnails/thumbnail.png
 ```
 
-### What is written today: `format` 2
+### What is written today: `format` 3
 
 The subset the app can represent, read and written by `io/project.{h,cpp}`, which refuses what it
 would have to guess about. Costs of the v0 layout are in
@@ -311,6 +335,8 @@ layout stopped writing — is how a document opens subtly wrong. `format` 2 adde
 `opacity` and `mode` to every layer row, which is what the Layers panel and the compositor act
 on; a row that omits one is refused with the field and the layer named, and a `mode` outside
 `core::kBlendModes` is refused naming both the value and the names that would have worked.
+`format` 3 added the selection plane: an extra member the manifest declares, absent when the
+document has no selection. It is a layout change rather than a widened name, so 2 is refused.
 
 `mode` grew from one name to the MVP eight (`normal`, `multiply`, `screen`, `overlay`, `darken`,
 `lighten`, `color-dodge`, `color-burn`, spelled as PDF 1.4 and CSS spell them) **without a `format`
@@ -323,7 +349,8 @@ added enum value would make the number mean "the day someone edited a table" and
 | member | written | read |
 |---|---|---|
 | `mimetype` | stored, first member, no extra fields | must match exactly or the file is not ours |
-| `manifest.json` | `format`, `size: [w,h]`, `layers: [{name, src, visible, opacity, mode}]` | `format` must be 2; `size` must agree with the PNG, and both numbers are named if they do not; `src`/`visible`/`opacity`/`mode` are required, `name` is not, because a file from elsewhere may not have named its layers |
+| `manifest.json` | `format`, `size: [w,h]`, `layers: [{name, src, visible, opacity, mode}]`, and `selection: {src}` when there is one | `format` must be 3; `size` must agree with the PNG, and both numbers are named if they do not; `src`/`visible`/`opacity`/`mode` are required, `name` is not, because a file from elsewhere may not have named its layers |
+| `selection.m8` | the selection's coverage plane, one byte per pixel, canvas-sized, written only when the document has a selection | read only when the manifest declares it: **no row is no selection, and a declared plane that is missing or the wrong size is refused** — guessing which would turn a corrupt file into a silently unclamped document |
 | `layers/<n>/layer.png` | one per layer, bottom-first | one PNG per declared row, each covering the whole canvas: a layer of another size is refused naming both sizes, because cropping or padding it silently is data loss |
 | `mergedimage.png` | the composite — which is the layer only when there is one layer and it is visible at full strength | optional |
 | anything else | — | carried through and rewritten byte-identical, so opening a file written by a newer build cannot delete what this one cannot show |
@@ -412,17 +439,21 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 
 | Group | Commands | Why |
 |---|---|---|
-| state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `selection.get`, `server.state`, `job.list`, `log.tail` | read what the app believes, cheaply |
-| drive | `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `screenshot`, `pixels.compare`, `wire.info` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
+| state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `server.state`, `job.list`, `log.tail` | read what the app believes, cheaply |
+| drive | `select.rect {rect, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.get`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `screenshot`, `pixels.compare`, `wire.info` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
 | ai | `ai.preview {recipe, args}` (compiled request + prepped PNG, **no send**), `ai.run`, `job.wait {id}`, `cache.stats` | verify what we *would* send before spending minutes of someone's GPU |
 
-Live now: the state/drive/pixels rows minus `layer.*`, `selection.*`, `server.state`,
-`job.list` and the whole ai row, which arrive with their milestones.
+Live now: the state/drive/pixels rows minus `server.state`, `job.list` and the whole ai row, which
+arrive with their milestones.
 `app.state` reports `frame` (frames presented), `frame_ms` (last presented frame), `canvas`
 (origin + size of the canvas content area in framebuffer px) and the view transform
-(`scale`, `origin`, `image`, `fit_pending`), the brush and tool the last stroke ran with, and
-the document's `history` depths — enough for a driver to place an image rect on screen, wait
+(`scale`, `origin`, `image`, `fit_pending`), the brush and tool the last stroke ran with, the
+document's `history` depths, and its `selection` (`active`, `bounds`, `covered`, `canvas`, with
+`canvas` present only while one exists, because a sized mask that covers nothing is a real state and
+must not read as no selection). While a pointer gesture is down, `stroke` also reports `marquee` — the
+rectangle the select tool is drawing, live, which is the only way to tell a marquee that tracks the
+pointer from one that appears on release. Enough for a driver to place an image rect on screen, wait
 for the frame that drew it, and tell a stroke from an undo. `doc.get` is the call that hashes
 the pixels and answers with a checksum; `app.state` deliberately does not, because a driver
 polls it every frame. `fit_pending` is true while a fit waits for a

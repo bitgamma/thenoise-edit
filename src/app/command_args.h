@@ -41,5 +41,8 @@ json document_summary_json(const AppState& state);
 json document_json(const AppState& state);
 json brush_json(const AppState& state);
 json stroke_json(const AppState& state);
+// The selection: whether there is one, what it covers and where. Reading it costs the mask's derived
+// facts, which the mask caches, so only the first call after a change scans.
+json selection_json(const AppState& state);
 
 }  // namespace noise::app

@@ -162,16 +162,89 @@ one composite rule (`(1-ab)·as·Cs + as·ab·B + (1-as)·ab·Cb`, PDF 1.4 / CSS
   the general-path cost of one pass, not a floor - the same pass is now 2.5 ms whole-opaque and
   8 ms at partial strength, with the arithmetic untouched and byte tables in front of it.
 
+### Rectangular selection, as built (observed, not assumed)
+
+`M` and `Ctrl+D`/`Ctrl+I` were a row of todos; the row that mattered was "selection is
+document-level state". Built as: **`core/mask` is the coverage plane** - one straight byte per pixel -
+and `Document` holds `std::optional<Mask>` as *the* selection. `restrict_to(mask, ...)` runs inside
+`paint` and `repaint_provisional`, so clipping is a property of the document's write doors rather than
+etiquette each tool has to remember: the brush, the move tool and every writer that arrives later
+(including the AI composite, which is what this feature exists for) get it for free, and a writer
+cannot forget it.
+
+- **`nullopt` and a zero-filled mask are different states and both are reachable.** No selection means
+  the whole canvas is writable; a selection that covers nothing blocks every write. Saving them
+  identically would be a data-loss bug in the reader's favour, so `selection.m8` is written only when a
+  selection exists and the manifest's `selection` row decides (`test_project` checks a file with no row
+  against a file whose plane covers nothing).
+- **Partial coverage mixes in premultiplied space.** Scaling straight RGBA scales the colour too, so a
+  half-selected stroke would paint the right alpha in the wrong colour. `test_mask` compares against an
+  independent double-precision "scale the amount painted" reference: coverage 0 and 255 exact, in
+  between alpha within 1 LSB and colour within 2 - the blend's rounding plus this one's. The comment in
+  `restrict_to` carries that measurement so nobody "simplifies" it back to straight alpha.
+- **An edit that changes nothing is not an edit.** `paint` and `commit_provisional` compare what they
+  were about to write with what they wrote and, if equal, record no step, set no dirty flag, bump no
+  revision. Otherwise a stray click outside a small selection spends an undo step that restores
+  identical bytes and `undo_depth` stops meaning "edits".
+- **`MaskFacts` (covered count, tight bbox, boundary runs) is cached by the mask that owns the bytes**
+  and dropped by every write to them, so the overlay, the status bar and the panel read the same runs
+  the brush is clipped by. There is no `selection_revision` counter, which is what a second home for
+  "did this change" looks like.
+- **The overlay is one dashed line per boundary run**, light/dark alternating on a shared phase.
+  Measured on a screenshot pair (selection up, then `select.clear`, nothing else changed): every
+  differing pixel lies on the selection's own rectangle - bbox `(172,191)-(387,400)` against a rect at
+  `(172,190)-(388,402)`. `ImGui::GetTime()` drives the march and nothing else: the phase is in no
+  command reply and no document byte.
+- **`tool.pointer` is the select tool's path** and `app.state.stroke.marquee` reports the rectangle
+  while the button is down, which is the only way for a driver to tell a marquee that tracks the
+  pointer from one that appears on release. `marquee()` rounds outward (`floor` of the min, `ceil` of
+  the max): dropping the half-covered pixel under the cursor would misreport what was dragged.
+- **`tool.stroke` now refuses when the *app's* tool cannot paint.** It validated only the tool named in
+  the call, so with `M` selected a wire stroke painted anyway - the class of bug where a command checks
+  its argument instead of the state it acts on.
+- **`app.state.document.selection` answers with no `canvas` key when there is no selection**, rather
+  than `[0,0]`, so "sized but empty" and "absent" stay distinguishable on the wire.
+- `.noise` is **format 3**: a plane member plus its manifest row is a layout change, so 2 is refused by
+  number. `tools/container_probe.py` grew a third pass where a third-party `zipfile` reader finds the
+  plane, its bytes are exactly the rectangle, and the app reopens it with the selection intact - a
+  format only our reader can read is not a container.
+- Live checks: `test_mask` 4 646, `test_document` 1 720, `test_project` 157, `test_app` 54 937, 19/19
+  hermetic, and `tools/wire_input.py` drives the whole thing through real X11 events - `M`, the marquee
+  drag (552 of 3072 px), a stroke outside the selection changing no byte and costing no step, a stroke
+  through it changing the document and undoing exactly, `Ctrl+I` twice coming back round, `Ctrl+D`
+  letting the held-back stroke through. Red-checking (`/tmp/redcheck_selection.py`, 18 mutations over
+  the clip, the door, the marquee rule, the live report, the refusals): **0 survived**, after four
+  survived the first pass and named what the tests did not yet pin.
+
+**What this deliberately did not build**: layer masks, and the two conversions. They are one field on
+`Layer` plus the conversion commands, now that `Mask` exists - and doing them *before* mask painting is
+the order that keeps `Mask` the one representation instead of a selection-shaped type with a mask
+bolted on afterwards. Feather, lasso, grow/shrink and snap-to-colour all attach to the same `Mask`.
+
 ### To do, in order
 
 1. ~~**Blend modes**~~ - done; see "Blend modes, as built" above for the arithmetic, the
    specification-restated test, the two order bugs the red-checks found, and why the `format` number
    did not move.
-2. ~~**The remaining tool keys**~~ - `,`/`.` and `Shift+,`/`Shift+.` are live (hardness, opacity)
+2. ~~**Rectangular selection (`M`)**~~ - done as the section above: `core::Mask` as the document's
+   selection, clipping at the write doors, `select.*`, live marquee, `.noise` format 3.
+3. **Layer masks, and the two conversions.** `Layer` gains `std::optional<Mask> mask` (layer-sized; a
+   mismatch refused naming both sizes, as `Document::set_selection` does); `blend_layer` multiplies the
+   layer's coverage by the mask's before compositing, so a masked-out pixel reads as *absent* and not
+   black - the distinction `test_document` already holds for a lone hidden layer; setting a mask follows
+   the selection rule (dirty, not history). Then `select.from_mask` (active layer's mask -> document
+   selection) and `mask.from_selection` (selection -> active layer's mask), which is what the human
+   asked for: *"easy to turn any mask into a selection and selection into a mask"* - one `Mask` type, so
+   each is a copy and neither is an adapter. Both need format 4. Mask painting (`add`/`subtract` modes,
+   feather) attaches after, as `MaskOp` rows.
+4. **`core/maskops`**: rasterize shapes, flood fill, feather, morphology, colour-match.
+5. **The rest of the `edit` group** (`cut`, `copy`, `paste`) and the first AI command with a region
+   compile behind it, in that order. (Undo/redo have been live since the gesture fix; `crop` and
+   `flatten` wait on tool UI.) - `,`/`.` and `Shift+,`/`Shift+.` are live (hardness, opacity)
    with a hover hint on the panel sliders. `V` and `M` are **not key work**: `V` is the move tool and
    `M` is rect selection, and a key bound to a tool that does not exist is a shortcut to nothing.
    Both became their own items below.
-3. ~~Exact fast paths in `blend_layer`~~ - done, and it is what the opacity slider was waiting for:
+6. ~~Exact fast paths in `blend_layer`~~ - done, and it is what the opacity slider was waiting for:
    a whole-canvas change at 3 x 2048^2 went 100 ms -> 22 ms on the running app (peak frame), dragging
    the opacity went 200 ms -> 20.4 ms per frame counted, so 5 fps -> 49 fps, and the repair alone
    82.5 ms -> 14.6 ms Release / 806 ms -> 269 ms Debug. Three exact paths in front of the
@@ -184,7 +257,7 @@ one composite rule (`(1-ab)·as·Cs + as·ab·B + (1-as)·ab·Cb`, PDF 1.4 / CSS
    real-GPU question and the probe says where the number comes from. Still open, in cost order:
    per-layer content rectangles (the repair at 4096^2 is 14 fps and is arithmetic), GPU stamp
    preview, per-layer GPU textures + the shader blend pair checked against `core/blend`.
-4. ~~**The move tool** (`V`)~~ - the active layer slides under the cursor: whole document pixels (no
+7. ~~**The move tool** (`V`)~~ - the active layer slides under the cursor: whole document pixels (no
    resampling, so nothing blurs), the button-down point as the anchor, one undo step per gesture, and
    a tremor under half a pixel is not an edit. The layer is redrawn from a snapshot taken at press, so
    a gesture fed event by event lands on the same bytes as one offset applied at once - which is what
@@ -194,10 +267,13 @@ one composite rule (`(1-ab)·as·Cs + as·ab·B + (1-as)·ab·Cb`, PDF 1.4 / CSS
    content, so the leftward ones are the only proof that what leaves is gone. There is no ghost overlay:
    the provisional edit shows the real pixels live, which is better than a preview and needs no second
    renderer. `V` and the drag are proven through injected events in `wire_input.py`.
-5. **Rect selection** (`M`) - the selection model itself: a document-level mask, tools honouring it,
-   marching ants, `Ctrl+D`/`Ctrl+I`, and the composite/region paths keeping it in mind. This is the
-   item the MVP's `selection.{h,cpp}` module exists for; it is a milestone slice, not a key.
-6. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
+8. ~~**Rect selection** (`M`)~~ - done; see "Rectangular selection, as built" above. What it assumed
+   and what stayed true: the selection is document-level state (a `Mask`, not a rectangle, so a lasso or
+   a painted mask needs no new type), the tools honour it because the *document* applies it, and the
+   composite and region paths needed nothing - clipping happens on the way in, so the flattened image
+   never learns that a selection existed. `selection.{h,cpp}` was not created: a second coverage type
+   next to `Mask` is the thing the design now forbids.
+9. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
    outlive the session).
 
 **Answered and implemented since:** the table now refuses an argument its command does not declare
@@ -412,6 +488,9 @@ Still open, when convenient:
     manifest has no field for them, which is a format decision to ask for rather than invent.
 
 ## Next steps, in order
+
+*(Superseded - kept as the M0 record. The live list is "To do, in order" in the handoff section
+above; items 2-4 here have since been built, and `.noise` is format 3.)*
 
 1. **CI waits until MVP** (decided 2026-10-09): the workflow is not going to run on a runner
    before MVP, so nothing here should spend effort on remotes or runners. The local gate

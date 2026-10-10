@@ -16,11 +16,26 @@ const std::vector<ToolInfo> kTools{
     {"brush", ToolAction::paint, PaintMode::Over, "B", "Paint with the brush tool"},
     {"eraser", ToolAction::paint, PaintMode::Erase, "E", "Paint with the eraser tool"},
     {"move", ToolAction::move, std::nullopt, "V", "Move the active layer with the pointer"},
+    {"select", ToolAction::select, std::nullopt, "M", "Select a rectangle with the pointer"},
 };
 
 std::string tool_names() {
     std::string names;
     for (const ToolInfo& tool : kTools) {
+        if (!names.empty()) {
+            names += ", ";
+        }
+        names += tool.id;
+    }
+    return names;
+}
+
+std::string paintable_tool_names() {
+    std::string names;
+    for (const ToolInfo& tool : kTools) {
+        if (!tool.paint) {
+            continue;
+        }
         if (!names.empty()) {
             names += ", ";
         }

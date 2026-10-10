@@ -125,7 +125,7 @@ void test_pixels_and_layer_name_come_back_unchanged() {
     const Image original = checker(Extent{41, 23});
     const std::string path = temp("roundtrip.noise");
     std::string error;
-    CHECK(io::save_project(path, one("Sketch", original), original, {}, error));
+    CHECK(io::save_project(path, one("Sketch", original), original, std::nullopt, {}, error));
 
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
@@ -176,7 +176,7 @@ void test_layer_state_round_trips() {
 
     const std::string path = temp("state.noise");
     std::string error;
-    CHECK(io::save_project(path, stack, image, {}, error));
+    CHECK(io::save_project(path, stack, image, std::nullopt, {}, error));
 
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
@@ -218,7 +218,7 @@ void test_every_mode_round_trips_under_its_own_name() {
     }
     const std::string path = temp("modes.noise");
     std::string error;
-    CHECK(io::save_project(path, stack, image, {}, error));
+    CHECK(io::save_project(path, stack, image, std::nullopt, {}, error));
 
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
@@ -249,7 +249,9 @@ void test_every_mode_round_trips_under_its_own_name() {
 // not have is how a document comes back subtly wrong.
 void test_another_format_is_refused_by_name() {
     const Image image = checker(Extent{6, 6});
-    for (const int format : {1, io::kFormatVersion + 6}) {
+    // Format 2 had no selection row at all, and a missing row now means "no selection" - so the two
+    // states could not be told apart across a file, which is the whole reason for the bump.
+    for (const int format : {1, 2, io::kFormatVersion + 6}) {
         const std::string path = temp("format-" + std::to_string(format) + ".noise");
         write_archive(path, minimal_members(image, format, 1));
         io::Project loaded;
@@ -320,7 +322,7 @@ void test_unknown_members_are_carried_through_a_save() {
         io::ZipEntry{"Thumbnails/thumbnail.png", io::encode_png(image)},
     };
     std::string error;
-    CHECK(io::save_project(path, one("Layer 1", image), image, carried, error));
+    CHECK(io::save_project(path, one("Layer 1", image), image, std::nullopt, carried, error));
 
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
@@ -333,7 +335,7 @@ void test_unknown_members_are_carried_through_a_save() {
     CHECK_EQ(text_of(loaded.carried[1].data), provenance);
 
     // And a save after that open keeps them, so an edit-and-save cannot lose them either.
-    CHECK(io::save_project(path, one("Layer 1", image), image, loaded.carried, error));
+    CHECK(io::save_project(path, one("Layer 1", image), image, std::nullopt, loaded.carried, error));
     io::Project again;
     CHECK(io::load_project(path, again, error));
     CHECK_EQ(again.carried.size(), 2u);
@@ -351,7 +353,7 @@ void test_layers_keep_their_order_and_names_through_a_save() {
     stack.push_back(Layer{0, "Paper", base});
     stack.push_back(Layer{0, "Ink", top});
     std::string error;
-    CHECK(io::save_project(path, stack, top, {}, error));
+    CHECK(io::save_project(path, stack, top, std::nullopt, {}, error));
 
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
@@ -378,7 +380,7 @@ void test_a_layer_of_another_size_is_refused() {
     stack.push_back(Layer{0, "Paper", base});
     stack.push_back(Layer{0, "Oversized", odd});
     std::string error;
-    CHECK(io::save_project(path, stack, base, {}, error));
+    CHECK(io::save_project(path, stack, base, std::nullopt, {}, error));
 
     io::Project loaded;
     CHECK(!io::load_project(path, loaded, error));
@@ -430,17 +432,17 @@ void test_a_failed_save_leaves_no_file_and_keeps_the_old_one() {
     std::string error;
 
     const std::string nowhere = temp("no-such-directory/project.noise");
-    CHECK(!io::save_project(nowhere, one("Layer 1", image), image, {}, error));
+    CHECK(!io::save_project(nowhere, one("Layer 1", image), image, std::nullopt, {}, error));
     CHECK(!std::filesystem::exists(nowhere));
 
     const std::string path = temp("replaced.noise");
-    CHECK(io::save_project(path, one("First", image), image, {}, error));
+    CHECK(io::save_project(path, one("First", image), image, std::nullopt, {}, error));
     // A directory in the place of the target makes the rename fail, and the original file has
     // to still be there and still be readable.
     const std::string occupied = temp("occupied.noise");
-    CHECK(io::save_project(occupied, one("Keep", image), image, {}, error));
+    CHECK(io::save_project(occupied, one("Keep", image), image, std::nullopt, {}, error));
     std::filesystem::create_directory(occupied + ".noise-tmp");
-    CHECK(!io::save_project(occupied, one("Replace", image), image, {}, error));
+    CHECK(!io::save_project(occupied, one("Replace", image), image, std::nullopt, {}, error));
     io::Project loaded;
     CHECK(io::load_project(occupied, loaded, error));
     CHECK_EQ(loaded.layers.size(), 1u);
@@ -451,10 +453,154 @@ void test_a_failed_save_leaves_no_file_and_keeps_the_old_one() {
     std::filesystem::remove(occupied);
 }
 
+// What a selection is worth is that it comes back: a partial-coverage plane saved and reloaded has
+// to be the same bytes, or "select, save, reopen" quietly changes what is writable.
+void test_the_selection_round_trips_byte_for_byte() {
+    const Extent size{37, 11};
+    const Image image = checker(size);
+    std::vector<std::uint8_t> plane(
+        static_cast<std::size_t>(size.w) * static_cast<std::size_t>(size.h));
+    std::uint32_t state = 1u;
+    for (std::uint8_t& cell : plane) {
+        state = state * 1664525u + 1013904223u;
+        cell = static_cast<std::uint8_t>((state >> 24) & 0xFFu);
+    }
+    const std::optional<Mask> saved = Mask::from_plane(size, plane);
+    CHECK(saved.has_value());
+
+    const std::string path = temp("selection.noise");
+    std::string error;
+    CHECK(io::save_project(path, one("Layer 1", image), image, saved, {}, error));
+
+    io::Project loaded;
+    CHECK(io::load_project(path, loaded, error));
+    CHECK(loaded.selection.has_value());
+    CHECK(loaded.selection == *saved);
+
+    // The plane is one member, named by the manifest, and it is not also carried through as an
+    // unknown member: a save after an open must not accumulate copies of it.
+    std::vector<std::uint8_t> raw;
+    std::string read_error;
+    CHECK(io::read_file(path, raw, read_error));
+    const auto members = io::read_zip(std::span<const std::uint8_t>(raw), read_error);
+    CHECK(members.has_value());
+    int planes = 0;
+    for (const io::ZipEntry& entry : *members) {
+        planes += entry.name == io::kSelectionName ? 1 : 0;
+    }
+    CHECK_EQ(planes, 1);
+    CHECK_EQ(loaded.carried.size(), 0u);
+
+    CHECK(io::save_project(path, one("Layer 1", image), image, loaded.selection, loaded.carried,
+                           error));
+    io::Project again;
+    CHECK(io::load_project(path, again, error));
+    CHECK(again.selection == *saved);
+    std::filesystem::remove(path);
+}
+
+// "No selection" and "a selection covering nothing" are different states in the document, so they
+// have to be different states in the file too.
+void test_no_selection_and_an_empty_selection_are_different_in_the_file() {
+    const Extent size{6, 4};
+    const Image image = checker(size);
+    const std::string none_path = temp("no-selection.noise");
+    std::string error;
+    CHECK(io::save_project(none_path, one("Layer 1", image), image, std::nullopt, {}, error));
+    io::Project none_loaded;
+    CHECK(io::load_project(none_path, none_loaded, error));
+    CHECK(!none_loaded.selection.has_value());
+
+    Mask empty(size);
+    const std::string empty_path = temp("empty-selection.noise");
+    CHECK(io::save_project(empty_path, one("Layer 1", image), image, empty, {}, error));
+    io::Project empty_loaded;
+    CHECK(io::load_project(empty_path, empty_loaded, error));
+    CHECK(empty_loaded.selection.has_value());
+    if (empty_loaded.selection) {
+        CHECK_EQ(empty_loaded.selection->covered(), 0u);
+        CHECK(empty_loaded.selection->size() == size);
+    }
+    std::filesystem::remove(none_path);
+    std::filesystem::remove(empty_path);
+}
+
+// A declared selection the archive cannot honour is refused rather than opened as "no selection":
+// the user would go on painting where they had fenced themselves off.
+void test_a_broken_selection_is_refused_naming_the_problem() {
+    const Image image = checker(Extent{5, 5});
+
+    {
+        const std::string path = temp("selection-no-member.noise");
+        json manifest{{"format", io::kFormatVersion},
+                      {"layers", layer_rows(1)},
+                      {"selection", json{{"src", io::kSelectionName}}},
+                      {"size", json::array({5, 5})}};
+        std::vector<io::ZipEntry> members{
+            io::ZipEntry{"mimetype", bytes_of(io::kMimetype)},
+            io::ZipEntry{"manifest.json", bytes_of(manifest.dump())},
+            io::ZipEntry{"layers/0/layer.png", io::encode_png(image)},
+        };
+        write_archive(path, members);
+        io::Project loaded;
+        std::string error;
+        CHECK(!io::load_project(path, loaded, error));
+        CHECK(error.find(io::kSelectionName) != std::string::npos);
+        std::filesystem::remove(path);
+    }
+
+    {
+        const std::string path = temp("selection-wrong-size.noise");
+        json manifest{{"format", io::kFormatVersion},
+                      {"layers", layer_rows(1)},
+                      {"selection", json{{"src", io::kSelectionName}}},
+                      {"size", json::array({5, 5})}};
+        std::vector<io::ZipEntry> members{
+            io::ZipEntry{"mimetype", bytes_of(io::kMimetype)},
+            io::ZipEntry{"manifest.json", bytes_of(manifest.dump())},
+            io::ZipEntry{"layers/0/layer.png", io::encode_png(image)},
+            io::ZipEntry{io::kSelectionName, std::vector<std::uint8_t>(24, 255)},
+        };
+        write_archive(path, members);
+        io::Project loaded;
+        std::string error;
+        CHECK(!io::load_project(path, loaded, error));
+        // Names what it found and what the canvas is, so the file can be fixed by reading the error.
+        CHECK(error.find("24") != std::string::npos);
+        CHECK(error.find("5x5") != std::string::npos);
+        std::filesystem::remove(path);
+    }
+
+    {
+        // A plane with no manifest row is a member this build does not define, and unknown members
+        // survive: opening a file must not delete what the app cannot read.
+        const std::string path = temp("selection-undeclared.noise");
+        json manifest{{"format", io::kFormatVersion},
+                      {"layers", layer_rows(1)},
+                      {"size", json::array({5, 5})}};
+        std::vector<io::ZipEntry> members{
+            io::ZipEntry{"mimetype", bytes_of(io::kMimetype)},
+            io::ZipEntry{"manifest.json", bytes_of(manifest.dump())},
+            io::ZipEntry{"layers/0/layer.png", io::encode_png(image)},
+            io::ZipEntry{io::kSelectionName, std::vector<std::uint8_t>(25, 255)},
+        };
+        write_archive(path, members);
+        io::Project loaded;
+        std::string error;
+        CHECK(io::load_project(path, loaded, error));
+        CHECK(!loaded.selection.has_value());
+        CHECK_EQ(loaded.carried.size(), 1u);
+        std::filesystem::remove(path);
+    }
+}
+
 }  // namespace
 
 int main() {
     test_pixels_and_layer_name_come_back_unchanged();
+    test_the_selection_round_trips_byte_for_byte();
+    test_no_selection_and_an_empty_selection_are_different_in_the_file();
+    test_a_broken_selection_is_refused_naming_the_problem();
     test_layer_state_round_trips();
     test_every_mode_round_trips_under_its_own_name();
     test_another_format_is_refused_by_name();

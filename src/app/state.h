@@ -52,6 +52,15 @@ struct PointerMove {
     Rect content{};
 };
 
+// The gesture the pointer is making with the select tool. The rectangle is the marquee in document
+// pixels and it is live: the document holds it during the drag, so a state report taken mid-gesture
+// says what is selected rather than what was selected before the button went down.
+struct PointerSelection {
+    bool active = false;
+    Vec2 origin{};
+    Rect rect{};
+};
+
 struct AppState {
     Document doc;
     // The brush the next stroke uses, and the one the last stroke ran with: the status bar
@@ -61,6 +70,7 @@ struct AppState {
     std::string tool = kDefaultTool;
     PointerStroke stroke;
     PointerMove move;
+    PointerSelection select;
     ViewTransform view{{0, 0}, 1.0, {0.0, 0.0}};
     // Members of the .noise file that was opened which this build does not define, written
     // back unchanged on save so opening a newer file cannot delete what we cannot show.
@@ -95,7 +105,7 @@ struct AppState {
     // True while the pointer is inside a gesture of any tool. The host ends the gesture on the
     // button release through this, so a new tool has one place to be counted in and cannot leave
     // the button held by being forgotten in a condition elsewhere.
-    bool gesturing() const { return stroke.active || move.active; }
+    bool gesturing() const { return stroke.active || move.active || select.active; }
 };
 
 }

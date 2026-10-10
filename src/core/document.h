@@ -11,6 +11,9 @@
 #include "core/history.h"
 #include "core/image.h"
 #include "core/layer.h"
+#include "core/mask.h"
+
+#include <optional>
 
 namespace noise {
 
@@ -32,8 +35,10 @@ public:
     // A new or freshly opened document starts a new timeline: `path` empty means "never
     // saved", which is what makes doc.save report itself instead of guessing a filename.
     // Ids are assigned here, so a document always owns the identity its history names and a
-    // file cannot name a layer this document does not have.
-    void reset(std::vector<Layer> layers, std::string path);
+    // file cannot name a layer this document does not have. The selection is part of becoming a
+    // document rather than something done to it afterwards, which is the only way "opening a file
+    // leaves the document clean" stays true however many fields a file carries.
+    void reset(std::vector<Layer> layers, std::optional<Mask> selection, std::string path);
 
     const std::string& path() const;
     void set_path(std::string path);
@@ -62,6 +67,19 @@ public:
     // False when `index` is out of range. Selecting changes no pixels, so it bumps no revision.
     bool select_layer(int index);
 
+    // The selection: the pixels a write may change. `nullopt` is *no selection*, which is the whole
+    // canvas, and it is not the same state as a mask that covers nothing - that one stops every
+    // write. Both are needed, because inverting an empty selection selects everything and subtracting
+    // everything leaves nothing, and one value cannot tell those apart.
+    //
+    // The selection changes no pixel and enters no undo step, exactly like a layer's visibility: a
+    // step puts pixels back, and one that also moved the selection would undo something the user never
+    // asked about. It is part of the document, so it is saved with it and it marks the document dirty.
+    const std::optional<Mask>& selection() const { return selection_; }
+    // False when the mask is not the size of the canvas. A selection is a claim about these pixels, so
+    // cropping or padding one to fit would move the claim; the caller fixes the size or is told.
+    bool set_selection(std::optional<Mask> selection);
+
     // What the composite is made of, changed without touching a pixel. All three bump the
     // revision - the canvas shows the composite, so a renderer that re-uploads on it would
     // otherwise keep showing a layer that is meant to be gone - and all three mark the document
@@ -88,7 +106,9 @@ public:
 
     // Applies `edit` to the active layer and records the pixels `bounds` held beforehand. An
     // edit that writes outside `bounds` will not be fully undone, which is why bounds is not
-    // inferred.
+    // inferred. What the edit wrote is then pulled back to what was there wherever the selection
+    // does not reach, so no writer has to know a selection exists - and an edit left with no pixel
+    // changed records no step, marks nothing dirty and bumps no revision.
     void paint(Rect bounds, const std::function<void(Image&)>& edit);
 
     // A gesture that is still going - a pointer stroke - shows its result before it ends, on
@@ -127,6 +147,8 @@ private:
     // The pristine bytes the gesture found inside `absolute`, taken out of the held-aside
     // snapshot, as an image of `absolute`'s own size.
     Image held_aside(Rect absolute) const;
+    // True when `region` of `after` still holds exactly what `before` did, row by row.
+    bool unchanged(const Image& before, const Image& after, Rect region) const;
 
     // What the layers changed since `composite_` was last repaired. Accumulated by every pixel
     // change, emptied by the repair; structural changes widen it to the whole canvas.
@@ -136,6 +158,7 @@ private:
     std::vector<Layer> layers_;
     int active_ = 0;
     std::optional<Provisional> provisional_;
+    std::optional<Mask> selection_;
     // What the gesture has actually painted, which is smaller than the held-aside rectangle: the
     // undo step records this, and discarding restores this.
     Rect painted_;

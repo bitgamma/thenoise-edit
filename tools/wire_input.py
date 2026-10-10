@@ -219,6 +219,9 @@ KEY_COMMA = 0x2C       # XK_comma
 KEY_PERIOD = 0x2E      # XK_period
 KEY_CTRL_L = 0xFFE3    # XK_Control_L
 KEY_V = 0x0076         # XK_v
+KEY_M = 0x006D         # XK_m
+KEY_D = 0x0064         # XK_d
+KEY_I = 0x0069         # XK_i
 # One press of a step key, as `core/brush.h` defines it: the probe asserts a step happened rather
 # than recomputing the value, so this is the width of "one", not a copy of the arithmetic.
 BRUSH_STEP = 0.05
@@ -413,6 +416,92 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
     print(f"Ctrl+Z after the move: {undone[:12]}")
     if undone != before:
         fails.append("Ctrl+Z did not undo the move")
+
+    # The select tool: `M`, a marquee drawn by the pointer, and then proof that the selection holds
+    # the paint - all of it through events, because what the app does with a real drag is what the
+    # canvas window decides, not what a wire client asks for.
+    inj.key(KEY_M)
+    wd.settle(wire)
+    state = wire.call("app.state")
+    if state["brush"]["tool"] != "select":
+        fails.append(f"M selected '{state['brush']['tool']}', expected 'select'")
+    doc = wd.document_screen_rect(state)
+    scale = state["view"]["scale"]
+    canvas_area = state["document"]["width"] * state["document"]["height"]
+    inj.move(doc[0] + doc[2] * 0.2, doc[1] + doc[3] * 0.2)
+    inj.button(1, True)
+    wd.settle(wire)
+    inj.move(doc[0] + doc[2] * 0.55, doc[1] + doc[3] * 0.6)
+    wd.settle(wire)
+    mid = wire.call("app.state")
+    inj.button(1, False)
+    wd.settle(wire)
+    sel = wire.call("select.get", {})
+    print(f"M drag: marquee during {mid['stroke']['marquee']}, after bounds {sel['bounds']} "
+          f"covering {sel['covered']} of {canvas_area} px, active {sel['active']}")
+    if len(mid["stroke"]["marquee"]) != 4:
+        fails.append("the drag reported no marquee while the button was down")
+    if not sel["active"] or sel["covered"] == 0:
+        fails.append("the marquee drag left no selection")
+    if sel["bounds"] != mid["stroke"]["marquee"]:
+        fails.append(f"the released selection {sel['bounds']} is not the marquee that was drawn "
+                     f"{mid['stroke']['marquee']}")
+    wire.call("screenshot", {"name": "selection-ants"})
+
+    # A stroke that never reaches the selection changes no byte and costs no undo step; one that
+    # reaches it changes the document and puts every byte back on Ctrl+Z.
+    inside = sel["bounds"]
+    outside_stroke = {"points": [[state["document"]["width"] - 14, state["document"]["height"] - 6],
+                                 [state["document"]["width"] - 5, state["document"]["height"] - 3]],
+                      "tool": "brush", "size": 5.0, "hardness": 1.0, "opacity": 1.0, "flow": 1.0,
+                      "spacing": 0.25, "color": [250, 20, 20, 255]}
+    inside_stroke = {"points": [[inside[0] + 2, inside[1] + 2],
+                                [inside[0] + max(2, inside[2] - 3), inside[1] + max(2, inside[3] - 3)]],
+                     "tool": "brush", "size": 5.0, "hardness": 1.0, "opacity": 1.0, "flow": 1.0,
+                     "spacing": 0.25, "color": [250, 20, 20, 255]}
+    held = wire.call("doc.get", {})["checksum"]
+    depth_held = wire.call("app.state")["document"]["history"]["undo_depth"]
+    wire.call("tool.stroke", outside_stroke)
+    blocked = wire.call("doc.get", {})["checksum"]
+    depth_blocked = wire.call("app.state")["document"]["history"]["undo_depth"]
+    wire.call("tool.stroke", inside_stroke)
+    through = wire.call("doc.get", {})["checksum"]
+    print(f"selection holds paint: outside {blocked[:12] == held[:12]}, through {through[:12]} "
+          f"({depth_held} -> {depth_blocked} -> "
+          f"{wire.call('app.state')['document']['history']['undo_depth']} steps)")
+    if blocked != held:
+        fails.append("a stroke outside the selection changed the document")
+    if depth_blocked != depth_held:
+        fails.append("a stroke the selection stopped still cost an undo step")
+    if through == held:
+        fails.append("a stroke through the selection changed nothing, so the check proved nothing")
+    wire.call("edit.undo", {})
+    if wire.call("doc.get", {})["checksum"] != held:
+        fails.append("Ctrl+Z did not put the clipped stroke back")
+
+    # Ctrl+I twice is the same selection; Ctrl+D puts it down, and the paint that was held back then
+    # goes through - which is the only way to tell a working deselect from a stroke that paints
+    # nothing at all.
+    inj.modified_key(KEY_I, KEY_CTRL_L)
+    wd.settle(wire)
+    inverted = wire.call("select.get", {})
+    if inverted["covered"] + sel["covered"] != canvas_area:
+        fails.append(f"inverting covered {inverted['covered']} where the selection held "
+                     f"{sel['covered']} of {canvas_area}")
+    inj.modified_key(KEY_I, KEY_CTRL_L)
+    wd.settle(wire)
+    if wire.call("select.get", {})["covered"] != sel["covered"]:
+        fails.append("Ctrl+I twice did not come back to the selection that was drawn")
+    inj.modified_key(KEY_D, KEY_CTRL_L)
+    wd.settle(wire)
+    cleared = wire.call("select.get", {})
+    print(f"Ctrl+D: active {sel['active']} -> {cleared['active']}, covered {cleared['covered']}")
+    if cleared["active"]:
+        fails.append("Ctrl+D left the selection up")
+    wire.call("tool.stroke", outside_stroke)
+    if wire.call("doc.get", {})["checksum"] == held:
+        fails.append("with no selection the stroke outside the old rectangle still painted nothing")
+    wire.call("edit.undo", {})
 
     # The step keys, through the real key path. `,`/`.` move hardness by one step and Shift takes
     # the same two keys to opacity - which only a real modifier state can demonstrate, because the

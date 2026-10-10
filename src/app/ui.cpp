@@ -2,6 +2,7 @@
 #include "app/ui.h"
 
 #include "app/brush_steps.h"
+#include "app/command_args.h"
 
 #include "core/log.h"
 #include "gfx/checker.h"
@@ -34,6 +35,13 @@ constexpr float kToolPanelFraction = 0.36f;
 // the name keeps a slice of its own so a narrow panel still shows which layer is which. The mode
 // dropdown is the width of the name slice, so the two lines read as one record.
 constexpr float kLayerOpacitySliderPx = 88.0f;
+// Marching ants: one-pixel dashes of white on black, marching along the selection's outline. The
+// phase comes from ImGui's clock - an overlay may read the wall time, and nothing a test can reach
+// may, which is why it is read here rather than passed in as a parameter.
+constexpr float kAntDashPx = 4.0f;
+constexpr float kAntMarchPxPerSecond = 32.0f;
+constexpr ImU32 kAntLight = IM_COL32(255, 255, 255, 255);
+constexpr ImU32 kAntDark = IM_COL32(20, 20, 20, 255);
 constexpr float kLayerNameMinPx = 40.0f;
 
 // Docked by name below and opened by the same constants here.
@@ -42,6 +50,39 @@ constexpr const char* kWindowTool = "Brush";
 constexpr const char* kWindowLayers = "Layers";
 constexpr const char* kWindowLog = "Log";
 constexpr const char* kWindowStatus = "Status";
+
+// The selection's boundary, in dashes that march. Runs come from the mask, so a rectangle, a painted
+// blob and a selection that fills the canvas are all drawn by the same code; the dashes are placed in
+// screen space so they stay legible whatever the zoom, and share one phase so the outline reads as
+// one line rather than as rows that disagree.
+void draw_selection(ImDrawList* list, const AppState& state, const ImVec2& origin) {
+    if (!state.doc.selection()) {
+        return;
+    }
+    const float march = static_cast<float>(std::fmod(
+        ImGui::GetTime() * static_cast<double>(kAntMarchPxPerSecond), 2.0 * kAntDashPx));
+    for (const MaskRun& run : state.doc.selection()->outline()) {
+        const Vec2 edge = state.view.world_to_view(
+            {static_cast<double>(run.x0), static_cast<double>(run.y) + 0.5});
+        const float from_x = static_cast<float>(edge.x);
+        const float row_y = static_cast<float>(edge.y);
+        const float stop_x = static_cast<float>(
+            state.view.world_to_view({static_cast<double>(run.x1), 0.0}).x);
+        const float first_boundary =
+            std::floor((from_x + march) / kAntDashPx) * kAntDashPx - march;
+        for (float x = first_boundary; x < stop_x; x += kAntDashPx) {
+            const float dash_from = std::max(x, from_x);
+            const float dash_to = std::min(x + kAntDashPx, stop_x);
+            if (dash_to <= dash_from) {
+                continue;
+            }
+            const bool light = std::fmod(std::fabs(x + march), 2.0f * kAntDashPx) < kAntDashPx;
+            list->AddLine(ImVec2(dash_from + origin.x, row_y + origin.y),
+                          ImVec2(dash_to + origin.x, row_y + origin.y),
+                          light ? kAntLight : kAntDark, 1.0f);
+        }
+    }
+}
 
 void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
                  const gfx::Checker& checker) {
@@ -88,6 +129,22 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
             list->AddImage(simgui_imtextureid(canvas_texture.view), canvas_min, canvas_max);
         }
         list->AddRect(canvas_min, canvas_max, kCanvasBorder);
+        draw_selection(list, state, origin);
+        if (state.select.active && !state.select.rect.empty()) {
+            // The marquee is the selection during the gesture, and drawing it on top is what tells
+            // the user the second corner follows the pointer rather than the first.
+            const Vec2 corner = state.view.world_to_view(
+                {static_cast<double>(state.select.rect.x),
+                 static_cast<double>(state.select.rect.y)});
+            const Vec2 far = state.view.world_to_view(
+                {static_cast<double>(state.select.rect.right()),
+                 static_cast<double>(state.select.rect.bottom())});
+            list->AddRect(ImVec2(static_cast<float>(corner.x) + origin.x,
+                                 static_cast<float>(corner.y) + origin.y),
+                          ImVec2(static_cast<float>(far.x) + origin.x,
+                                 static_cast<float>(far.y) + origin.y),
+                          kAntLight, 0.0f, 0, 1.0f);
+        }
 
         // Left button paints, and goes through the same table the wire drives, so a
         // recorded gesture and a hand-made one are the same code path.
@@ -139,6 +196,30 @@ void draw_tool_panel(AppState& state, CommandTable& commands) {
         }
         ImGui::SameLine();
         ImGui::TextDisabled("[%s]", tool.select_key);
+    }
+
+    // The selection, because the tool above is the one that draws it. Every control here is a
+    // `select.*` command, so the keyboard, the wire and a click cannot disagree about what
+    // deselecting means.
+    ImGui::SeparatorText("selection");
+    const json selection = selection_json(state);
+    if (selection["active"].get<bool>()) {
+        const json& bounds = selection["bounds"];
+        ImGui::TextDisabled("%d x %d, %d px", bounds[2].get<int>(), bounds[3].get<int>(),
+                            static_cast<int>(selection["covered"].get<std::int64_t>()));
+    } else {
+        ImGui::TextDisabled("the whole canvas");
+    }
+    if (ImGui::Button("All")) {
+        commands.invoke("select.all", json::object());
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("None")) {
+        commands.invoke("select.clear", json::object());
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Invert")) {
+        commands.invoke("select.invert", json::object());
     }
 
     // Sliders write one field at a time through tool.set, so a drag of the size slider and a
@@ -357,6 +438,11 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
     // screenshot back into the settings that made it.
     ImGui::TextDisabled("%s %.0f px", state.tool.c_str(), static_cast<double>(state.brush.size));
     ImGui::SameLine();
+    if (state.doc.selection()) {
+        const Rect bounds = state.doc.selection()->bounds();
+        ImGui::TextDisabled("sel %d x %d", bounds.w, bounds.h);
+        ImGui::SameLine();
+    }
     if (state.stroke.active) {
         ImGui::TextDisabled("painting %zu dabs", state.stroke.dabs);
         ImGui::SameLine();

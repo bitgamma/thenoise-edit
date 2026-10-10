@@ -47,7 +47,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         base.pixels = Image::filled(Extent{width, height}, fill[0], fill[1], fill[2], fill[3]);
         std::vector<Layer> layers;
         layers.push_back(std::move(base));
-        state.doc.reset(std::move(layers), std::string());
+        state.doc.reset(std::move(layers), std::nullopt, std::string());
         state.carried.clear();  // a new document is not tied to the file that was open
         request_fit(state);
         log::info("created image " + std::to_string(width) + "x" + std::to_string(height));
@@ -62,6 +62,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         const std::string path = args.at("path").get<std::string>();
         std::string error;
         std::vector<Layer> loaded;
+        std::optional<Mask> opened_selection;
         // The bytes decide, not the name. `.noise`, `.ora` and a dozen other formats are all ZIP
         // containers, and routing an OpenRaster file by its extension sent it to the PNG decoder,
         // which reported "Not a PNG file" about a file that is a perfectly good archive of
@@ -73,6 +74,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
                 return fail("doc.open", error);
             }
             loaded = std::move(project.layers);
+            opened_selection = std::move(project.selection);
             state.carried = std::move(project.carried);
         } else if (!sniff_error.empty()) {
             return fail("doc.open", sniff_error);
@@ -87,7 +89,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
             loaded.push_back(std::move(base));
             state.carried.clear();
         }
-        state.doc.reset(std::move(loaded), path);
+        state.doc.reset(std::move(loaded), std::move(opened_selection), path);
         request_fit(state);
         log::info("loaded " + path + " (" + std::to_string(state.doc.layers().size()) +
                   " layers)");
@@ -116,7 +118,8 @@ void register_document_commands(AppState& state, CommandTable& table) {
                             "; use doc.export for a flat image (got '" + path + "')");
         }
         std::string error;
-        if (!io::save_project(path, state.doc.layers(), state.doc.composite(), state.carried,
+        if (!io::save_project(path, state.doc.layers(), state.doc.composite(),
+                              state.doc.selection(), state.carried,
                               error)) {
             return fail("doc.save", error);
         }

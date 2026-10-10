@@ -43,6 +43,15 @@ inline bool operator==(const Rect& a, const Rect& b) {
     return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
 }
 
+// A run of consecutive pixels along one row, half-open in x like every other region here. Mask
+// boundaries come back as these because the outline of a painted region is thin, and a caller that
+// draws it wants runs rather than a pixel list.
+struct MaskRun {
+    int y = 0;
+    int x0 = 0;
+    int x1 = 0;
+};
+
 // Canvas (world) -> viewport transform: view = (world - origin) * scale.
 struct ViewTransform {
     Extent image{};

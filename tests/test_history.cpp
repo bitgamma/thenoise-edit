@@ -57,7 +57,7 @@ std::size_t differing_pixels(const Image& a, const Image& b) {
 
 void test_undo_after_many_mutations_restores_every_byte() {
     Document doc;
-    doc.reset(one_layer(make_pattern(Extent{64, 48})), "pattern.png");
+    doc.reset(one_layer(make_pattern(Extent{64, 48})), std::nullopt, "pattern.png");
     const std::string original = doc.checksum();
 
     int grey = 8;
@@ -88,7 +88,7 @@ void test_undo_after_many_mutations_restores_every_byte() {
 
 void test_undo_touches_only_the_rectangle_it_recorded() {
     Document doc;
-    doc.reset(one_layer(make_pattern(Extent{40, 30})), "pattern.png");
+    doc.reset(one_layer(make_pattern(Extent{40, 30})), std::nullopt, "pattern.png");
     const std::string untouched = doc.checksum();
 
     fill(doc, Rect{5, 4, 12, 9}, 200);
@@ -99,7 +99,7 @@ void test_undo_touches_only_the_rectangle_it_recorded() {
     // Putting one rectangle back must leave every other pixel exactly as it was, so the
     // result has to equal a document that only ever ran the first step.
     Document reference;
-    reference.reset(one_layer(make_pattern(Extent{40, 30})), "pattern.png");
+    reference.reset(one_layer(make_pattern(Extent{40, 30})), std::nullopt, "pattern.png");
     fill(reference, Rect{5, 4, 12, 9}, 200);
     CHECK_EQ(differing_pixels(reference.layer(0).pixels, doc.layer(0).pixels), 0u);
     CHECK_EQ(doc.checksum(), after_first_step);
@@ -108,7 +108,7 @@ void test_undo_touches_only_the_rectangle_it_recorded() {
 
 void test_a_mutation_after_an_undo_forks_the_timeline() {
     Document doc;
-    doc.reset(one_layer(make_pattern(Extent{24, 24})), "pattern.png");
+    doc.reset(one_layer(make_pattern(Extent{24, 24})), std::nullopt, "pattern.png");
     fill(doc, Rect{0, 0, 4, 4}, 10);
     fill(doc, Rect{8, 8, 4, 4}, 20);
     CHECK_EQ(doc.history().redo_depth, 0);
@@ -120,10 +120,10 @@ void test_a_mutation_after_an_undo_forks_the_timeline() {
 
 void test_opening_a_document_starts_a_new_timeline() {
     Document doc;
-    doc.reset(one_layer(make_pattern(Extent{16, 16})), "a.png");
+    doc.reset(one_layer(make_pattern(Extent{16, 16})), std::nullopt, "a.png");
     fill(doc, Rect{0, 0, 4, 4}, 40);
     CHECK(doc.can_undo());
-    doc.reset(one_layer(make_pattern(Extent{4, 4})), "b.png");
+    doc.reset(one_layer(make_pattern(Extent{4, 4})), std::nullopt, "b.png");
     CHECK(!doc.can_undo());
     CHECK(!doc.can_redo());
     CHECK_EQ(doc.history().bytes, 0u);
@@ -133,7 +133,7 @@ void test_opening_a_document_starts_a_new_timeline() {
 
 void test_a_change_outside_the_pixels_is_not_a_step() {
     Document doc;
-    doc.reset(one_layer(make_pattern(Extent{12, 12})), "pattern.png");
+    doc.reset(one_layer(make_pattern(Extent{12, 12})), std::nullopt, "pattern.png");
     const std::string before = doc.checksum();
     const std::uint64_t revision = doc.revision();
     doc.paint(Rect{40, 40, 8, 8},
@@ -145,7 +145,7 @@ void test_a_change_outside_the_pixels_is_not_a_step() {
 
 void test_the_revision_moves_with_every_undoable_change() {
     Document doc;
-    doc.reset(one_layer(make_pattern(Extent{12, 12})), "pattern.png");
+    doc.reset(one_layer(make_pattern(Extent{12, 12})), std::nullopt, "pattern.png");
     const std::uint64_t opened = doc.revision();
     fill(doc, Rect{1, 1, 3, 3}, 90);
     CHECK_EQ(doc.revision(), opened + 1);
@@ -183,7 +183,7 @@ void test_the_budget_drops_whole_steps_oldest_first() {
 // A step belongs to one layer, and putting it back must not disturb any other layer.
 void test_undo_restores_one_layer_and_leaves_the_others_alone() {
     Document doc;
-    doc.reset(one_layer(make_pattern(Extent{20, 20})), "pattern.png");
+    doc.reset(one_layer(make_pattern(Extent{20, 20})), std::nullopt, "pattern.png");
     doc.add_layer("Skies", Rgba8{0, 0, 0, 0});
     doc.add_layer("Ink", Rgba8{0, 0, 0, 0});
     CHECK_EQ(doc.layers().size(), 3u);
@@ -207,7 +207,7 @@ void test_undo_restores_one_layer_and_leaves_the_others_alone() {
 // each layer's steps stay undoable in order.
 void test_each_layer_undoes_independently_and_in_order() {
     Document doc;
-    doc.reset(one_layer(make_pattern(Extent{16, 16})), "pattern.png");
+    doc.reset(one_layer(make_pattern(Extent{16, 16})), std::nullopt, "pattern.png");
     doc.add_layer("Top", Rgba8{0, 0, 0, 0});
     fill(doc, Rect{0, 0, 4, 4}, 240);  // Top
     CHECK(doc.select_layer(0));
@@ -229,7 +229,7 @@ void test_each_layer_undoes_independently_and_in_order() {
 // so only the entries naming the deleted layer leave the stacks.
 void test_deleting_a_layer_drops_only_its_own_steps() {
     Document doc;
-    doc.reset(one_layer(make_pattern(Extent{16, 16})), "pattern.png");
+    doc.reset(one_layer(make_pattern(Extent{16, 16})), std::nullopt, "pattern.png");
     doc.add_layer("Temp", Rgba8{0, 0, 0, 0});
     fill(doc, Rect{0, 0, 4, 4}, 200);  // Temp
     CHECK(doc.select_layer(0));
@@ -248,10 +248,10 @@ void test_deleting_a_layer_drops_only_its_own_steps() {
 // it is dropped whole rather than written somewhere plausible.
 void test_a_history_that_no_longer_fits_its_layers_is_dropped() {
     Document doc;
-    doc.reset(one_layer(make_pattern(Extent{16, 16})), "pattern.png");
+    doc.reset(one_layer(make_pattern(Extent{16, 16})), std::nullopt, "pattern.png");
     fill(doc, Rect{0, 0, 4, 4}, 90);
     CHECK(doc.can_undo());
-    doc.reset(one_layer(make_pattern(Extent{16, 16})), "pattern.png");
+    doc.reset(one_layer(make_pattern(Extent{16, 16})), std::nullopt, "pattern.png");
     fill(doc, Rect{0, 0, 4, 4}, 91);
     CHECK(doc.can_undo());
     // Undo must still be exact for the live document: the recorded ids are fresh, and the old

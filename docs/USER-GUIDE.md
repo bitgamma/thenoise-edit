@@ -61,7 +61,7 @@ screenshot from the picture alone.
 
 | Input | Does |
 |---|---|
-| Left-drag | paints on the active layer |
+| Left-drag | paints on the active layer, or drags a marquee with the select tool |
 | Right-drag | pans |
 | Mouse wheel | zooms about the cursor, x1.10 per click |
 | `F` | fit the document into the canvas pane |
@@ -71,22 +71,12 @@ is allowed for 48 px, so an edge is not a wall.
 
 ## Painting
 
-`B` brush, `E` eraser, `V` move. `[` and `]` step the size by x1.25 — the same keystroke means the same
+`B` brush, `E` eraser, `V` move, `M` select (see *A selection*). `[` and `]` step the size by x1.25 — the same keystroke means the same
 thing at 4 px and at 400 px. `,` and `.` step **hardness** down and up, `Shift+,` and `Shift+.`
 step **opacity**: the MVP gave four actions to two keys, so the modifier takes the second pair. A
 step lands on the 5 % grid, so pressing `,` from a slider dragged to 0.73 gives 0.70 rather than
 0.68, and both ends stop dead rather than going past 0 or 1. Hover a slider to see its keys;
 `command.list` prints them all. The Brush panel holds the rest:
-
-### Moving a layer
-
-`V` picks up the **active layer** and drags it. Press somewhere, move, release: the layer slides
-under the cursor and the gesture is one undo step. Offsets are whole document pixels — a move never
-resamples, so nothing is blurred by dragging — and pixels pushed past the canvas edge are gone from
-the layer, which `Ctrl+Z` brings back. The button-down position is the anchor, so where you press
-does not matter, only how far you drag; a tremor smaller than half a pixel is not an edit at all, and
-costs neither a step nor the unsaved mark. The layer under the cursor is the one that moves: with a
-painting on the layer above, it stays where it is.
 
 | Field | Means |
 |---|---|
@@ -104,6 +94,45 @@ pixels it found. `Ctrl+Z` / `Ctrl+Y` undo and redo.
 **Undo covers pixels only.** Hiding or fading a layer, adding one, and deleting one are not
 undoable — and deleting a layer discards the steps made on it, because a change to a layer that
 is gone cannot be put back.
+
+### Moving a layer
+
+`V` picks up the **active layer** and drags it. Press somewhere, move, release: the layer slides
+under the cursor and the gesture is one undo step. Offsets are whole document pixels — a move never
+resamples, so nothing is blurred by dragging — and pixels pushed past the canvas edge are gone from
+the layer, which `Ctrl+Z` brings back. The button-down position is the anchor, so where you press
+does not matter, only how far you drag; a tremor smaller than half a pixel is not an edit at all, and
+costs neither a step nor the unsaved mark. The layer under the cursor is the one that moves: with a
+painting on the layer above, it stays where it is.
+
+## A selection
+
+`M`, then drag. **Every document pixel the rectangle passes over is selected**, and the marching ants
+run along those pixels, so what is outlined is exactly what is writable. Dragging past the edge still
+selects up to the edge; a click selects one pixel; releasing without a marquee puts the selection down.
+
+The selection belongs to the document and **limits every write to the pixels it covers**: painting,
+erasing and moving a layer all leave the pixels outside it exactly as they were. A stroke that lands
+only outside the selection changes no byte and costs no undo step, so mis-clicking against a selection
+does not spend your history. Undo restores pixels and leaves the selection up — a selection is a
+working state, not an edit, and is not in the undo chain.
+
+*No selection* and *a selection that covers nothing* are different states: the first means the whole
+canvas is writable, the second blocks every write, and `Ctrl+D` is what puts it down. `Ctrl+I` flips
+the two, so inverting no selection selects the whole canvas and inverting twice returns what you had.
+
+The Brush panel has the same three actions as buttons — **All**, **None**, **Invert** — and reports
+the selection's size and pixel count. `select.rect {rect, mode}` with `mode` one of `replace`, `add`,
+`subtract`, plus `select.all`, `select.clear`, `select.invert` and `select.get`, are the wire
+spelling, so a driver can put a selection down without a pointer and read back what the canvas window
+agreed to.
+
+A selection is saved into the `.noise` with the rest of the document, and a reopened document paints
+as the one you closed: the plane is one byte per pixel (`selection.m8`), and a file that declares one
+without carrying it, or carries one the wrong size, is refused rather than guessed at. Exporting a flat
+PNG/JPEG/WebP ignores it — a selection is part of how you are editing, not part of a picture.
+Feathered and painted selections are not here yet, and a selection cannot yet become a layer mask or
+the other way round.
 
 ## Layers
 
@@ -200,6 +229,8 @@ call("doc.new", width=512, height=512)
 print(call("app.state")["document"]["width"])
 call("tool.stroke", points=[[64, 64], [400, 380]], size=32.0, hardness=0.8,
      opacity=1.0, flow=1.0, spacing=0.25, color=[220, 40, 40, 255])
+call("select.rect", rect=[100, 100, 200, 150])   # every later write is clipped to this
+print(call("select.get"))                        # bounds, covered count, canvas size
 print(call("screenshot", name="demo")["path"])
 PY
 /tmp/…/noise-edit/captures/demo-c68a18bc770c.png
@@ -213,7 +244,8 @@ stroke and a capture, and the PNG turned up where it said.
 | app | `app.state` `app.quit` `command.list` `command.invoke` `log.tail` `log.level` `wire.info` |
 | document | `doc.new` `doc.open` `doc.save` `doc.export` `doc.get` `image.get` |
 | layers | `layer.list` `layer.add` `layer.remove` `layer.select` `layer.set` |
-| paint | `tool.brush` `tool.eraser` `tool.move` (one per tool row) `tool.set` `tool.stroke` `tool.pointer` `brush.larger` `brush.smaller` |
+| paint | `tool.brush` `tool.eraser` `tool.move` `tool.select` (one per tool row) `tool.set` `tool.stroke` `tool.pointer` `brush.larger` `brush.smaller` |
+| selection | `select.rect` `select.all` `select.clear` `select.invert` `select.get` |
 | view | `view.fit` `view.set` `view.pan` `view.zoom` |
 | edit | `edit.undo` `edit.redo` |
 | observe | `screenshot` `pixels.compare` |
@@ -249,9 +281,12 @@ problems and only one of them is a bug:
 
 - **No AI at all.** No server profile, no roles, no generate / remove / replace / upscale.
   That is milestones M3 and M4.
-- **No selections and no masks.** Nothing to select with, nothing to mask a layer with.
+- **Selections are rectangular only, and there are no layer masks.** No lasso, wand, feather or
+  grow/shrink, nothing to paint a mask with, and no way yet to turn a selection into a layer mask or a
+  layer mask into a selection — `core::Mask` is already the one representation for both; the commands
+  between them are not.
 - **No reorder, rename, duplicate or merge** in the Layers panel.
-- **Three tools**: brush, eraser and move. No fill, eyedropper, lasso or wand, no pen pressure.
+- **Four tools**: brush, eraser, move and select. No fill, eyedropper, lasso or wand, no pen pressure.
 - **No `.ora`/PSD at all**: OpenRaster is out of the design by decision, so a foreign layered file
   is refused naming its mimetype rather than guessed at.
 - **No autosave or crash recovery**, and the undo history lives and dies with the session.

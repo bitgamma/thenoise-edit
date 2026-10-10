@@ -13,6 +13,7 @@ add_executable(test_zip test_zip.cpp)
 add_executable(test_project test_project.cpp)
 add_executable(test_document test_document.cpp)
 add_executable(test_blend test_blend.cpp)
+add_executable(test_mask test_mask.cpp)
 
 foreach(target test_hash test_geom test_command test_wire test_brush test_history)
     target_link_libraries(${target} PRIVATE noise_core noise_dbg)
@@ -33,6 +34,13 @@ target_link_libraries(test_blend PRIVATE noise_core noise_dbg)
 target_include_directories(test_blend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(test_blend PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
 add_test(NAME test_blend COMMAND test_blend)
+
+# What a coverage plane does to a write, checked against source-over written out again in the test:
+# the claim that the document can restrict a write after the fact rests on the two being the same.
+target_link_libraries(test_mask PRIVATE noise_core noise_dbg)
+target_include_directories(test_mask PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_mask PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_mask COMMAND test_mask)
 
 # The container reader is a parser for files from elsewhere, so it gets the hostile-input
 # tests: crc, truncation, and a directory that lies.

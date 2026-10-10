@@ -109,6 +109,7 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
 
     std::vector<Layer> loaded;
     std::vector<std::string> sources;
+    std::optional<Mask> selection;
     const json& declared = manifest.at("layers");
     for (std::size_t index = 0; index < declared.size(); ++index) {
         const json& layer = declared[index];
@@ -181,9 +182,36 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
         sources.push_back(source);
     }
 
+    // Absent is a real answer: it means the document had no selection. Present-but-unreadable is a
+    // refusal, because a selection the reader cannot honour would let writes through that the user
+    // had fenced off.
+    if (manifest.contains("selection")) {
+        const json& row = manifest.at("selection");
+        if (!row.is_object() || !row.contains("src") || !row.at("src").is_string()) {
+            error = std::string(kManifestName) +
+                    " has a 'selection' with no string 'src' in " + path;
+            return false;
+        }
+        const std::string source = row.at("src").get<std::string>();
+        const ZipEntry* plane = find(*entries, source);
+        if (plane == nullptr) {
+            error = "'selection' names '" + source + "', which the archive does not hold: " + path;
+            return false;
+        }
+        selection = Mask::from_plane(claimed, plane->data);
+        if (!selection) {
+            error = "'" + source + "' holds " + std::to_string(plane->data.size()) +
+                    " coverage bytes, not one per pixel of a " + std::to_string(claimed.w) + "x" +
+                    std::to_string(claimed.h) + " canvas in " + path;
+            return false;
+        }
+        sources.push_back(source);
+    }
+
     out = Project{};
     out.format = format;
     out.layers = std::move(loaded);
+    out.selection = std::move(selection);
 
     for (const ZipEntry& entry : *entries) {
         if (entry.name == "mimetype" || entry.name == kManifestName || entry.name == kMergedName ||
@@ -198,7 +226,8 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
 }
 
 bool save_project(const std::string& path, std::span<const Layer> layers, const Image& merged,
-                  std::span<const ZipEntry> carried, std::string& error) {
+                  const std::optional<Mask>& selection, std::span<const ZipEntry> carried,
+                  std::string& error) {
     if (layers.empty()) {
         error = "a project needs at least one layer to save: " + path;
         return false;
@@ -216,11 +245,16 @@ bool save_project(const std::string& path, std::span<const Layer> layers, const 
                                 {"src", layer_source(index)},
                                 {"visible", layers[index].visible}});
     }
-    const json manifest{
+    json manifest{
         {"format", kFormatVersion},
         {"size", json::array({merged.size().w, merged.size().h})},
         {"layers", declared},
     };
+    if (selection) {
+        // Its size is the canvas's, so the row names the member and nothing else: a width repeated
+        // here is a fact that can disagree with `size`.
+        manifest["selection"] = json{{"src", kSelectionName}};
+    }
 
     ZipWriter zip;
     // The order is the format: sniffable mimetype first, then the app's own manifest, then the
@@ -229,6 +263,9 @@ bool save_project(const std::string& path, std::span<const Layer> layers, const 
     zip.add(kManifestName, bytes_of(manifest.dump(2) + "\n"));
     for (std::size_t index = 0; index < layers.size(); ++index) {
         zip.add(layer_source(index), std::span<const std::uint8_t>(encode_png(layers[index].pixels)));
+    }
+    if (selection) {
+        zip.add(kSelectionName, std::span<const std::uint8_t>(selection->plane()));
     }
     zip.add(kMergedName, std::span<const std::uint8_t>(encode_png(merged)));
     for (const ZipEntry& entry : carried) {

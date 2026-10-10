@@ -2,6 +2,7 @@
 #include "test.h"
 
 #include "core/document.h"
+#include "core/mask.h"
 
 #include <cstdint>
 #include <span>
@@ -35,7 +36,7 @@ void paint_on(Document& doc, Rect rect, std::uint8_t grey) {
 // blended a layer twice, shows up here and nowhere else.
 void test_the_incremental_composite_equals_one_built_from_scratch() {
     Document live;
-    live.reset(stack({{"Paper", Image::filled(Extent{24, 18}, 20, 20, 20, 255)}}), "x.noise");
+    live.reset(stack({{"Paper", Image::filled(Extent{24, 18}, 20, 20, 20, 255)}}), std::nullopt, "x.noise");
 
     const auto check_against_scratch = [&live](const char* where) {
         std::vector<Layer> copy;
@@ -49,7 +50,7 @@ void test_the_incremental_composite_equals_one_built_from_scratch() {
             copy.push_back(std::move(clone));
         }
         Document fresh;
-        fresh.reset(std::move(copy), "x.noise");
+        fresh.reset(std::move(copy), std::nullopt, "x.noise");
         const std::string built = live.composite().checksum_hex();
         const std::string scratch = fresh.composite().checksum_hex();
         if (built == scratch) {
@@ -133,7 +134,7 @@ void test_a_lone_layers_composite_is_the_blend_paths_answer_for_every_mode() {
         Document one;
         std::vector<Layer> stack;
         stack.push_back(lone);
-        one.reset(std::move(stack), "x.noise");
+        one.reset(std::move(stack), std::nullopt, "x.noise");
 
         Image blended = Image::filled(size, 0, 0, 0, 0);
         blend_layer(blended, pixels, Rect{0, 0, size.w, size.h}, info.mode, 1.0);
@@ -171,7 +172,7 @@ void test_a_lone_layer_is_shown_whole_only_at_full_strength() {
         }
     }
     Document doc;
-    doc.reset(stack({{"Lone", pixels}}), "x.noise");
+    doc.reset(stack({{"Lone", pixels}}), std::nullopt, "x.noise");
     CHECK(doc.set_layer_mode(0, BlendMode::overlay));
     // Whole: same coverage everywhere, same colour wherever there is any. Not "the same bytes",
     // because a pixel with no coverage keeps whatever colour its destination held and the shortcut
@@ -219,7 +220,7 @@ void test_setting_a_mode_moves_the_picture_and_touches_nothing_else() {
     Document doc;
     doc.reset(stack({{"Paper", Image::filled(Extent{8, 6}, 200, 100, 50, 255)},
                      {"Ink", Image::filled(Extent{8, 6}, 128, 128, 128, 255)}}),
-              "x.noise");
+              std::nullopt, "x.noise");
     const std::string normal = doc.composite().checksum_hex();
     const std::string ink_before = doc.layers()[1].pixels.checksum_hex();
     const int undos_before = doc.history().undo_depth;
@@ -255,12 +256,12 @@ void test_a_hidden_layer_contributes_nothing() {
     const Image top = Image::filled(size, 200, 0, 0, 255);
 
     Document doc;
-    doc.reset(stack({{"Bottom", bottom}, {"Top", top}}), "x.noise");
+    doc.reset(stack({{"Bottom", bottom}, {"Top", top}}), std::nullopt, "x.noise");
     const std::string with_top = doc.composite().checksum_hex();
 
     CHECK(doc.set_layer_visible(1, false));
     Document without;
-    without.reset(stack({{"Bottom", bottom}}), "x.noise");
+    without.reset(stack({{"Bottom", bottom}}), std::nullopt, "x.noise");
     CHECK_EQ(doc.composite().checksum_hex(), without.composite().checksum_hex());
     CHECK_NE(with_top, doc.composite().checksum_hex());
     CHECK_EQ(doc.layer(1).pixels.checksum_hex(), top.checksum_hex());
@@ -268,7 +269,7 @@ void test_a_hidden_layer_contributes_nothing() {
     // The single-layer shortcut has to respect it too: one hidden layer is a transparent canvas,
     // not that layer handed straight to the renderer.
     Document single;
-    single.reset(stack({{"Only", top}}), "x.noise");
+    single.reset(stack({{"Only", top}}), std::nullopt, "x.noise");
     CHECK(single.set_layer_visible(0, false));
     CHECK(!single.composite().empty());
     CHECK_EQ(single.composite().checksum_hex(), Image::filled(size, 0, 0, 0, 0).checksum_hex());
@@ -308,11 +309,11 @@ void test_layer_opacity_scales_the_blend() {
     Document doc;
     doc.reset(stack({{"Bottom", Image::filled(size, 255, 0, 0, 255)},
                      {"Top", Image::filled(size, 0, 255, 0, 255)}}),
-              "x.noise");
+              std::nullopt, "x.noise");
     const std::string shown = doc.composite().checksum_hex();
     CHECK(doc.set_layer_opacity(1, 0.0));
     Document only_bottom;
-    only_bottom.reset(stack({{"Bottom", Image::filled(size, 255, 0, 0, 255)}}), "x.noise");
+    only_bottom.reset(stack({{"Bottom", Image::filled(size, 255, 0, 0, 255)}}), std::nullopt, "x.noise");
     CHECK_EQ(doc.composite().checksum_hex(), only_bottom.composite().checksum_hex());
     CHECK(doc.set_layer_opacity(1, 1.0));
     CHECK_EQ(doc.composite().checksum_hex(), shown);
@@ -324,7 +325,7 @@ void test_layer_state_changes_reach_the_renderer() {
     Document doc;
     doc.reset(stack({{"Bottom", Image::filled(Extent{4, 4}, 1, 1, 1, 255)},
                      {"Top", Image::filled(Extent{4, 4}, 2, 2, 2, 255)}}),
-              "x.noise");
+              std::nullopt, "x.noise");
     doc.composite();
     const std::uint64_t before = doc.revision();
     CHECK(doc.set_layer_visible(1, false));
@@ -344,7 +345,7 @@ void test_layer_state_changes_reach_the_renderer() {
 // Out of range is a refusal that leaves the layer alone, not a clamped value.
 void test_layer_state_refuses_what_was_asked_for() {
     Document doc;
-    doc.reset(stack({{"Only", Image::filled(Extent{4, 4}, 1, 1, 1, 255)}}), "x.noise");
+    doc.reset(stack({{"Only", Image::filled(Extent{4, 4}, 1, 1, 1, 255)}}), std::nullopt, "x.noise");
     CHECK(!doc.set_layer_opacity(0, 1.5));
     CHECK(!doc.set_layer_opacity(0, -0.5));
     CHECK(!doc.set_layer_opacity(-1, 0.5));
@@ -366,7 +367,7 @@ void test_the_stack_blends_bottom_first() {
     top.fill_rect(Rect{0, 0, 6, 4}, half_green);
 
     Document doc;
-    doc.reset(stack({{"Bottom", bottom}, {"Top", top}}), "x.noise");
+    doc.reset(stack({{"Bottom", bottom}, {"Top", top}}), std::nullopt, "x.noise");
     const Image& out = doc.composite();
     // Alpha 128 is not exactly a half: 128/255 over opaque red keeps 127/255 of the red, and
     // contributes 128/255 of the green. Both channels survive, alpha stays opaque.
@@ -382,7 +383,7 @@ void test_repairing_a_rectangle_leaves_the_rest_of_the_canvas_alone() {
     Document doc;
     doc.reset(stack({{"Bottom", Image::filled(size, 10, 20, 30, 255)},
                      {"Top", Image::filled(size, 0, 0, 0, 0)}}),
-              "x.noise");
+              std::nullopt, "x.noise");
     paint_on(doc, Rect{2, 2, 4, 4}, 210);
     const std::span<const std::uint8_t> raw_before = doc.composite().pixels();
     const std::vector<std::uint8_t> before(raw_before.begin(), raw_before.end());
@@ -406,7 +407,7 @@ void test_the_stack_keeps_a_usable_selection() {
     doc.reset(stack({{"A", Image::filled(Extent{4, 4}, 0, 0, 0, 0)},
                      {"B", Image::filled(Extent{4, 4}, 0, 0, 0, 0)},
                      {"C", Image::filled(Extent{4, 4}, 0, 0, 0, 0)}}),
-              "x.noise");
+              std::nullopt, "x.noise");
     CHECK_EQ(doc.active(), 2);
     CHECK_EQ(doc.layer(0).name, std::string("A"));
     CHECK(doc.select_layer(0));
@@ -427,7 +428,7 @@ void test_the_stack_keeps_a_usable_selection() {
 // layers.
 void test_names_are_generated_from_the_stack_size() {
     Document doc;
-    doc.reset(stack({{"Kept", Image::filled(Extent{4, 4}, 0, 0, 0, 0)}}), "x.noise");
+    doc.reset(stack({{"Kept", Image::filled(Extent{4, 4}, 0, 0, 0, 0)}}), std::nullopt, "x.noise");
     doc.add_layer("", Rgba8{0, 0, 0, 0});
     CHECK_EQ(doc.layer(1).name, std::string("Layer 2"));
     doc.add_layer("", Rgba8{0, 0, 0, 0});
@@ -441,18 +442,195 @@ void test_names_are_generated_from_the_stack_size() {
 // A document checksum that ignored the stack could not tell two different documents apart.
 void test_the_document_checksum_follows_the_stack() {
     Document one;
-    one.reset(stack({{"A", Image::filled(Extent{8, 8}, 1, 1, 1, 255)}}), "x.noise");
+    one.reset(stack({{"A", Image::filled(Extent{8, 8}, 1, 1, 1, 255)}}), std::nullopt, "x.noise");
     Document two;
     two.reset(stack({{"A", Image::filled(Extent{8, 8}, 1, 1, 1, 255)},
                      {"B", Image::filled(Extent{8, 8}, 0, 0, 0, 0)}}),
-              "x.noise");
+              std::nullopt, "x.noise");
     CHECK_NE(one.checksum(), two.checksum());
     // Same two layers, opposite order: the flattened result differs, and so must the checksum.
     Document three;
     three.reset(stack({{"B", Image::filled(Extent{8, 8}, 0, 0, 0, 0)},
                        {"A", Image::filled(Extent{8, 8}, 1, 1, 1, 255)}}),
-                "x.noise");
+                std::nullopt, "x.noise");
     CHECK_NE(two.checksum(), three.checksum());
+}
+
+// The selection is a claim about *writable pixels*, so the two empty-looking states must differ: no
+// selection lets everything through, a mask that covers nothing stops everything.
+void test_no_selection_and_an_empty_selection_are_different_things() {
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(Extent{6, 6}, 10, 20, 30, 255)}}), std::nullopt, "x.noise");
+    const std::string untouched = doc.checksum();
+
+    paint_on(doc, Rect{1, 1, 2, 2}, 200);
+    CHECK_NE(doc.checksum(), untouched);
+    CHECK(doc.dirty());
+
+    Mask nothing(Extent{6, 6});
+    CHECK(doc.set_selection(nothing));
+    const std::string blocked_start = doc.checksum();
+    const int steps_before = doc.history().undo_depth;
+    paint_on(doc, Rect{0, 0, 6, 6}, 99);
+    // Not one pixel, not one undo step, no new dirty mark: a write the selection stopped is not an
+    // edit, and a gesture that lands outside the selection must not spend the undo budget.
+    CHECK_EQ(doc.checksum(), blocked_start);
+    CHECK_EQ(doc.history().undo_depth, steps_before);
+
+    // The same write with the whole canvas selected is exactly the write.
+    Mask everything(Extent{6, 6});
+    everything.fill(255);
+    CHECK(doc.set_selection(everything));
+    paint_on(doc, Rect{0, 0, 6, 6}, 99);
+    const std::string painted_all = doc.checksum();
+    doc.undo();
+    doc.undo();
+    doc.set_selection(std::nullopt);
+    paint_on(doc, Rect{0, 0, 6, 6}, 99);
+    CHECK_EQ(doc.checksum(), painted_all);
+}
+
+// The load-bearing invariant: with a selection on, no byte outside it changes, whatever the writer
+// asked for. Whole-image comparison, not a sampled point.
+void test_a_selection_holds_every_write_inside_it() {
+    const Extent size{12, 9};
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(size, 0, 0, 0, 0)}}), std::nullopt, "x.noise");
+
+    Mask selection(size);
+    selection.op(Rect{3, 2, 5, 4}, MaskOp::replace);
+    CHECK(doc.set_selection(selection));
+
+    const Image before = doc.layer(0).pixels;
+    // A write covering the whole canvas, in one call, through the plain door.
+    paint_on(doc, Rect{0, 0, size.w, size.h}, 128);
+    const Image after = doc.layer(0).pixels;
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const bool inside = selection.coverage(x, y) == 255;
+            for (int channel = 0; channel < kChannels; ++channel) {
+                const int expected = inside ? after.at(x, y)[channel] : before.at(x, y)[channel];
+                CHECK_EQ(static_cast<int>(after.at(x, y)[channel]), expected);
+            }
+            if (inside) {
+                CHECK_EQ(static_cast<int>(after.at(x, y)[3]), 255);
+            }
+        }
+    }
+    CHECK_NE(doc.checksum(), std::string{});
+}
+
+// The gesture door has to honour the selection too - it is the one the brush and the move tool go
+// through - and the step it commits has to put the pixels back exactly.
+void test_a_gesture_clips_to_the_selection_and_undoes_exactly() {
+    const Extent size{16, 5};
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(size, 1, 2, 3, 255)}}), std::nullopt, "x.noise");
+
+    Mask selection(size);
+    selection.op(Rect{4, 0, 3, 5}, MaskOp::replace);
+    CHECK(doc.set_selection(selection));
+
+    const std::string start = doc.checksum();
+    // Three events of one drag, each repainting its own rectangle, which is how a live stroke
+    // reaches the document. The last rectangle overlaps the earlier ones, so a writer that
+    // compounded its own work instead of starting from the held-aside pixels would show up.
+    for (const Rect event : {Rect{0, 0, 6, 5}, Rect{3, 0, 6, 5}, Rect{8, 0, 8, 5}}) {  // third is past the selection
+        doc.begin_provisional(event);
+        doc.repaint_provisional(event, [event](Image& image, Rect area) {
+            const std::uint8_t stroke_rgba[4] = {240, 10, 10, 255};
+            image.fill_rect(intersect(area, event), stroke_rgba);
+        });
+    }
+    const Image during = doc.layer(0).pixels;
+    const std::string gestured = doc.checksum();
+    doc.commit_provisional();
+    CHECK_EQ(doc.checksum(), gestured);
+    CHECK_EQ(doc.history().undo_depth, 1);
+
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const bool inside = selection.coverage(x, y) == 255;
+            const bool reached = x >= 4 && x < 11;
+            for (int channel = 0; channel < kChannels; ++channel) {
+                // Outside the selection the layer still holds what it started with, including the part
+            // the third event reached: the selection is what limits a write, not the gesture's own
+            // rectangle.
+            const int found[kChannels] = {1, 2, 3, 255};
+            const int expected = inside && reached ? during.at(x, y)[channel] : found[channel];
+                CHECK_EQ(static_cast<int>(doc.layer(0).pixels.at(x, y)[channel]), expected);
+            }
+        }
+    }
+
+    CHECK(doc.undo());
+    CHECK_EQ(doc.checksum(), start);
+
+    // A whole gesture outside the selection costs nothing at all: no step, no dirty bump, because
+    // what it would put back is what is already there.
+    Mask corner(size);
+    corner.op(Rect{12, 0, 4, 5}, MaskOp::replace);
+    CHECK(doc.set_selection(corner));
+    const int steps = doc.history().undo_depth;
+    doc.begin_provisional(Rect{0, 0, 6, 5});
+    doc.repaint_provisional(Rect{0, 0, 6, 5}, [](Image& image, Rect area) {
+        const std::uint8_t stroke_rgba[4] = {0, 255, 0, 255};
+        image.fill_rect(area, stroke_rgba);
+    });
+    CHECK_EQ(doc.layer(0).pixels.checksum_hex(), Image::filled(size, 1, 2, 3, 255).checksum_hex());
+    doc.commit_provisional();
+    CHECK_EQ(doc.history().undo_depth, steps);
+
+    // Undo puts pixels back; it does not move the selection, which was never part of the step.
+    CHECK(doc.selection().has_value());
+    CHECK(doc.selection()->size() == size);
+}
+
+// A mask of another size is a claim about pixels this document does not have.
+void test_a_selection_of_another_size_is_refused() {
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(Extent{4, 4}, 0, 0, 0, 0)}}), std::nullopt, "x.noise");
+    Mask too_big(Extent{5, 4});
+    CHECK(!doc.set_selection(too_big));
+    CHECK(!doc.selection().has_value());
+    Mask too_small(Extent{4, 3});
+    CHECK(!doc.set_selection(too_small));
+    CHECK(!doc.selection().has_value());
+
+    // Opening a document is not continuing the one that was open: the selection belongs to the
+    // document, so a fresh stack starts with none.
+    Mask inside(Extent{4, 4});
+    inside.op(Rect{0, 0, 2, 2}, MaskOp::replace);
+    CHECK(doc.set_selection(inside));
+    doc.reset(stack({{"B", Image::filled(Extent{4, 4}, 0, 0, 0, 0)}}), std::nullopt, "y.noise");
+    CHECK(!doc.selection().has_value());
+}
+
+// What the selection costs, and what it must not cost: setting it marks the document dirty because it
+// is written to the file, and saying the same thing twice must not.
+void test_a_selection_change_is_a_document_change() {
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(Extent{8, 8}, 0, 0, 0, 0)}}), std::nullopt, "x.noise");
+    Mask selection(Extent{8, 8});
+    selection.op(Rect{1, 1, 2, 2}, MaskOp::replace);
+    CHECK(doc.set_selection(selection));
+    CHECK(doc.dirty());
+
+    const std::uint64_t revision_after = doc.revision();
+    doc.mark_saved();
+    CHECK(doc.set_selection(selection));
+    CHECK(!doc.dirty());
+    CHECK_EQ(doc.revision(), revision_after);
+
+    Mask wider(Extent{8, 8});
+    wider.op(Rect{1, 1, 4, 4}, MaskOp::replace);
+    CHECK(doc.set_selection(wider));
+    CHECK(doc.dirty());
+
+    // Clearing is a change too, and the state that results is "no selection", not a mask of nothing.
+    CHECK(doc.set_selection(std::nullopt));
+    CHECK(doc.dirty());
+    CHECK(!doc.selection().has_value());
 }
 
 }  // namespace
@@ -471,5 +649,10 @@ int main() {
     test_the_stack_keeps_a_usable_selection();
     test_names_are_generated_from_the_stack_size();
     test_the_document_checksum_follows_the_stack();
+    test_no_selection_and_an_empty_selection_are_different_things();
+    test_a_selection_holds_every_write_inside_it();
+    test_a_gesture_clips_to_the_selection_and_undoes_exactly();
+    test_a_selection_of_another_size_is_refused();
+    test_a_selection_change_is_a_document_change();
     return noise::test::summary("document");
 }

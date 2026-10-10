@@ -191,6 +191,18 @@ json layers_json_with_checksums(const AppState& state) {
     return rows;
 }
 
+json selection_json(const AppState& state) {
+    if (!state.doc.selection()) {
+        return json{{"active", false}, {"bounds", json::array()}, {"covered", 0}};
+    }
+    const Mask& selection = *state.doc.selection();
+    const Rect bounds = selection.bounds();
+    return json{{"active", true},
+                {"bounds", json::array({bounds.x, bounds.y, bounds.w, bounds.h})},
+                {"covered", selection.covered()},
+                {"canvas", json::array({selection.size().w, selection.size().h})}};
+}
+
 json document_summary_json(const AppState& state) {
     return json{{"path", state.doc.path()},
                 {"kind", document_kind(state.doc.path())},
@@ -200,6 +212,7 @@ json document_summary_json(const AppState& state) {
                 {"width", state.doc.width()},
                 {"height", state.doc.height()},
                 {"revision", state.doc.revision()},
+                {"selection", selection_json(state)},
                 {"history", history_json(state.doc)}};
 }
 
@@ -210,13 +223,19 @@ json document_json(const AppState& state) {
 }
 
 json stroke_json(const AppState& state) {
-    return json{{"active", state.stroke.active || state.move.active},
+    return json{{"active", state.gesturing()},
                 {"dabs", state.stroke.dabs},
                 // Where a move gesture has got to. Zero for a paint gesture, so one reply shape
                 // serves both and a client reading `dabs` is unaffected.
                 {"dx", state.move.dx},
                 {"dy", state.move.dy},
                 {"move_steps", state.move.steps},
+                // The marquee a select gesture is drawing, empty otherwise, so one reply shape
+                // serves every tool the pointer can hold.
+                {"marquee", state.select.rect.empty()
+                                ? json::array()
+                                : json::array({state.select.rect.x, state.select.rect.y,
+                                               state.select.rect.w, state.select.rect.h})},
                 {"provisional_area",
                  json::array({state.doc.provisional_area().x, state.doc.provisional_area().y,
                               state.doc.provisional_area().w, state.doc.provisional_area().h})}};

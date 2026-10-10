@@ -37,11 +37,12 @@ enum class PaintMode {
     Erase,  // src-out: takes alpha away, leaves the colour alone
 };
 
-// What the pointer does while a tool has the button: paints, or moves the layer's pixels. A
-// selection tool is a third action and belongs in the table beside these, not in a branch.
+// What the pointer does while a tool has the button. A new tool adds a row to `kTools` and a case to
+// the dispatch, and nothing anywhere compares a tool's name.
 enum class ToolAction {
-    paint,
-    move,
+    paint,   // coverage into the active layer
+    move,    // the active layer's pixels slide
+    select,  // the marquee becomes the document's selection
 };
 
 // One tool per row: the id a request carries, what it does to the pixels, and the bare key
@@ -67,6 +68,11 @@ std::optional<ToolAction> tool_action(const std::string& id);
 
 // "brush, eraser" - the tool list as an error message wants it, from the same table.
 std::string tool_names();
+
+// Only the rows that carry a paint mode. A command that paints refuses a tool that is in
+// `tool_names` but not here, so a tool added for some other purpose cannot be used to paint by
+// accident - which is what happened before this existed.
+std::string paintable_tool_names();
 
 // The size the brush actually takes, never the one a caller asked for past the ends of the
 // slider: kMinBrushSize is the smallest stamp that still paints its own edge.

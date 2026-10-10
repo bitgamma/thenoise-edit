@@ -12,7 +12,7 @@ namespace noise {
 
 Document::Document() : history_(kHistoryBudgetBytes) {}
 
-void Document::reset(std::vector<Layer> layers, std::string path) {
+void Document::reset(std::vector<Layer> layers, std::optional<Mask> selection, std::string path) {
     layers_ = std::move(layers);
     for (Layer& layer : layers_) {
         layer.id = next_layer_id_++;
@@ -22,6 +22,7 @@ void Document::reset(std::vector<Layer> layers, std::string path) {
     path_ = std::move(path);
     dirty_ = path_.empty();  // nothing on disk holds this document yet
     history_.clear();
+    selection_ = std::move(selection);
     ++revision_;
 }
 
@@ -223,12 +224,43 @@ void Document::paint(Rect bounds, const std::function<void(Image&)>& edit) {
     }
     Image before = target.region(touched);
     edit(target);
+    if (selection_) {
+        restrict_to(*selection_, touched, before, touched, target);
+    }
+    // An edit that changed no pixel is not an edit. Painting into an area the selection does not
+    // reach, or stamping a colour identical to what was there, would otherwise spend a step of the
+    // undo budget restoring bytes the document never lost.
+    if (unchanged(before, target, touched)) {
+        return;
+    }
     const std::span<const std::uint8_t> bytes = before.pixels();
     history_.record(layers_[static_cast<std::size_t>(active_)].id, touched,
                     {bytes.begin(), bytes.end()});
     pending_ = unite(pending_, touched);
     dirty_ = true;
     ++revision_;
+}
+
+bool Document::set_selection(std::optional<Mask> selection) {
+    if (selection && selection->size() != size()) {
+        return false;
+    }
+    if (selection_ == selection) {
+        return true;
+    }
+    selection_ = std::move(selection);
+    dirty_ = true;
+    return true;
+}
+
+bool Document::unchanged(const Image& before, const Image& after, Rect region) const {
+    const std::size_t row = static_cast<std::size_t>(region.w) * kChannels;
+    for (int y = 0; y < region.h; ++y) {
+        if (std::memcmp(before.at(0, y), after.at(region.x, region.y + y), row) != 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void Document::begin_provisional(Rect area) {
@@ -274,6 +306,11 @@ void Document::repaint_provisional(Rect dirty, const std::function<void(Image&, 
     }
     copy_rows(*target, whole(*target), provisional_->pixels, provisional_->rect, area);
     paint(*target, area);
+    if (selection_) {
+        // The held-aside snapshot is the `before` this write started from, so restricting costs no
+        // extra copy: the gesture's own buffer is what a pixel outside the selection returns to.
+        restrict_to(*selection_, area, provisional_->pixels, provisional_->rect, *target);
+    }
     painted_ = unite(painted_, area);
     pending_ = unite(pending_, area);
     ++revision_;
@@ -287,6 +324,14 @@ void Document::commit_provisional() {
         // The step covers what was painted, not the buffer that grew around it: the bytes
         // history stores are paid for by the user's undo budget.
         const Image before = held_aside(painted_);
+        Image* target = layer_pixels(provisional_->layer);
+        if (target == nullptr || unchanged(before, *target, painted_)) {
+            // A gesture the selection stopped, or a stroke that painted the colour that was
+            // already there, has nothing to put back.
+            provisional_.reset();
+            painted_ = Rect{};
+            return;
+        }
         const std::span<const std::uint8_t> bytes = before.pixels();
         history_.record(provisional_->layer, painted_, {bytes.begin(), bytes.end()});
         dirty_ = true;

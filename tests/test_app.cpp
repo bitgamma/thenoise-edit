@@ -2,6 +2,7 @@
 #include "test.h"
 
 #include "app/commands.h"
+#include "app/tools/select.h"
 #include "app/state.h"
 #include "core/image.h"
 #include "io/file.h"
@@ -1379,6 +1380,218 @@ void test_view_navigation_keeps_the_image_reachable() {
     CHECK_NEAR(tinier["scale"].get<double>(), tiny["scale"].get<double>(), 1e-12);
 }
 
+}  // namespace
+
+std::string rect_text(const Rect& r) {
+    return "x=" + std::to_string(r.x) + " y=" + std::to_string(r.y) + " w=" + std::to_string(r.w) +
+           " h=" + std::to_string(r.h);
+}
+
+bool rect_is(const Rect& got, const Rect& want, int line) {
+    if (got == want) {
+        return true;
+    }
+    noise::test::report("rectangle", __FILE__, line, "got " + rect_text(got) + " want " + rect_text(want));
+    return false;
+}
+
+// The marquee is the select tool's whole meaning, so it is checked as a function: every pixel the
+// rectangle passed over is claimed, and the direction of the drag cannot change that.
+void test_the_marquee_claims_every_pixel_it_passed_over() {
+    const Extent canvas{40, 20};
+    CHECK(app::marquee({2.2, 3.7}, {2.2, 3.7}, canvas) == (Rect{2, 3, 1, 1}));
+    // A marquee lying exactly along pixel boundaries encloses no pixel, which is what rounding
+    // outwards from both ends means; the same drag with a hair of height claims that row.
+    CHECK(app::marquee({5.0, 5.0}, {9.0, 5.0}, canvas).empty());
+    CHECK(app::marquee({5.0, 5.0}, {9.0, 5.4}, canvas) == (Rect{5, 5, 4, 1}));
+    const Vec2 pairs[][2] = {
+        {{1.0, 1.0}, {9.0, 6.0}},
+        {{9.0, 6.0}, {1.0, 1.0}},
+        {{30.5, 15.25}, {12.25, 2.75}},
+        {{-8.0, -6.0}, {12.0, 40.0}},
+        {{38.5, 19.5}, {39.5, 25.0}},
+    };
+    for (const auto (&pair)[2] : pairs) {
+        const Rect forward = app::marquee(pair[0], pair[1], canvas);
+        CHECK(forward.inside(canvas));
+        // Dragging from the far corner draws the same rectangle: only the corners matter, not the
+        // order, and a sign error would show up here and nowhere else.
+        CHECK(app::marquee(pair[1], pair[0], canvas) == forward);
+        // Every pixel strictly between the two points, rounded outwards, is inside.
+        const int left = static_cast<int>(std::floor(std::min(pair[0].x, pair[1].x)));
+        const int top = static_cast<int>(std::floor(std::min(pair[0].y, pair[1].y)));
+        const int right = std::min(static_cast<int>(std::ceil(std::max(pair[0].x, pair[1].x))),
+                                   canvas.w);
+        const int bottom = std::min(static_cast<int>(std::ceil(std::max(pair[0].y, pair[1].y))),
+                                    canvas.h);
+        for (int y = std::max(top, 0); y < bottom; ++y) {
+            for (int x = std::max(left, 0); x < right; ++x) {
+                CHECK(forward.contains(x, y));
+            }
+        }
+    }
+    // A marquee drawn off the canvas selects nothing rather than wrapping to the near corner.
+    CHECK(app::marquee({-30.0, -30.0}, {-1.0, -1.0}, canvas).empty());
+}
+
+void test_the_select_commands_set_add_and_take_away() {
+    Harness h;
+    h.value("doc.new", json{{"width", 40}, {"height", 20}, {"fill", json::array({0, 0, 0, 255})}});
+    CHECK(!h.value("select.get", json::object())["active"].get<bool>());
+
+    h.value("select.rect", json{{"rect", json::array({4, 4, 10, 6})}, {"mode", "replace"}});
+    json got = h.value("select.get", json::object());
+    CHECK(got["active"].get<bool>());
+    CHECK_EQ(got["covered"].get<int>(), 60);
+    CHECK(rect_is(Rect{got["bounds"][0].get<int>(), got["bounds"][1].get<int>(),
+                       got["bounds"][2].get<int>(), got["bounds"][3].get<int>()},
+                  Rect{4, 4, 10, 6}, __LINE__));
+
+    // `mode` defaults to replace, so a second rectangle does not grow the first.
+    h.value("select.rect", json{{"rect", json::array({20, 2, 4, 4})}});
+    CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 16);
+    h.value("select.rect", json{{"rect", json::array({4, 4, 10, 6})}, {"mode", "add"}});
+    CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 76);
+    h.value("select.rect", json{{"rect", json::array({4, 4, 10, 6})}, {"mode", "subtract"}});
+    CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 16);
+
+    // Refused, and named: an operation the table does not have, and a rectangle with no area.
+    const CommandResult odd_mode =
+        h.run("select.rect", json{{"rect", json::array({1, 1, 2, 2})}, {"mode", "intersect"}});
+    CHECK(!odd_mode.ok);
+    CHECK(odd_mode.error.find("intersect") != std::string::npos);
+    CHECK(odd_mode.error.find("replace") != std::string::npos);
+    const CommandResult flat_rect = h.run("select.rect", json{{"rect", json::array({1, 1, 0, 5})}});
+    CHECK(!flat_rect.ok);
+    CHECK(flat_rect.error.find("0x5") != std::string::npos);
+    CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 16);
+
+    // Whole canvas, then nothing, then the complement of nothing and of everything.
+    h.value("select.all", json::object());
+    CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 800);
+    // Selecting all must mean *nothing is held back*, which counting covered pixels cannot tell from
+    // a plane a hair under full coverage. The same stroke with and without a selection has to leave
+    // the same bytes.
+    json probe = full_stroke();
+    probe["points"] = json::array({json::array({4.0, 4.0}), json::array({30.0, 14.0})});
+    probe["size"] = 10.0;
+    h.value("tool.stroke", probe);
+    const std::string painted_under_all = h.state.doc.layer(0).pixels.checksum_hex();
+    h.value("edit.undo", json::object());
+    h.value("select.clear", json::object());
+    h.value("tool.stroke", probe);
+    CHECK_EQ(h.state.doc.layer(0).pixels.checksum_hex(), painted_under_all);
+    h.value("edit.undo", json::object());
+    h.value("select.clear", json::object());
+    CHECK(!h.value("select.get", json::object())["active"].get<bool>());
+    // No selection means everything is writable, so its complement is nothing - which is a state the
+    // app has to be able to hold, because painting then does nothing at all.
+    h.value("select.invert", json::object());
+    CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 800);
+    h.value("select.invert", json::object());
+    CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 0);
+    CHECK(h.value("select.get", json::object())["active"].get<bool>());
+    h.value("select.invert", json::object());
+    CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 800);
+
+    // A selection is not a step: undo puts pixels back and leaves the selection where it is.
+    CHECK_EQ(undo_depth(h), 0);
+}
+
+// The invariant that matters end to end: with a selection up, no byte outside it moves, whatever the
+// stroke asked for - checked through the command surface the UI and the wire use.
+void test_a_selection_holds_a_stroke_inside_it() {
+    constexpr int kWidth = 48;
+    constexpr int kHeight = 32;
+    Harness h;
+    h.value("doc.new", json{{"width", kWidth}, {"height", kHeight},
+                            {"fill", json::array({20, 30, 40, 255})}});
+    h.value("select.rect", json{{"rect", json::array({10, 8, 12, 10})}});
+
+    json stroke = full_stroke();
+    stroke["points"] = json::array({json::array({2.0, 4.0}), json::array({44.0, 28.0})});
+    stroke["size"] = 18.0;
+    const Image before = h.state.doc.layer(0).pixels;
+    h.value("tool.stroke", stroke);
+    const Image after = h.state.doc.layer(0).pixels;
+
+    std::size_t changed = 0;
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            const bool inside = x >= 10 && x < 22 && y >= 8 && y < 18;
+            bool differs = false;
+            for (int channel = 0; channel < 4; ++channel) {
+                differs = differs || after.at(x, y)[channel] != before.at(x, y)[channel];
+            }
+            if (!inside) {
+                CHECK(!differs);
+            }
+            if (differs) {
+                CHECK(inside);
+                ++changed;
+            }
+        }
+    }
+    // The stroke crossed the rectangle, so a run that clipped everything also clipped inside.
+    CHECK(changed > 0);
+
+    const int steps = undo_depth(h);
+    h.value("edit.undo", json::object());
+    CHECK(h.state.doc.layer(0).pixels.checksum_hex() == before.checksum_hex());
+    CHECK_EQ(undo_depth(h), steps - 1);
+    // Undo restored pixels; the selection the user drew is still up.
+    CHECK(h.value("select.get", json::object())["active"].get<bool>());
+
+    // The same stroke with the selection put down changes the canvas: the clip above was the
+    // selection doing work, not a stroke that painted nothing.
+    h.value("select.clear", json::object());
+    h.value("tool.stroke", stroke);
+    CHECK(h.state.doc.layer(0).pixels.checksum_hex() != before.checksum_hex());
+}
+
+// The select tool through the pointer: the marquee is live, and the gesture costs no pixel history.
+void test_the_select_gesture_draws_and_puts_down_the_selection() {
+    Harness h;
+    h.value("doc.new", json{{"width", 40}, {"height", 20}, {"fill", json::array({0, 0, 0, 255})}});
+    h.value("tool.select", json::object());
+    CHECK_EQ(h.state.tool, std::string("select"));
+    // A tool that selects cannot paint, and says which of the two it is.
+    const CommandResult paint_attempt = h.run("tool.stroke", json{{"points", json::array(
+        {json::array({1.0, 1.0})})}});
+    CHECK(!paint_attempt.ok);
+    CHECK(paint_attempt.error.find("select") != std::string::npos);
+
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({10.4, 10.4})}});
+    // The press itself is a selection, not just the start of one: what is under the pointer is
+    // claimed before any drag arrives.
+    CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 1);
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({26.0, 18.0})}});
+    const json mid = h.value("app.state", json::object());
+    CHECK(mid["stroke"]["active"].get<bool>());
+    CHECK(rect_is(Rect{mid["stroke"]["marquee"][0].get<int>(), mid["stroke"]["marquee"][1].get<int>(),
+                       mid["stroke"]["marquee"][2].get<int>(), mid["stroke"]["marquee"][3].get<int>()},
+                  Rect{10, 10, 16, 8}, __LINE__));
+    // Live in the document during the gesture, and still no step: a selection is not a pixel edit.
+    CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 128);
+    CHECK_EQ(undo_depth(h), 0);
+    h.value("tool.pointer", json{{"phase", "release"}});
+    CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 128);
+    const json after = h.value("app.state", json::object());
+    CHECK(!after["stroke"]["active"].get<bool>());
+    // With no gesture there is no marquee to report, and the reply says so rather than leaving the
+    // last rectangle for a client to read as still-dragging.
+    CHECK_EQ(after["stroke"]["marquee"].size(), 0u);
+
+    // A press outside the canvas draws nothing, and an empty marquee puts the selection down. That is
+    // the mouse route out of a selection for anyone not reaching for Ctrl+D.
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({90.0, 90.0})}});
+    h.value("tool.pointer", json{{"phase", "release"}});
+    CHECK(!h.value("select.get", json::object())["active"].get<bool>());
+
+    // A click inside the canvas claims the one pixel under it, which is what the marquee rule says.
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({5.4, 6.6})}});
+    h.value("tool.pointer", json{{"phase", "release"}});
+    CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 1);
 }
 
 int main() {
@@ -1411,6 +1624,10 @@ int main() {
     test_a_layer_mode_is_layer_state_and_reaches_the_composite();
     test_a_two_layer_project_round_trips_and_exports_its_composite();
     test_a_project_round_trips_and_an_export_is_not_a_save();
+    test_the_marquee_claims_every_pixel_it_passed_over();
+    test_the_select_commands_set_add_and_take_away();
+    test_a_selection_holds_a_stroke_inside_it();
+    test_the_select_gesture_draws_and_puts_down_the_selection();
     test_the_move_tool_slides_the_layer_and_undoes_it_exactly();
     test_a_move_that_never_left_its_pixel_is_not_an_edit();
     test_a_move_slides_the_active_layer_and_no_other();

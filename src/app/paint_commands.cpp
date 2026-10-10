@@ -7,6 +7,7 @@
 #include "core/brush.h"
 #include "app/tools/brush.h"
 #include "app/tools/move.h"
+#include "app/tools/select.h"
 #include "core/log.h"
 
 #include <nlohmann/json.hpp>
@@ -100,9 +101,15 @@ CommandResult read_stroke(const json& args,
             return fail(who, "'tool' must be a string");
         }
         tool = args.at("tool").get<std::string>();
-        if (!tool_mode(tool)) {
+        if (!tool_action(tool)) {
             return fail(who, "unknown tool '" + tool + "' (" + tool_names() + ")");
         }
+    }
+    // Checked whatever way the tool was chosen: the session can be left on `move` or `select`, and a
+    // stroke that then painted over the canvas would be the command doing something no tool asked it
+    // to do.
+    if (!tool_mode(tool)) {
+        return fail(who, "tool '" + tool + "' paints nothing (" + paintable_tool_names() + ")");
     }
     brush = current.brush;
     for (const BrushField& field : kBrushFields) {
@@ -196,6 +203,18 @@ void register_paint_commands(AppState& state, CommandTable& table) {
                     brush_drag(state, point);
                 } else if (phase == "release") {
                     brush_release(state);
+                } else {
+                    return fail("tool.pointer", "unknown phase '" + phase +
+                                                    "' (press, drag, release)");
+                }
+                break;
+            case ToolAction::select:
+                if (phase == "press") {
+                    select_press(state, point);
+                } else if (phase == "drag") {
+                    select_drag(state, point);
+                } else if (phase == "release") {
+                    select_release(state);
                 } else {
                     return fail("tool.pointer", "unknown phase '" + phase +
                                                     "' (press, drag, release)");

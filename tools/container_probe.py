@@ -30,7 +30,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wire_drive as wd  # noqa: E402
 
 MIMETYPE = b"application/x-noise+zip"
-FORMAT = 2
+# One format is written and read, and a file of another number is refused by that number. Format 3
+# added the selection plane; format 2 had no row for it, and a missing row now means "no selection",
+# which is a state that cannot be guessed at.
+FORMAT = 3
 FILL = (7, 14, 21, 255)
 WIDTH = 40
 HEIGHT = 24
@@ -93,7 +96,7 @@ def check_archive(path: Path, fails: list[str], expect_visible: bool = True,
         fails.append(f"layer src is {layers[0].get('src')!r}, expected 'layers/0/layer.png'")
     if not layers[0].get("name"):
         fails.append("layer has no name")
-    # Format 2 requires the layer's own state, so a reader that only looks at the PNGs still
+    # The format requires the layer's own state, so a reader that only looks at the PNGs still
     # learns what the file says the layer looks like.
     if layers[0].get("visible") is not expect_visible:
         fails.append(f"layer 'visible' is {layers[0].get('visible')!r}, "
@@ -164,6 +167,48 @@ def check_foreign_project(work: Path, wire: wd.Wire, fails: list[str]) -> None:
     # which is the point of writing it by hand.
     wire.call("doc.save", {"path": str(work / "from_foreign.noise")})
     check_archive(work / "from_foreign.noise", fails, True, 0.5)
+
+
+def check_selection_archive(work: Path, wire: wd.Wire, fails: list[str]) -> None:
+    """The selection plane is a plain byte array named by the manifest, so a reader that knows
+    nothing about this app has to find the same rectangle in it that the app reports."""
+    path = work / "selected.noise"
+    rect = [4, 4, 12, 8]
+    wire.call("select.rect", {"rect": rect, "mode": "replace"})
+    reported = wire.call("select.get", {})
+    wire.call("doc.save", {"path": str(path)})
+    with zipfile.ZipFile(path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        src = (manifest.get("selection") or {}).get("src")
+        if src is None:
+            fails.append("a document with a selection saved no 'selection' row")
+            return
+        if src not in archive.namelist():
+            fails.append(f"manifest names selection member '{src}', which the archive lacks")
+            return
+        plane = archive.read(src)
+        if len(plane) != WIDTH * HEIGHT:
+            fails.append(f"selection plane is {len(plane)} bytes, expected {WIDTH * HEIGHT}")
+            return
+        wanted = {(y * WIDTH + x)
+                  for y in range(rect[1], rect[1] + rect[3])
+                  for x in range(rect[0], rect[0] + rect[2])}
+        claimed = {index for index, byte in enumerate(plane) if byte}
+        if claimed != wanted:
+            fails.append(f"the plane claims {len(claimed)} pixels, expected the {len(wanted)} of "
+                         f"the rectangle")
+
+    # Through the app again: the same report after a save and an open, and no leftover selection in
+    # the next document.
+    wire.call("doc.new", {"width": 2, "height": 2})
+    opened = wire.call("doc.open", {"path": str(path)})
+    if opened.get("selection") != reported:
+        fails.append(f"selection after reopen is {opened.get('selection')}, expected {reported}")
+    if not reported.get("active"):
+        fails.append("the rectangle selected nothing, so the round trip proved nothing")
+    wire.call("doc.new", {"width": 2, "height": 2})
+    if wire.call("select.get", {}).get("active"):
+        fails.append("a fresh document opened with a selection")
 
 
 def check_hidden_layer(work: Path, wire: wd.Wire, fails: list[str]) -> None:
@@ -275,6 +320,7 @@ def run(args: argparse.Namespace) -> int:
                     fails.append("doc.export wrote an empty file")
                 check_foreign_project(work, wire, fails)
                 check_hidden_layer(work, wire, fails)
+                check_selection_archive(work, wire, fails)
 
                 # Recorded, not asserted narrowly: what a save of a full-size document costs.
                 big = work / "big.noise"

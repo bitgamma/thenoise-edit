@@ -147,7 +147,9 @@ command palette and a user keymap file cost nothing later. Live today: `F` fit, 
 save, `Ctrl+Z`/`Ctrl+Y` undo and redo, `Escape`/`Ctrl+Q` quit, `B`/`E` brush and eraser,
 `[`/`]` brush size, `,`/`.` hardness and `Shift+,`/`Shift+.` opacity (the MVP's "`,`/`.` hardness
 / opacity" pair, disambiguated by the modifier because four actions cannot share two keys), `V` move
-(the whole active layer, whole pixels, one step per gesture),
+(the whole active layer, whole pixels, one step per gesture), `M` rectangular selection drawn with
+the pointer plus `Ctrl+D` deselect and `Ctrl+I` invert - the selection belongs to the document, is
+saved with it, and limits every write to the pixels it covers -
 wheel zoom-to-cursor, right-drag pan and left-drag paint; every other key
 above arrives with the tool or command it belongs to (and
 `command.list` is the truth about what is bound). `Ctrl+S` writes the project and only the
@@ -159,8 +161,9 @@ and an opacity slider per row, applied where the stack is flattened rather than 
 layer's pixels, so a layer shown at 30 % still paints at full strength - and, like adding and
 deleting, neither enters an undo step. That is `.noise` **format 2**, which made `visible` /
 `opacity` / `mode` required on every layer row and refuses any other version by number. Blend
-modes are the next layer increment: `BlendMode` has one value, `normal`, and `core::kBlendModes`
-is where the rest arrive together with their arithmetic and their manifest names.
+modes are in it — `core::kBlendModes` is the eight the compositor, the panel, the manifest and the
+tests all read — and `.noise` **format 3** added the document's selection, a coverage plane the
+manifest declares and this build refuses to guess about.
 
 Design rules: nothing blocks the canvas, ever · every AI op shows *what it will send* ·
 model swaps are explicit and priced · destructive ops are labelled but never nag (undo is
