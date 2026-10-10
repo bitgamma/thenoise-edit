@@ -43,14 +43,19 @@ inline bool operator==(const Rect& a, const Rect& b) {
     return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
 }
 
-// A run of consecutive pixels along one row, half-open in x like every other region here. Mask
-// boundaries come back as these because the outline of a painted region is thin, and a caller that
-// draws it wants runs rather than a pixel list.
+// A run of consecutive boundary pixels, half-open like every other region here: `from` is included,
+// `to` is not. One type serves both directions because a boundary is one idea - `rows` hold it with
+// `fixed` as the row and `from..to` along x, `columns` with `fixed` as the column and `from..to`
+// along y - and an outline drawn along one axis only cannot show an edge that runs the other way.
 struct MaskRun {
-    int y = 0;
-    int x0 = 0;
-    int x1 = 0;
+    int fixed = 0;
+    int from = 0;
+    int to = 0;
 };
+
+inline bool operator==(const MaskRun& a, const MaskRun& b) {
+    return a.fixed == b.fixed && a.from == b.from && a.to == b.to;
+}
 
 // Canvas (world) -> viewport transform: view = (world - origin) * scale.
 struct ViewTransform {

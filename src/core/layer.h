@@ -7,6 +7,7 @@
 
 #include "core/blend.h"
 #include "core/image.h"
+#include "core/mask.h"
 
 namespace noise {
 
@@ -43,6 +44,12 @@ struct Layer {
     bool visible = kLayerVisibleDefault;
     double opacity = kLayerOpacityDefault;  // 0..1
     BlendMode mode = BlendMode::normal;
+
+    // Coverage that hides part of the layer without editing it: the composite sees the layer
+    // through this, while a paint still lands on pixels the mask hides, because a mask says what
+    // shows, not what exists. `nullopt` is no mask; a sized one is the layer's size, and coverage
+    // outside it is 0, which is a mask that hides the layer rather than a layer with no mask.
+    std::optional<Mask> mask;
 };
 
 }  // namespace noise

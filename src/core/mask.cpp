@@ -2,6 +2,7 @@
 #include "core/mask.h"
 
 #include <algorithm>
+#include <cstring>
 #include <optional>
 
 namespace noise {
@@ -40,10 +41,11 @@ Rect bounds_of(const std::vector<std::uint8_t>& plane, Extent size) {
     return Rect{x0, y0, x1 - x0, y1 - y0};
 }
 
-// The covered pixels that touch an uncovered one, as runs along each row. Out-of-bounds counts as
-// uncovered, so a selection that fills the document still has an outline: the boundary the user sees
-// is where coverage stops, wherever that is.
-std::vector<MaskRun> outline_of(const std::vector<std::uint8_t>& plane, Extent size) {
+// The covered pixels that touch an uncovered one, as runs along one axis. Out-of-bounds counts as
+// uncovered, so a selection that fills the document still has a boundary: the edge the user sees is
+// where coverage stops, wherever that is. `along_x` picks which axis the runs run along; the pixel
+// set is the same either way.
+std::vector<MaskRun> runs_of(const std::vector<std::uint8_t>& plane, Extent size, bool along_x) {
     auto covered = [&](int x, int y) {
         if (x < 0 || y < 0 || x >= size.w || y >= size.h) {
             return false;
@@ -51,36 +53,37 @@ std::vector<MaskRun> outline_of(const std::vector<std::uint8_t>& plane, Extent s
         return plane[static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) +
                      static_cast<std::size_t>(x)] != kOut;
     };
+    const int lines = along_x ? size.h : size.w;
+    const int cells = along_x ? size.w : size.h;
     std::vector<MaskRun> runs;
-    int run_y = -1;
-    int run_x0 = 0;
-    int run_x1 = 0;
-    auto flush = [&runs, &run_y, &run_x0, &run_x1] {
-        if (run_y >= 0) {
-            runs.push_back(MaskRun{run_y, run_x0, run_x1});
-            run_y = -1;
+    int run_fixed = -1;
+    int run_from = 0;
+    int run_to = 0;
+    auto flush = [&runs, &run_fixed, &run_from, &run_to] {
+        if (run_fixed >= 0) {
+            runs.push_back(MaskRun{run_fixed, run_from, run_to});
+            run_fixed = -1;
         }
     };
-    for (int y = 0; y < size.h; ++y) {
-        for (int x = 0; x < size.w; ++x) {
-            if (!covered(x, y)) {
-                flush();
-                continue;
-            }
-            const bool touches_out = !covered(x - 1, y) || !covered(x + 1, y) ||
-                                     !covered(x, y - 1) || !covered(x, y + 1);
+    for (int fixed = 0; fixed < lines; ++fixed) {
+        for (int cell = 0; cell < cells; ++cell) {
+            const int x = along_x ? cell : fixed;
+            const int y = along_x ? fixed : cell;
+            const bool touches_out =
+                covered(x, y) && (!covered(x - 1, y) || !covered(x + 1, y) ||
+                                  !covered(x, y - 1) || !covered(x, y + 1));
             if (!touches_out) {
                 flush();
                 continue;
             }
-            if (run_y == y && run_x1 == x) {
-                run_x1 = x + 1;
+            if (run_fixed == fixed && run_to == cell) {
+                run_to = cell + 1;
                 continue;
             }
             flush();
-            run_y = y;
-            run_x0 = x;
-            run_x1 = x + 1;
+            run_fixed = fixed;
+            run_from = cell;
+            run_to = cell + 1;
         }
         flush();
     }
@@ -93,7 +96,8 @@ MaskFacts facts_of(const std::vector<std::uint8_t>& plane, Extent size) {
         facts.covered += cell != kOut ? 1u : 0u;
     }
     facts.bounds = bounds_of(plane, size);
-    facts.outline = outline_of(plane, size);
+    facts.rows = runs_of(plane, size, true);
+    facts.columns = runs_of(plane, size, false);
     return facts;
 }
 
@@ -203,6 +207,35 @@ bool Mask::operator==(const Mask& other) const {
     return size_ == other.size_ && plane_ == other.plane_;
 }
 
+namespace {
+
+// `to` becomes `coverage / 255` of the way from `from` to `to`, in premultiplied space, which is
+// where "some fraction of this write happened" is a linear statement about both colour and amount.
+// Coverage is a fraction of 255 and premultiplied colour a fraction of 255 squared, so the largest
+// value below is 65025 * 255 - inside int32, with the rounding error far under one LSB of the byte
+// that comes out. What is left with no coverage is the absent pixel and that byte pattern only: a
+// hue nobody can see is a second way to say "nothing here", and the composite would diff.
+void mix_towards(const std::uint8_t* from, std::uint8_t* to, std::uint8_t coverage) {
+    const int below_alpha = static_cast<int>(from[3]) * 255;
+    const int written_alpha = static_cast<int>(to[3]) * 255;
+    const int mixed_alpha = below_alpha + step_towards(written_alpha - below_alpha, coverage);
+    if (mixed_alpha <= 0) {
+        for (int channel = 0; channel < kChannels; ++channel) {
+            to[channel] = 0;
+        }
+        return;
+    }
+    for (int channel = 0; channel < 3; ++channel) {
+        const int below = static_cast<int>(from[channel]) * static_cast<int>(from[3]);
+        const int written = static_cast<int>(to[channel]) * static_cast<int>(to[3]);
+        const int mixed = below + step_towards(written - below, coverage);
+        to[channel] = static_cast<std::uint8_t>((mixed * 255 + 127) / mixed_alpha);
+    }
+    to[3] = static_cast<std::uint8_t>((mixed_alpha + 127) / 255);
+}
+
+}  // namespace
+
 void restrict_to(const Mask& mask, Rect at, const Image& before, Rect before_at, Image& after) {
     if (!mask.sized() || at.empty()) {
         return;
@@ -216,29 +249,29 @@ void restrict_to(const Mask& mask, Rect at, const Image& before, Rect before_at,
             if (coverage == kIn) {
                 continue;
             }
-            const std::uint8_t* from = before.at(x - before_at.x, y - before_at.y);
-            std::uint8_t* to = after.at(x, y);
-            // Coverage is a fraction of 255 and premultiplied colour is a fraction of 255 squared,
-            // so the largest value below is 65025 * 255 - inside int32, with the rounding error far
-            // under one LSB of the byte that comes out.
-            const int below_alpha = static_cast<int>(from[3]) * 255;
-            const int written_alpha = static_cast<int>(to[3]) * 255;
-            const int mixed_alpha = below_alpha + step_towards(written_alpha - below_alpha, coverage);
-            // What is left with no coverage is the absent pixel, and that byte pattern only: a hue
-            // nobody can see is a second way to say "nothing here", and the composite would diff.
-            if (mixed_alpha <= 0) {
-                for (int channel = 0; channel < kChannels; ++channel) {
-                    to[channel] = 0;
-                }
-                continue;
-            }
-            for (int channel = 0; channel < 3; ++channel) {
-                const int below = static_cast<int>(from[channel]) * static_cast<int>(from[3]);
-                const int written = static_cast<int>(to[channel]) * static_cast<int>(to[3]);
-                const int mixed = below + step_towards(written - below, coverage);
-                to[channel] = static_cast<std::uint8_t>((mixed * 255 + 127) / mixed_alpha);
-            }
-            to[3] = static_cast<std::uint8_t>((mixed_alpha + 127) / 255);
+            mix_towards(before.at(x - before_at.x, y - before_at.y), after.at(x, y), coverage);
+        }
+    }
+}
+
+void scale_by_coverage(const Mask& mask, Rect at, const Image& layer, Image& out) {
+    if (out.size() != layer.size()) {
+        out = Image::filled(layer.size(), 0, 0, 0, 0);
+    }
+    if (at.empty()) {
+        return;
+    }
+    const Rect area = intersect(at, Rect{0, 0, layer.size().w, layer.size().h});
+    const std::uint8_t absent[kChannels] = {0, 0, 0, 0};
+    // A mask with no pixels makes no claim, which for a mask means the same as it does for a
+    // selection: nothing is hidden. Leaving the layer's bytes alone is the identity, and the
+    // alternative - a plane that covers nothing because it has no size - would blank the layer.
+    const std::uint8_t whole = kIn;
+    for (int y = area.y; y < area.bottom(); ++y) {
+        for (int x = area.x; x < area.right(); ++x) {
+            std::uint8_t* to = out.at(x, y);
+            std::memcpy(to, layer.at(x, y), kChannels);   // then scaled, in place
+            mix_towards(absent, to, mask.sized() ? mask.coverage(x, y) : whole);
         }
     }
 }

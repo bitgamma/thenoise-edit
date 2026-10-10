@@ -503,6 +503,40 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
         fails.append("with no selection the stroke outside the old rectangle still painted nothing")
     wire.call("edit.undo", {})
 
+    # The mask conversions, after a marquee drawn by the pointer: the composite changes, the layer's
+    # own bytes do not, and neither direction costs an undo step. The composite is only visible
+    # through a written image, so that is what is compared - hashed, because "different" has to mean
+    # different bytes rather than a different filename.
+    def composite_hash() -> str:
+        import hashlib
+
+        return hashlib.sha256(Path(wire.call("image.get", {})["png_path"]).read_bytes()).hexdigest()
+
+    wire.call("select.rect", {"rect": [6, 4, 18, 12], "mode": "replace"})
+    pixels_before = wire.call("doc.get", {})["checksum"]
+    shown_before = composite_hash()
+    steps_before = wire.call("app.state")["document"]["history"]["undo_depth"]
+    masked = wire.call("mask.from_selection", {})
+    shown_masked = composite_hash()
+    pixels_after = wire.call("doc.get", {})["checksum"]
+    steps_after = wire.call("app.state")["document"]["history"]["undo_depth"]
+    print(f"mask.from_selection: {masked['covered']} px shown, composite "
+          f"{shown_before[:8]} -> {shown_masked[:8]}, layer {pixels_after[:12] == pixels_before[:12]}, "
+          f"{steps_before} -> {steps_after} steps")
+    if masked["covered"] == 0:
+        fails.append("the mask covers nothing, so the composite check proved nothing")
+    if shown_before == shown_masked:
+        fails.append("the composite is unchanged by a mask, so the mask is not reaching the canvas")
+    if pixels_after != pixels_before:
+        fails.append("masking edited the layer's pixels; a mask is meant to hide, not to erase")
+    if steps_after != steps_before:
+        fails.append("applying a layer mask cost an undo step")
+
+    loaded_back = wire.call("select.from_mask", {})
+    if loaded_back["bounds"] != masked["bounds"] or loaded_back["covered"] != masked["covered"]:
+        fails.append(f"select.from_mask gave {loaded_back}, expected the mask's {masked}")
+    print(f"select.from_mask: bounds {loaded_back['bounds']}, covered {loaded_back['covered']}")
+
     # The step keys, through the real key path. `,`/`.` move hardness by one step and Shift takes
     # the same two keys to opacity - which only a real modifier state can demonstrate, because the
     # keysym is the same either way and a dropped Shift would look like a working key.

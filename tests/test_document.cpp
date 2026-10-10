@@ -47,6 +47,7 @@ void test_the_incremental_composite_equals_one_built_from_scratch() {
             clone.visible = layer.visible;
             clone.opacity = layer.opacity;
             clone.mode = layer.mode;
+            clone.mask = layer.mask;
             copy.push_back(std::move(clone));
         }
         Document fresh;
@@ -105,6 +106,21 @@ void test_the_incremental_composite_equals_one_built_from_scratch() {
     check_against_scratch("with the bottom layer screening too");
     live.set_layer_mode(1, BlendMode::normal);
     check_against_scratch("back to normal, one mode still changed");
+    // A mask widens the pending region over the boxes the old and the new mask cover, which is the
+    // one place a repair can be *narrower* than the change: a mask moved across the canvas leaves
+    // pixels behind that a full rebuild would have taken care of.
+    Mask corner(Extent{24, 18});
+    corner.op(Rect{2, 2, 5, 4}, MaskOp::replace);
+    live.set_layer_mask(1, corner);
+    check_against_scratch("with a layer masked to a corner");
+    Mask elsewhere(Extent{24, 18});
+    elsewhere.op(Rect{14, 10, 6, 6}, MaskOp::replace);
+    live.set_layer_mask(1, elsewhere);
+    check_against_scratch("with the same layer masked somewhere else");
+    live.set_layer_mask(0, Mask(Extent{24, 18}));
+    check_against_scratch("with the bottom layer masked to nothing at all");
+    live.set_layer_mask(1, std::nullopt);
+    check_against_scratch("with the mask taken off again");
 }
 
 // `Document::composite` hands back a lone layer's own pixels instead of blending it. That is legal
@@ -633,6 +649,143 @@ void test_a_selection_change_is_a_document_change() {
     CHECK(!doc.selection().has_value());
 }
 
+// A layer mask says what shows, not what exists: it changes the composite and leaves the layer's
+// pixels, and therefore the document checksum, exactly as they were.
+void test_a_layer_mask_hides_without_editing_the_layer() {
+    Document doc;
+    doc.reset(stack({{"Ink", Image::filled(Extent{8, 6}, 200, 40, 20, 255)}}), std::nullopt,
+              "x.noise");
+    const std::string pixels_before = doc.layer(0).pixels.checksum_hex();
+    const std::string whole = doc.composite().checksum_hex();
+
+    Mask mask(Extent{8, 6});
+    mask.op(Rect{2, 1, 3, 3}, MaskOp::replace);
+    CHECK(doc.set_layer_mask(0, mask));
+    CHECK(doc.dirty());
+    // Hiding is not an edit: no step to put back, and the layer's own bytes are untouched.
+    CHECK(!doc.can_undo());
+    CHECK_EQ(doc.layer(0).pixels.checksum_hex(), pixels_before);
+    CHECK(doc.composite().checksum_hex() != whole);
+
+    for (int y = 0; y < 6; ++y) {
+        for (int x = 0; x < 8; ++x) {
+            const std::uint8_t* shown = doc.composite().at(x, y);
+            const bool inside = x >= 2 && x < 5 && y >= 1 && y < 4;
+            CHECK_EQ(shown[3], inside ? 255 : 0);
+        }
+    }
+
+    // A lone masked layer is *not* the layer: the shortcut that hands back the layer by reference
+    // has no coverage in it, so it would show pixels the mask hides.
+    CHECK(doc.composite().checksum_hex() != pixels_before);
+
+    // A mask that covers nothing hides the layer entirely, which is a different claim from removing
+    // it - and both are one `set_layer_mask` apart.
+    Mask hides_everything(Extent{8, 6});
+    CHECK(doc.set_layer_mask(0, hides_everything));
+    for (int y = 0; y < 6; ++y) {
+        for (int x = 0; x < 8; ++x) {
+            CHECK_EQ(doc.composite().at(x, y)[3], 0);
+        }
+    }
+    CHECK(doc.set_layer_mask(0, std::nullopt));
+    CHECK_EQ(doc.composite().checksum_hex(), whole);
+    CHECK(doc.layer(0).mask == std::nullopt);
+}
+
+void test_a_layer_mask_of_another_size_is_refused() {
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(Extent{4, 4}, 0, 0, 0, 0)}}), std::nullopt, "x.noise");
+    CHECK(!doc.set_layer_mask(0, Mask(Extent{5, 4})));
+    CHECK(!doc.set_layer_mask(0, Mask(Extent{4, 3})));
+    CHECK(!doc.layer(0).mask.has_value());
+    CHECK(!doc.set_layer_mask(9, Mask(Extent{4, 4})));
+}
+
+// Masking is composite state, like visibility: it marks the document dirty because it is saved, it
+// bumps the revision because the canvas changes, and it enters no undo step. Saying the same thing
+// twice must cost nothing.
+void test_a_layer_mask_change_is_a_document_change() {
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(Extent{8, 8}, 0, 0, 0, 0)}}), std::nullopt, "x.noise");
+    // A stroke first, so there is a step in the timeline for a mask change to destroy: the claim
+    // being tested is not "a mask pushes a step" but "a mask leaves the steps that exist alone".
+    paint_on(doc, Rect{6, 6, 2, 2}, 210);
+    const std::string painted = doc.layer(0).pixels.checksum_hex();
+    CHECK(doc.can_undo());
+
+    Mask mask(Extent{8, 8});
+    mask.op(Rect{1, 1, 2, 2}, MaskOp::replace);
+    CHECK(doc.set_layer_mask(0, mask));
+    CHECK(doc.dirty());
+    const std::uint64_t revision = doc.revision();
+    CHECK_EQ(doc.history().undo_depth, 1);
+
+    doc.mark_saved();
+    CHECK(doc.set_layer_mask(0, mask));
+    CHECK(!doc.dirty());
+    CHECK_EQ(doc.revision(), revision);
+    // Nothing a step could put back: a mask that never existed cannot be restored, and a history
+    // entry with no pixels in it would make `undo_depth` lie about edits.
+    const std::string before_untouched = doc.layer(0).pixels.checksum_hex();
+    // Undo walks back to the stroke, one step and no further: the mask change between is not in the
+    // chain, and a change that entered it would make the stroke's own undo restore the wrong thing.
+    CHECK(doc.undo());
+    CHECK(doc.layer(0).pixels.checksum_hex() != painted);
+    CHECK(!doc.can_undo());
+
+    Mask wider(Extent{8, 8});
+    wider.op(Rect{1, 1, 5, 5}, MaskOp::replace);
+    CHECK(doc.set_layer_mask(0, wider));
+    CHECK(doc.dirty());
+    CHECK(doc.revision() > revision);
+    CHECK_EQ(doc.history().undo_depth, 0);
+    CHECK(doc.redo());
+    CHECK_EQ(doc.layer(0).pixels.checksum_hex(), before_untouched);
+}
+
+// Both fences at once: the selection limits what a write may change, the layer mask limits what the
+// canvas shows of what was changed. A stroke under a masked-out area is real - it is on the layer -
+// and simply is not visible until the mask moves.
+void test_a_selection_and_a_mask_fence_different_things() {
+    Document doc;
+    doc.reset(stack({{"Ink", Image::filled(Extent{10, 4}, 0, 0, 0, 0)}}), std::nullopt, "x.noise");
+
+    Mask selection(Extent{10, 4});
+    selection.op(Rect{0, 0, 8, 4}, MaskOp::replace);
+    CHECK(doc.set_selection(selection));
+    Mask mask(Extent{10, 4});
+    mask.op(Rect{0, 0, 6, 4}, MaskOp::replace);
+    CHECK(doc.set_layer_mask(0, mask));
+
+    // Outside the selection: the write door is the selection, so nothing lands anywhere.
+    const std::string empty = doc.layer(0).pixels.checksum_hex();
+    paint_on(doc, Rect{8, 1, 2, 2}, 180);
+    CHECK_EQ(doc.layer(0).pixels.checksum_hex(), empty);
+    CHECK(!doc.can_undo());
+
+    // Inside both: the layer changes and the canvas shows it.
+    paint_on(doc, Rect{1, 1, 2, 2}, 180);
+    CHECK(doc.layer(0).pixels.checksum_hex() != empty);
+    CHECK_EQ(doc.composite().at(1, 1)[3], 255);
+
+    // Inside the selection but under the mask: the write is allowed and the canvas keeps it out of
+    // sight, which is the whole point of a non-destructive mask.
+    paint_on(doc, Rect{7, 1, 1, 2}, 180);
+    CHECK_EQ(doc.composite().at(7, 1)[3], 0);
+
+    // With the selection down the same pixels are writable, and still hidden - so the layer, not
+    // the composite, is what changed.
+    CHECK(doc.set_selection(std::nullopt));
+    paint_on(doc, Rect{9, 1, 1, 2}, 180);
+    CHECK_EQ(doc.composite().at(9, 1)[3], 0);
+
+    // Taking the mask off shows every byte that was painted under it.
+    CHECK(doc.set_layer_mask(0, std::nullopt));
+    CHECK_EQ(doc.composite().at(7, 1)[3], 255);
+    CHECK_EQ(doc.composite().at(9, 1)[3], 255);
+}
+
 }  // namespace
 
 int main() {
@@ -654,5 +807,9 @@ int main() {
     test_a_gesture_clips_to_the_selection_and_undoes_exactly();
     test_a_selection_of_another_size_is_refused();
     test_a_selection_change_is_a_document_change();
+    test_a_layer_mask_hides_without_editing_the_layer();
+    test_a_layer_mask_of_another_size_is_refused();
+    test_a_layer_mask_change_is_a_document_change();
+    test_a_selection_and_a_mask_fence_different_things();
     return noise::test::summary("document");
 }

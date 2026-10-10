@@ -171,8 +171,8 @@ void test_pixels_and_layer_name_come_back_unchanged() {
 void test_layer_state_round_trips() {
     const Image image = checker(Extent{7, 5});
     std::vector<Layer> stack;
-    stack.push_back(Layer{0, "Paper", image, true, 1.0, BlendMode::normal});
-    stack.push_back(Layer{0, "Wash", image, false, 0.25, BlendMode::normal});
+    stack.push_back(Layer{0, "Paper", image, true, 1.0, BlendMode::normal, std::nullopt});
+    stack.push_back(Layer{0, "Wash", image, false, 0.25, BlendMode::normal, std::nullopt});
 
     const std::string path = temp("state.noise");
     std::string error;
@@ -214,7 +214,8 @@ void test_every_mode_round_trips_under_its_own_name() {
     const Image image = checker(Extent{5, 4});
     std::vector<Layer> stack;
     for (const BlendModeInfo& info : kBlendModes) {
-        stack.push_back(Layer{0, std::string("L-") + info.name, image, true, 1.0, info.mode});
+        stack.push_back(
+            Layer{0, std::string("L-") + info.name, image, true, 1.0, info.mode, std::nullopt});
     }
     const std::string path = temp("modes.noise");
     std::string error;
@@ -251,7 +252,7 @@ void test_another_format_is_refused_by_name() {
     const Image image = checker(Extent{6, 6});
     // Format 2 had no selection row at all, and a missing row now means "no selection" - so the two
     // states could not be told apart across a file, which is the whole reason for the bump.
-    for (const int format : {1, 2, io::kFormatVersion + 6}) {
+    for (const int format : {1, 2, 3, io::kFormatVersion + 6}) {
         const std::string path = temp("format-" + std::to_string(format) + ".noise");
         write_archive(path, minimal_members(image, format, 1));
         io::Project loaded;
@@ -350,8 +351,8 @@ void test_layers_keep_their_order_and_names_through_a_save() {
     top.fill_rect(Rect{0, 0, 4, 4}, std::array<std::uint8_t, 4>{9, 9, 9, 255}.data());
     const std::string path = temp("stack.noise");
     std::vector<Layer> stack;
-    stack.push_back(Layer{0, "Paper", base});
-    stack.push_back(Layer{0, "Ink", top});
+    stack.push_back(Layer{0, "Paper", base, kLayerVisibleDefault, kLayerOpacityDefault, BlendMode::normal, std::nullopt});
+    stack.push_back(Layer{0, "Ink", top, kLayerVisibleDefault, kLayerOpacityDefault, BlendMode::normal, std::nullopt});
     std::string error;
     CHECK(io::save_project(path, stack, top, std::nullopt, {}, error));
 
@@ -377,8 +378,8 @@ void test_a_layer_of_another_size_is_refused() {
     Image odd = checker(Extent{12, 8});
     const std::string path = temp("odd.noise");
     std::vector<Layer> stack;
-    stack.push_back(Layer{0, "Paper", base});
-    stack.push_back(Layer{0, "Oversized", odd});
+    stack.push_back(Layer{0, "Paper", base, kLayerVisibleDefault, kLayerOpacityDefault, BlendMode::normal, std::nullopt});
+    stack.push_back(Layer{0, "Oversized", odd, kLayerVisibleDefault, kLayerOpacityDefault, BlendMode::normal, std::nullopt});
     std::string error;
     CHECK(io::save_project(path, stack, base, std::nullopt, {}, error));
 
@@ -596,12 +597,137 @@ void test_a_broken_selection_is_refused_naming_the_problem() {
 
 }  // namespace
 
+// A layer mask is the same plane as the selection, in a member the layer's own row names, so a
+// reader that ignores masks still finds the layer PNG and shows more than the file meant - which is
+// why the round trip has to be byte-exact and the refusals exact.
+void test_a_layer_mask_round_trips_byte_for_byte() {
+    const Extent size{19, 13};
+    const Image image = checker(size);
+    std::vector<std::uint8_t> plane(static_cast<std::size_t>(size.w) *
+                                    static_cast<std::size_t>(size.h));
+    std::uint32_t state = 9u;
+    for (std::uint8_t& cell : plane) {
+        state = state * 1664525u + 1013904223u;
+        cell = static_cast<std::uint8_t>((state >> 24) & 0xFFu);
+    }
+    std::vector<Layer> stack;
+    stack.push_back(Layer{0, "Unmasked", image, true, 1.0, BlendMode::normal, std::nullopt});
+    stack.push_back(Layer{0, "Masked", image, true, 1.0, BlendMode::normal,
+                          Mask::from_plane(size, plane)});
+    CHECK(stack[1].mask.has_value());
+
+    const std::string path = temp("masked.noise");
+    std::string error;
+    CHECK(io::save_project(path, stack, image, std::nullopt, {}, error));
+
+    io::Project loaded;
+    CHECK(io::load_project(path, loaded, error));
+    CHECK_EQ(loaded.layers.size(), 2u);
+    if (loaded.layers.size() != 2) {
+        return;
+    }
+    CHECK(!loaded.layers[0].mask.has_value());
+    CHECK(loaded.layers[1].mask == stack[1].mask);
+
+    // The plane is one member, not one member carried twice: a save after an open must not
+    // accumulate copies of what this build already understands.
+    std::vector<std::uint8_t> raw;
+    std::string read_error;
+    CHECK(io::read_file(path, raw, read_error));
+    const auto members = io::read_zip(std::span<const std::uint8_t>(raw), read_error);
+    CHECK(members.has_value());
+    int planes = 0;
+    for (const io::ZipEntry& entry : *members) {
+        planes += entry.name == "layers/1/mask.m8" ? 1 : 0;
+    }
+    CHECK_EQ(planes, 1);
+    CHECK_EQ(loaded.carried.size(), 0u);
+
+    CHECK(io::save_project(path, loaded.layers, image, std::nullopt, loaded.carried, error));
+    io::Project again;
+    CHECK(io::load_project(path, again, error));
+    CHECK(again.layers[1].mask == stack[1].mask);
+    std::filesystem::remove(path);
+}
+
+// "This layer has no mask" and "this layer has a mask that hides everything" are different documents,
+// and a file that flattened them would show pixels somebody hid.
+void test_no_mask_and_an_empty_mask_are_different_in_the_file() {
+    const Extent size{6, 4};
+    const Image image = checker(size);
+    Mask empty(size);
+    std::vector<Layer> stack;
+    stack.push_back(Layer{0, "A", image, true, 1.0, BlendMode::normal, std::nullopt});
+    stack.push_back(Layer{0, "B", image, true, 1.0, BlendMode::normal, empty});
+
+    const std::string path = temp("empty-mask.noise");
+    std::string error;
+    CHECK(io::save_project(path, stack, image, std::nullopt, {}, error));
+    io::Project loaded;
+    CHECK(io::load_project(path, loaded, error));
+    CHECK_EQ(loaded.layers.size(), 2u);
+    if (loaded.layers.size() != 2) {
+        return;
+    }
+    CHECK(!loaded.layers[0].mask.has_value());
+    CHECK(loaded.layers[1].mask.has_value());
+    CHECK_EQ(loaded.layers[1].mask->covered(), 0u);
+    std::filesystem::remove(path);
+}
+
+void test_a_broken_layer_mask_is_refused_naming_the_problem() {
+    const Extent size{8, 6};
+    const Image image = checker(size);
+    std::string error;
+
+    // Declared and absent: the file promises a mask it does not hold.
+    {
+        json rows = layer_rows(1);
+        rows[0]["mask"] = json{{"src", "layers/0/mask.m8"}};
+        const std::string path = temp("mask-missing.noise");
+        write_archive(path, members_with_rows(image, rows, io::kFormatVersion));
+        io::Project loaded;
+        CHECK(!io::load_project(path, loaded, error));
+        CHECK(error.find("layers/0/mask.m8") != std::string::npos);
+        std::filesystem::remove(path);
+    }
+    // Declared and the wrong size: coverage cannot be cropped or padded to fit.
+    {
+        json rows = layer_rows(1);
+        rows[0]["mask"] = json{{"src", "layers/0/mask.m8"}};
+        std::vector<io::ZipEntry> members =
+            members_with_rows(image, rows, io::kFormatVersion);
+        members.push_back(io::ZipEntry{"layers/0/mask.m8", std::vector<std::uint8_t>(8 * 5)});
+        const std::string path = temp("mask-size.noise");
+        write_archive(path, members);
+        io::Project loaded;
+        CHECK(!io::load_project(path, loaded, error));
+        CHECK(error.find("40") != std::string::npos);
+        CHECK(error.find("8x6") != std::string::npos);
+        std::filesystem::remove(path);
+    }
+    // Declared without a src to read.
+    {
+        json rows = layer_rows(1);
+        rows[0]["mask"] = json::object();
+        const std::string path = temp("mask-row.noise");
+        write_archive(path, members_with_rows(image, rows, io::kFormatVersion));
+        io::Project loaded;
+        CHECK(!io::load_project(path, loaded, error));
+        CHECK(error.find("mask") != std::string::npos);
+        std::filesystem::remove(path);
+    }
+}
+
 int main() {
     test_pixels_and_layer_name_come_back_unchanged();
     test_the_selection_round_trips_byte_for_byte();
     test_no_selection_and_an_empty_selection_are_different_in_the_file();
     test_a_broken_selection_is_refused_naming_the_problem();
     test_layer_state_round_trips();
+    test_a_layer_mask_round_trips_byte_for_byte();
+    test_no_mask_and_an_empty_mask_are_different_in_the_file();
+    test_a_broken_layer_mask_is_refused_naming_the_problem();
     test_every_mode_round_trips_under_its_own_name();
     test_another_format_is_refused_by_name();
     test_a_layer_that_omits_its_state_is_refused();

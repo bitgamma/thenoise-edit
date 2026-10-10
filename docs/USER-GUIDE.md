@@ -131,8 +131,27 @@ A selection is saved into the `.noise` with the rest of the document, and a reop
 as the one you closed: the plane is one byte per pixel (`selection.m8`), and a file that declares one
 without carrying it, or carries one the wrong size, is refused rather than guessed at. Exporting a flat
 PNG/JPEG/WebP ignores it — a selection is part of how you are editing, not part of a picture.
-Feathered and painted selections are not here yet, and a selection cannot yet become a layer mask or
-the other way round.
+## A layer mask
+
+**To layer mask** turns the selection into a mask on the active layer, and **From layer mask** puts
+that mask back into the selection. Both are buttons in the Brush panel and commands
+(`mask.from_selection`, `select.from_mask`), and both *copy*: the selection you converted is still
+there afterwards, and neither costs an undo step.
+
+A mask says **what shows**, not what exists. The layer's pixels are untouched - masking a layer and
+then `Ctrl+Z`-ing everything back cannot fail, because there is nothing to fail to restore - so you
+can keep painting under a masked-out area and the strokes are there when the mask moves. What changes
+is the composite: the same picture the renderer shows, the flat export writes and `mergedimage.png`
+holds inside the project.
+
+A mask that covers nothing is a real state and hides the whole layer; removing the mask is what brings
+the layer back. The panel says which layer carries one and how much of it shows
+(`mask on 'Layer 1': 2295 px shown`), `layer.list` reports `mask` per row - `null` meaning none - and
+a mask is saved in the `.noise` as its own plane, `layers/<n>/mask.m8`.
+
+What is not here: painting into a mask, enabling/disabling or deleting one from the keyboard, viewing
+a mask on its own, or a mask anywhere but on a layer. There is no way yet to draw a mask except by
+selecting first.
 
 ## Layers
 
@@ -245,7 +264,7 @@ stroke and a capture, and the PNG turned up where it said.
 | document | `doc.new` `doc.open` `doc.save` `doc.export` `doc.get` `image.get` |
 | layers | `layer.list` `layer.add` `layer.remove` `layer.select` `layer.set` |
 | paint | `tool.brush` `tool.eraser` `tool.move` `tool.select` (one per tool row) `tool.set` `tool.stroke` `tool.pointer` `brush.larger` `brush.smaller` |
-| selection | `select.rect` `select.all` `select.clear` `select.invert` `select.get` |
+| selection | `select.rect` `select.all` `select.clear` `select.invert` `select.from_mask` `select.get` `mask.from_selection` |
 | view | `view.fit` `view.set` `view.pan` `view.zoom` |
 | edit | `edit.undo` `edit.redo` |
 | observe | `screenshot` `pixels.compare` |
@@ -281,10 +300,9 @@ problems and only one of them is a bug:
 
 - **No AI at all.** No server profile, no roles, no generate / remove / replace / upscale.
   That is milestones M3 and M4.
-- **Selections are rectangular only, and there are no layer masks.** No lasso, wand, feather or
-  grow/shrink, nothing to paint a mask with, and no way yet to turn a selection into a layer mask or a
-  layer mask into a selection — `core::Mask` is already the one representation for both; the commands
-  between them are not.
+- **Selections are rectangular only, and masks cannot be painted.** No lasso, wand, feather or
+  grow/shrink, and no brush that edits a mask rather than a layer: today a mask can only come from a
+  selection. There is nothing to enable, disable, apply or view one with either.
 - **No reorder, rename, duplicate or merge** in the Layers panel.
 - **Four tools**: brush, eraser, move and select. No fill, eyedropper, lasso or wand, no pen pressure.
 - **No `.ora`/PSD at all**: OpenRaster is out of the design by decision, so a foreign layered file

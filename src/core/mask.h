@@ -44,7 +44,12 @@ std::string mask_op_names();
 struct MaskFacts {
     std::size_t covered = 0;
     Rect bounds{};
-    std::vector<MaskRun> outline{};
+    // The same boundary pixels, grouped both ways: `rows` along x and `columns` along y. Two
+    // groupings because a run is only drawable along its own length - a vertical edge is one pixel
+    // per row, so dashes placed along x turn it into a line that is either solid or absent, and it
+    // flips as the dashes march.
+    std::vector<MaskRun> rows{};
+    std::vector<MaskRun> columns{};
 };
 
 // Coverage of one pixel: 0 is out, 255 is in, between is a partial claim on it. Straight rather
@@ -85,10 +90,11 @@ public:
     // Pixels with any coverage at all, and the tight box holding them (empty when there are none).
     std::size_t covered() const { return facts().covered; }
     Rect bounds() const { return facts().bounds; }
-    // The boundary, as horizontal runs: the covered pixels that touch an uncovered one, out-of-bounds
-    // counting as uncovered. One pixel wide and one rule, so a rectangle, a painted blob and a
-    // selection that fills the canvas all get an outline without any of them being special-cased.
-    const std::vector<MaskRun>& outline() const { return facts().outline; }
+    // The boundary: the covered pixels that touch an uncovered one, out-of-bounds counting as
+    // uncovered, grouped along each axis. One rule, so a rectangle, a painted blob and a selection
+    // that fills the canvas all get an outline without any of them being special-cased.
+    const std::vector<MaskRun>& rows() const { return facts().rows; }
+    const std::vector<MaskRun>& columns() const { return facts().columns; }
 
     bool operator==(const Mask& other) const;
 
@@ -116,5 +122,15 @@ private:
 // `before_at`, which is where a caller's snapshot sits relative to the document. A mask with no
 // pixels restricts nothing, so the whole call is skipped.
 void restrict_to(const Mask& mask, Rect at, const Image& before, Rect before_at, Image& after);
+
+// `layer` seen through this mask, written into `out` at the same document coordinates, so a caller
+// can blend `out` where it would have blended `layer`: every pixel keeps its colour and keeps
+// `coverage / 255` of its amount, and a pixel the mask does not reach comes back as the absent
+// pixel. `out` is resized to `layer` when it is not already, and only `at` is written.
+//
+// This is `restrict_to` with nothing underneath, so it inherits that rule and its error bounds:
+// premultiplied, colour-preserving, within 1 LSB of alpha and 2 of colour of scaled arithmetic.
+// Masking straight-alpha channels instead would turn a half-masked red pixel into a darker red one.
+void scale_by_coverage(const Mask& mask, Rect at, const Image& layer, Image& out);
 
 }  // namespace noise

@@ -67,6 +67,7 @@ observed, not assumed; the numbers are from one dev box and rotate with it.
 | `3506b8c` | eight blend modes in the one table, one composite rule, `layer.set {mode}` and a panel chooser; `tests/test_blend.cpp` restating the definitions; no `format` bump, with the reason written down | the layer model stops being a stack of overrides, and the test suite gained the one thing it did not have: a specification the implementation can be wrong against (it already caught two order bugs it had been mirroring) |
 | `4f67f43` | the whole-texture upload measured instead of assumed: 334 fps while painting at 2048^2 with the upload inside it, so the dirty-rect item closes as a real-GPU question | "we think the upload dominates" was the claim; cadence counted through `app.state.frame` says it does not, here, at these sizes - and the report says where the number would change |
 | `abf42b5` | the move tool: `V`, whole-document-pixel offsets, one undo step per gesture, live from a press-time snapshot, `move_steps` in the stroke report | the third tool the keys already promised, and the first one the pointer router had to dispatch by `ToolAction` rather than by name - which found a release-routing bug that only a *real* drag could show |
+| (this commit) | a layer mask: `Layer::mask`, the composite reading a layer through it, `mask.m8` per layer (`.noise` **format 4**), and `mask.from_selection` / `select.from_mask` | the human's "turn any mask into a selection and back" is a statement about types: one `Mask`, two copies, no adapter and therefore no rules to get wrong. It also cost a startup assert that only launching the app could show, and taught the two composite shortcuts (lone-layer, pending region) that a mask is not part of the layer's bytes |
 | `990d85d` | `core/mask`: the coverage plane the document owns as its selection, clipping at both write doors, `select.*`, live marquee, ants from the mask's own runs, `.noise` format 3 | every later writer (fill, paste, the AI composite) gets spatial honesty for free instead of re-implementing it, and a layer mask will be the same type, so the two convert by copying |
 | `2bbd35c` | PNG, JPEG and WebP read **and** written, as one table (`io/flat`); exports report `format`, `quality`, `discarded_alpha`; system libjpeg/libwebp via pkg-config; `tools/image_interop_probe.py` registered in ctest | the MVP's interchange claim became true rather than planned, and there is now a test for the failure no in-house codec test can catch: a header written wrong by us and read wrong by us, which any self-consistent pair of codec tests passes |
 
@@ -193,11 +194,14 @@ cannot forget it.
   and dropped by every write to them, so the overlay, the status bar and the panel read the same runs
   the brush is clipped by. There is no `selection_revision` counter, which is what a second home for
   "did this change" looks like.
-- **The overlay is one dashed line per boundary run**, light/dark alternating on a shared phase.
-  Measured on a screenshot pair (selection up, then `select.clear`, nothing else changed): every
-  differing pixel lies on the selection's own rectangle - bbox `(172,191)-(387,400)` against a rect at
-  `(172,190)-(388,402)`. `ImGui::GetTime()` drives the march and nothing else: the phase is in no
-  command reply and no document byte.
+- **The overlay is a dashed line on the boundary, drawn in both directions**, each line on the outer
+  edge of its boundary pixel, so the ants fall between the selected pixel and the unselected one -
+  both directions because a boundary can only be dashed along its own length; the story of that is in
+  "The ants that blinked" below. Measured on a screenshot pair (same document, selection up then
+  `select.clear`): 2 871 differing device pixels, bbox `(171,189)-(388,402)` against a selection rect
+  at `(172,190)-(388,402)` - the 1 px overhang each side is the antialiasing on a line centred on the
+  pixel edge. `ImGui::GetTime()` drives the march and nothing else: the phase is in no command reply
+  and no document byte.
 - **`tool.pointer` is the select tool's path** and `app.state.stroke.marquee` reports the rectangle
   while the button is down, which is the only way for a driver to tell a marquee that tracks the
   pointer from one that appears on release. `marquee()` rounds outward (`floor` of the min, `ceil` of
@@ -224,6 +228,82 @@ cannot forget it.
 the order that keeps `Mask` the one representation instead of a selection-shaped type with a mask
 bolted on afterwards. Feather, lasso, grow/shrink and snap-to-colour all attach to the same `Mask`.
 
+### The ants that blinked: a bug report, and what it turned out to be
+
+The human's report after the selection landed: *"the selection marker is strange, it blinks very fast
+and while horizontal lines are stroked, vertical ones are solid or don't appear."* Both halves were
+real, and the second one was an architecture error in `MaskFacts`, not a drawing typo.
+
+- **The boundary was only grouped along rows.** A vertical edge is then one run per row, each one
+  pixel long, and dashes placed along x on a 1-pixel run make that edge *solid or absent* - and it
+  flips as the pattern moves, because whether the single pixel lands inside a dash depends on the
+  phase. Dashing had to happen along the run's own length, which meant the mask had to report the
+  boundary grouped both ways. `MaskFacts.outline` became `rows` + `columns` over one `MaskRun`
+  (`fixed`, `from`, `to`), computed by one function over the same boundary set; the type has one
+  meaning and the two groupings cannot disagree, which `test_the_boundary_reports_its_vertical_edges_too`
+  pins by requiring both groupings to cover the same pixel set and a hole's four sides to be there
+  after an invert.
+- **"Blinks very fast" was the march speed**: 32 px/s over an 8 px light-dark pair is four pattern
+  cycles a second. It is now 8 px/s over a 6 px pair - one and a third cycles. The speed is now
+  measurable from screenshots, which is the only way to test a phase at all: shots 0.25 s apart differ
+  on 2 606 of the ~2 871 ant pixels, and a phase frozen at a multiple of the pattern makes that number
+  collapse - which is exactly what the aliasing at 0.125 s (0 pixels changed, phase shift of exactly 1
+  px against a 6 px pattern) demonstrates about why one number cannot be the whole test.
+- **One thing that looked wrong and was not**: at a stride of 4 device px, light coverage measured on
+  the ant line came out at 43 %, which reads as "43 % of the boundary is missing". It is not -
+  light and dark dashes tile the boundary with no gap, so every boundary pixel is marked in every
+  frame, which is what an editor's ants do; the *colour* is what marches. Probing every device pixel
+  across the line over-samples the antialiased one and under-counts the dark half against the fixture's
+  own bright colours. A still frame of correct ants cannot look dashed; the movement is the feature.
+- **What the previous verification had missed**, and why: the earlier check was a whole-image diff with
+  a bounding box. It proved the ants were *on the selection* and proved nothing about their pattern,
+  because a bounding box is insensitive to whether the four sides are drawn the same way. The
+  replacement asks per edge: light coverage on the top line and on the left line, and the phase change
+  between frames. A test that summarizes cannot catch a defect that is different per side - which is
+  what the report was.
+
+### Layer masks and the two conversions, as built (observed, not assumed)
+
+The human's requirement was *"easy to turn any mask into a selection and selection into a mask"*,
+which is a statement about types rather than about features: it is why the selection landed as
+`core::Mask` one commit earlier and why this slice is small. `Layer` gained
+`std::optional<Mask> mask`, the composite reads a layer through it with `scale_by_coverage` -
+`restrict_to`'s premultiplied mix with nothing underneath - and the commands are
+`mask.from_selection` and `select.from_mask`, both copies, both outside history.
+
+- **A mask hides, it does not clip writes.** Painting under a masked-out region is allowed and real;
+  `test_a_selection_and_a_mask_fence_different_things` pins both halves, including taking the mask off
+  and finding the pixels that were painted beneath it. Selections fence the write doors, masks fence
+  the canvas; conflating them would make a mask destructive on the next brush stroke.
+- **Two shortcuts had to learn about it.** A lone visible layer at full strength used to composite by
+  returning the layer's own bytes - legal, and wrong once the layer has a mask, because that path
+  never touches coverage. And a mask change widens the pending region to the **whole canvas**: what a
+  mask hides is outside its bounds too, so a region taken from either mask's `bounds()` leaves the
+  composite showing the mask that *used* to be. Both were found by the existing incremental-vs-scratch
+  property test once masks were added to its journey - the test that was written for a different bug
+  and caught this one.
+- **`nullopt` and a covered-nothing mask are different documents in the file as well as in memory**,
+  so `layers/<n>/mask.m8` is written only when there is a mask and the row decides, exactly as the
+  selection plane does. `tools/container_probe.py` now reads that plane with a third-party `zipfile`
+  reader and reopens the file: the byte set equals the rectangle, and opening does not mark the
+  document dirty.
+- **The empty-document crash the tests could not see**: the Brush panel read
+  `doc.layer(active())` unconditionally, and a fresh app has no document - so the app asserted on
+  startup, while every test creates a document first. Found by launching the app for the screenshot,
+  which is the argument for launching it.
+- Live checks: `test_mask` 4 962, `test_document` 1 862, `test_project` 191, `test_app` 55 964,
+  19/19 hermetic in Debug and Release. `wire_input.py` converts a pointer-drawn marquee into a mask on
+  the running app: composite `31b14367 -> 362ff014`, layer checksum unchanged, undo depth unchanged,
+  and `select.from_mask` returning the same bounds. Red-check: 21 mutations over the scale, the
+  composite, the door, the manifest row and the two refusals - **0 survived**, after one
+  ("a mask change also records history") initially survived and forced the test to say *what it means*
+  (`undo_depth` before and after a mask change around a real stroke) instead of only that undo is
+  unavailable on a document that never had a step.
+
+**Not here**: painting into a mask, enable/disable/apply/view, mask management UI (there is no way to
+draw a mask except by selecting first), and per-layer content rectangles - which a mask makes worth
+doing, since a masked layer's visible box is `min(pixels.bounds, mask.bounds())`.
+
 ### To do, in order
 
 1. ~~**Blend modes**~~ - done; see "Blend modes, as built" above for the arithmetic, the
@@ -231,23 +311,20 @@ bolted on afterwards. Feather, lasso, grow/shrink and snap-to-colour all attach 
    did not move.
 2. ~~**Rectangular selection (`M`)**~~ - done as the section above: `core::Mask` as the document's
    selection, clipping at the write doors, `select.*`, live marquee, `.noise` format 3.
-3. **Layer masks, and the two conversions.** `Layer` gains `std::optional<Mask> mask` (layer-sized; a
-   mismatch refused naming both sizes, as `Document::set_selection` does); `blend_layer` multiplies the
-   layer's coverage by the mask's before compositing, so a masked-out pixel reads as *absent* and not
-   black - the distinction `test_document` already holds for a lone hidden layer; setting a mask follows
-   the selection rule (dirty, not history). Then `select.from_mask` (active layer's mask -> document
-   selection) and `mask.from_selection` (selection -> active layer's mask), which is what the human
-   asked for: *"easy to turn any mask into a selection and selection into a mask"* - one `Mask` type, so
-   each is a copy and neither is an adapter. Both need format 4. Mask painting (`add`/`subtract` modes,
-   feather) attaches after, as `MaskOp` rows.
-4. **`core/maskops`**: rasterize shapes, flood fill, feather, morphology, colour-match.
-5. **The rest of the `edit` group** (`cut`, `copy`, `paste`) and the first AI command with a region
+3. ~~**Layer masks, and the two conversions**~~ - done as the section above. What is left of the idea
+   is mask *painting* (item 5) and a mask affordance in the Layers panel: today a mask can only come
+   from a selection, and can only be removed by converting a covered-nothing selection.
+4. **The rectangle is still the only shape.** `Mask` holds coverage, so an ellipse, a lasso or a wand
+   is a new way to produce runs of it rather than a new type; grow/shrink/feather are `MaskOp` rows or
+   one pass over the plane. Neither the selection nor a layer mask has to change when they arrive.
+5. **`core/maskops`**: rasterize shapes, flood fill, feather, morphology, colour-match - the pieces
+   mask painting and the region compiler both want, in the order the first of them needs them.
+6. **The rest of the `edit` group** (`cut`, `copy`, `paste`) and the first AI command with a region
    compile behind it, in that order. (Undo/redo have been live since the gesture fix; `crop` and
-   `flatten` wait on tool UI.) - `,`/`.` and `Shift+,`/`Shift+.` are live (hardness, opacity)
-   with a hover hint on the panel sliders. `V` and `M` are **not key work**: `V` is the move tool and
-   `M` is rect selection, and a key bound to a tool that does not exist is a shortcut to nothing.
-   Both became their own items below.
-6. ~~Exact fast paths in `blend_layer`~~ - done, and it is what the opacity slider was waiting for:
+   `flatten` wait on tool UI.) A masked layer is the natural source of an inpaint region: subtracting
+   the selection from the layer's mask and taking `Mask::bounds` is already the crop a recipe wants,
+   and `restrict_to` is already the way back in.
+7. ~~Exact fast paths in `blend_layer`~~ - done, and it is what the opacity slider was waiting for:
    a whole-canvas change at 3 x 2048^2 went 100 ms -> 22 ms on the running app (peak frame), dragging
    the opacity went 200 ms -> 20.4 ms per frame counted, so 5 fps -> 49 fps, and the repair alone
    82.5 ms -> 14.6 ms Release / 806 ms -> 269 ms Debug. Three exact paths in front of the
@@ -260,7 +337,7 @@ bolted on afterwards. Feather, lasso, grow/shrink and snap-to-colour all attach 
    real-GPU question and the probe says where the number comes from. Still open, in cost order:
    per-layer content rectangles (the repair at 4096^2 is 14 fps and is arithmetic), GPU stamp
    preview, per-layer GPU textures + the shader blend pair checked against `core/blend`.
-7. ~~**The move tool** (`V`)~~ - the active layer slides under the cursor: whole document pixels (no
+8. ~~**The move tool** (`V`)~~ - the active layer slides under the cursor: whole document pixels (no
    resampling, so nothing blurs), the button-down point as the anchor, one undo step per gesture, and
    a tremor under half a pixel is not an edit. The layer is redrawn from a snapshot taken at press, so
    a gesture fed event by event lands on the same bytes as one offset applied at once - which is what
@@ -270,13 +347,13 @@ bolted on afterwards. Feather, lasso, grow/shrink and snap-to-colour all attach 
    content, so the leftward ones are the only proof that what leaves is gone. There is no ghost overlay:
    the provisional edit shows the real pixels live, which is better than a preview and needs no second
    renderer. `V` and the drag are proven through injected events in `wire_input.py`.
-8. ~~**Rect selection** (`M`)~~ - done; see "Rectangular selection, as built" above. What it assumed
+9. ~~**Rect selection** (`M`)~~ - done; see "Rectangular selection, as built" above. What it assumed
    and what stayed true: the selection is document-level state (a `Mask`, not a rectangle, so a lasso or
    a painted mask needs no new type), the tools honour it because the *document* applies it, and the
    composite and region paths needed nothing - clipping happens on the way in, so the flattened image
    never learns that a selection existed. `selection.{h,cpp}` was not created: a second coverage type
    next to `Mask` is the thing the design now forbids.
-9. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
+10. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
    outlive the session).
 
 **Answered and implemented since:** the table now refuses an argument its command does not declare

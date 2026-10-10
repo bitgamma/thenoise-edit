@@ -164,6 +164,15 @@ const char* document_kind(const std::string& path) {
 
 // The rows, hashing nothing. `app.state` is polled every frame and the layer commands answer
 // clicks and slider drags.
+json layer_mask_json(const Layer& layer) {
+    if (!layer.mask) {
+        return nullptr;
+    }
+    const Rect bounds = layer.mask->bounds();
+    return json{{"covered", layer.mask->covered()},
+                {"bounds", json::array({bounds.x, bounds.y, bounds.w, bounds.h})}};
+}
+
 json layers_json(const AppState& state) {
     json rows = json::array();
     const std::span<const Layer> layers = state.doc.layers();
@@ -173,7 +182,10 @@ json layers_json(const AppState& state) {
                             {"active", static_cast<int>(index) == state.doc.active()},
                             {"visible", layers[index].visible},
                             {"opacity", layers[index].opacity},
-                            {"mode", std::string(blend_mode_name(layers[index].mode))}});
+                            {"mode", std::string(blend_mode_name(layers[index].mode))},
+                            // A layer mask is reported the way a selection is, so `covered == 0`
+                            // means "hides everything" and a `null` means "has none".
+                            {"mask", layer_mask_json(layers[index])}});
     }
     return rows;
 }

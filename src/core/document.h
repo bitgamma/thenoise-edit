@@ -85,6 +85,13 @@ public:
     // otherwise keep showing a layer that is meant to be gone - and all three mark the document
     // dirty. None enters history, nor does adding or removing a layer. `opacity` is 0..1, and out
     // of range is false rather than a clamped value.
+    // The layer's mask: what the composite hides. A mask must be the size of the canvas, and a
+    // different size is false rather than a resized mask - a mask that quietly shifted would hide
+    // pixels nobody asked about. Like visibility it changes no pixel and enters no undo step, but it
+    // does change the canvas, so it bumps the revision, marks the document dirty and widens the
+    // pending region to the whole canvas, because what a mask hides is outside its bounds too.
+    bool set_layer_mask(int index, std::optional<Mask> mask);
+
     bool set_layer_visible(int index, bool visible);
     bool set_layer_opacity(int index, double opacity);
     bool set_layer_mode(int index, BlendMode mode);
@@ -167,6 +174,10 @@ private:
     std::uint64_t revision_ = 0;
     History history_;
     mutable Image composite_;
+    // Scratch for a masked layer: the layer scaled by its mask's coverage, at document coordinates,
+    // so the blend reads it exactly as it reads a layer. Held by the document so a masked composite
+    // does not allocate per layer per frame; unused, and so unallocated, while no layer has a mask.
+    mutable Image masked_;
 };
 
 }  // namespace noise

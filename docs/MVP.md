@@ -49,14 +49,17 @@ Constraints that shape everything (see `AI-BACKEND.md`):
   panel has a dropdown per layer, `layer.set {mode}` sets one, and the composite applies it. Rename,
   duplicate, drag-reorder and the M5 modes are not
 - merge down, flatten, crop-to-selection, new-layer-via-copy/clone
-- layer masks: add from selection / from layer, hide-all/show-all, enable/disable, apply
-  (destructive), alt-click to view mask
+- **partly live**: a layer mask exists (`Layer::mask`), the composite honours it, it is saved with the
+  project, and it converts both ways with the selection (`mask.from_selection`, `select.from_mask`) -
+  with buttons for both in the Brush panel. Still missing: hide-all/show-all, enable/disable, apply
+  (destructive), alt-click to view the mask, and anything at all to paint into one
 
 **Selections**
 - rect, ellipse, polygon/lasso (path → scanline fill), magic wand (tolerance,
   contiguous/global, anti-aliased) on composite or active layer
 - new/add/subtract/intersect modifiers; invert; feather; expand/shrink; border
-- marching ants, `Ctrl+D` clear, save selection ↔ layer mask
+- **live**: marching ants, `Ctrl+D` clear, save selection ↔ layer mask (and the reverse). Rectangles
+  only for now: no lasso, wand, feather or expand/shrink, and no painting into a mask
 
 **AI**
 - `New image from prompt` → new layer, aspect presets at the model's native scale,
@@ -162,8 +165,9 @@ layer's pixels, so a layer shown at 30 % still paints at full strength - and, li
 deleting, neither enters an undo step. That is `.noise` **format 2**, which made `visible` /
 `opacity` / `mode` required on every layer row and refuses any other version by number. Blend
 modes are in it — `core::kBlendModes` is the eight the compositor, the panel, the manifest and the
-tests all read — and `.noise` **format 3** added the document's selection, a coverage plane the
-manifest declares and this build refuses to guess about.
+tests all read — and .noise` **format 3** added the document's selection, a coverage plane the
+manifest declares and this build refuses to guess about, and **format 4** the same plane per layer as
+that layer's mask.
 
 Design rules: nothing blocks the canvas, ever · every AI op shows *what it will send* ·
 model swaps are explicit and priced · destructive ops are labelled but never nag (undo is

@@ -126,6 +126,7 @@ add_library(noise_app STATIC
     src/app/layer_commands.cpp
     src/app/paint_commands.cpp
     src/app/select_commands.cpp
+    src/app/mask_commands.cpp
     src/app/tools/brush.cpp
     src/app/tools/move.cpp
     src/app/tools/select.cpp

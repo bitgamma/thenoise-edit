@@ -6,6 +6,7 @@
 #include "app/state.h"
 #include "core/image.h"
 #include "io/file.h"
+#include "io/project.h"
 #include "io/jpeg.h"
 #include "io/png.h"
 #include "io/zip.h"
@@ -1490,7 +1491,6 @@ void test_the_select_commands_set_add_and_take_away() {
     CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 800);
     h.value("select.invert", json::object());
     CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 0);
-    CHECK(h.value("select.get", json::object())["active"].get<bool>());
     h.value("select.invert", json::object());
     CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 800);
 
@@ -1547,6 +1547,120 @@ void test_a_selection_holds_a_stroke_inside_it() {
     h.value("select.clear", json::object());
     h.value("tool.stroke", stroke);
     CHECK(h.state.doc.layer(0).pixels.checksum_hex() != before.checksum_hex());
+}
+
+// The two conversions, which are the reason a selection and a mask are the same type: each is a
+// copy, so neither can shift by a pixel or lose partial coverage on the way across.
+void test_a_selection_becomes_a_mask_and_a_mask_becomes_a_selection() {
+    constexpr int kWidth = 40;
+    constexpr int kHeight = 24;
+    Harness h;
+    h.value("doc.new", json{{"width", kWidth}, {"height", kHeight},
+                            {"fill", json::array({10, 20, 30, 255})}});
+
+    // Nothing to convert yet: both directions refuse, and say what is missing.
+    const CommandResult no_selection = h.run("mask.from_selection", json::object());
+    CHECK(!no_selection.ok);
+    CHECK(no_selection.error.find("no selection") != std::string::npos);
+    const CommandResult no_mask = h.run("select.from_mask", json::object());
+    CHECK(!no_mask.ok);
+    CHECK(no_mask.error.find("no mask") != std::string::npos);
+
+    h.value("select.rect", json{{"rect", json::array({4, 3, 12, 9})}});
+    const json selection = h.value("select.get", json::object());
+    const json report = h.value("mask.from_selection", json::object());
+    CHECK_EQ(report["covered"].get<std::int64_t>(), selection["covered"].get<std::int64_t>());
+    CHECK(report["bounds"] == selection["bounds"]);
+
+    // The mask is the layer's, not the document's: `layer.list` shows it on the active row and the
+    // selection is still up afterwards, because the conversion copied.
+    const json rows = h.value("layer.list", json::object())["layers"];
+    CHECK(!rows[0]["mask"].is_null());
+    CHECK_EQ(rows[0]["mask"]["covered"].get<std::int64_t>(),
+             selection["covered"].get<std::int64_t>());
+    CHECK(h.value("select.get", json::object())["active"].get<bool>());
+// ...and the document still knows how to paint the whole canvas: a selection that survives the
+    // conversion is the point, and one silently cleared would fence the user out of their own image.
+    CHECK(h.value("select.get", json::object())["active"].get<bool>());
+    const int steps_after_mask = undo_depth(h);
+    const std::string pixels_with_mask = h.state.doc.layer(0).pixels.checksum_hex();
+    h.value("select.clear", json::object());
+    json wide = full_stroke();
+    wide["points"] = json::array({json::array({2.0, 2.0}), json::array({36.0, 20.0})});
+    wide["size"] = 10.0;
+    h.value("tool.stroke", wide);
+    CHECK(h.state.doc.layer(0).pixels.checksum_hex() != pixels_with_mask);
+    CHECK_EQ(undo_depth(h), steps_after_mask + 1);
+
+    // The canvas now shows only the masked rectangle, although the layer's pixels still cover the
+    // whole canvas - the mask hides, it does not edit.
+    const Image& composite = h.state.doc.composite();
+    const Image& pixels = h.state.doc.layer(0).pixels;
+    CHECK_EQ(pixels.at(0, 0)[3], 255);
+    CHECK_EQ(composite.at(0, 0)[3], 0);
+    CHECK_EQ(composite.at(6, 6)[3], 255);
+
+    // Put the selection down, then load it back from the mask: the same facts come back.
+    h.value("select.clear", json::object());
+    const json loaded = h.value("select.from_mask", json::object());
+    CHECK_EQ(loaded["covered"].get<std::int64_t>(),
+             selection["covered"].get<std::int64_t>());
+    CHECK(loaded["bounds"] == selection["bounds"]);
+
+    // A mask taken from a *partial* selection keeps its coverage, which is the part a rectangle
+    // cannot show: invert turns half-covered pixels into half-covered pixels, so nothing was
+    // rounded to in/out on the way through the file-less conversion.
+    h.value("select.clear", json::object());
+    h.value("select.rect", json{{"rect", json::array({0, 0, kWidth, kHeight})}});
+    h.value("select.invert", json::object());  // nothing at all selected
+    h.value("mask.from_selection", json::object());
+    const json empty_mask = h.value("layer.list", json::object())["layers"][0];
+    CHECK_EQ(empty_mask["mask"]["covered"].get<std::int64_t>(), 0);
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            CHECK_EQ(composite.at(x, y)[3], 0);
+        }
+    }
+    // A mask that hides everything is still a mask, so it still converts back - to a selection that
+    // blocks every write, which is a different document from one with no selection.
+    const json back = h.value("select.from_mask", json::object());
+    CHECK(back["active"].get<bool>());
+    CHECK_EQ(back["covered"].get<std::int64_t>(), 0);
+}
+
+// A layer mask is composite state: it must reach the canvas through the command table, and it must
+// not be an undo step, exactly like the eye and the opacity slider.
+void test_a_layer_mask_costs_no_undo_step_and_reaches_the_file() {
+    constexpr int kWidth = 24;
+    constexpr int kHeight = 16;
+    Harness h;
+    h.value("doc.new", json{{"width", kWidth}, {"height", kHeight},
+                            {"fill", json::array({200, 100, 50, 255})}});
+    h.value("select.rect", json{{"rect", json::array({2, 2, 6, 6})}});
+    const int steps = undo_depth(h);
+    h.value("mask.from_selection", json::object());
+    CHECK_EQ(undo_depth(h), steps);
+    CHECK(h.state.doc.dirty());
+
+    const std::string path = h.temp("masked.noise");
+    h.value("doc.save", json{{"path", path}});
+    io::Project loaded;
+    std::string error;
+    CHECK(io::load_project(path, loaded, error));
+    CHECK_EQ(loaded.layers.size(), 1u);
+    if (!loaded.layers.empty()) {
+        CHECK(loaded.layers[0].mask.has_value());
+    }
+    // Reopening gives the same canvas: the mask is part of the document, not a view setting.
+    const std::string composite_with_mask = h.state.doc.composite().checksum_hex();
+    h.value("doc.new", json{{"width", 4}, {"height", 4}, {"fill", json::array({0, 0, 0, 0})}});
+    h.value("doc.open", json{{"path", path}});
+    CHECK_EQ(h.state.doc.composite().checksum_hex(), composite_with_mask);
+    CHECK(h.state.doc.layer(0).mask.has_value());
+    // Converting copies: the selection the mask was made from is still the document's, and both
+    // come back from the file, so "make a mask out of this" does not cost the user their selection.
+    CHECK(h.state.doc.selection().has_value());
+    CHECK_EQ(h.value("select.get", json::object())["covered"].get<std::int64_t>(), 36);
 }
 
 // The select tool through the pointer: the marquee is live, and the gesture costs no pixel history.
@@ -1628,6 +1742,8 @@ int main() {
     test_the_select_commands_set_add_and_take_away();
     test_a_selection_holds_a_stroke_inside_it();
     test_the_select_gesture_draws_and_puts_down_the_selection();
+    test_a_selection_becomes_a_mask_and_a_mask_becomes_a_selection();
+    test_a_layer_mask_costs_no_undo_step_and_reaches_the_file();
     test_the_move_tool_slides_the_layer_and_undoes_it_exactly();
     test_a_move_that_never_left_its_pixel_is_not_an_edit();
     test_a_move_slides_the_active_layer_and_no_other();

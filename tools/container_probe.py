@@ -31,9 +31,10 @@ import wire_drive as wd  # noqa: E402
 
 MIMETYPE = b"application/x-noise+zip"
 # One format is written and read, and a file of another number is refused by that number. Format 3
-# added the selection plane; format 2 had no row for it, and a missing row now means "no selection",
-# which is a state that cannot be guessed at.
-FORMAT = 3
+# added the selection plane; format 4 added a layer's own mask plane, named by that layer's row.
+# Neither can be inferred from an older file: a missing row means "no selection" and "no mask", which
+# are states, not omissions.
+FORMAT = 4
 FILL = (7, 14, 21, 255)
 WIDTH = 40
 HEIGHT = 24
@@ -211,6 +212,58 @@ def check_selection_archive(work: Path, wire: wd.Wire, fails: list[str]) -> None
         fails.append("a fresh document opened with a selection")
 
 
+def check_layer_mask_archive(work: Path, wire: wd.Wire, fails: list[str]) -> None:
+    """A layer mask is a plane the layer's own row names, so an outside reader can find which layer
+    is masked and which pixels the file means to show, without knowing anything about this app."""
+    path = work / "masked.noise"
+    # The checks run in sequence and the one before left a 2x2 document open: the plane's size is
+    # this document's, so say which document is being masked rather than assume the last one.
+    wire.call("doc.new", {"width": WIDTH, "height": HEIGHT, "fill": [12, 34, 56, 255]})
+    wd.wait_for_fit(wire)
+    rect = [2, 1, 9, 5]
+    wire.call("select.rect", {"rect": rect, "mode": "replace"})
+    report = wire.call("mask.from_selection", {})
+    wire.call("doc.save", {"path": str(path)})
+    with zipfile.ZipFile(path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        rows = manifest.get("layers") or []
+        with_mask = [i for i, row in enumerate(rows) if row.get("mask")]
+        if with_mask != [0]:
+            fails.append(f"mask rows are on layers {with_mask}, expected the active layer 0")
+            return
+        src = rows[0]["mask"]["src"]
+        if src not in archive.namelist():
+            fails.append(f"layer 0 names mask member '{src}', which the archive lacks")
+            return
+        plane = archive.read(src)
+        if len(plane) != WIDTH * HEIGHT:
+            fails.append(f"layer mask plane is {len(plane)} bytes, expected {WIDTH * HEIGHT}")
+            return
+        wanted = {(y * WIDTH + x)
+                  for y in range(rect[1], rect[1] + rect[3])
+                  for x in range(rect[0], rect[0] + rect[2])}
+        claimed = {index for index, byte in enumerate(plane) if byte}
+        if claimed != wanted:
+            fails.append(f"the layer mask claims {len(claimed)} pixels, expected the {len(wanted)} "
+                         f"of the rectangle")
+
+    # Through the app again: the mask is on the same layer and the canvas is the same picture.
+    wire.call("doc.new", {"width": 2, "height": 2})
+    opened = wire.call("doc.open", {"path": str(path)})
+    listed = wire.call("layer.list", {})["layers"]
+    shown = (listed[0].get("mask") or {})
+    if shown.get("covered") != report.get("covered"):
+        fails.append(f"mask after reopen covers {shown.get('covered')}, expected "
+                     f"{report.get('covered')}")
+    if opened.get("dirty"):
+        # Reading a mask is not an edit; a loader that set it through a path that marked the
+        # document dirty would have every open look like an unsaved change.
+        fails.append("opening a file with a layer mask marked the document dirty")
+    wire.call("doc.new", {"width": 2, "height": 2})
+    if wire.call("layer.list", {})["layers"][0].get("mask"):
+        fails.append("a fresh document opened with a layer mask")
+
+
 def check_hidden_layer(work: Path, wire: wd.Wire, fails: list[str]) -> None:
     """What the manifest says and what the flattened image shows must agree.
 
@@ -321,6 +374,7 @@ def run(args: argparse.Namespace) -> int:
                 check_foreign_project(work, wire, fails)
                 check_hidden_layer(work, wire, fails)
                 check_selection_archive(work, wire, fails)
+                check_layer_mask_archive(work, wire, fails)
 
                 # Recorded, not asserted narrowly: what a save of a full-size document costs.
                 big = work / "big.noise"

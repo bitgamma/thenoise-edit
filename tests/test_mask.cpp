@@ -4,6 +4,7 @@
 #include "core/image.h"
 #include "core/mask.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -358,41 +359,91 @@ void test_outline_is_the_covered_edge_and_nothing_else() {
         const Extent size{16, 9};
         Mask mask(size);
         mask.op(selection, MaskOp::replace);
-        const std::vector<MaskRun> runs = mask.outline();
 
-        // The set the runs cover, rebuilt independently of how they were produced.
-        std::vector<std::uint8_t> listed(
-            static_cast<std::size_t>(size.w) * static_cast<std::size_t>(size.h), 0);
-        for (const MaskRun& run : runs) {
-            CHECK(run.y >= 0 && run.y < size.h);
-            CHECK(run.x0 < run.x1);
-            for (int x = run.x0; x < run.x1; ++x) {
-                CHECK(mask.coverage(x, run.y) != 0);
-                listed[cell(size, x, run.y)] = 1;
-            }
-        }
-        // Sorted, and maximal: two runs on one row must have a gap between them, or the outline
-        // broke one line into two and a dashed overlay would show it.
-        int last_y = -1;
-        int last_x1 = -1;
-        for (const MaskRun& run : runs) {
-            CHECK(run.y > last_y || (run.y == last_y && run.x0 > last_x1 + 1));
-            last_y = run.y;
-            last_x1 = run.x1;
-        }
-        for (int y = 0; y < size.h; ++y) {
-            for (int x = 0; x < size.w; ++x) {
-                if (mask.coverage(x, y) == 0) {
-                    CHECK_EQ(static_cast<int>(listed[cell(size, x, y)]), 0);
-                    continue;
+        // The set the runs cover, rebuilt independently of how they were produced. The rule is
+        // checked along both axes, because a boundary is one pixel set grouped two ways.
+        const std::vector<MaskRun> rows = mask.rows();
+        const std::vector<MaskRun> columns = mask.columns();
+        for (const std::vector<MaskRun>* runs : {&rows, &columns}) {
+            std::vector<std::uint8_t> listed(
+                static_cast<std::size_t>(size.w) * static_cast<std::size_t>(size.h), 0);
+            int last_fixed = -1;
+            int last_to = -1;
+            for (const MaskRun& run : *runs) {
+                CHECK(run.fixed >= 0 && run.fixed < (runs == &rows ? size.h : size.w));
+                CHECK(run.from < run.to);
+                // Sorted, and maximal: two runs on one line must have a gap between them, or the
+                // outline broke one line into two and a dashed overlay shows it.
+                CHECK(run.fixed > last_fixed ||
+                      (run.fixed == last_fixed && run.from > last_to + 1));
+                last_fixed = run.fixed;
+                last_to = run.to;
+                for (int cell = run.from; cell < run.to; ++cell) {
+                    const int x = runs == &rows ? cell : run.fixed;
+                    const int y = runs == &rows ? run.fixed : cell;
+                    CHECK(mask.coverage(x, y) != 0);
+                    listed[static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) +
+                           static_cast<std::size_t>(x)] = 1;
                 }
-                const bool touches_out = mask.coverage(x - 1, y) == 0 || mask.coverage(x + 1, y) == 0 ||
-                                         mask.coverage(x, y - 1) == 0 || mask.coverage(x, y + 1) == 0;
-                CHECK_EQ(static_cast<int>(listed[cell(size, x, y)]), touches_out ? 1 : 0);
+            }
+            for (int y = 0; y < size.h; ++y) {
+                for (int x = 0; x < size.w; ++x) {
+                    if (mask.coverage(x, y) == 0) {
+                        CHECK_EQ(static_cast<int>(listed[cell(size, x, y)]), 0);
+                        continue;
+                    }
+                    const bool touches_out =
+                        mask.coverage(x - 1, y) == 0 || mask.coverage(x + 1, y) == 0 ||
+                        mask.coverage(x, y - 1) == 0 || mask.coverage(x, y + 1) == 0;
+                    CHECK_EQ(static_cast<int>(listed[cell(size, x, y)]), touches_out ? 1 : 0);
+                }
             }
         }
     }
 }
+
+// A vertical edge is the case the row grouping cannot express on its own: every run there is one
+// pixel long, so the overlay has to be given the columns too. The two groupings describe the same
+// boundary, and a rectangle's vertical sides only appear once the columns are there.
+void test_the_boundary_reports_its_vertical_edges_too() {
+    const Extent size{16, 9};
+    Mask mask(size);
+    mask.op(Rect{4, 2, 6, 5}, MaskOp::replace);
+
+    std::vector<std::uint8_t> from_rows(
+        static_cast<std::size_t>(size.w) * static_cast<std::size_t>(size.h), 0);
+    std::vector<std::uint8_t> from_columns(from_rows);
+    for (const MaskRun& run : mask.rows()) {
+        for (int x = run.from; x < run.to; ++x) {
+            from_rows[cell(size, x, run.fixed)] = 1;
+        }
+    }
+    for (const MaskRun& run : mask.columns()) {
+        for (int y = run.from; y < run.to; ++y) {
+            from_columns[cell(size, run.fixed, y)] = 1;
+        }
+    }
+    CHECK(from_rows == from_columns);
+
+    // The left side of the rectangle is a column of its own, spanning the rectangle's height: a
+    // grouping that only did rows would leave nothing to draw there.
+    const MaskRun left_edge{4, 2, 7};
+    CHECK(std::any_of(mask.columns().begin(), mask.columns().end(),
+                      [left_edge](const MaskRun& run) { return run == left_edge; }));
+    mask.invert();
+    // Inverted, the boundary is the canvas frame *and* the ring of covered pixels around the hole.
+    // The hole's left and right sides are columns 5 pixels tall, its top and bottom sides rows 6
+    // pixels long: the same edge reported in both groupings, which is what lets the overlay dash a
+    // hole in a selection instead of drawing its sides solid.
+    for (const MaskRun& wanted : {MaskRun{3, 2, 7}, MaskRun{10, 2, 7}}) {
+        CHECK(std::find(mask.columns().begin(), mask.columns().end(), wanted) !=
+              mask.columns().end());
+    }
+    for (const MaskRun& wanted : {MaskRun{1, 4, 10}, MaskRun{7, 4, 10}}) {
+        CHECK(std::find(mask.rows().begin(), mask.rows().end(), wanted) != mask.rows().end());
+    }
+}
+
 
 // The facts a mask reports - how much it covers, where, and its outline - are held by the mask and
 // dropped by every write. A cache that outlived the coverage would show the ants in the old place
@@ -403,23 +454,133 @@ void test_the_facts_follow_every_write() {
     mask.op(Rect{1, 1, 3, 2}, MaskOp::replace);
     CHECK_EQ(mask.covered(), 6u);
     CHECK(mask.bounds() == Rect{1, 1, 3, 2});
-    CHECK(!mask.outline().empty());
+    CHECK(!mask.rows().empty());
     // Reading them twice hands back the same computed values, which is what a per-frame overlay needs.
     CHECK(&mask.facts() == &mask.facts());
 
     mask.op(Rect{1, 1, 3, 2}, MaskOp::subtract);
     CHECK_EQ(mask.covered(), 0u);
     CHECK(mask.bounds().empty());
-    CHECK(mask.outline().empty());
+    CHECK(mask.rows().empty());
 
     mask.fill(255);
     CHECK_EQ(mask.covered(), 48u);
     CHECK(mask.bounds() == Rect{0, 0, 8, 6});
     mask.invert();
     CHECK_EQ(mask.covered(), 0u);
-    CHECK(mask.outline().empty());
+    CHECK(mask.rows().empty());
     mask.invert();
     CHECK_EQ(mask.covered(), 48u);
+}
+
+// A layer seen through a mask, checked against arithmetic written out again here rather than
+// against `scale_by_coverage`: the layer's own premultiplied amount, scaled by coverage / 255.
+void test_a_layer_through_a_mask_keeps_its_colour_and_its_amount() {
+    const Extent size{9, 7};
+    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(size.w) *
+                                     static_cast<std::size_t>(size.h) * kChannels);
+    const std::uint8_t alphas[]{0, 1, 17, 128, 254, 255};
+    const std::uint8_t hues[]{0, 33, 128, 211, 255};
+    std::size_t cell = 0;
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const std::size_t index = static_cast<std::size_t>(x) * 3 +
+                                      static_cast<std::size_t>(y) * 5;
+            const std::uint8_t alpha = alphas[index % (sizeof(alphas) / sizeof(alphas[0]))];
+            for (int channel = 0; channel < 3; ++channel) {
+                pixels[cell++] = hues[(static_cast<std::size_t>(x) + static_cast<std::size_t>(y) +
+                                       static_cast<std::size_t>(channel)) %
+                                      (sizeof(hues) / sizeof(hues[0]))];
+            }
+            pixels[cell++] = alpha;
+        }
+    }
+    const Image layer = Image::from_rgba(size, std::move(pixels));
+    const std::optional<Mask> mask = Mask::from_plane(size, plane_of(size, 7));
+    CHECK(mask.has_value());
+
+    Image shown;
+    scale_by_coverage(*mask, Rect{0, 0, size.w, size.h}, layer, shown);
+    CHECK_EQ(shown.size().w, size.w);
+    CHECK_EQ(shown.size().h, size.h);
+
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const std::uint8_t* from = layer.at(x, y);
+            const std::uint8_t* got = shown.at(x, y);
+            const double coverage = mask->coverage(x, y) / 255.0;
+            const double amount = from[3] / 255.0 * coverage;
+            if (from[3] == 255) {
+                // An opaque pixel is the one case where masking has an exact answer: the amount is
+                // the coverage and the colour cannot move, because colour and amount scale by the
+                // same factor. A masking that mixed straight alpha would fail exactly here.
+                CHECK_EQ(got[3], mask->coverage(x, y));
+                for (int channel = 0; channel < 3; ++channel) {
+                    CHECK_EQ(got[channel], from[channel]);
+                }
+                continue;
+            }
+            if (mask->coverage(x, y) == 255) {
+                for (int channel = 0; channel < kChannels; ++channel) {
+                    CHECK_EQ(got[channel], from[channel]);
+                }
+                continue;
+            }
+            if (mask->coverage(x, y) == 0 || from[3] == 0) {
+                for (int channel = 0; channel < kChannels; ++channel) {
+                    CHECK_EQ(got[channel], 0);
+                }
+                continue;
+            }
+            CHECK(std::abs(static_cast<int>(got[3]) - static_cast<int>(std::lround(amount * 255))) <=
+                  1);
+            const double expected_alpha = got[3] > 0 ? got[3] : 1;
+            for (int channel = 0; channel < 3; ++channel) {
+                const double wanted_premul = from[channel] / 255.0 * (from[3] / 255.0) * coverage;
+                const double got_premul = got[channel] / 255.0 * (expected_alpha / 255.0);
+                CHECK(std::abs(wanted_premul - got_premul) * 255.0 <= 2.0);
+            }
+        }
+    }
+}
+
+// Coverage outside the mask is 0, and a reused scratch buffer must not remember the last layer that
+// was scaled through it.
+void test_a_mask_hides_what_it_does_not_cover_and_leaves_nothing_behind() {
+    const Extent size{6, 5};
+    Image layer = Image::filled(size, 200, 100, 50, 255);
+    Mask mask(size);
+    mask.op(Rect{1, 1, 2, 2}, MaskOp::replace);
+
+    Image shown;
+    scale_by_coverage(mask, Rect{0, 0, size.w, size.h}, layer, shown);
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const bool inside = x >= 1 && x < 3 && y >= 1 && y < 3;
+            if (inside) {
+                CHECK_EQ(shown.at(x, y)[3], 255);
+            } else {
+                CHECK_EQ(shown.at(x, y)[3], 0);
+            }
+        }
+    }
+
+    // Same buffer, mask the other way round: every pixel of the region is written again, so a
+    // caller that blends the region cannot see a pixel from the previous pass.
+    mask.invert();
+    scale_by_coverage(mask, Rect{0, 0, size.w, size.h}, layer, shown);
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const bool inside = x >= 1 && x < 3 && y >= 1 && y < 3;
+            CHECK_EQ(shown.at(x, y)[3], inside ? 0 : 255);
+        }
+    }
+
+    // A mask with no pixels scales nothing, which is what makes "no mask" cheap rather than a
+    // special case in the caller.
+    Image untouched;
+    scale_by_coverage(Mask{}, Rect{0, 0, size.w, size.h}, layer, untouched);
+    CHECK(untouched.empty() || untouched.checksum_hex() == layer.checksum_hex());
 }
 
 }  // namespace
@@ -434,6 +595,9 @@ int main() {
     test_a_write_past_the_mask_is_left_alone();
     test_bounds_are_tight();
     test_outline_is_the_covered_edge_and_nothing_else();
+    test_the_boundary_reports_its_vertical_edges_too();
     test_the_facts_follow_every_write();
+    test_a_layer_through_a_mask_keeps_its_colour_and_its_amount();
+    test_a_mask_hides_what_it_does_not_cover_and_leaves_nothing_behind();
     return noise::test::summary("mask");
 }

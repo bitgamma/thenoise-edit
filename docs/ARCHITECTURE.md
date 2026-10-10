@@ -59,11 +59,16 @@ src/
                        match yet.
     mask.{h,cpp}       the coverage plane: one byte per pixel, straight, and the one home of the
                        rules over it - `op(rect, replace|add|subtract)`, `invert`, and `facts()`
-                       (covered count, tight bbox, boundary runs) held by the mask that owns the
-                       bytes and dropped by every write to them. A document's selection is a `Mask`;
-                       a layer mask will be a `Mask`; converting between them is a copy, which is why
-                       there is no `selection.{h,cpp}` and no second coverage type.
-                       `restrict_to(mask, …)` is the write-door rule stated below.
+                       (covered count, tight bbox, and the boundary grouped along **both** axes:
+                       `rows` and `columns` over one `MaskRun`, because a boundary is only drawable
+                       along its own length - an outline of row runs makes a vertical edge a line
+                       that reads as solid in one frame and absent in the next) held by the mask that
+                       owns the bytes and dropped by every write to them. A document's selection is a
+                       `Mask`; a layer mask is a `Mask`; converting between them is a copy, which is
+                       why there is no `selection.{h,cpp}` and no second coverage type.
+                       `restrict_to(mask, …)` is the write-door rule stated below, and
+                       `scale_by_coverage(mask, …)` the same mix with nothing underneath, which is
+                       how a composite reads a layer through its mask.
     maskops.{h,cpp}    rasterize shapes, flood fill, feather, morphology, colour-match (bbox is here
                        no longer: `Mask::facts` owns it)
     heal.{h,cpp}       Telea / Chan fusion inpainting (local, offline)
@@ -95,6 +100,8 @@ src/
                        part of the app layer)
     ui/                panels: layers, generate, journal, jobs, status, prefs
     select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
+    mask_commands.cpp select.from_mask and mask.from_selection - the two directions between a
+                       selection and the active layer's mask, both copies of one `Mask`
   ai/
     server.{h,cpp}     ServerProfile: base URL, bearer key, TLS opts, adaptive timeouts;
                        /v1/health handshake; session-model state; load/pin; latency EMA
@@ -245,6 +252,20 @@ keep it cheap and honest:
   double-precision scaling of the write, and pins the two ends exactly: coverage 0 leaves the pixel
   untouched, coverage 255 leaves the write whole, and in between alpha is within 1 LSB and colour
   within 2 of scaled arithmetic — two roundings, the blend's and this one's.
+* **A layer mask hides, and never edits.** `Layer` holds `std::optional<Mask>`, and the composite
+  reads the layer through it (`scale_by_coverage`, the same premultiplied mix as `restrict_to`, with
+  nothing underneath). Painting is unaffected: a mask says what shows, not what exists, so a stroke
+  under a masked-out area is real and comes back when the mask moves. Two consequences that are not
+  obvious from either type: a *lone* masked layer no longer takes the "a stack of one is that layer"
+  shortcut, because that shortcut hands back the layer's own bytes and would show what the file hides;
+  and a mask change widens the pending region to the **whole canvas**, because what a mask hides lies
+  outside its bounds too, so a box taken from either mask would leave the composite showing the mask
+  that used to be (`test_document` compares the incremental repair against a rebuild after a mask
+  moves, precisely because that is the bug a bounds-based region would hide).
+* **`select.from_mask` and `mask.from_selection` are copies**, which is why a selection and a layer
+  mask are one type rather than two with an adapter between them: an adapter needs rules, and rules
+  are where "the mask moved by a pixel" and "the partial coverage got rounded" come from. Converting
+  costs no undo step on either side and leaves the source where it was.
 * **An edit that changes nothing is not an edit.** A stroke the selection stopped entirely writes no
   bytes, so it marks nothing dirty, bumps no revision and costs no undo step — otherwise painting
   against a small selection would spend the history restoring bytes that already match, and the undo
@@ -336,7 +357,9 @@ layout stopped writing — is how a document opens subtly wrong. `format` 2 adde
 on; a row that omits one is refused with the field and the layer named, and a `mode` outside
 `core::kBlendModes` is refused naming both the value and the names that would have worked.
 `format` 3 added the selection plane: an extra member the manifest declares, absent when the
-document has no selection. It is a layout change rather than a widened name, so 2 is refused.
+document has no selection. `format` 4 added a layer's own mask plane, named by that layer's row for
+the same reason - "no mask" and "a mask that hides everything" are different documents. Each is a
+layout change rather than a widened name, so earlier numbers are refused.
 
 `mode` grew from one name to the MVP eight (`normal`, `multiply`, `screen`, `overlay`, `darken`,
 `lighten`, `color-dodge`, `color-burn`, spelled as PDF 1.4 and CSS spell them) **without a `format`
@@ -350,6 +373,7 @@ added enum value would make the number mean "the day someone edited a table" and
 |---|---|---|
 | `mimetype` | stored, first member, no extra fields | must match exactly or the file is not ours |
 | `manifest.json` | `format`, `size: [w,h]`, `layers: [{name, src, visible, opacity, mode}]`, and `selection: {src}` when there is one | `format` must be 3; `size` must agree with the PNG, and both numbers are named if they do not; `src`/`visible`/`opacity`/`mode` are required, `name` is not, because a file from elsewhere may not have named its layers |
+| `layers/<n>/mask.m8` | a layer's mask plane, same shape, written only when that layer has one and named by that layer's row | read only when the row declares it: no row is no mask, and `covered == 0` is a mask that hides the layer, so the two must not collapse |
 | `selection.m8` | the selection's coverage plane, one byte per pixel, canvas-sized, written only when the document has a selection | read only when the manifest declares it: **no row is no selection, and a declared plane that is missing or the wrong size is refused** — guessing which would turn a corrupt file into a silently unclamped document |
 | `layers/<n>/layer.png` | one per layer, bottom-first | one PNG per declared row, each covering the whole canvas: a layer of another size is refused naming both sizes, because cropping or padding it silently is data loss |
 | `mergedimage.png` | the composite — which is the layer only when there is one layer and it is visible at full strength | optional |
@@ -440,7 +464,7 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | Group | Commands | Why |
 |---|---|---|
 | state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `server.state`, `job.list`, `log.tail` | read what the app believes, cheaply |
-| drive | `select.rect {rect, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.get`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `screenshot`, `pixels.compare`, `wire.info` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
+| drive | `select.rect {rect, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `screenshot`, `pixels.compare`, `wire.info` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
 | ai | `ai.preview {recipe, args}` (compiled request + prepped PNG, **no send**), `ai.run`, `job.wait {id}`, `cache.stats` | verify what we *would* send before spending minutes of someone's GPU |
 

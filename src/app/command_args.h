@@ -33,6 +33,8 @@ json image_json(const Image& image, const std::string& label);
 CommandResult require_document(const AppState& state);
 json history_json(const Document& doc);
 // The layer rows, hashing nothing: these answer clicks and slider drags.
+// A layer's mask as `layer.list` reports it: null for no mask, otherwise what it covers.
+json layer_mask_json(const Layer& layer);
 json layers_json(const AppState& state);
 // The same rows with what each layer holds. Only the diagnostic that asks for it pays; hashing a
 // stack to answer a click costs a document-sized SHA-256 per event.

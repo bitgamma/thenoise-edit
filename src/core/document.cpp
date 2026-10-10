@@ -108,6 +108,28 @@ bool Document::set_layer_visible(int index, bool visible) {
     return true;
 }
 
+bool Document::set_layer_mask(int index, std::optional<Mask> mask) {
+    if (index < 0 || static_cast<std::size_t>(index) >= layers_.size()) {
+        return false;
+    }
+    if (mask && mask->size() != size()) {
+        return false;
+    }
+    Layer& layer = layers_[static_cast<std::size_t>(index)];
+    if (layer.mask == mask) {
+        return true;
+    }
+    // The whole canvas, not a box: a mask hides what is *outside* its bounds as much as what is
+    // inside, so the pixels that changed are where two coverages differ - which is not a rectangle,
+    // and a pending region taken from either mask's bounds would leave the composite showing the
+    // mask that used to be. Same rule as visibility, opacity and mode.
+    pending_ = Rect{0, 0, width(), height()};
+    layer.mask = std::move(mask);
+    dirty_ = true;
+    ++revision_;
+    return true;
+}
+
 bool Document::set_layer_mode(int index, BlendMode mode) {
     if (index < 0 || static_cast<std::size_t>(index) >= layers_.size()) {
         return false;
@@ -176,7 +198,9 @@ bool blends_to_itself(const std::vector<Layer>& layers) {
         return false;
     }
     const Layer& only = layers.front();
-    return only.visible && only.opacity == kLayerOpacityDefault;
+    // A mask is not part of the layer's pixels, so a masked layer is *not* itself: over an empty
+    // backdrop the composite would have to be the layer scaled by coverage, which is a pass.
+    return only.visible && only.opacity == kLayerOpacityDefault && !only.mask;
 }
 
 }  // namespace
@@ -204,7 +228,12 @@ const Image& Document::composite() const {
             if (!layer.visible) {
                 continue;
             }
-            blend_layer(composite_, layer.pixels, region, layer.mode, layer.opacity);
+            const Image* source = &layer.pixels;
+            if (layer.mask) {
+                scale_by_coverage(*layer.mask, region, layer.pixels, masked_);
+                source = &masked_;
+            }
+            blend_layer(composite_, *source, region, layer.mode, layer.opacity);
         }
     }
     pending_ = Rect{};

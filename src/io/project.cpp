@@ -35,6 +35,10 @@ std::string layer_source(std::size_t index) {
     return "layers/" + std::to_string(index) + "/layer.png";
 }
 
+std::string layer_mask_source(std::size_t index) {
+    return "layers/" + std::to_string(index) + "/mask" + kMaskExtension;
+}
+
 const ZipEntry* find(const std::vector<ZipEntry>& entries, const std::string& name) {
     for (const ZipEntry& entry : entries) {
         if (entry.name == name) {
@@ -171,14 +175,43 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
             return false;
         }
 
-        loaded.push_back(Layer{0,
-                               layer.contains("name") && layer.at("name").is_string()
-                                   ? layer.at("name").get<std::string>()
-                                   : default_layer_name(index),
-                               std::move(pixels),
-                               visible,
-                               opacity,
-                               *mode});
+        Layer loaded_layer{0,
+                           layer.contains("name") && layer.at("name").is_string()
+                               ? layer.at("name").get<std::string>()
+                               : default_layer_name(index),
+                           std::move(pixels),
+                           visible,
+                           opacity,
+                           *mode,
+                           std::nullopt};
+        // A row with no `mask` is a layer with no mask. A row that names one this build cannot read
+        // is refused: showing a layer whose mask could not be loaded would show pixels the file said
+        // to hide, which is the louder of the two failures but the wrong one.
+        if (layer.contains("mask")) {
+            const json& mask_row = layer.at("mask");
+            if (!mask_row.is_object() || !mask_row.contains("src") ||
+                !mask_row.at("src").is_string()) {
+                error = "layer " + std::to_string(index) +
+                        " has a 'mask' with no string 'src' in " + path;
+                return false;
+            }
+            const std::string mask_source = mask_row.at("src").get<std::string>();
+            const ZipEntry* plane = find(*entries, mask_source);
+            if (plane == nullptr) {
+                error = "layer " + std::to_string(index) + " names mask '" + mask_source +
+                        "', which the archive does not hold: " + path;
+                return false;
+            }
+            loaded_layer.mask = Mask::from_plane(claimed, plane->data);
+            if (!loaded_layer.mask) {
+                error = "'" + mask_source + "' holds " + std::to_string(plane->data.size()) +
+                        " coverage bytes, not one per pixel of a " + std::to_string(claimed.w) +
+                        "x" + std::to_string(claimed.h) + " canvas in " + path;
+                return false;
+            }
+            sources.push_back(mask_source);
+        }
+        loaded.push_back(std::move(loaded_layer));
         sources.push_back(source);
     }
 
@@ -239,11 +272,15 @@ bool save_project(const std::string& path, std::span<const Layer> layers, const 
 
     json declared = json::array();
     for (std::size_t index = 0; index < layers.size(); ++index) {
-        declared.push_back(json{{"mode", std::string(blend_mode_name(layers[index].mode))},
-                                {"name", layers[index].name},
-                                {"opacity", layers[index].opacity},
-                                {"src", layer_source(index)},
-                                {"visible", layers[index].visible}});
+        json row{{"mode", std::string(blend_mode_name(layers[index].mode))},
+                 {"name", layers[index].name},
+                 {"opacity", layers[index].opacity},
+                 {"src", layer_source(index)},
+                 {"visible", layers[index].visible}};
+        if (layers[index].mask) {
+            row["mask"] = json{{"src", layer_mask_source(index)}};
+        }
+        declared.push_back(std::move(row));
     }
     json manifest{
         {"format", kFormatVersion},
@@ -263,6 +300,10 @@ bool save_project(const std::string& path, std::span<const Layer> layers, const 
     zip.add(kManifestName, bytes_of(manifest.dump(2) + "\n"));
     for (std::size_t index = 0; index < layers.size(); ++index) {
         zip.add(layer_source(index), std::span<const std::uint8_t>(encode_png(layers[index].pixels)));
+        if (layers[index].mask) {
+            zip.add(layer_mask_source(index),
+                    std::span<const std::uint8_t>(layers[index].mask->plane()));
+        }
     }
     if (selection) {
         zip.add(kSelectionName, std::span<const std::uint8_t>(selection->plane()));

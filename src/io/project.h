@@ -21,18 +21,27 @@ namespace noise::io {
 inline constexpr const char* kMimetype = "application/x-noise+zip";
 inline constexpr const char* kProjectExtension = "noise";
 
-// Format 2 added `visible`, `opacity` and `mode` to every layer row and made them required, so
+// Format 4 added a layer's mask: the same coverage plane as the selection, in a member the layer's
+// row names and omits entirely when the layer has no mask - "no mask" and "a mask that hides
+// everything" are different states, exactly as they are for the selection. Format 3 added the
+// selection plane and its manifest row. Format 2 added `visible`, `opacity` and `mode` to every
+// layer row and made them required, so
 // a file cannot half-state how a layer looks. Format 3 added the selection: a coverage plane, and
 // a manifest `selection` row that is *absent* when the document has no selection - which is a
 // different state from a plane that covers nothing, and cannot be inferred from a missing field of
 // an older file. The version is bumped for optional fields too, and a file of any other version is
 // refused by number: there is one writer, it is us, and silently guessing a default for a field the
 // format stopped writing is how a document opens wrong.
-inline constexpr int kFormatVersion = 3;
+inline constexpr int kFormatVersion = 4;
 
 // The selection's coverage plane: one byte per canvas pixel, raw, deflate-compressed by the
 // container. Its size is the manifest `size`, restated nowhere.
 inline constexpr const char* kSelectionName = "selection.m8";
+
+// A layer mask is the same plane, named by that layer's row rather than by the manifest, so a
+// reader that does not know masks still finds the layer's own PNG and simply shows more than the
+// file meant.
+inline constexpr const char* kMaskExtension = ".m8";
 
 struct Project {
     int format = kFormatVersion;
