@@ -2021,11 +2021,32 @@ void test_an_answer_lands_on_the_document_and_undoes_completely() {
     CHECK_EQ(checksum_of(h), before);
     CHECK_EQ(undo_depth(h), 0);
 
+    const Image scene = h.state.doc.composite();
     const json applied = h.value("ai.compose", json{{"image", answer_path}, {"apply", true}});
     CHECK(applied["applied"].get<bool>());
     CHECK_EQ(applied["composite"]["pixels_changed"].get<std::size_t>(), changed);
     CHECK_NE(checksum_of(h), before);
     CHECK_EQ(undo_depth(h), 1);
+
+    // The report describes the document rather than an edit that was then fenced: the feather is
+    // wider than the selection it was compiled from, and the pixels that differ are the ones the
+    // composite counted.
+    const Image landed = h.state.doc.composite();
+    const Mask& selection = *h.state.doc.selection();
+    std::size_t different = 0;
+    std::size_t past_selection = 0;
+    for (int y = 0; y < landed.size().h; ++y) {
+        for (int x = 0; x < landed.size().w; ++x) {
+            if (std::memcmp(landed.at(x, y), scene.at(x, y), kChannels) != 0) {
+                ++different;
+                if (selection.coverage(x, y) == 0) {
+                    ++past_selection;
+                }
+            }
+        }
+    }
+    CHECK_EQ(different, applied["composite"]["pixels_changed"].get<std::size_t>());
+    CHECK(past_selection > 0);
     h.value("edit.undo", json::object());
     CHECK_EQ(checksum_of(h), before);
     const std::string redone = [&h] {

@@ -272,7 +272,7 @@ const Image& Document::composite() const {
 
 std::uint64_t Document::revision() const { return revision_; }
 
-void Document::paint(Rect bounds, const std::function<void(Image&)>& edit) {
+void Document::paint(Rect bounds, PaintFence fence, const std::function<void(Image&)>& edit) {
     if (empty()) {
         return;
     }
@@ -283,7 +283,7 @@ void Document::paint(Rect bounds, const std::function<void(Image&)>& edit) {
     }
     Image before = target.region(touched);
     edit(target);
-    if (selection_) {
+    if (fence == PaintFence::selection && selection_) {
         restrict_to(*selection_, touched, before, touched, target);
     }
     // An edit that changed no pixel is not an edit. Painting into an area the selection does not

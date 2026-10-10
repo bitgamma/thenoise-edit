@@ -173,7 +173,9 @@ void register_paint_commands(AppState& state, CommandTable& table) {
                 touched = paint_stroke_mask(mask, path, brush, mode);
             });
         } else {
-            state.doc.paint(bounds, [&](Image& image) { touched = paint_stroke(image, path, brush, color, mode); });
+            state.doc.paint(bounds, PaintFence::selection, [&](Image& image) {
+                touched = paint_stroke(image, path, brush, color, mode);
+            });
         }
         if (!touched) {
             return fail("tool.stroke", "the stroke painted nothing inside the document");

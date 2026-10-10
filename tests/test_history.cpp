@@ -44,7 +44,8 @@ void paint_rect(Image& image, Rect rect, std::uint8_t grey) {
 
 // A mutation the way a tool makes one: fill a rectangle and declare which one it was.
 void fill(Document& doc, Rect rect, std::uint8_t grey) {
-    doc.paint(rect, [rect, grey](Image& image) { paint_rect(image, rect, grey); });
+    doc.paint(rect, PaintFence::selection,
+              [rect, grey](Image& image) { paint_rect(image, rect, grey); });
 }
 
 // A layer holding both planes, so an entry naming one of them can be shown not to touch the other.
@@ -153,7 +154,7 @@ void test_a_change_outside_the_pixels_is_not_a_step() {
     doc.reset(one_layer(make_pattern(Extent{12, 12})), std::nullopt, "pattern.png");
     const std::string before = doc.checksum();
     const std::uint64_t revision = doc.revision();
-    doc.paint(Rect{40, 40, 8, 8},
+    doc.paint(Rect{40, 40, 8, 8}, PaintFence::selection,
               [](Image& image) { paint_rect(image, Rect{0, 0, 12, 12}, 0); });
     CHECK_EQ(doc.checksum(), before);
     CHECK_EQ(doc.revision(), revision);

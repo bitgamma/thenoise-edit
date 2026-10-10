@@ -26,6 +26,14 @@ inline constexpr std::size_t kHistoryBudgetBytes = 128 * 1024 * 1024;
 // the last layer cannot be removed.
 inline constexpr std::size_t kMinLayers = 1;
 
+// What limits a write to a layer. `own_coverage` is the claim that the edit's own extent is the limit:
+// an AI composite arrives with a feathered mask deliberately wider than the selection it was compiled
+// from, and fencing that by the selection puts back the hard edge the feather exists to remove.
+enum class PaintFence {
+    selection,
+    own_coverage,
+};
+
 // The open document: a stack of layers, and the history of what changed in them. Pixels change
 // only through `paint`, a provisional gesture or undo/redo, so every visible change can be put
 // back exactly - within one layer, which is what a step is recorded against.
@@ -114,10 +122,11 @@ public:
 
     // Applies `edit` to the active layer and records the pixels `bounds` held beforehand. An
     // edit that writes outside `bounds` will not be fully undone, which is why bounds is not
-    // inferred. What the edit wrote is then pulled back to what was there wherever the selection
-    // does not reach, so no writer has to know a selection exists - and an edit left with no pixel
-    // changed records no step, marks nothing dirty and bumps no revision.
-    void paint(Rect bounds, const std::function<void(Image&)>& edit);
+    // inferred. With `fence` == `selection`, what the edit wrote is then pulled back to what was there
+    // wherever the document's selection does not reach; with `own_coverage` the edit's own extent is the
+    // limit, and keeping inside it is the caller's claim. An edit left with no pixel changed records no
+    // step, marks nothing dirty and bumps no revision.
+    void paint(Rect bounds, PaintFence fence, const std::function<void(Image&)>& edit);
 
     // The same door over the active layer's coverage instead of its colour: `bounds` recorded, the
     // selection applied to it, no step for a write that changed nothing. False when there is no

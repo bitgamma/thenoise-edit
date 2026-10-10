@@ -341,6 +341,8 @@ The scripts in `tools/` are the same wire, already wired into `ctest`:
 `wire_drive.py` (pan+zoom, capture, golden diff), `wire_input.py` (injected mouse and keyboard
 gestures), `stroke_probe.py` (a 5000-dab stroke with the app still drivable),
 `container_probe.py` (a project read back by Python's `zipfile`),
+`ai_compose_probe.py` (an answer image landing on a real document, with the report checked against the
+pixels the document actually shows),
 `image_interop_probe.py` (our PNG/JPEG/WebP read by Pillow and Pillow's read by us), `tn_probe.py`
 (the live AI server; see `AI-BACKEND.md`).
 

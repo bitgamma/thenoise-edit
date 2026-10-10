@@ -117,6 +117,17 @@ if(Python3_Interpreter_FOUND)
                          TIMEOUT 180
                          DEPENDS noise-edit)
 
+    # The result compositor on the running app: an answer lands where the selection is, the report
+    # agrees byte for byte with what the document shows, the feather reaches past the selection (a
+    # door that re-clipped it would put the hard edge back), and undo returns everything.
+    add_test(NAME test_ai_compose_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ai_compose_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_ai_compose_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 120
+                         DEPENDS noise-edit)
+
     # The container read by an implementation that knows nothing about us: our reader agreeing
     # with our own writer proves almost nothing about the bytes on disk.
     add_test(NAME test_container_interop

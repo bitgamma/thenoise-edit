@@ -575,8 +575,8 @@ void test_the_flag_decides_and_a_missing_ring_matches_nothing() {
                                                 CompositePolicy{2, false, 0});
     CHECK(with_match.composed);
     CHECK(without.composed);
-    CHECK(!without.colour_matched);
-    CHECK(with_match.colour_matched);
+    CHECK(!without.colour_corrected);
+    CHECK(with_match.colour_corrected);
 
     // Deep inside the selection the two differ - the match did something - and what it did was bring
     // the paste nearer the colour of the pixels the composite left alone.
@@ -608,7 +608,7 @@ void test_the_flag_decides_and_a_missing_ring_matches_nothing() {
     const ComposeReport report = compose_result(all, answer_pattern(full.requested), full, whole,
                                                CompositePolicy{0, true, 0});
     CHECK(report.composed);
-    CHECK(!report.colour_matched);
+    CHECK(!report.colour_corrected);
     for (int y = 0; y < kHeight; ++y) {
         for (int x = 0; x < kWidth; ++x) {
             CHECK(same(before, all, x, y) || report.coverage.coverage(x, y) > 0);

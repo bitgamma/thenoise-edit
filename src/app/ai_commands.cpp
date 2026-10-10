@@ -57,7 +57,7 @@ json report_json(const ai::ComposeReport& report) {
     return json{{"composed", report.composed},
                 {"refusal", report.refusal},
                 {"feather_px", report.feather_px},
-                {"colour_matched", report.colour_matched},
+                {"colour_corrected", report.colour_corrected},
                 {"area", rect_json(report.area)},
                 {"result_width", report.result_dims.w},
                 {"result_height", report.result_dims.h},
@@ -134,9 +134,12 @@ void register_ai_commands(AppState& state, CommandTable& table) {
         ai::ComposeReport report;
         std::string preview;
         if (apply) {
-            // Through the document's own door, so the selection fence, the undo step, the dirty
-            // rects and the revision all behave as they do for a stroke.
-            state.doc.paint(plan->crop, [&](Image& layer) {
+            // Through the document's own door, so the undo step, the dirty rects and the revision
+            // behave as they do for a stroke - but unfenced by the selection: the coverage this
+            // composite writes is the feathered mask, wider than the selection by design, and fencing
+            // it would delete the feather and leave the report describing an edit the document did not
+            // perform.
+            state.doc.paint(plan->crop, PaintFence::own_coverage, [&](Image& layer) {
                 report = compose_result(layer, answer, *plan, coverage, policy);
             });
         } else {

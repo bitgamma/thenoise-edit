@@ -138,8 +138,9 @@ src/
     ui/                panels: layers, generate, journal, jobs, status, prefs
     select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
     ai_commands.cpp     `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`: lands a
-                       result file on the document through the same doors a stroke uses, or previews
-                       it and reports what the policy resolved to
+                       result file on the document through `Document::paint` with `own_coverage` - one
+                       undo step, unfenced by the selection - or previews it and reports what the policy
+                       resolved to
     mask_commands.cpp mask.from_selection, mask.add/remove/fill/invert, mask.target and mask.get -
                        the two directions between a selection and the active layer's mask (both copies
                        of one `Mask`), the mask's own life cycle, and where strokes are aimed at
@@ -291,9 +292,14 @@ keep it cheap and honest:
 
 * **A selection limits writes, at the door, and mixes in premultiplied space.** The document holds
   its selection as a `Mask` and applies `restrict_to` inside `paint` and `repaint_provisional`: the
-  result is pulled back towards the pixels held before by the coverage of the mask, so a brush, a
-  move, a fill or an AI composite cannot write outside it without each one carrying the rule, and a
-  writer cannot forget it. Mixing *premultiplied* rather than straight RGBA is what makes partial
+  result is pulled back towards the pixels held before by the coverage of the mask, so a brush, a move
+  or a fill cannot write outside it without each one carrying the rule, and a writer cannot forget it.
+  A write names which fence it wants (`PaintFence`): `selection` for a stroke, `own_coverage` for an edit
+  that arrives with coverage of its own — an AI composite's feathered mask is meant to reach past the
+  selection it was compiled from, and fencing it there deletes the feather and leaves the report
+  describing an edit the document did not perform. With `own_coverage` staying inside the intended region
+  is the caller's claim, and `bounds` is what the undo step was recorded against.
+  Mixing *premultiplied* rather than straight RGBA is what makes partial
   coverage mean "part of this stroke happened": straight-alpha mixing changes a pixel's colour when
   only its coverage was meant to change. `test_mask` compares the result against a separate
   double-precision scaling of the write, and pins the two ends exactly: coverage 0 leaves the pixel

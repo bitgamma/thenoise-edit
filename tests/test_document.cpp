@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <span>
 #include <string>
@@ -29,7 +30,7 @@ std::vector<Layer> stack(std::vector<std::pair<std::string, Image>> contents) {
 }
 
 void paint_on(Document& doc, Rect rect, std::uint8_t grey) {
-    doc.paint(rect, [rect, grey](Image& image) {
+    doc.paint(rect, PaintFence::selection, [rect, grey](Image& image) {
         const std::uint8_t rgba[4] = {grey, grey, grey, 255};
         image.fill_rect(rect, rgba);
     });
@@ -662,6 +663,43 @@ void test_a_selection_holds_every_write_inside_it() {
     CHECK_NE(doc.checksum(), std::string{});
 }
 
+// The other half of the door: an edit that arrives with its own coverage - an AI composite's feathered
+// mask, compiled from the selection and then widened - must not be re-clipped by that selection, or the
+// hard edge returns and the report the caller printed describes an edit the document did not perform.
+// It still has to be one undo step that gives every byte back.
+void test_an_edit_carrying_its_own_coverage_reaches_past_the_selection() {
+    const Extent size{12, 9};
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(size, 10, 20, 30, 255)}}), std::nullopt, "x.noise");
+
+    Mask selection(size);
+    selection.op(Rect{4, 3, 4, 3}, MaskOp::replace);
+    CHECK(doc.set_selection(selection));
+
+    const Image before = doc.layer(0).pixels;
+    const int steps_before = doc.history().undo_depth;
+    const std::uint8_t patch[4] = {200, 200, 0, 255};
+    doc.paint(Rect{0, 0, size.w, size.h}, PaintFence::own_coverage,
+              [&](Image& image) { image.fill_rect(Rect{3, 2, 6, 5}, patch); });
+
+    const Image after = doc.layer(0).pixels;
+    std::size_t past = 0;
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            if (selection.coverage(x, y) == 0 &&
+                std::memcmp(after.at(x, y), before.at(x, y), kChannels) != 0) {
+                ++past;
+            }
+        }
+    }
+    CHECK(past > 0);  // the margin landed, which is the whole claim of this door
+    // And it is undone whole. A step that restored only what the selection would have allowed would
+    // leave the margin behind as a permanent smear.
+    CHECK_EQ(doc.history().undo_depth, steps_before + 1);
+    CHECK(doc.undo());
+    CHECK_EQ(doc.layer(0).pixels.checksum_hex(), before.checksum_hex());
+}
+
 // A shape whose edge covers part of a pixel is the case the coverage plane exists for: the write is
 // mixed by how much, not switched on and off by whether there is any. Painting white onto black makes
 // the expected result exact - the coverage byte itself - so this pins the whole path from a shape's
@@ -1236,6 +1274,7 @@ int main() {
     });
     test_no_selection_and_an_empty_selection_are_different_things();
     test_a_selection_holds_every_write_inside_it();
+    test_an_edit_carrying_its_own_coverage_reaches_past_the_selection();
     test_a_partly_covered_selection_paints_partly();
     test_a_gesture_clips_to_the_selection_and_undoes_exactly();
     test_painting_a_mask_is_one_undo_step_that_hides_and_shows();

@@ -59,7 +59,10 @@ struct ComposeReport {
 
     // The feather actually used, after an `auto` policy resolved it.
     int feather_px = 0;
-    bool colour_matched = false;
+    // The ring correction ran and moved pixels. The policy's `colour_match` is the request for it;
+    // this is the fact that it was needed - a patch that already agrees with its ring is corrected by
+    // nothing, and reporting the request as the effect would make a probe believe a match happened.
+    bool colour_corrected = false;
     // The crop clipped to `target`: what the composite could reach at all.
     Rect area{};
 

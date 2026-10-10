@@ -287,7 +287,10 @@ run asserts it with `pixels.compare`.
 `ai.compose {image, apply?, feather?, colour_match?, lock_band?}` is that path on the wire, with the
 document's selection as the mask and no selection meaning whole-document coverage. `apply` false (the
 default) touches nothing and writes a preview PNG; `apply` true goes through `Document::paint`, so it is
-one undo step and the selection fences it like any other edit. The report carries the resolved policy,
+one undo step that returns every byte — but with `PaintFence::own_coverage`, **not** fenced by the
+selection: the effective coverage is the limit, and a fence at the selection would cut the feather off and
+leave the report describing an edit the document did not perform (`test_ai_compose_probe` checks the report
+against the document's own pixels, and that the feather reaches past the selection). The report carries the resolved policy,
 the effective coverage, `pixels_changed`, `pixels_clipped_by_alpha` and `answered_as_requested` — false
 on that last one is not a failure (the engine answers a snapped size and the resample copes) but it is
 where a drift investigation starts.
