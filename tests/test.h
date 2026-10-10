@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <iterator>
 #include <string>
 #include <type_traits>
@@ -102,6 +103,17 @@ inline void expect_ok(const R& result, const char* expression, const char* file,
     }
 }
 
+// A precondition, not an assertion: continuing after one would compare against a state the test never
+// set up, which reports a failure that did not happen.
+inline void require(bool condition, const char* expression, const char* file, int line) {
+    ++checks;
+    if (!condition) {
+        report(expression, file, line, "PRECONDITION");
+        std::fflush(stderr);
+        std::exit(1);
+    }
+}
+
 inline int summary(const char* suite) {
     std::fprintf(stderr, "%s: %d checks, %d failures\n", suite, checks, failures);
     return failures == 0 ? 0 : 1;
@@ -109,6 +121,7 @@ inline int summary(const char* suite) {
 
 }
 
+#define REQUIRE(...) ::noise::test::require((__VA_ARGS__), #__VA_ARGS__, __FILE__, __LINE__)
 #define CHECK(...) ::noise::test::expect((__VA_ARGS__), #__VA_ARGS__, __FILE__, __LINE__)
 #define CHECK_OK(expr) ::noise::test::expect_ok((expr), #expr " ok", __FILE__, __LINE__)
 #define CHECK_EQ(a, b) ::noise::test::expect_eq((a), (b), #a " == " #b, __FILE__, __LINE__)
