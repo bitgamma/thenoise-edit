@@ -109,8 +109,10 @@ with its ring.
 Measured on the live app, worth keeping as the reference numbers for the first recipe: auto feather picked
 8 px for a 140×140 mask and its transition measured ~11 px on each side of the selection edge; the ring
 corrected a deliberate cast from a mean 25.7 units off the true background to 1.7; the exact answer landed
-with a worst-channel error of 0.5. **Open:** a colour step that big still shows a Mach-band edge at an 8 px
-feather, so `kAutoFeatherMaxPx` is a recipe question, not a settled number.
+with a worst-channel error of 0.5. **Settled by the human: 8 px is the right ceiling.** A colour step as
+large as the probe's deliberately paints shows a Mach-band edge at that width, and the answer is the
+recipe naming a wider `feather_px` for a job that expects a big colour change — not a larger default, which
+would cost every ordinary edit a quarter of its feature width.
 
 **Red-check of the slice.** 24 mutants over `compose`/`blur`/`resample`/`colour_match`: **22 killed**, 0
 anchors unusable, re-run against the final tree. The 2 survivors are equivalents, and the reason matters
