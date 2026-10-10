@@ -3,13 +3,59 @@
 
 #include "app/command_args.h"
 
+#include "core/layer.h"
+#include "core/log.h"
 #include "core/mask.h"
 
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <string_view>
 
 namespace noise::app {
+
+namespace {
+
+// What a fill leaves behind. A row per end of the coverage scale, so the panel and the wire ask for
+// the same two things and neither restates what the byte is.
+struct MaskFill {
+    const char* name;
+    std::uint8_t coverage;
+};
+constexpr MaskFill kMaskFills[]{
+    {"show", kMaskIn},
+    {"hide", kMaskOut},
+};
+
+std::string mask_fill_names() {
+    std::string names;
+    for (const MaskFill& fill : kMaskFills) {
+        if (!names.empty()) {
+            names += ", ";
+        }
+        names += fill.name;
+    }
+    return names;
+}
+
+// The canvas the whole-plane commands write, in the document's own coordinates.
+Rect canvas(const AppState& state) {
+    return Rect{0, 0, state.doc.width(), state.doc.height()};
+}
+
+// The active layer, or a refusal naming the layer that had no mask to act on. The write itself goes
+// through `Document::paint_mask`, because that is the door which records the step, repairs the
+// composite and asks the selection how far the write may reach.
+const Layer* masked_layer(AppState& state, const char* who, CommandResult& refusal) {
+    const Layer& layer = state.doc.layer(static_cast<std::size_t>(state.doc.active()));
+    if (!layer.mask) {
+        refusal = fail(who, "layer '" + layer.name + "' has no mask (mask.add puts one down)");
+        return nullptr;
+    }
+    return &layer;
+}
+
+}  // namespace
 
 void register_mask_commands(AppState& state, CommandTable& table) {
     // The two directions between a selection and a layer mask. Both are copies of the same
@@ -48,6 +94,101 @@ void register_mask_commands(AppState& state, CommandTable& table) {
         }
         state.doc.set_selection(layer.mask);
         return command_ok(selection_json(state));
+    });
+
+    // The mask itself, as an object the panel can put on and take off. Adding one replaces one the
+    // layer already has, which is what the panel's single button does and why it says `Add` only
+    // when there is nothing there.
+    table.add("mask.add", "Put a fully shown mask on the active layer, replacing one it has", {}, {},
+              [&state](const json&) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        Mask mask(state.doc.size());
+        mask.fill(kMaskIn);
+        if (!state.doc.set_layer_mask(state.doc.active(), mask)) {
+            return fail("mask.add", "the mask did not fit the document");
+        }
+        return command_ok(layer_mask_json(state.doc.layer(static_cast<std::size_t>(state.doc.active()))));
+    });
+
+    table.add("mask.remove", "Take the active layer's mask off", {}, {},
+              [&state](const json&) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        if (!state.doc.set_layer_mask(state.doc.active(), std::nullopt)) {
+            return fail("mask.remove", "the layer could not be changed");
+        }
+        return command_ok(layer_mask_json(state.doc.layer(static_cast<std::size_t>(state.doc.active()))));
+    });
+
+    table.add("mask.fill", "Fill the active layer's mask with full or no coverage", {}, {"to"},
+              [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        if (!args.contains("to") || !args.at("to").is_string()) {
+            return fail("mask.fill", "'to' must be one of " + mask_fill_names());
+        }
+        const std::string_view to = args.at("to").get<std::string_view>();
+        for (const MaskFill& fill : kMaskFills) {
+            if (to != fill.name) {
+                continue;
+            }
+            CommandResult refusal;
+            if (masked_layer(state, "mask.fill", refusal) == nullptr) {
+                return refusal;
+            }
+            const std::uint8_t coverage = fill.coverage;
+            state.doc.paint_mask(canvas(state),
+                                 [coverage](Mask& mask) { mask.fill(coverage); });
+            return command_ok(layer_mask_json(state.doc.layer(static_cast<std::size_t>(state.doc.active()))));
+        }
+        return fail("mask.fill", "'to' must be one of " + mask_fill_names());
+    });
+
+    table.add("mask.invert", "Turn what the active layer's mask shows into what it hides", {}, {},
+              [&state](const json&) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        CommandResult refusal;
+        if (masked_layer(state, "mask.invert", refusal) == nullptr) {
+            return refusal;
+        }
+        state.doc.paint_mask(canvas(state), [](Mask& mask) { mask.invert(); });
+        return command_ok(layer_mask_json(state.doc.layer(static_cast<std::size_t>(state.doc.active()))));
+    });
+
+    table.add("mask.target", "Choose the plane a stroke writes: 'pixels' or 'mask'", {}, {"plane"},
+              [&state](const json& args) -> CommandResult {
+        if (!args.contains("plane") || !args.at("plane").is_string()) {
+            return fail("mask.target",
+                        "'plane' must be one of " + layer_plane_names() + ", in mask.target");
+        }
+        const std::optional<LayerPlane> plane = layer_plane_from_name(args.at("plane").get<std::string>());
+        if (!plane) {
+            return fail("mask.target", "unknown plane '" + args.at("plane").get<std::string>() +
+                                           "' (" + layer_plane_names() + ")");
+        }
+        state.paint_target = *plane;
+        return command_ok(brush_json(state));
+    });
+
+    table.add("mask.get", "Report where strokes go and what the active layer's mask holds", {}, {},
+              [&state](const json&) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        return command_ok(json{{"target", layer_plane_name(state.paint_target)},
+                               {"mask", layer_mask_json(state.doc.layer(
+                                            static_cast<std::size_t>(state.doc.active())))}});
     });
 }
 

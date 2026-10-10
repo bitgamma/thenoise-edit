@@ -159,9 +159,41 @@ the layer back. The panel says which layer carries one and how much of it shows
 (`mask on 'Layer 1': 2295 px shown`), `layer.list` reports `mask` per row - `null` meaning none - and
 a mask is saved in the `.noise` as its own plane, `layers/<n>/mask.m8`.
 
-What is not here: painting into a mask, enabling/disabling or deleting one from the keyboard, viewing
-a mask on its own, or a mask anywhere but on a layer. There is no way yet to draw a mask except by
-selecting first.
+### Painting one
+
+The Layers panel has a **mask** section for the active layer: **Add mask** puts a fully-shown mask on
+it, and once there is one, **Remove**, **Show all**, **Hide all** and **Invert**. Below them, two
+radio buttons say where strokes go: **paint: layer** writes colour as always, **paint: mask** writes
+coverage. Aimed at the mask, the brush reveals it and the eraser hides it, with the same size, hardness
+and opacity you set for painting - a soft brush lays a soft mask edge, and half opacity reveals half.
+
+```text
+mask.target {"plane": "mask"}   aim strokes at the mask, over the wire
+mask.get                        where strokes go, and what the mask holds
+```
+
+There is no key for the aim yet: the radio buttons are the quick way, and `mask.target` is the way a
+driver does it. Whatever set it, `app.state` reports `brush.paint_target` and a live gesture reports
+the plane it has been writing since the button went down (`stroke.plane`), so a session can be read
+rather than remembered.
+
+One drag is one undo step, and `Ctrl+Z` puts the coverage back exactly - it does not touch the layer's
+pixels, which is the same promise as before. A selection fences a mask stroke exactly as it fences a
+colour one: what the brush did happens only where the selection reaches, and a half-selected pixel
+moves half way.
+
+Two counts are reported, because they answer different questions: **touched** is how many pixels the
+mask reached, **shown** is how much of them it shows. An anti-aliased edge makes them differ,
+and `mask.get` gives both (`covered` and `area`).
+
+Aiming at a mask the layer does not have is refused rather than silently painting colour: a stroke
+reports which layer it looked at and says to `mask.add` one. Filling and inverting a mask are undoable;
+putting one on and taking it off are not steps, and taking one off drops the undo steps that named its
+coverage, since there is nothing left to restore them into.
+
+What is not here: enabling or disabling a mask without deleting it, applying it, viewing a mask on its
+own, or a mask thumbnail to click. A mask still cannot be started from nothing but a selection or an
+`Add mask`.
 
 ## Layers
 
@@ -274,7 +306,8 @@ stroke and a capture, and the PNG turned up where it said.
 | document | `doc.new` `doc.open` `doc.save` `doc.export` `doc.get` `image.get` |
 | layers | `layer.list` `layer.add` `layer.remove` `layer.select` `layer.set` |
 | paint | `tool.brush` `tool.eraser` `tool.move` `tool.select` (one per tool row) `tool.set` `tool.stroke` `tool.pointer` `brush.larger` `brush.smaller` |
-| selection | `select.rect` `select.ellipse` `select.all` `select.clear` `select.invert` `select.from_mask` `select.get` `mask.from_selection` |
+| selection | `select.rect` `select.ellipse` `select.all` `select.clear` `select.invert` `select.from_mask` `select.get` |
+| masks | `mask.from_selection` `mask.add` `mask.remove` `mask.fill` `mask.invert` `mask.target` `mask.get` |
 | view | `view.fit` `view.set` `view.pan` `view.zoom` |
 | edit | `edit.undo` `edit.redo` |
 | observe | `screenshot` `pixels.compare` |
@@ -310,9 +343,9 @@ problems and only one of them is a bug:
 
 - **No AI at all.** No server profile, no roles, no generate / remove / replace / upscale.
   That is milestones M3 and M4.
-- **Selections are rectangular only, and masks cannot be painted.** No lasso, wand, feather or
-  grow/shrink, and no brush that edits a mask rather than a layer: today a mask can only come from a
-  selection. There is nothing to enable, disable, apply or view one with either.
+- **Selections are rectangular and elliptical only.** No lasso, wand, feather or grow/shrink.
+  Masks can be painted (`mask.target`), but there is nothing to enable, disable, apply or view one
+  with, and no thumbnail to click.
 - **No reorder, rename, duplicate or merge** in the Layers panel.
 - **Four tools**: brush, eraser, move and select. No fill, eyedropper, lasso or wand, no pen pressure.
 - **No `.ora`/PSD at all**: OpenRaster is out of the design by decision, so a foreign layered file

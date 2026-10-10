@@ -163,8 +163,18 @@ void register_paint_commands(AppState& state, CommandTable& table) {
                                    {"touched", json::array()},
                                    {"revision", state.doc.revision()}});
         }
+        if (state.paint_target == LayerPlane::mask && !state.paint_target_held()) {
+            return fail("tool.stroke", "the paint target is 'mask' and layer '" +
+                                           state.active_layer().name + "' has none (mask.add)");
+        }
         std::optional<Rect> touched;
-        state.doc.paint(bounds, [&](Image& image) { touched = paint_stroke(image, path, brush, color, mode); });
+        if (state.paint_target == LayerPlane::mask) {
+            state.doc.paint_mask(bounds, [&](Mask& mask) {
+                touched = paint_stroke_mask(mask, path, brush, mode);
+            });
+        } else {
+            state.doc.paint(bounds, [&](Image& image) { touched = paint_stroke(image, path, brush, color, mode); });
+        }
         if (!touched) {
             return fail("tool.stroke", "the stroke painted nothing inside the document");
         }
@@ -172,6 +182,7 @@ void register_paint_commands(AppState& state, CommandTable& table) {
         // across it, and a caller that wants one asks `doc.get`.
         return command_ok(json{{"tool", tool},
                                {"dabs", dabs},
+                               {"plane", layer_plane_name(state.paint_target)},
                                {"touched",
                                 json::array({touched->x, touched->y, touched->w, touched->h})},
                                {"revision", state.doc.revision()}});
@@ -197,6 +208,12 @@ void register_paint_commands(AppState& state, CommandTable& table) {
         }
         switch (*action) {
             case ToolAction::paint:
+                if (phase == "press" && !state.paint_target_held()) {
+                    return fail("tool.pointer", "the paint target is '" +
+                                                    std::string(layer_plane_name(state.paint_target)) +
+                                                    "' and layer '" + state.active_layer().name +
+                                                    "' has none (mask.add)");
+                }
                 if (phase == "press") {
                     brush_press(state, point);
                 } else if (phase == "drag") {

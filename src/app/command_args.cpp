@@ -170,6 +170,7 @@ json layer_mask_json(const Layer& layer) {
     }
     const Rect bounds = layer.mask->bounds();
     return json{{"covered", layer.mask->covered()},
+                {"area", layer.mask->area()},
                 {"bounds", json::array({bounds.x, bounds.y, bounds.w, bounds.h})}};
 }
 
@@ -243,6 +244,9 @@ json document_json(const AppState& state) {
 json stroke_json(const AppState& state) {
     return json{{"active", state.gesturing()},
                 {"dabs", state.stroke.dabs},
+                // Which plane this press has been writing since the button went down, which is the
+                // target as it was then rather than as it is now.
+                {"plane", layer_plane_name(state.stroke.plane)},
                 // Where a move gesture has got to. Zero for a paint gesture, so one reply shape
                 // serves both and a client reading `dabs` is unaffected.
                 {"dx", state.move.dx},
@@ -264,6 +268,10 @@ json stroke_json(const AppState& state) {
 
 json brush_json(const AppState& state) {
     return json{{"tool", state.tool},
+                // Which plane of the active layer the next stroke writes. `mask.get` says whether that
+                // plane is there; a target aimed at a plane the layer lacks refuses strokes rather
+                // than silently painting colour.
+                {"paint_target", layer_plane_name(state.paint_target)},
                 {"color", json::array({state.color.r, state.color.g, state.color.b,
                                        state.color.a})},
                 {"size", state.brush.size},

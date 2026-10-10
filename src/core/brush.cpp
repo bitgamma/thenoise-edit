@@ -253,6 +253,56 @@ void scratch_composite(Image& image, const StrokeScratch& scratch, Rgba8 color,
     }
 }
 
+std::vector<std::uint8_t> scratch_coverage(const StrokeScratch& scratch, Rect region,
+                                           double opacity) {
+    const bool inside = region.x >= scratch.rect.x && region.y >= scratch.rect.y &&
+                        region.right() <= scratch.rect.right() &&
+                        region.bottom() <= scratch.rect.bottom();
+    if (region.empty() || !inside) {
+        return {};
+    }
+    std::vector<std::uint8_t> patch;
+    patch.reserve(static_cast<std::size_t>(region.w) * static_cast<std::size_t>(region.h));
+    for (int y = 0; y < region.h; ++y) {
+        for (int x = 0; x < region.w; ++x) {
+            const double alpha = scratch.coverage[index(scratch.rect, region.x + x, region.y + y)] *
+                                 std::clamp(opacity, 0.0, 1.0);
+            patch.push_back(static_cast<std::uint8_t>(
+                std::lround(std::clamp(alpha, 0.0, 1.0) * kMaskIn)));
+        }
+    }
+    return patch;
+}
+
+MaskInk mask_ink(PaintMode mode) {
+    switch (mode) {
+        case PaintMode::Over:
+            return MaskInk::reveal;
+        case PaintMode::Erase:
+            return MaskInk::hide;
+    }
+    // Unreachable while every mode is listed above, which is the point: a new mode breaks the build
+    // on the switch rather than silently mapping to a default.
+    return MaskInk::reveal;
+}
+
+std::optional<Rect> paint_stroke_mask(Mask& mask,
+                                      const std::vector<Vec2>& path,
+                                      const Brush& brush,
+                                      PaintMode mode) {
+    const std::vector<Vec2> dabs = stroke_dabs(path, brush);
+    const Rect touched = stroke_bounds(path, brush, mask.size());
+    if (mask.empty() || dabs.empty() || touched.empty()) {
+        return std::nullopt;
+    }
+    StrokeScratch scratch;
+    const Rect stamped = scratch_stamp(scratch, dabs, brush, mask.size());
+    if (!mask.paint(stamped, scratch_coverage(scratch, stamped, brush.opacity), mask_ink(mode))) {
+        return std::nullopt;
+    }
+    return touched;
+}
+
 std::optional<Rect> paint_stroke(Image& image,
                                  const std::vector<Vec2>& path,
                                  const Brush& brush,

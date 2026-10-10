@@ -49,10 +49,13 @@ Constraints that shape everything (see `AI-BACKEND.md`):
   panel has a dropdown per layer, `layer.set {mode}` sets one, and the composite applies it. Rename,
   duplicate, drag-reorder and the M5 modes are not
 - merge down, flatten, crop-to-selection, new-layer-via-copy/clone
-- **partly live**: a layer mask exists (`Layer::mask`), the composite honours it, it is saved with the
-  project, and it converts both ways with the selection (`mask.from_selection`, `select.from_mask`) -
-  with buttons for both in the Brush panel. Still missing: hide-all/show-all, enable/disable, apply
-  (destructive), alt-click to view the mask, and anything at all to paint into one
+- **live**: a layer mask (`Layer::mask`) the composite honours, saved with the project, converting
+  both ways with the selection (`mask.from_selection`, `select.from_mask`) - buttons for both in the
+  Brush panel - and **paintable**: the Layers panel puts one on (`mask.add`), takes it off
+  (`mask.remove`), fills it (`mask.fill {to: show|hide}`), inverts it (`mask.invert`) and aims strokes
+  at it (`mask.target {plane: pixels|mask}`), so the brush reveals coverage and the eraser takes it
+  back, one drag per undo step. Still missing: enable/disable without deleting it, apply
+  (destructive), alt-click to view the mask, and a mask thumbnail in the row
 
 **Selections**
 - rect, ellipse, polygon/lasso (path → scanline fill), magic wand (tolerance,
@@ -61,7 +64,7 @@ Constraints that shape everything (see `AI-BACKEND.md`):
 - **live**: marching ants, `Ctrl+D` clear, invert, save selection ↔ layer mask (and the reverse), and
   two shapes — rectangle (`M`) and the anti-aliased ellipse inscribed in the drag (`Shift+M`), plus
   `select.rect` / `select.ellipse` with `replace`/`add`/`subtract`. Missing: lasso, wand, feather,
-  expand/shrink, border, and any way to paint into a mask
+  expand/shrink and border
 
 **AI**
 - `New image from prompt` → new layer, aspect presets at the model's native scale,

@@ -35,33 +35,35 @@ void paint_on(Document& doc, Rect rect, std::uint8_t grey) {
 // The composite is repaired over the rectangles that changed, so the load-bearing property is
 // that it ends up identical to one built from scratch. A partial repair that missed a region, or
 // blended a layer twice, shows up here and nowhere else.
+void composite_matches_scratch(Document& live, const char* where) {
+    std::vector<Layer> copy;
+    for (const Layer& layer : live.layers()) {
+        Layer clone;
+        clone.name = layer.name;
+        clone.pixels = layer.pixels;
+        clone.visible = layer.visible;
+        clone.opacity = layer.opacity;
+        clone.mode = layer.mode;
+        clone.mask = layer.mask;
+        copy.push_back(std::move(clone));
+    }
+    Document fresh;
+    fresh.reset(std::move(copy), std::nullopt, "x.noise");
+    const std::string built = live.composite().checksum_hex();
+    const std::string scratch = fresh.composite().checksum_hex();
+    if (built == scratch) {
+        ++noise::test::checks;
+        return;
+    }
+    noise::test::report("incremental composite == composite from scratch", __FILE__, __LINE__,
+                        std::string(where) + ": got " + built + " want " + scratch);
+}
+
 void test_the_incremental_composite_equals_one_built_from_scratch() {
     Document live;
     live.reset(stack({{"Paper", Image::filled(Extent{24, 18}, 20, 20, 20, 255)}}), std::nullopt, "x.noise");
 
-    const auto check_against_scratch = [&live](const char* where) {
-        std::vector<Layer> copy;
-        for (const Layer& layer : live.layers()) {
-            Layer clone;
-            clone.name = layer.name;
-            clone.pixels = layer.pixels;
-            clone.visible = layer.visible;
-            clone.opacity = layer.opacity;
-            clone.mode = layer.mode;
-            clone.mask = layer.mask;
-            copy.push_back(std::move(clone));
-        }
-        Document fresh;
-        fresh.reset(std::move(copy), std::nullopt, "x.noise");
-        const std::string built = live.composite().checksum_hex();
-        const std::string scratch = fresh.composite().checksum_hex();
-        if (built == scratch) {
-            ++noise::test::checks;
-            return;
-        }
-        noise::test::report("incremental composite == composite from scratch", __FILE__,
-                            __LINE__, std::string(where) + ": got " + built + " want " + scratch);
-    };
+    auto check_against_scratch = [&live](const char* where) { composite_matches_scratch(live, where); };
 
     check_against_scratch("one layer, nothing painted");
     paint_on(live, Rect{1, 1, 5, 4}, 200);
@@ -685,7 +687,7 @@ void test_a_gesture_clips_to_the_selection_and_undoes_exactly() {
 // colour: the composite follows it frame by frame, the whole drag is one undo step, and undo puts
 // every coverage byte back - not approximately, and not the pixels with it.
 void test_painting_a_mask_is_one_undo_step_that_hides_and_shows() {
-    const Extent size{16, 5};
+    const Extent size{16, 8};
     Document doc;
     doc.reset(stack({{"A", Image::filled(size, 4, 5, 6, 255)},
                      {"B", Image::filled(size, 200, 30, 30, 255)}}),
@@ -701,23 +703,40 @@ void test_painting_a_mask_is_one_undo_step_that_hides_and_shows() {
     // Three events of one drag, each repainting its own rectangle: the last overlaps the second, so a
     // gesture that compounded its own work instead of starting from the held-aside coverage would
     // come back darker rather than identical.
-    for (const Rect event : {Rect{0, 0, 6, 5}, Rect{3, 0, 6, 5}, Rect{8, 0, 4, 5}}) {
+    // None of these starts at the top row, and the third leaves the rectangle the previous two grew,
+    // so the held-aside coverage is copied at a non-zero origin in both directions - the arithmetic
+    // that put a stroke outside the plane the first time it was written.
+    for (const Rect event : {Rect{0, 2, 6, 4}, Rect{3, 3, 6, 4}, Rect{8, 1, 4, 6}}) {
         CHECK(doc.begin_provisional(event, LayerPlane::mask));
         doc.repaint_provisional_mask(event, [event](Mask& mask, Rect area) {
             mask.op(intersect(area, event), MaskOp::subtract);
         });
+        composite_matches_scratch(doc, "mid-gesture, after a mask event");
     }
-    // Hidden where the drag reached (x 0..11 inclusive), shown where it did not.
+    // Hidden where the drag reached, shown everywhere else. The reach is the union of the three
+    // rectangles: x 0..11 for rows 2..6, and x 8..11 for rows 1 and 7 as well.
+    std::size_t shown_cells = 0;
     for (int x = 0; x < size.w; ++x) {
-        const std::uint8_t want = x < 12 ? kMaskOut : kMaskIn;
-        for (int y = 0; y < size.h; ++y) {            CHECK_EQ(static_cast<int>(doc.layer(1).mask->coverage(x, y)),
+        for (int y = 0; y < size.h; ++y) {
+            const bool reached = (x < 6 && y >= 2 && y < 6) || (x >= 3 && x < 9 && y >= 3 && y < 7) ||
+                                 (x >= 8 && x < 12 && y >= 1 && y < 7);
+            const std::uint8_t want = reached ? kMaskOut : kMaskIn;
+            shown_cells += reached ? 0u : 1u;            CHECK_EQ(static_cast<int>(doc.layer(1).mask->coverage(x, y)),
                        static_cast<int>(want));
         }
     }
-    // The canvas shows it, through the repaired composite rather than a rebuilt one.
-    CHECK_EQ(doc.composite().at(0, 0)[0], 4);
-    CHECK_EQ(doc.composite().at(15, 0)[0], 200);
-    CHECK(doc.layer(1).mask->bounds() == Rect{12, 0, 4, 5});
+    // The canvas shows it, through the repaired composite rather than a rebuilt one: every event of
+    // the gesture is compared against a composite built from scratch, because a mask write reaches the
+    // compositor by a route (masked layers, the blends-to-itself shortcut) that a colour write does
+    // not, and a repair that forgot the vacated half of a move would look fine here and nowhere else.
+    composite_matches_scratch(doc, "after a mask gesture");
+    CHECK_EQ(doc.composite().at(0, 0)[0], 200);   // row 0 was never reached, so the layer still shows
+    CHECK_EQ(doc.composite().at(15, 4)[0], 200);
+    CHECK_EQ(doc.composite().at(9, 4)[0], 4);     // reached, so the layer below shows through
+    CHECK_EQ(doc.layer(1).mask->covered(), shown_cells);
+    // The tight rectangle is the whole plane, because the drag missed enough of every edge for
+    // coverage to survive to all four sides - which is the check that the missed rows stayed missed.
+    CHECK(doc.layer(1).mask->bounds() == Rect{0, 0, size.w, size.h});
 
     CHECK(doc.in_provisional());
     doc.commit_provisional();
@@ -776,6 +795,53 @@ void test_the_selection_fences_a_mask_stroke_too() {
     CHECK_EQ(doc.history().undo_depth, 1);
     CHECK(doc.undo());
     CHECK_EQ(doc.layer(0).mask->covered(), static_cast<std::size_t>(size.w * size.h));
+}
+
+// The pointer path fences a coverage write as well as the one-call door does, and what a pixel outside
+// the selection returns to is the gesture's own held-aside byte rather than the write. `commit` then has
+// to leave the fenced state standing and record the fenced rectangle, so undo returns the same bytes the
+// gesture started from - not the unfenced ones the brush would have written.
+void test_a_mask_gesture_is_fenced_by_the_selection() {
+    const Extent size{10, 4};
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(size, 5, 5, 5, 255)}}), std::nullopt, "x.noise");
+    Mask shown(size);
+    shown.fill(kMaskIn);
+    CHECK(doc.set_layer_mask(0, shown));
+    doc.mark_saved();
+
+    Mask selection(size);
+    selection.op(Rect{3, 0, 4, size.h}, MaskOp::replace);
+    CHECK(doc.set_selection(selection));
+
+    // Hide the whole plane through the gesture door.
+    CHECK(doc.begin_provisional(Rect{0, 0, size.w, size.h}, LayerPlane::mask));
+    doc.repaint_provisional_mask(Rect{0, 0, size.w, size.h}, [](Mask& mask, Rect) {
+        mask.fill(kMaskOut);
+    });
+    const auto expect_fenced = [&doc, &size](const char* where) {
+        for (int x = 0; x < size.w; ++x) {
+            for (int y = 0; y < size.h; ++y) {
+                const std::uint8_t want = x >= 3 && x < 7 ? kMaskOut : kMaskIn;
+                if (doc.layer(0).mask->coverage(x, y) != want) {
+                    noise::test::report("mask gesture fenced by the selection", __FILE__, __LINE__,
+                                        std::string(where) + " at x=" + std::to_string(x) +
+                                            " y=" + std::to_string(y) + ": got " +
+                                            std::to_string(doc.layer(0).mask->coverage(x, y)) +
+                                            " want " + std::to_string(want));
+                }
+            }
+        }
+    };
+    expect_fenced("during the gesture");
+    doc.commit_provisional();
+    expect_fenced("after the commit");
+    CHECK_EQ(doc.history().undo_depth, 1);
+
+    CHECK(doc.undo());
+    CHECK_EQ(doc.layer(0).mask->covered(), static_cast<std::size_t>(size.w * size.h));
+    CHECK(doc.redo());
+    expect_fenced("after the redo");
 }
 
 // A stroke that changed no coverage is not an edit: no step, no dirty mark, no revision, exactly as
@@ -1081,6 +1147,7 @@ int main() {
     test_a_gesture_clips_to_the_selection_and_undoes_exactly();
     test_painting_a_mask_is_one_undo_step_that_hides_and_shows();
     test_the_selection_fences_a_mask_stroke_too();
+    test_a_mask_gesture_is_fenced_by_the_selection();
     test_a_mask_stroke_that_changed_nothing_costs_nothing();
     test_painting_a_layer_with_no_mask_is_refused();
     test_a_gesture_holds_one_plane();

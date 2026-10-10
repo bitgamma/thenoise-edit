@@ -37,6 +37,10 @@ struct PointerStroke {
     std::size_t dabs = 0;
     DabWalk walk{0.0, false};
     StrokeScratch scratch;
+    // Which of the layer's two planes this press writes, taken when the button went down. Held here
+    // rather than read per event because the held-aside bytes are one plane's: a target switched
+    // mid-drag would otherwise leave a gesture writing coverage into a snapshot of colour.
+    LayerPlane plane = LayerPlane::pixels;
 };
 
 // The gesture the pointer is making with the move tool. The snapshot is the active layer as it was
@@ -74,6 +78,11 @@ struct AppState {
     Brush brush = kBrushDefaults;
     Rgba8 color = kDefaultColor;
     std::string tool = kDefaultTool;
+    // Which plane of the active layer a stroke is aimed at. Read as the claim "the active layer's
+    // <plane>", with no reset policy of its own: a layer without that plane refuses the stroke, and
+    // the report says which plane and which layer, so nothing here has to shadow what the document
+    // looks like.
+    LayerPlane paint_target = LayerPlane::pixels;
     PointerStroke stroke;
     PointerMove move;
     PointerSelection select;
@@ -113,6 +122,24 @@ struct AppState {
     // button release through this, so a new tool has one place to be counted in and cannot leave
     // the button held by being forgotten in a condition elsewhere.
     bool gesturing() const { return stroke.active || move.active || select.active; }
+
+    // Whether the active layer holds the plane a stroke is aimed at. The panel hides the affordance,
+    // the commands refuse with this question, and the tool never starts a gesture it cannot hold - so
+    // "there is no mask here" is answered in one place rather than guessed at three.
+    bool paint_target_held() const {
+        if (doc.empty()) {
+            return false;
+        }
+        if (paint_target == LayerPlane::pixels) {
+            return true;
+        }
+        return active_layer().mask.has_value();
+    }
+
+    // The layer a write, a mask or a refusal is about.
+    const Layer& active_layer() const {
+        return doc.layer(static_cast<std::size_t>(doc.active()));
+    }
 };
 
 }

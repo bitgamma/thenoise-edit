@@ -8,6 +8,7 @@
 
 #include "core/geom.h"
 #include "core/image.h"
+#include "core/mask.h"
 #include "core/maskops.h"
 
 namespace noise {
@@ -124,8 +125,28 @@ Rect scratch_stamp(StrokeScratch& scratch, const std::vector<Vec2>& dabs, const 
 
 // Composites the accumulated coverage onto `image`, limited to `limit` - the same arithmetic
 // `paint_stroke` uses, which passes the rectangle the dabs reached.
-void scratch_composite(Image& image, const StrokeScratch& scratch, Rgba8 color,
+void scratch_composite(Image& image,
+                       const StrokeScratch& scratch,
+                       Rgba8 color,
                        const Brush& brush, PaintMode mode, Rect limit);
+
+// The same coverage, as bytes for the coverage door: `region` is the rectangle the dabs reached, as
+// returned by `scratch_stamp`, and must lie inside the scratch buffer. `opacity` scales it the way
+// `scratch_composite` scales a colour stroke, so a brush at 0.2 reveals a mask as softly as it lays
+// paint. A mask has no colour, so the stroke colour's alpha takes no part.
+std::vector<std::uint8_t> scratch_coverage(const StrokeScratch& scratch, Rect region,
+                                           double opacity);
+
+// Which end of the coverage scale a paint mode drives. Adding a third `PaintMode` breaks the build
+// here until it says what it does to a mask.
+MaskInk mask_ink(PaintMode mode);
+
+// Stamp a stroke's coverage into a mask: the same dab geometry as `paint_stroke`, so the same path
+// reaches the same cells whichever plane it lands on.
+std::optional<Rect> paint_stroke_mask(Mask& mask,
+                                      const std::vector<Vec2>& path,
+                                      const Brush& brush,
+                                      PaintMode mode);
 
 // The distance still owed before the next dab, so a gesture fed in point by point emits the
 // same dabs as the same polyline handed over all at once.

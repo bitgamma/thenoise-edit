@@ -136,6 +136,9 @@ public:
     const MaskFacts& facts() const;
 
     // Pixels with any coverage at all, and the tight box holding them (empty when there are none).
+    // No coverage at all, including a mask that was never given a plane.
+    bool empty() const { return plane_.empty(); }
+
     std::size_t covered() const { return facts().covered; }
     double area() const { return facts().area; }
     Rect bounds() const { return facts().bounds; }

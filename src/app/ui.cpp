@@ -433,6 +433,58 @@ void draw_layers_panel(AppState& state, CommandTable& commands) {
         if (ImGui::Button("Delete layer")) {
             commands.invoke("layer.remove", json::object());
         }
+        // The active layer's mask, and which plane of it strokes write. Every control is a `mask.*`
+        // command, so a click, the wire and a scripted test cannot disagree about what "Hide all"
+        // means, and none of them has to know whether a mask is a plane, a channel or a claim.
+        const Layer& active = state.doc.layer(static_cast<std::size_t>(state.doc.active()));
+        ImGui::SeparatorText("mask");
+        if (active.mask) {
+            if (ImGui::Button("Remove")) {
+                commands.invoke("mask.remove", json::object());
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Show all")) {
+                commands.invoke("mask.fill", json{{"to", "show"}});
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Hide all")) {
+                commands.invoke("mask.fill", json{{"to", "hide"}});
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Invert")) {
+                commands.invoke("mask.invert", json::object());
+            }
+            const json facts = layer_mask_json(active);
+            const json& bounds = facts["bounds"];
+            // Two lines, because one of them clipped mid-word in a panel a third of the window.
+            // "Touched" and "shown" are the two counts a coverage plane has - how many pixels it
+            // reached, and how much of them it shows - and an anti-aliased edge makes them differ, so
+            // a painter who read only one would misjudge what the brush did.
+            ImGui::TextDisabled("%d px touched, %.1f px shown",
+                                static_cast<int>(facts["covered"].get<std::int64_t>()),
+                                facts["area"].get<double>());
+            ImGui::TextDisabled("%d x %d at %d,%d", bounds[2].get<int>(), bounds[3].get<int>(),
+                                bounds[0].get<int>(), bounds[1].get<int>());
+        } else {
+            if (ImGui::Button("Add mask")) {
+                commands.invoke("mask.add", json::object());
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("nothing hidden");
+        }
+        // Two buttons, not a checkbox: which plane a stroke lands on is the question being answered.
+        // `paint: mask` is disabled where there is no mask, so the reason a stroke would do nothing
+        // is on the screen instead of in a canvas that refused to move.
+        const bool aimed_at_mask = state.paint_target == LayerPlane::mask;
+        if (ImGui::RadioButton("paint: layer", !aimed_at_mask)) {
+            commands.invoke("mask.target", json{{"plane", "pixels"}});
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!active.mask.has_value());
+        if (ImGui::RadioButton("paint: mask", aimed_at_mask)) {
+            commands.invoke("mask.target", json{{"plane", "mask"}});
+        }
+        ImGui::EndDisabled();
         ImGui::TextDisabled("%d x %d  %.1f%%", state.doc.width(), state.doc.height(),
                             state.view.scale * 100.0);
     }

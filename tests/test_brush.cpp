@@ -3,8 +3,10 @@
 
 #include "core/brush.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -280,6 +282,104 @@ void test_repainting_only_what_changed_equals_repainting_the_whole_scratch() {
     CHECK_NE(stepwise.checksum_hex(), base.checksum_hex());
 }
 
+// What a stroke costs a mask. The dab's strength is the ink: the scratch is the single source of
+// coverage for both planes, so the same path reaches the same cells and lands at the same strength
+// whichever plane it is aimed at, and `opacity` scales that strength rather than the geometry.
+void test_a_stroke_of_a_plane_is_woven_from_one_scratch() {
+    const Extent size{200, 120};
+    const Brush brush{22.0, 0.75, 1.0, 0.9, 0.3};
+    const std::vector<Vec2> path{Vec2{40.0, 90.0}, Vec2{160.0, 30.0}};
+
+    StrokeScratch colour;
+    const Rect painted = scratch_stamp(colour, stroke_dabs(path, brush), brush, size);
+    StrokeScratch coverage;
+    const Rect stamped = scratch_stamp(coverage, stroke_dabs(path, brush), brush, size);
+    CHECK(painted == stamped);
+    CHECK(!stamped.empty());
+
+    // The patch is exactly the rectangle the dabs reached - which is what lets the document write one
+    // rectangle and repair one rectangle.
+    const std::vector<std::uint8_t> ink = scratch_coverage(coverage, stamped, 1.0);
+    CHECK_EQ(ink.size(), static_cast<std::size_t>(stamped.w) * static_cast<std::size_t>(stamped.h));
+    // A region the scratch does not hold is refused rather than read out of the buffer.
+    CHECK(scratch_coverage(coverage, Rect{0, 0, size.w, size.h}, 1.0).empty());
+    CHECK(scratch_coverage(coverage, Rect{stamped.x - 1, stamped.y, stamped.w, stamped.h}, 1.0).empty());
+    CHECK(scratch_coverage(coverage, Rect{}, 1.0).empty());
+
+    // And the two planes agree cell for cell: `paint_stroke_mask` and `scratch_composite` started from
+    // the same scratch, so the mask's coverage is the colour stroke's alpha and not a recomputation
+    // that could drift by a pixel.
+    Mask mask(size);
+    CHECK(paint_stroke_mask(mask, path, brush, PaintMode::Over).has_value());
+    Image image = Image::filled(size, 0, 0, 0, 0);
+    scratch_composite(image, colour, Rgba8{255, 255, 255, 255}, brush, PaintMode::Over, painted);
+    std::size_t differing = 0;
+    std::size_t reached = 0;
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const int alpha = image.at(x, y)[3];
+            const int cell = mask.coverage(x, y);
+            differing += alpha != cell ? 1u : 0u;
+            reached += cell > 0 || alpha > 0 ? 1u : 0u;
+        }
+    }
+    CHECK_EQ(differing, 0u);
+    CHECK(reached > 100u);
+}
+
+// Opacity scales the ink, and the eraser travels the other way with the same arithmetic.
+void test_opacity_and_the_eraser_move_coverage_both_ways() {
+    const Extent size{120, 80};
+    const std::vector<Vec2> path{Vec2{30.0, 40.0}, Vec2{90.0, 40.0}};
+
+    Mask full(size);
+    full.fill(kMaskIn);
+    Mask empty(size);
+
+    const Brush soft{20.0, 0.6, 1.0, 1.0, 0.25};
+    CHECK(paint_stroke_mask(full, path, soft, PaintMode::Erase).has_value());
+    CHECK(paint_stroke_mask(empty, path, soft, PaintMode::Over).has_value());
+    CHECK(full.plane() != empty.plane());
+
+    const Brush faint{20.0, 0.6, 0.25, 1.0, 0.25};
+    Mask faint_hide(size);
+    faint_hide.fill(kMaskIn);
+    CHECK(paint_stroke_mask(faint_hide, path, faint, PaintMode::Erase).has_value());
+    Mask faint_reveal(size);
+    CHECK(paint_stroke_mask(faint_reveal, path, faint, PaintMode::Over).has_value());
+
+    // The symmetry is the rule `had + (target - had) * ink`: what a quarter-strength eraser takes off a
+    // fully shown mask, a quarter-strength brush puts back on an empty one, to within the byte's own
+    // rounding on each side.
+    std::size_t worst = 0;
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const int taken = kMaskIn - faint_hide.coverage(x, y);
+            const int given = faint_reveal.coverage(x, y);
+            worst = std::max(worst, static_cast<std::size_t>(std::abs(taken - given)));
+        }
+    }
+    CHECK(worst <= 2u);
+    // Per cell the two are the same move from opposite ends of the scale, so across the whole plane
+    // their areas add up to the plane - up to a byte of rounding each way. That is the invariant a
+    // `MaskInk` reversal has to hold: the eraser is not a different brush.
+    CHECK_NEAR(faint_hide.area() + faint_reveal.area(), static_cast<double>(size.w * size.h), 40.0);
+    CHECK(faint_hide.area() > faint_reveal.area());
+
+    // A stroke at half opacity reveals about half of what the same stroke at full opacity reveals - a
+    // property the pointer path relies on, because the panel's opacity slider is the only thing
+    // between a mask stroke and a full reveal.
+    Mask half(size);
+    Mask whole(size);
+    const Brush weak{20.0, 1.0, 0.5, 1.0, 0.25};
+    const Brush strong{20.0, 1.0, 1.0, 1.0, 0.25};
+    CHECK(paint_stroke_mask(half, path, weak, PaintMode::Over).has_value());
+    CHECK(paint_stroke_mask(whole, path, strong, PaintMode::Over).has_value());
+    CHECK(whole.area() > 0.0);
+    const double ratio = half.area() / whole.area();
+    CHECK(ratio > 0.35 && ratio < 0.7);
+}
+
 int main() {
     test_dabs_are_spaced_from_the_brush_size();
     test_coverage_is_a_round_ramped_stamp();
@@ -289,5 +389,7 @@ int main() {
     test_stroke_bounds_is_exactly_the_painted_rectangle();
     test_a_scratch_stamped_in_pieces_holds_the_same_coverage_as_one_stamp();
     test_repainting_only_what_changed_equals_repainting_the_whole_scratch();
+    test_a_stroke_of_a_plane_is_woven_from_one_scratch();
+    test_opacity_and_the_eraser_move_coverage_both_ways();
     return noise::test::summary("brush");
 }

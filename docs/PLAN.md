@@ -406,6 +406,90 @@ the overlay. The lasso is the one item here that is not a producer over a box: i
 gesture, which is `stroke`-shaped rather than marquee-shaped, and that is the reason it stayed on the
 list rather than coming with this slice.
 
+### A mask is a plane you can paint
+
+**Built.** `mask.add`, `mask.remove`, `mask.fill {to: show|hide}`, `mask.invert`,
+`mask.target {plane: pixels|mask}` and `mask.get`; a **mask** section in the Layers panel with those four
+buttons, the two counts a coverage plane has, and `paint: layer` / `paint: mask` radio buttons; and the brush
+and eraser writing coverage when aimed at the mask. One drag is one undo step, the selection fences it, the
+layer's own bytes never move, and a stroke aimed at a mask the layer lacks is refused naming both.
+
+The question was whether painting a mask needed a mechanism. It needed one fact: `LayerPlane`
+(`pixels`, `mask`), which a write - and therefore a history step - belongs to. `Mask::paint(rect, ink,
+reveal|hide)` mixes coverage towards one end of the scale by the ink, the same rule the colour door uses, so
+two coats at half strength come to three quarters rather than to a union of two claims (`test_ink_lays_coverage_in_coats`
+says it in bytes: 128 then 191, then exactly 255, and `faint_hide.area() + faint_reveal.area() == the plane`,
+which is the eraser being *the same brush* and not a second one). `Document::paint_mask` is the door, and what
+it already did for colour it now does for coverage: the canvas clip, the selection fence, the `unchanged` test
+that keeps a stroke which moved nothing from costing a step, the repair rectangle, one history record. The
+scratch that holds a stroke's dab coverage hands the same bytes to either plane, so
+`test_a_stroke_of_a_plane_is_woven_from_one_scratch` can demand that a stroke's mask coverage equals the same
+stroke's alpha, cell for cell over 24000 pixels - one weave, two planes, no second rasteriser to drift.
+
+Three things no type checks for you, each now said in code:
+
+* **A gesture holds one plane.** The held-aside bytes are one plane's, so `PointerStroke::plane` is fixed at
+  button-down and `Document::begin_provisional(rect, plane)` refuses to change horses mid-press
+  (`test_a_gesture_holds_one_plane`, and `stroke.plane` on the wire shows a mid-drag `mask.target` does not
+  split a gesture across two planes).
+* **A step has to be restored into the plane it came from.** Undo of a coverage step pastes coverage; a step
+  naming coverage on a layer that has no mask now *refuses* rather than replacing the whole canvas with a mask
+  nobody painted, and `mask.remove` drops the steps that name it while leaving the layer's colour steps alone
+  (`test_taking_a_mask_off_ends_a_gesture_and_its_steps`).
+* **The mask rows copy addressed from each side's own rectangle.** `copy_coverage_rows` subtracted the source
+  origin and not the destination's, so every gesture whose rectangle started below row 0 wrote past the end of
+  the held-aside plane. **Every unit test had its gesture rectangles at `y = 0`**, and the app died on the
+  first real drag, four pixels down from the top of the canvas. The arithmetic is `copy_rows`'s, which was
+  right; the fix is one subtraction per side, the regression is `Rect{0, 2, 6, 4}` in the mask gesture test,
+  and `test_document`, `test_mask`, `test_maskops` and `test_history` are clean under
+  `-fsanitize=address,undefined` (`ASAN_OPTIONS=detect_leaks=0`; LSan itself cannot run under this harness's
+  ptrace). **Read this as a warning about test geometry: a rectangle that starts at the origin tests one
+  corner of the addressing and nothing else.**
+
+A hole the same test hunt found, unrelated to painting: `Document::checksum()` hashed layer names, visibility,
+opacity, mode and pixels - and not the mask. Two documents differing only in what they hid had the same digest,
+so the `.noise` round-trip comparison had been weaker than it read for as long as masks existed. It counts them
+now, which changes the digest of every document holding a mask; `tools/wire_input.py` had been using the
+document digest to claim "a mask did not edit the layer's pixels", which is exactly the claim a mask-inclusive
+digest can no longer make, so it compares the layer's own pixel digest from `layer.list` instead - the command
+that reports it.
+
+On screen (`/tmp/mask_paint_probe.py`, 3.62 px per doc px, an opaque layer over a magenta base so "hidden" and
+"shown" are two colours rather than an alpha argument): filling the mask with nothing shown leaves **0 device px
+of the masked layer** anywhere on the document; a pointer-drawn brush over it shows **34 974 px fully the masked
+layer, 6 286 px of partial edge**, where the wire's own `area` predicts 37 324 - the difference is the rim, and
+`Ctrl+Z` on the eraser pass that followed put `covered` back to 2997 exactly. The measurement itself needed one
+correction: counting "pixels that are neither colour" over `app.state.canvas` counted the **void outside the
+document** as part of the picture (611x522 canvas area against a 579x434 document, 68k px), which made a clean
+hard-edged stroke look two thirds antialiased. Measure the document rectangle, not the canvas area.
+`/tmp/mask_painted.png` is the picture; the panel crop showed the facts line clipping mid-word at the panel
+width, so the counts and the bounds are on two lines now.
+
+Through real X events (`tools/wire_input.py`, extended, and this is `ctest`'s `test_input_gestures`):
+`brush on the mask: gesture plane mask, dabs 10, covered 0 -> 645, layer bytes unchanged True, composite
+f3cc1031 -> 22fdc2f1, 2 -> 3 steps`, `Ctrl+Z` back to 0, then the same drag aimed at `pixels` changing the
+layer's bytes and leaving `covered` alone, and after `mask.remove` the refusal arriving as
+`the paint target is 'mask' and layer 'Layer 1' has none (mask.add)`. One trap here: `app.state.stroke` is
+cleared on release, so a gesture's `plane`/`dabs` have to be read between the last move and the release - the
+first version read them after the press and dutifully reported one dab.
+
+`tools/container_probe.py` now saves and reopens a mask taken from an **ellipse** rather than a rectangle, and
+says what a painted mask actually is in a file: bytes outside the curve's box zero, fewer bytes claimed than the
+box holds, at least one byte strictly between 0 and 255 (without it, a container that stored a bitmap would pass
+every other claim), and `area` equal across the round trip - the check that every byte came back, since the area
+sums them.
+
+Counts after the slice: `mask` 4766, `brush` 1843, `document` 3576, `maskops` 8515, `history` 138,
+`app` 56213; 21/21 green in Debug and Release with no new warnings.
+
+**Where that leaves the design.** A mask is now a plane with two doors and one representation, which is what the
+AI path was missing: a painted mask *is* an inpaint region, and `region compile = mask ∩ layer, cropped to
+Mask::bounds` needs no new type to exist. What the panel still cannot do is enable or disable a mask without
+deleting it, apply it, or show a thumbnail to click - the thumbnail is a pointer target in the row, which is the
+same UI plumbing the layer rows will want for reorder. `paint_target` deliberately has no reset policy: it is a
+claim about the next stroke, and the answer to a claim that does not hold is a refusal that names the layer, not
+a second piece of state shadowing what the document looks like.
+
 ### To do, in order
 
 1. ~~**Blend modes**~~ - done; see "Blend modes, as built" above for the arithmetic, the
@@ -413,9 +497,10 @@ list rather than coming with this slice.
    did not move.
 2. ~~**Rectangular selection (`M`)**~~ - done as the section above: `core::Mask` as the document's
    selection, clipping at the write doors, `select.*`, live marquee, `.noise` format 3.
-3. ~~**Layer masks, and the two conversions**~~ - done as the section above. What is left of the idea
-   is mask *painting* (item 5) and a mask affordance in the Layers panel: today a mask can only come
-   from a selection, and can only be removed by converting a covered-nothing selection.
+3. ~~**Layer masks, and the two conversions**~~ - done as the section above, and now **painted**:
+   see "A mask is a plane you can paint". Left of the idea: enable/disable without deleting, apply
+   (destructive), view a mask on its own, and a thumbnail in the row to click - which is the pointer
+   target reorder will want too.
 4. ~~**The rectangle is still the only shape**~~ - the ellipse is done, and it cost no new type: see
    "The rectangle was the only shape" above. Left here: the lasso, which needs a freehand path rather
    than a box (a gesture shaped like `stroke`, not like the marquee), and grow/shrink/feather as one
@@ -423,7 +508,11 @@ list rather than coming with this slice.
 5. **`core/maskops`** exists, with shapes in it: `MaskShape` (`rect`, `ellipse`) applied over a `Rect`
    with a `MaskOp`, and `Mask::op(area, patch, op)` as the seam any producer writes through. Still to
    arrive in it: flood fill (the wand - seed, tolerance, contiguous or global), feather, morphology,
-   colour-match - the pieces mask painting and the region compiler both want.
+   colour-match - all producers over a plane, none of them a new type. Mask painting did *not* come
+   through here: a brush is a producer of coverage over a rectangle too, but its coverage is woven by
+   the dab walk, so it hands over `scratch_coverage` and writes through `Mask::paint`. Where the two
+   meet is `Mask::op`: a feather or a grow is a pass over the plane, and the wand is a seed plus the
+   same patch hand-off.
 6. **The rest of the `edit` group** (`cut`, `copy`, `paste`) and the first AI command with a region
    compile behind it, in that order. (Undo/redo have been live since the gesture fix; `crop` and
    `flatten` wait on tool UI.) A masked layer is the natural source of an inpaint region: subtracting

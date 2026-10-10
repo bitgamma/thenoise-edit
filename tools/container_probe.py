@@ -220,8 +220,10 @@ def check_layer_mask_archive(work: Path, wire: wd.Wire, fails: list[str]) -> Non
     # this document's, so say which document is being masked rather than assume the last one.
     wire.call("doc.new", {"width": WIDTH, "height": HEIGHT, "fill": [12, 34, 56, 255]})
     wd.wait_for_fit(wire)
-    rect = [2, 1, 9, 5]
-    wire.call("select.rect", {"rect": rect, "mode": "replace"})
+    # An ellipse, not a rectangle: a painted mask holds partial coverage as a matter of course, so
+    # the archive has to round-trip the bytes and not just which pixels are non-zero.
+    rect = [4, 3, 17, 11]
+    wire.call("select.ellipse", {"rect": rect, "mode": "replace"})
     report = wire.call("mask.from_selection", {})
     wire.call("doc.save", {"path": str(path)})
     with zipfile.ZipFile(path) as archive:
@@ -239,13 +241,22 @@ def check_layer_mask_archive(work: Path, wire: wd.Wire, fails: list[str]) -> Non
         if len(plane) != WIDTH * HEIGHT:
             fails.append(f"layer mask plane is {len(plane)} bytes, expected {WIDTH * HEIGHT}")
             return
-        wanted = {(y * WIDTH + x)
-                  for y in range(rect[1], rect[1] + rect[3])
-                  for x in range(rect[0], rect[0] + rect[2])}
         claimed = {index for index, byte in enumerate(plane) if byte}
-        if claimed != wanted:
-            fails.append(f"the layer mask claims {len(claimed)} pixels, expected the {len(wanted)} "
-                         f"of the rectangle")
+        box = {y * WIDTH + x
+               for y in range(rect[1], rect[1] + rect[3])
+               for x in range(rect[0], rect[0] + rect[2])}
+        if not claimed <= box:
+            fails.append(f"the layer mask claims {len(claimed - box)} pixels outside the ellipse's "
+                         f"box, which nothing painted")
+        if len(claimed) >= len(box):
+            fails.append(f"the mask claims all {len(box)} px of the ellipse's box, so this read a "
+                         f"rectangle and not a curve")
+        partial = sum(1 for byte in plane if 0 < byte < 255)
+        if not partial:
+            # Without a byte in between, a file that stored the mask as a bitmap would pass every
+            # other claim here.
+            fails.append("no byte of the saved mask is partial, so the anti-aliased case is not "
+                         "being read at all")
 
     # Through the app again: the mask is on the same layer and the canvas is the same picture.
     wire.call("doc.new", {"width": 2, "height": 2})
@@ -255,6 +266,14 @@ def check_layer_mask_archive(work: Path, wire: wd.Wire, fails: list[str]) -> Non
     if shown.get("covered") != report.get("covered"):
         fails.append(f"mask after reopen covers {shown.get('covered')}, expected "
                      f"{report.get('covered')}")
+    if report.get("area", 0.0) >= rect[2] * rect[3]:
+        fails.append(f"the selection claimed area {report.get('area')} of a "
+                     f"{rect[2] * rect[3]} px box")
+    if shown.get("area") != report.get("area"):
+        # The area sums the coverage bytes, so this is the claim that every byte came back and not
+        # merely the set of pixels that are non-zero.
+        fails.append(f"mask after reopen shows area {shown.get('area')}, expected "
+                     f"{report.get('area')}: a coverage byte changed on the way through the file")
     if opened.get("dirty"):
         # Reading a mask is not an edit; a loader that set it through a path that marked the
         # document dirty would have every open look like an unsaved change.

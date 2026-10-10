@@ -43,10 +43,15 @@ src/
     image.{h,cpp}      ImageBuffer (RGBA8 straight alpha, stride-aware, tiles later)
     document.{h,cpp}   Document: a stack of layers, path, revision, the composite over them
                        and the history under it
-    layer.{h,cpp}      Layer (id, name, pixels, visible, opacity, mode) and generated names;
-                       a stack is bottom-first
-    history.{h,cpp}    undo/redo as stacked (layer, rectangle) deltas, budgeted by stored bytes
-    brush.{h,cpp}      dabs, stamp coverage, stroke compositing (the CPU paint path)
+    layer.{h,cpp}      Layer (id, name, pixels, optional mask, visible, opacity, mode) and generated
+                       names; a stack is bottom-first. `LayerPlane` names which of a layer's two
+                       planes - `pixels`, `mask` - a write or a step belongs to, and its name table is
+                       the vocabulary `mask.target` and `stroke.plane` speak
+    history.{h,cpp}    undo/redo as stacked (layer, plane, rectangle) deltas, budgeted by stored bytes
+    brush.{h,cpp}      dabs, stamp coverage, stroke compositing (the CPU paint path), and the same
+                       coverage handed to the other plane: `scratch_coverage` as bytes for the mask
+                       door, `mask_ink` as the coverage statement of `PaintMode`, and
+                       `paint_stroke_mask` stamping a whole stroke into a `Mask`
     blend.{h,cpp}      the blend reference: source-over and erase on straight RGBA8, the layer
                        blend (mode + per-layer opacity) and `kBlendModes`, the one table of
                        modes and their manifest names, and the one place a blend result is
@@ -59,7 +64,9 @@ src/
                        match yet.
     mask.{h,cpp}       the coverage plane: one byte per pixel, straight, and the one home of the
                        rules over it - `op(rect, replace|add|subtract)`, `op(rect, patch, op)` for
-                       coverage a shape produced, `invert`, and `facts()` (pixels touched, the area
+                       coverage a shape produced, `paint(rect, ink, reveal|hide)` for a stroke laying
+                       coverage in coats towards one end of the scale, `invert`, and `facts()` (pixels
+                       touched, the area
                        those bytes claim, the tight bbox, and the boundary as `runs()` of `MaskRun`,
                        which are the **edges** between covered and uncovered pixels labelled with the
                        side they face: each edge once, consecutive edges of one side as one run).
@@ -109,8 +116,9 @@ src/
                        part of the app layer)
     ui/                panels: layers, generate, journal, jobs, status, prefs
     select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
-    mask_commands.cpp select.from_mask and mask.from_selection - the two directions between a
-                       selection and the active layer's mask, both copies of one `Mask`
+    mask_commands.cpp mask.from_selection, mask.add/remove/fill/invert, mask.target and mask.get -
+                       the two directions between a selection and the active layer's mask (both copies
+                       of one `Mask`), the mask's own life cycle, and where strokes are aimed at
   ai/
     server.{h,cpp}     ServerProfile: base URL, bearer key, TLS opts, adaptive timeouts;
                        /v1/health handshake; session-model state; load/pin; latency EMA
@@ -279,6 +287,25 @@ curves and boxes without a case for the pair.
   outside its bounds too, so a box taken from either mask would leave the composite showing the mask
   that used to be (`test_document` compares the incremental repair against a rebuild after a mask
   moves, precisely because that is the bug a bounds-based region would hide).
+* **A mask is a plane, so painting it is a write and not a subsystem.** `Mask::paint(rect, ink, mask_ink)`
+mixes coverage towards one end of the scale by the ink, the same rule the colour door uses, so two coats
+at half strength come to three quarters rather than to a union of two claims, and the ends stay exact.
+`Document::paint_mask` is the door: it takes the selection fence, the `unchanged` test that keeps a
+stroke which moved nothing from costing a step, the repair rectangle and the history record, and
+`History` steps carry their `LayerPlane` so undo restores the plane it was taken from. Three things a
+gesture has to get right and no type checks for you: it holds **one** plane for the whole press (the
+held-aside bytes are that plane's, so `PointerStroke::plane` is fixed at button-down and the document
+refuses a write from the other); the plane rows are copied addressed from each side's own rectangle,
+which is the arithmetic that ran off the end of the plane the first time a stroke started below row 0;
+and taking a mask off drops the steps that name its coverage, because restoring them into a layer
+without one would replace the whole canvas with a mask nobody painted. `mask.add` and `mask.remove` are
+therefore not steps, while `mask.fill` and `mask.invert` are: they write coverage through the same door
+a brush does.
+* **`paint_target` is a claim, not a shadow of the document.** Strokes go to the active layer's
+  `pixels` or `mask`; nothing resets it when the layer changes or the mask goes away, because a reset
+  policy would be a second fact to keep true. A stroke aimed at a plane the layer lacks is refused
+  naming the layer and the plane, `app.state` reports the aim and `stroke.plane` the plane the press is
+  holding, and `mask.get` answers whether that plane is there at all.
 * **`select.from_mask` and `mask.from_selection` are copies**, which is why a selection and a layer
   mask are one type rather than two with an adapter between them: an adapter needs rules, and rules
   are where "the mask moved by a pixel" and "the partial coverage got rounded" come from. Converting
@@ -481,7 +508,8 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | Group | Commands | Why |
 |---|---|---|
 | state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `server.state`, `job.list`, `log.tail` | read what the app believes, cheaply |
-| drive | `select.rect {rect, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `screenshot`, `pixels.compare`, `wire.info` | `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
+| drive | `select.rect {rect, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `screenshot`, `pixels.compare`, `wire.info` |
+ `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
 | ai | `ai.preview {recipe, args}` (compiled request + prepped PNG, **no send**), `ai.run`, `job.wait {id}`, `cache.stats` | verify what we *would* send before spending minutes of someone's GPU |
 
@@ -497,7 +525,11 @@ up: for a rectangle they are equal, for an anti-aliased curve `area` is what the
 `covered` is the pixels it grazes. While a pointer gesture is down, `stroke` also reports `marquee` —
 the box the select tool is drawing, live, and `marquee_shape`, which of them it is: the only way to
 tell a marquee that tracks the pointer from one that appears on release, and the only way to see which
-tool row a gesture was started with. Enough for a driver to place an image rect on screen, wait
+tool row a gesture was started with. The mask is reported the same way a selection is - `layer.list`
+rows carry `mask` (`covered`, `area`, `bounds`, or `null` for none), `mask.get` adds `target`, and
+`brush.paint_target` says where the next stroke goes - so a driver can tell a mask that hides
+everything from a layer that has no mask, and a stroke that painted colour from one that painted
+coverage. Enough for a driver to place an image rect on screen, wait
 for the frame that drew it, and tell a stroke from an undo. `doc.get` is the call that hashes
 the pixels and answers with a checksum; `app.state` deliberately does not, because a driver
 polls it every frame. `fit_pending` is true while a fit waits for a

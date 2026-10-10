@@ -356,8 +356,11 @@ void Document::copy_coverage_rows(Mask& dst, Rect dst_at, const Mask& src, Rect 
     }
     const std::size_t row = static_cast<std::size_t>(area.w);
     for (int y = 0; y < area.h; ++y) {
-        std::memcpy(dst.row(area.y + y).data() + (area.x - dst_at.x),
-                    src.row(area.y + y).data() + (area.x - src_at.x), row);
+        // Each side is addressed from its own rectangle's corner, exactly as `copy_rows` does for
+        // colour: a gesture rectangle that does not start at the top-left has to subtract it twice
+        // over, once for the held-aside copy's origin and once for the plane's.
+        std::memcpy(dst.row(area.y + y - dst_at.y).data() + (area.x - dst_at.x),
+                    src.row(area.y + y - src_at.y).data() + (area.x - src_at.x), row);
     }
 }
 

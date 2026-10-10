@@ -219,6 +219,8 @@ KEY_J = 0x6A           # XK_j, bound to nothing today
 KEY_COMMA = 0x2C       # XK_comma
 KEY_PERIOD = 0x2E      # XK_period
 KEY_CTRL_L = 0xFFE3    # XK_Control_L
+KEY_B = 0x62           # XK_b
+KEY_E = 0x65           # XK_e
 KEY_V = 0x0076         # XK_v
 KEY_M = 0x006D         # XK_m
 KEY_D = 0x0064         # XK_d
@@ -567,6 +569,104 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
     if loaded_back["bounds"] != masked["bounds"] or loaded_back["covered"] != masked["covered"]:
         fails.append(f"select.from_mask gave {loaded_back}, expected the mask's {masked}")
     print(f"select.from_mask: bounds {loaded_back['bounds']}, covered {loaded_back['covered']}")
+
+    # Painting the mask itself with the pointer. The claim is about the seam: a stroke aimed at
+    # `mask` moves coverage and nothing else, so the layer's own bytes sit still while the canvas
+    # changes, the gesture reports the plane it is writing, and one drag is one undo step that puts
+    # the coverage back. A screenshot cannot tell this from painting colour, and neither can a test
+    # that only reads the mask back.
+    wire.call("select.clear", {})
+    wire.call("mask.target", {"plane": "mask"})
+    wire.call("mask.fill", {"to": "hide"})
+
+    def mask_view() -> tuple:
+        listed = wire.call("layer.list", {})
+        active = listed["active"]
+        facts = wire.call("mask.get", {})
+        return facts, listed["layers"][active]["checksum"], listed["composite_checksum"]
+
+    aimed = wire.call("app.state", {})["brush"]["paint_target"]
+    cleared, _, _ = mask_view()
+    print(f"mask.target mask: paint_target {aimed}, filled with nothing shown: "
+          f"covered {cleared['mask']['covered']}")
+    if aimed != "mask":
+        fails.append(f"mask.target reported '{aimed}'")
+    if cleared["mask"]["covered"] != 0:
+        fails.append(f"a filled-to-hidden mask covers {cleared['mask']['covered']} px")
+
+    wire.call("tool.set", {"tool": "brush", "size": 14.0, "hardness": 1.0})
+    doc = wd.document_screen_rect(wire.call("app.state", {}))
+    before_facts, layer_before, composite_before = mask_view()
+    depth_before = wire.call("app.state", {})["document"]["history"]["undo_depth"]
+    inj.move(doc[0] + doc[2] * 0.25, doc[1] + doc[3] * 0.35)
+    inj.button(1, True)
+    wd.settle(wire)
+    inj.move(doc[0] + doc[2] * 0.7, doc[1] + doc[3] * 0.55)
+    wd.settle(wire)
+    # Read between the move and the release: after the release the gesture is over and its own record
+    # is gone, which is what a press-only read found - one dab, and no evidence of a drag.
+    during = wire.call("app.state", {})["stroke"]
+    inj.button(1, False)
+    wd.settle(wire)
+    after_facts, layer_after, composite_after = mask_view()
+    depth_after = wire.call("app.state", {})["document"]["history"]["undo_depth"]
+    print(f"brush on the mask: gesture plane {during['plane']}, dabs {during['dabs']}, "
+          f"covered {before_facts['mask']['covered']} -> {after_facts['mask']['covered']}, "
+          f"layer bytes unchanged {layer_after == layer_before}, composite "
+          f"{composite_before[:8]} -> {composite_after[:8]}, {depth_before} -> {depth_after} steps")
+    if during["plane"] != "mask":
+        fails.append(f"the press reported plane '{during['plane']}', expected 'mask'")
+    if during["dabs"] < 2:
+        fails.append("the drag laid no dabs, so nothing below proves anything")
+    if after_facts["mask"]["covered"] == 0:
+        fails.append("painting the mask revealed nothing")
+    if layer_after != layer_before:
+        fails.append("a mask stroke moved the layer's colour bytes")
+    if composite_before == composite_after:
+        fails.append("the canvas did not change, so the mask stroke never reached the composite")
+    if depth_after != depth_before + 1:
+        fails.append(f"a mask drag cost {depth_after - depth_before} undo steps, expected one")
+
+    inj.modified_key(KEY_Z, KEY_CTRL_L)
+    wd.settle(wire)
+    reverted, _, _ = mask_view()
+    print(f"Ctrl+Z after the mask stroke: covered back to {reverted['mask']['covered']}")
+    if reverted["mask"]["covered"] != 0:
+        fails.append("undo did not put the mask back to hidden")
+
+    # Aimed at colour again, the same stroke writes colour: the mask's own facts stop moving and the
+    # layer's bytes start to.
+    wire.call("mask.target", {"plane": "pixels"})
+    inj.key(KEY_B)
+    wd.settle(wire)
+    _, layer_before_colour, _ = mask_view()
+    inj.move(doc[0] + doc[2] * 0.3, doc[1] + doc[3] * 0.3)
+    inj.button(1, True)
+    inj.move(doc[0] + doc[2] * 0.6, doc[1] + doc[3] * 0.5)
+    wd.settle(wire)
+    inj.button(1, False)
+    wd.settle(wire)
+    facts_colour, layer_after_colour, _ = mask_view()
+    print(f"paint: pixels - same drag: layer bytes changed "
+          f"{layer_after_colour != layer_before_colour}, mask covered stayed "
+          f"{reverted['mask']['covered']} -> {facts_colour['mask']['covered']}")
+    if layer_after_colour == layer_before_colour:
+        fails.append("aimed at pixels, the stroke painted nothing")
+    if facts_colour["mask"]["covered"] != reverted["mask"]["covered"]:
+        fails.append("aimed at pixels, the stroke still edited the mask")
+
+    # With the mask taken off, a stroke aimed at it is refused by name rather than painting colour
+    # behind the user's back.
+    wire.call("mask.remove", {})
+    wire.call("mask.target", {"plane": "mask"})
+    try:
+        wire.call("tool.stroke", {"points": [[10.0, 10.0]]})
+        fails.append("a stroke aimed at a removed mask was accepted")
+    except wd.WireError as why:
+        print(f"stroke aimed at a removed mask: {why}")
+        if "has none" not in str(why):
+            fails.append(f"the refusal did not name the missing mask: {why}")
+    wire.call("mask.target", {"plane": "pixels"})
 
     # The step keys, through the real key path. `,`/`.` move hardness by one step and Shift takes
     # the same two keys to opacity - which only a real modifier state can demonstrate, because the
