@@ -76,6 +76,7 @@ observed, not assumed; the numbers are from one dev box and rotate with it.
 ### What the last commit changed, and why it was one commit
 | `17ee6c9` | a mask becomes a plane you can write: `LayerPlane`, `Mask::paint(rect, ink, reveal\|hide)`, `Document::paint_mask`, per-plane history and a gesture that holds one plane; `Document::checksum()` counts masks | undo had to know which plane a step restores or it would paste coverage over colour; the digest hole meant a `.noise` round-trip check had been blind to lost coverage for as long as masks existed |
 | `ed249ba` | `mask.add/remove/fill/invert/target/get`, the Layers panel's mask section and `paint: layer\|mask` radios, brush and eraser writing coverage, `brush.paint_target`, `stroke.plane`, mask `area`; the row-addressing fix | the panel, the aim and the refusal are one claim - without the refusal the aim can lie, without the reports a driver cannot tell a mask that hides everything from a layer that has none. Also the out-of-bounds copy every unit test missed by starting its gestures at `y = 0` |
+| `d0fc0be` | mask counts kept per row and dirtied per row, the boundary cached apart and walked over the mask's bounds, the composite's two skips, `tools/mask_speed_probe.py`, `tools/ants_window_probe.py`, two relative timing guards | the complaint was "mask painting is slow" and the paint was 0.01 ms: a per-frame panel read was re-scanning the plane (32 ms/event at 2048²), and the same family of whole-plane scan was making a marquee drag 18x a pixel event - found by measuring, not reported. Fusing the mask multiply into `blend_layer` was measured and declined |
 
 Three facts, entangled in `document.cpp` and `command_args.cpp`, each verified on its own:
 
@@ -519,6 +520,57 @@ compile behind it - with a painted mask as the region a recipe wants.
 command-table growth; if any wire-visible addition counts as a protocol change needing a yes first, that
 covers these too and they should be said so now rather than at the next review.
 
+### A mask stroke cost 32 ms a frame, and it was not the paint
+
+Reported: *painting in the mask is slower, much slower than painting in the image*. Measured rather
+than guessed at, because the shape of the complaint ("the other plane is slow") fits three different
+costs. Full numbers in `probes/2026-10-09-mask-and-marquee-cost.md`; what it was, in the order it turned
+up:
+
+- **The Layers panel reads `covered`/`area`/`bounds` every frame**, and any write to a mask dropped a
+  cache that was then refilled by scanning the plane: 32.25 ms per pointer event at 2048², against
+  0.01 ms for `Mask::paint` over the rectangle the stroke touched. So the mask stroke was slow because
+  a panel looked at it, not because coverage costs anything.
+- **Reading those three numbers also walked the boundary**, because `facts()` computed the ants' edges
+  in the same pass. A readout and an overlay had been welded into one question.
+- **The composite copied a masked layer through a scratch every time**, even when the mask showed
+  everything (what `mask.add` gives you) or reached nowhere.
+- **And a marquee drag cost 87.9 ms per event**, 18× a pixel event, which nobody had reported: the
+  boundary walk scanned the whole canvas whatever the selection covered. Not the reported bug, found by
+  the probe that measured the reported bug, and worse than it.
+
+The counts are per row now (cells touched, cells at full coverage, the sum of the bytes, first and last
+covered cell) and a write dirties only the rows it reached; the boundary is a separate cache and walks
+only the box the mask covers, because every edge has a covered pixel in it and the bounds hold all of
+them. The composite asks the tallies two questions before copying a layer: `covers_nothing(region)`
+takes the layer out of the repair, `covers_all(region)` leaves its own bytes to blend. Both are
+conservative in the direction that costs a pass and never in the direction that lies - a row with one
+bare cell cannot vouch for any box in it - and that direction is tested.
+
+After: 0.01 ms min / 0.12 ms mean for the counts after a 310x130 write, a wholly masked repair costs
+0.36 ms against 0.27 ms unmasked (was 1.45), a marquee event 7.1 ms (was 87.9), and the app-level
+number - the `tool.pointer` round trip, which is the frame the hand feels - 1.29× a pixel event.
+
+**Declined, with the measurement.** Fusing `scale_by_coverage` into `blend_layer` so a partly covered
+layer is blended in one pass: the multiply is 0.36 ms and the blend of the half-coverage source it
+produces is 0.80 ms, so the second pass is not the cost - semi-transparent pixels are, and any 50%
+opacity layer pays it. It would move `Mask` into `core/blend`'s signature to save a third of one pass.
+The row cache is what the fast paths needed anyway: `covers_all`/`covers_nothing` are free answers now.
+
+**What it is still owed.** The select tool builds a canvas-sized `Mask` and hands the document a copy on
+every event - a few megabytes zeroed and copied at 2048² before the outline is computed - so a marquee
+is 2.07× a pixel event. Proportional is a door to hand the tool (`Document::edit_selection`-shaped, or a
+move on the hand-off), not a redesign; `tools/mask_speed_probe.py` is the instrument that will show it.
+
+**How it is held.** Two relative timing guards in the suite - counts after a small write against a pass
+over the plane, and the boundary walk against the same boundary computed the whole-plane way - follow
+the `stroke_probe` precedent because a deleted fast path leaves every pixel correct and every other test
+green. 18 mutations, all red, none broken. And `tools/mask_speed_probe.py` (wire round trip per pointer
+event: mask, pixels, marquee, with parity limits) plus `tools/ants_window_probe.py` (which calibrates the
+document's rect from a whole-canvas selection's own dashes, then requires all four sides of a selection
+at (1200,1300,250x200)) stay manual: they measure a frame and a picture, and a shared box should not be
+able to fail the suite on both.
+
 ### To do, in order
 
 1. ~~**Blend modes**~~ - done; see "Blend modes, as built" above for the arithmetic, the
@@ -575,7 +627,9 @@ covers these too and they should be said so now rather than at the next review.
    a painted mask needs no new type), the tools honour it because the *document* applies it, and the
    composite and region paths needed nothing - clipping happens on the way in, so the flattened image
    never learns that a selection existed. `selection.{h,cpp}` was not created: a second coverage type
-   next to `Mask` is the thing the design now forbids.
+   next to `Mask` is the thing the design now forbids. What it still costs: the tool builds a
+   canvas-sized `Mask` per drag event and copies it into the document, so a marquee is 2.07x a pixel
+   event at 2048^2 even after the boundary walk learned about bounds.
 10. Deferred on purpose: CI until MVP; `enhance` role; blob store (until history or variants must
    outlive the session).
 
@@ -605,6 +659,24 @@ requires every command to refuse it, which is 101 red checks if the rule is remo
   Related: `build-failed` is not a caught mutation - five of 27 anchors needed rewriting (unused
   variables under `-Werror`, a `uint64_t` compared against its own type limit, and one that never
   matched the source and so had never been tested).
+- **A harness that restores sources but not objects leaves the mutant in the library.** It bit twice in
+  one afternoon: `test_document` went red on a tree that was correct, and a throwaway `.cpp` linked
+  against `build/libnoise_core.a` "reproduced" a composite that dropped a masked layer entirely. Both
+  were the last mutant in the archive. Rebuild after restoring, and never believe a red you did not
+  rebuild for.
+- **"Slower" names a symptom, not a stage.** The reported bug was mask painting; `Mask::paint` cost
+  0.01 ms and a readout cost 32 ms. Timing the stages before changing any of them also turned up a
+  second, worse defect of the same family (a marquee event at 87.9 ms) that nobody had noticed, and
+  killed a plausible restructuring (fusing the mask multiply into the blend) with two numbers.
+- **A `view.set` issued before the app's first fit is overridden by that fit.** A probe that set
+  `scale: 1` and computed where the ants should fall from the reply was looking at the wrong pixels, and
+  reported "the selection drew nothing" on a 2048² canvas - twice, for two different reasons, before the
+  calibration approach found them. Measure the mapping out of the capture: a whole-canvas selection
+  dashes the document's own edges, and those edges give scale and origin.
+- **Pixel-index arithmetic in a probe is as load-bearing as the code it measures.** Iterating a raw
+  buffer at step 3 and doing `i % width` (instead of `i // 3 % width`) reported a changed region running
+  to y=2395 on an 800-tall framebuffer, which made a correctly drawn overlay look absent. Print the
+  image size next to any bounding box, so an impossible number cannot pass for a finding.
 - Our own reader accepting our own writer proves nothing: the ZIP end-of-directory size was 12
   bytes wrong, `unzip` tolerated it, Python's `zipfile` refused it. `tools/container_probe.py`
   exists because of this. Any new format surface needs a second implementation reading it.

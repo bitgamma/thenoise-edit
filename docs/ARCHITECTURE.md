@@ -65,15 +65,23 @@ src/
     mask.{h,cpp}       the coverage plane: one byte per pixel, straight, and the one home of the
                        rules over it - `op(rect, replace|add|subtract)`, `op(rect, patch, op)` for
                        coverage a shape produced, `paint(rect, ink, reveal|hide)` for a stroke laying
-                       coverage in coats towards one end of the scale, `invert`, and `facts()` (pixels
-                       touched, the area
-                       those bytes claim, the tight bbox, and the boundary as `runs()` of `MaskRun`,
-                       which are the **edges** between covered and uncovered pixels labelled with the
-                       side they face: each edge once, consecutive edges of one side as one run).
+                       coverage in coats towards one end of the scale, `invert`, the counts `facts()`
+                       reports (pixels touched, the area those bytes claim, the tight bbox) and
+                       `boundary()` - the **edges** between covered and uncovered pixels labelled with
+                       the side they face: each edge once, consecutive edges of one side as one run.
                        Edges and not pixel groupings, because a boundary is only drawable along its
                        own length and a staircase must stay one line, and because rows grouped one
-                       way and columns the other make one corner belong to two lines. Held by the
-                       mask that owns the bytes and dropped by every write to them. A document's
+                       way and columns the other make one corner belong to two lines. The counts come
+                       from per-row tallies that a write dirties only for the rows it reached, and the
+                       boundary is cached apart from them and walked only over the box the mask covers
+                       - an overlay walking edges and a panel reading counts must not pay for each
+                       other, and at 2048² either one rescanned per pointer event is what made a mask
+                       stroke and a marquee drag feel slow
+                       (docs/probes/2026-10-09-mask-and-marquee-cost.md). `covers_all(region)` and
+                       `covers_nothing(region)` are answered from the same tallies, which is what lets
+                       the composite skip a pass it would only waste. Held by the mask that owns the
+                       bytes and dropped by every write to them, per row where the write says which
+                       rows. A document's
                        selection is a `Mask`; a layer mask is a `Mask`; converting between them is a
                        copy, which is why there is no `selection.{h,cpp}` and no second coverage
                        type. `restrict_to(mask, …)` is the write-door rule stated below, and
@@ -81,7 +89,7 @@ src/
                        how a composite reads a layer through its mask.
     maskops.{h,cpp}    coverage producers: `MaskShape` (`rect`, `ellipse`) applied to a `Rect` with a
                        `MaskOp`, the table `kMaskShapeInfo` naming them (and so naming the commands
-                     and marquee tools built from them). A shape writes the same coverage plane and is
+                       and the tools that draw them). A shape writes the same coverage plane and is
                        never a mask type of its own, so an added shape costs a row here and nothing in
                        the document, the composite, the format or the overlay. The ellipse is
                        anti-aliased by exact vertical strips, 16 samples for the width a pixel straddles.
@@ -279,7 +287,12 @@ curves and boxes without a case for the pair.
 
 * **A layer mask hides, and never edits.** `Layer` holds `std::optional<Mask>`, and the composite
   reads the layer through it (`scale_by_coverage`, the same premultiplied mix as `restrict_to`, with
-  nothing underneath). Painting is unaffected: a mask says what shows, not what exists, so a stroke
+  nothing underneath) except where the mask answers for itself: coverage reaching nowhere in the region
+  takes the layer out of it, and a wholly shown mask leaves the layer's own bytes to blend, which is the
+  state `mask.add` and `mask.fill{show}` produce. Both questions are answered from the mask's per-row
+  tallies, so neither costs a pass and each saves two; what a *partly* covered mask costs is the blend
+  of semi-transparent pixels, which any 50%-opacity layer costs too.
+  Painting is unaffected: a mask says what shows, not what exists, so a stroke
   under a masked-out area is real and comes back when the mask moves. Two consequences that are not
   obvious from either type: a *lone* masked layer no longer takes the "a stack of one is that layer"
   shortcut, because that shortcut hands back the layer's own bytes and would show what the file hides;
