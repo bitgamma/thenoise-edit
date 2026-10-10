@@ -23,6 +23,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                        const HostHooks& hooks) {
     register_document_commands(state, table);
     register_ai_commands(state, table);
+    register_ai_job_commands(state, table);
     register_paint_commands(state, table);
     register_layer_commands(state, table);
     register_select_commands(state, table);

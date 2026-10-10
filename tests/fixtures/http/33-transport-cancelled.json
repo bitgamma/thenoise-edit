@@ -1,0 +1,9 @@
+{
+ "name": "the transfer for 'cancelled-mid-transfer' never completed (cancelled)",
+ "method": "POST",
+ "path": "/images/edits",
+ "match": {
+  "model": "cancelled-mid-transfer"
+ },
+ "transport_error": "cancelled"
+}

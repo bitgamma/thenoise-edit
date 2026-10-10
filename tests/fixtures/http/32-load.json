@@ -1,0 +1,10 @@
+{
+ "name": "POST /load - explicit and priced, never silent",
+ "method": "POST",
+ "path": "/load",
+ "status": 200,
+ "json": {
+  "status": "ok",
+  "model_loaded": "Flux-2-Klein-9B-TheNoise"
+ }
+}

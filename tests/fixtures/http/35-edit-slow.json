@@ -1,0 +1,18 @@
+{
+ "name": "POST /images/edits - an answer that takes 700ms, so a queue and a cancellation exist",
+ "notes": "Cancellation and 'queued' are states that only exist while a request is in flight. A recording that answers at once cannot show them, and a test must not wait on a wall clock to make them exist either.",
+ "method": "POST",
+ "path": "/images/edits",
+ "match": {
+  "model": "slow-motion"
+ },
+ "delay_ms": 700,
+ "status": 200,
+ "json": {
+  "data": [
+   {
+    "b64_json": ""
+   }
+  ]
+ }
+}

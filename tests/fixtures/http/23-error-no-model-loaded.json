@@ -1,0 +1,14 @@
+{
+ "name": "503 - nothing resident",
+ "method": "POST",
+ "path": "/images/edits",
+ "match": {
+  "model": "not-resident"
+ },
+ "status": 503,
+ "json": {
+  "error": {
+   "message": "no model loaded"
+  }
+ }
+}

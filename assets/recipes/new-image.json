@@ -1,0 +1,13 @@
+{
+  "id": "new-image",
+  "endpoint": "generations",
+  "role": "generate.photo",
+  "region": "document",
+  "prep": "none",
+  "enhance": "never",
+  "prompt": [
+    "{{prompt}}",
+    "Compose the whole frame; there is no existing image to preserve."
+  ],
+  "composite": { "feather": "auto", "colour_match": false, "lock_band_px": 0, "extent": "canvas" }
+}

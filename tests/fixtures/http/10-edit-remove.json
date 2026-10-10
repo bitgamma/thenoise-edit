@@ -1,0 +1,17 @@
+{
+ "name": "POST /images/edits - an answer for the edit role at 64x64",
+ "method": "POST",
+ "path": "/images/edits",
+ "match": {
+  "model": "Flux-2-Klein-9B-TheNoise",
+  "size": "64x64"
+ },
+ "status": 200,
+ "json": {
+  "data": [
+   {
+    "b64_json": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAZUlEQVR42u3QQREAAAQAMAEklFgrcjh7rMAiu+azECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAu5bcjjR/+7y1Z0AAAAASUVORK5CYII="
+   }
+  ]
+ }
+}

@@ -20,6 +20,10 @@ add_executable(test_region test_region.cpp)
 add_executable(test_blur test_blur.cpp)
 add_executable(test_resample test_resample.cpp)
 add_executable(test_compose test_compose.cpp)
+add_executable(test_roles test_roles.cpp)
+add_executable(test_recipes test_recipes.cpp)
+add_executable(test_provider test_provider.cpp)
+add_executable(test_backend test_backend.cpp)
 
 foreach(target test_hash test_geom test_command test_wire test_brush test_history)
     target_link_libraries(${target} PRIVATE noise_core noise_dbg)
@@ -82,6 +86,11 @@ add_test(NAME test_image COMMAND test_image)
 # harness injects its own runtime dir, so the test runs standalone as well as under ctest.
 target_link_libraries(test_app PRIVATE noise_app noise_core noise_dbg)
 target_include_directories(test_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# The harness loads the shipped tables from the tree: roles and recipes are data the app is expected to
+# read, and a test that stubbed them would not be testing the resolution.
+target_compile_definitions(test_app
+    PRIVATE NOISE_TEST_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets"
+            NOISE_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/http")
 target_compile_options(test_app PRIVATE -Wall -Wextra -Werror -Wshadow)
 add_test(NAME test_app COMMAND test_app)
 
@@ -120,6 +129,15 @@ if(Python3_Interpreter_FOUND)
     # The result compositor on the running app: an answer lands where the selection is, the report
     # agrees byte for byte with what the document shows, the feather reaches past the selection (a
     # door that re-clipped it would put the hard edge back), and undo returns everything.
+    # The whole AI path on the running app, against the recordings: discovery, role resolution, the
+    # compiled request, the queue, the landing, and the pixels the report claims.
+    add_test(NAME test_ai_job_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ai_job_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_ai_job_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 600)
+
     add_test(NAME test_ai_compose_probe
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ai_compose_probe.py
                      --bin $<TARGET_FILE:noise-edit>)
@@ -169,6 +187,16 @@ option(NOISE_LIVE_TESTS "Register tests that make requests against the dev serve
 if(NOISE_LIVE_TESTS AND Python3_Interpreter_FOUND)
     # What the real server's contract actually is. Asserts discovery, explicit size, the shape
     # of a refusal and the 16px snap; records timings. --max-images caps the spend.
+    # The same probe against the dev box: contract and pixel-lock only, timings printed for
+    # docs/probes/, and a per-run image cap because the box is shared.
+    add_test(NAME ai_job_probe_live
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ai_job_probe.py
+                     --bin $<TARGET_FILE:noise-edit> --live --max-images 2)
+    set_tests_properties(ai_job_probe_live PROPERTIES
+                         LABELS live
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 1800)
+
     add_test(NAME tn_probe_live
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/tn_probe.py
                      --max-images 10 --upscale)
@@ -200,3 +228,38 @@ target_link_libraries(test_compose PRIVATE noise_ai noise_core noise_dbg)
 target_include_directories(test_compose PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(test_compose PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
 add_test(NAME test_compose COMMAND test_compose)
+
+# The role table and resolution order: which model a command gets, and what it says when the answer is
+# none. The shipped `roles.json` is checked here, so its policy numbers - the ones every region compile
+# hands the engine - cannot change without a test noticing.
+target_link_libraries(test_roles PRIVATE noise_ai noise_core noise_io noise_dbg)
+target_include_directories(test_roles PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(test_roles PRIVATE NOISE_TEST_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
+target_compile_options(test_roles PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_roles COMMAND test_roles)
+
+# Recipes are the product's policy: prompts, prep, region scope, composite policy. A malformed one is a
+# refusal that names the key, and the shipped set has to agree with the role table it names.
+target_link_libraries(test_recipes PRIVATE noise_ai noise_core noise_io noise_dbg)
+target_include_directories(test_recipes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(test_recipes PRIVATE NOISE_TEST_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
+target_compile_options(test_recipes PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_recipes COMMAND test_recipes)
+
+# The field policy, asserted on the bytes a request would go out as: the whitelist, the values the
+# builder refuses because the server would not, and the cache key's stability.
+target_link_libraries(test_provider PRIVATE noise_ai noise_core noise_io noise_dbg)
+target_include_directories(test_provider PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_provider PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_provider COMMAND test_provider)
+
+# The client, the queue and the cache against recorded HTTP fixtures: request field policy on the wire,
+# response parsing, every failure class, replay from cache, durability across a restart. The default
+# `ctest` run never opens a socket.
+target_link_libraries(test_backend PRIVATE noise_ai noise_core noise_io noise_dbg)
+target_include_directories(test_backend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(test_backend
+    PRIVATE NOISE_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/http"
+            NOISE_TEST_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
+target_compile_options(test_backend PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_backend COMMAND test_backend)

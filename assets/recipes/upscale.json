@@ -1,0 +1,11 @@
+{
+  "id": "upscale",
+  "endpoint": "upscale",
+  "role": "upscale",
+  "region": "selection",
+  "prep": "none",
+  "enhance": "never",
+  "prompt": [],
+  "variables": {},
+  "composite": { "feather": "none", "colour_match": false, "lock_band_px": 0, "extent": "layer" }
+}

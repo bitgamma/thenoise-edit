@@ -1,0 +1,16 @@
+{
+ "name": "POST /images/upscale - a 4x answer for a 16x16 crop",
+ "method": "POST",
+ "path": "/images/upscale",
+ "match": {
+  "model": "RealESRGAN-4xplus-TheNoise"
+ },
+ "status": 200,
+ "json": {
+  "data": [
+   {
+    "b64_json": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAZklEQVR42u3QMREAAAgEIJN8/3g20ByeDBSgkp7PSoAAAQIECBAgQIAAAQIECBAgQIAAAQIECBAgQIAAAQIECBAgQIAAAQIECBAgQIAAAQIECBAgQIAAAQIECBAgQIAAAQIECLhvAeV1sf/erpqRAAAAAElFTkSuQmCC"
+   }
+  ]
+ }
+}

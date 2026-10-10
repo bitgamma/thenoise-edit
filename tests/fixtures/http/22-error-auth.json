@@ -1,0 +1,14 @@
+{
+ "name": "401 - a key the server does not accept",
+ "method": "POST",
+ "path": "/images/edits",
+ "match": {
+  "model": "unauthorized"
+ },
+ "status": 401,
+ "json": {
+  "error": {
+   "message": "invalid api key"
+  }
+ }
+}

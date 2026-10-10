@@ -42,6 +42,10 @@ FetchContent_MakeAvailable(sokol imgui json)
 find_package(OpenGL REQUIRED)
 find_package(X11 REQUIRED COMPONENTS Xcursor Xi)
 find_package(Threads REQUIRED)
+# Approved dependency: the transport that speaks HTTP. Found the way the image codecs are, and required
+# rather than optional - an app that silently has no network layer is a worse failure than a configure
+# error that says what to install.
+pkg_check_modules(LIBCURL REQUIRED IMPORTED_TARGET libcurl)
 
 add_library(sokol STATIC vendor/sokol_impl.cpp)
 target_compile_definitions(sokol PUBLIC SOKOL_GLCORE=1 SOKOL_NO_ENTRY=1)
@@ -112,11 +116,21 @@ target_compile_options(noise_io PUBLIC ${LIBPNG_CFLAGS_OTHER})
 # The AI layer: the region compiler and the result compositor are pixels and maths, so they are
 # headless and testable like core; the transport that speaks HTTP lives beside them and links curl.
 add_library(noise_ai STATIC
+    src/ai/cache.cpp
     src/ai/colour_match.cpp
     src/ai/compose.cpp
-    src/ai/region.cpp)
+    src/ai/http.cpp
+    src/ai/profile.cpp
+    src/ai/http_curl.cpp
+    src/ai/provider.cpp
+    src/ai/queue.cpp
+    src/ai/recipes.cpp
+    src/ai/region.cpp
+    src/ai/recorded.cpp
+    src/ai/registry.cpp
+    src/ai/server.cpp)
 target_include_directories(noise_ai PUBLIC src)
-target_link_libraries(noise_ai PUBLIC noise_core)
+target_link_libraries(noise_ai PUBLIC noise_core noise_io PkgConfig::LIBCURL)
 
 add_library(noise_gfx STATIC
     src/gfx/checker.cpp
@@ -133,6 +147,9 @@ target_link_libraries(noise_dbg PUBLIC noise_core)
 # it is its own target: tests drive real commands through it.
 add_library(noise_app STATIC
     src/app/ai_commands.cpp
+    src/app/ai_job_commands.cpp
+    src/app/ai_landing.cpp
+    src/app/ai_session.cpp
     src/app/command_args.cpp
     src/app/commands.cpp
     src/app/document_commands.cpp

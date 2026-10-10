@@ -1,0 +1,16 @@
+{
+  "id": "region-fill",
+  "endpoint": "edits",
+  "role": "edit",
+  "region": "selection",
+  "prep": "white",
+  "enhance": "never",
+  "prompt": [
+    "Draw {{prompt}} in the marked area of this image.",
+    "Match the colour, brightness, light direction, perspective, focus and grain of the",
+    "surrounding {{context_desc}}.",
+    "Change nothing outside the marked area."
+  ],
+  "variables": { "prompt": "the described content", "context_desc": "background" },
+  "composite": { "feather": "auto", "colour_match": true, "lock_band_px": 4, "extent": "canvas" }
+}

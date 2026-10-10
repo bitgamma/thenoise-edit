@@ -1,0 +1,17 @@
+{
+ "name": "POST /images/edits - what Krea answers when asked for 48x48",
+ "method": "POST",
+ "path": "/images/edits",
+ "match": {
+  "model": "Krea-v0.3.1-INT8",
+  "size": "48x48"
+ },
+ "status": 200,
+ "json": {
+  "data": [
+   {
+    "b64_json": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAZUlEQVR42u3QQREAAAQAMAEklFgrcjh7rMCis+azECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAu5bMuzR/wV6mI8AAAAASUVORK5CYII="
+   }
+  ]
+ }
+}

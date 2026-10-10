@@ -1,0 +1,16 @@
+{
+ "name": "GET /health - one image model resident at a time",
+ "method": "GET",
+ "path": "/health",
+ "status": 200,
+ "json": {
+  "status": "ok",
+  "version": "2026.41.0~1639.29b21e73",
+  "model_loaded": null,
+  "max_models": {
+   "image": 1,
+   "llm": 1
+  },
+  "all_models_loaded": []
+ }
+}

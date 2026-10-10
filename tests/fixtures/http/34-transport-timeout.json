@@ -1,0 +1,9 @@
+{
+ "name": "the transfer for 'timed-out' never completed (timeout)",
+ "method": "POST",
+ "path": "/images/edits",
+ "match": {
+  "model": "timed-out"
+ },
+ "transport_error": "timeout"
+}

@@ -1,0 +1,17 @@
+{
+ "name": "POST /images/edits - the answer for any other size, at 64x64",
+ "notes": "A crop the region compiler asked for that has no recording of its own. The app path uses it to prove an answer that came back at a size nobody requested still lands, resampled, under the mask it was compiled from.",
+ "method": "POST",
+ "path": "/images/edits",
+ "match": {
+  "model": "Flux-2-Klein-9B-TheNoise"
+ },
+ "status": 200,
+ "json": {
+  "data": [
+   {
+    "b64_json": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAZUlEQVR42u3QQREAAAQAMAEklFgrcjh7rMAiu+azECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAu5bcjjR/+7y1Z0AAAAASUVORK5CYII="
+   }
+  ]
+ }
+}

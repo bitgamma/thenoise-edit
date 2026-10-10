@@ -1,0 +1,12 @@
+{
+ "name": "200 with no image in it",
+ "method": "POST",
+ "path": "/images/edits",
+ "match": {
+  "model": "empty-reply"
+ },
+ "status": 200,
+ "json": {
+  "data": []
+ }
+}

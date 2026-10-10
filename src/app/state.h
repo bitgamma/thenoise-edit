@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "app/ai_session.h"
 #include "app/ants.h"
 
 #include "core/brush.h"
@@ -93,6 +94,9 @@ struct AppState {
     // Where the app writes: captures, the wire endpoint file, the imgui layout. Set once
     // by the host so nothing in the command layer reaches for an ambient directory.
     std::string runtime_dir;
+    // The AI path's tables, server and queue. `open_ai_session` fills it once the host has set
+    // `runtime_dir`; every AI command reads it and nothing else constructs one.
+    app::AiSession ai;
     // The canvas content area, published by the host every frame it draws.
     Extent viewport{1, 1};
     // False until the host has published `viewport` once: before that the only extent on

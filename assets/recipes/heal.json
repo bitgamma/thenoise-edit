@@ -1,0 +1,16 @@
+{
+  "id": "heal",
+  "endpoint": "edits",
+  "role": "edit",
+  "region": "selection",
+  "prep": "average",
+  "enhance": "never",
+  "prompt": [
+    "Repair the marked area so it becomes a seamless continuation of the surrounding",
+    "{{context_desc}}, with the same colour, brightness, texture and grain.",
+    "Remove {{target}} without leaving a patch, a seam or a change in focus.",
+    "Change nothing outside the marked area."
+  ],
+  "variables": { "target": "the blemish", "context_desc": "surface" },
+  "composite": { "feather": "auto", "colour_match": true, "lock_band_px": 6, "extent": "layer" }
+}

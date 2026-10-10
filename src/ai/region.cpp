@@ -179,14 +179,13 @@ std::optional<RegionPlan> plan_region(Extent canvas, const Mask& mask, const Reg
     return plan;
 }
 
-int prep_blur_radius(Rect crop) {
-    const int short_side = std::min(crop.w, crop.h);
-    return std::max(kMinBlurRadiusPx, short_side / kBlurDivisor);
+int prep_blur_radius(Extent crop) {
+    return std::max(kMinBlurRadiusPx, std::min(crop.w, crop.h) / kBlurDivisor);
 }
 
-Image prep_region(const Image& base, const RegionPlan& plan, Prep prep, std::uint64_t seed) {
-    const Rect crop = plan.crop;
-    if (crop.empty() || crop.w > base.size().w || crop.h > base.size().h) {
+Image prep_region(const Image& base, Prep prep, std::uint64_t seed) {
+    const Extent crop = base.size();
+    if (crop.w <= 0 || crop.h <= 0) {
         return Image{};
     }
 
@@ -194,7 +193,7 @@ Image prep_region(const Image& base, const RegionPlan& plan, Prep prep, std::uin
                            static_cast<std::size_t>(kChannels));
     for (int y = 0; y < crop.h; ++y) {
         for (int x = 0; x < crop.w; ++x) {
-            const std::uint8_t* from = base.at(crop.x + x, crop.y + y);
+            const std::uint8_t* from = base.at(x, y);
             const std::size_t to =
                 (static_cast<std::size_t>(y) * static_cast<std::size_t>(crop.w) +
                  static_cast<std::size_t>(x)) *

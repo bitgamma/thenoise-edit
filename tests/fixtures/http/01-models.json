@@ -1,0 +1,131 @@
+{
+ "name": "GET /models - the dev box's short list",
+ "method": "GET",
+ "path": "/models",
+ "status": 200,
+ "json": {
+  "object": "list",
+  "data": [
+   {
+    "id": "Flux-2-Klein-9B-TheNoise",
+    "object": "model",
+    "created": 1700000000,
+    "owned_by": "lemonade",
+    "labels": [
+     "image",
+     "edit"
+    ],
+    "recipe": "thenoise",
+    "downloaded": true,
+    "size": 32.5,
+    "image_defaults": {
+     "steps": 4,
+     "cfg_scale": 1.0,
+     "width": 1024,
+     "height": 1024
+    }
+   },
+   {
+    "id": "Krea-v0.3.1-INT8",
+    "object": "model",
+    "created": 1700000000,
+    "owned_by": "lemonade",
+    "labels": [
+     "custom",
+     "image"
+    ],
+    "recipe": "thenoise",
+    "downloaded": true,
+    "size": 21.7,
+    "image_defaults": {
+     "steps": 8,
+     "cfg_scale": 1.0,
+     "width": 1024,
+     "height": 1024
+    }
+   },
+   {
+    "id": "Krea-2-VAE",
+    "object": "model",
+    "created": 1700000000,
+    "owned_by": "lemonade",
+    "labels": [
+     "custom",
+     "image"
+    ],
+    "recipe": "thenoise",
+    "downloaded": true,
+    "size": 33.0,
+    "image_defaults": {
+     "steps": 8,
+     "cfg_scale": 1.0,
+     "width": 1024,
+     "height": 1024
+    }
+   },
+   {
+    "id": "Qwen-Image-2.1",
+    "object": "model",
+    "created": 1700000000,
+    "owned_by": "lemonade",
+    "labels": [
+     "image",
+     "edit"
+    ],
+    "recipe": "thenoise",
+    "downloaded": false,
+    "size": 30.1,
+    "image_defaults": {
+     "steps": 28,
+     "cfg_scale": 1.0,
+     "width": 1024,
+     "height": 1024
+    }
+   },
+   {
+    "id": "RealESRGAN-4xplus-TheNoise",
+    "object": "model",
+    "created": 1700000000,
+    "owned_by": "lemonade",
+    "labels": [
+     "upscaling"
+    ],
+    "recipe": "thenoise",
+    "downloaded": true,
+    "size": 0.06,
+    "image_defaults": {}
+   },
+   {
+    "id": "SD-Turbo",
+    "object": "model",
+    "created": 1700000000,
+    "owned_by": "lemonade",
+    "labels": [
+     "image"
+    ],
+    "recipe": "sd-cpp",
+    "downloaded": true,
+    "size": 3.1,
+    "image_defaults": {
+     "steps": 1,
+     "cfg_scale": 1.0,
+     "width": 512,
+     "height": 512
+    }
+   },
+   {
+    "id": "gemma-3-4b-it",
+    "object": "model",
+    "created": 1700000000,
+    "owned_by": "lemonade",
+    "labels": [
+     "chat",
+     "vision"
+    ],
+    "recipe": "llama-cpp",
+    "downloaded": true,
+    "size": 4.0
+   }
+  ]
+ }
+}

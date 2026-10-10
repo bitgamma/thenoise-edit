@@ -1,0 +1,15 @@
+{
+ "name": "400 - Missing 'prompt' field",
+ "method": "POST",
+ "path": "/images/edits",
+ "match": {
+  "model": "needs-prompt"
+ },
+ "status": 400,
+ "json": {
+  "error": {
+   "message": "Missing 'prompt' field in request",
+   "type": "invalid_request_error"
+  }
+ }
+}

@@ -131,7 +131,8 @@ def app_command(args: argparse.Namespace, width: int, height: int, open_path: Pa
 
 
 def start_app(args: argparse.Namespace, runtime_dir: Path, width: int, height: int,
-              open_path: Path | None, app_stderr) -> subprocess.Popen:
+              open_path: Path | None, app_stderr,
+              extra: dict[str, str | None] | None = None) -> subprocess.Popen:
     env = dict(os.environ)
     env["NOISE_RUNTIME_DIR"] = str(runtime_dir)
     env.pop("NOISE_CONFIG_DIR", None)
@@ -139,6 +140,13 @@ def start_app(args: argparse.Namespace, runtime_dir: Path, width: int, height: i
     # without this the app under probe has no `roles.json`, and an AI command would refuse for a reason
     # that is about where it was started from rather than about the thing under test.
     env["NOISE_EDIT_ASSETS"] = str(Path(__file__).resolve().parent.parent / "assets")
+    for key, value in (extra or {}).items():
+        # None means "not set": a probe that means to replay the recordings must not inherit a live
+        # server by accident, and one that means to ask the box must not inherit recordings.
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
     return subprocess.Popen(app_command(args, width, height, open_path), env=env,
                             stderr=app_stderr)
 

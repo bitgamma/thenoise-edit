@@ -1,0 +1,387 @@
+// SPDX-License-Identifier: Apache-2.0
+#include "ai/provider.h"
+
+#include "core/base64.h"
+#include "core/hash.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdlib>
+
+namespace noise::ai {
+
+namespace {
+
+// The one ceiling on a request dimension. It is a client-side guard for the "size rejected" failure
+// row: the engine snaps an odd size rather than refusing it, so the sizes worth stopping here are the
+// ones out of range, and a refusal that names the number is cheaper than a minute of GPU time.
+inline constexpr int kMaxDimensionPx = 4096;
+inline constexpr int kMaxSteps = 128;
+inline constexpr const char* kResponseFormat = "b64_json";
+const std::uint8_t kPngMagic[8] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+
+struct EndpointShape {
+    std::string path;
+    std::vector<std::string> fields;
+};
+
+// Data, so adding a field is adding a row and the compiler still checks every endpoint is in the table.
+EndpointShape shape_of(Endpoint endpoint) {
+    switch (endpoint) {
+        case Endpoint::generations:
+            return EndpointShape{"/images/generations",
+                                 {"model", "prompt", "size", "steps", "cfg_scale", "seed",
+                                  "response_format"}};
+        case Endpoint::edits:
+            return EndpointShape{"/images/edits",
+                                 {"model", "image", "prompt", "size", "steps", "cfg_scale", "seed",
+                                  "response_format"}};
+        case Endpoint::upscale:
+            return EndpointShape{"/images/upscale", {"model", "image"}};
+        case Endpoint::chat:
+            return EndpointShape{"/chat/completions", {"model", "messages", "stream"}};
+    }
+    // Unreachable while the switch covers every enumerator, which is what the build checks. Left empty
+    // rather than repeating a row: an empty field list lets no field through, so an endpoint the table
+    // does not know builds nothing instead of guessing.
+    return EndpointShape{};
+}
+
+bool is_png(const std::vector<std::uint8_t>& bytes) {
+    if (bytes.size() < sizeof(kPngMagic)) {
+        return false;
+    }
+    return std::equal(std::begin(kPngMagic), std::end(kPngMagic), bytes.begin());
+}
+
+bool blank(const std::string& text) {
+    return std::all_of(text.begin(), text.end(),
+                       [](unsigned char c) { return std::isspace(c) != 0; });
+}
+
+std::string join(const std::vector<std::string>& names) {
+    std::string out;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (i != 0) {
+            out += ", ";
+        }
+        out += names[i];
+    }
+    return out;
+}
+
+std::string size_field(int width, int height) {
+    return std::to_string(width) + "x" + std::to_string(height);
+}
+
+std::string trimmed_double(double value) {
+    std::string text = std::to_string(value);
+    while (!text.empty() && text.back() == '0') {
+        text.pop_back();
+    }
+    if (!text.empty() && text.back() == '.') {
+        text.pop_back();
+    }
+    return text;
+}
+
+// Every field of a request passes through here, so the whitelist is enforced on the way in rather than
+// audited afterwards: a field that is not in the endpoint's set never becomes a body at all.
+class FieldSink {
+public:
+    explicit FieldSink(Endpoint endpoint) : endpoint_(endpoint) {}
+
+    void add_text(const std::string& name, const std::string& value) {
+        add(name, nlohmann::json(value));
+    }
+    void add_number(const std::string& name, double value) { add(name, nlohmann::json(value)); }
+    void add_integer(const std::string& name, std::int64_t value) {
+        add(name, nlohmann::json(value));
+    }
+
+    bool ok() const { return ok_; }
+    std::vector<RequestField> fields() const { return fields_; }
+
+private:
+    void add(const std::string& name, nlohmann::json value) {
+        ok_ = ok_ && field_allowed(endpoint_, name);
+        if (!ok_) {
+            return;
+        }
+        fields_.push_back(RequestField{name, std::move(value)});
+    }
+
+    Endpoint endpoint_;
+    std::vector<RequestField> fields_;
+    bool ok_ = true;
+};
+
+}  // namespace
+
+std::string RequestField::text() const {
+    if (value.is_string()) {
+        return value.get<std::string>();
+    }
+    if (value.is_number_integer()) {
+        return std::to_string(value.get<std::int64_t>());
+    }
+    if (value.is_number()) {
+        return trimmed_double(value.get<double>());
+    }
+    return value.dump();
+}
+
+bool field_allowed(Endpoint endpoint, const std::string& name) {
+    const std::vector<std::string> fields = shape_of(endpoint).fields;
+    return std::find(fields.begin(), fields.end(), name) != fields.end();
+}
+
+std::vector<std::string> allowed_fields(Endpoint endpoint) { return shape_of(endpoint).fields; }
+
+std::string BuiltRequest::canonical_text() const {
+    // Sorted by hand rather than by map order: this text is a cache key's whole input, and a key that
+    // changes because a field was inserted in a different order would silently double every blob.
+    std::string text = "server=" + params.server_name + "\n";
+    text += "endpoint=" + std::string(endpoint_name(endpoint)) + "\n";
+    text += "model=" + params.model_id + "\n";
+    text += "size=" + size_field(params.width, params.height) + "\n";
+    text += "steps=" + std::to_string(params.steps) + "\n";
+    text += "cfg_scale=" + trimmed_double(params.cfg_scale) + "\n";
+    text += "seed=" + std::to_string(params.seed) + "\n";
+    text += "blob=" + params.blob_id + "\n";
+    text += "prompt=" + params.prompt;
+    return text;
+}
+
+std::string BuiltRequest::cache_key() const {
+    return sha256_hex(canonical_text());
+}
+
+nlohmann::json BuiltRequest::json_body() const {
+    if (multipart()) {
+        return nullptr;
+    }
+    nlohmann::json body = nlohmann::json::object();
+    for (const RequestField& field : fields) {
+        body[field.name] = field.value;
+    }
+    return body;
+}
+
+nlohmann::json BuiltRequest::preview_json() const {
+    nlohmann::json fields = nlohmann::json::array();
+    for (const RequestField& field : this->fields) {
+        // A base64 PNG is not something to print: the preview says how much went and where it is.
+        const nlohmann::json shown =
+            field.name == "image" && field.value.is_string()
+                ? nlohmann::json("<b64 " + std::to_string(field.value.get<std::string>().size()) +
+                                 " chars>")
+                : field.value;
+        fields.push_back(nlohmann::json::array({field.name, shown}));
+    }
+    return nlohmann::json{{"endpoint", endpoint_name(endpoint)},
+                          {"path", path},
+                          {"model", params.model_id},
+                          {"server", params.server_name},
+                          {"size", size_field(params.width, params.height)},
+                          {"steps", params.steps},
+                          {"cfg_scale", params.cfg_scale},
+                          {"seed", params.seed},
+                          {"prompt", params.prompt},
+                          {"fields", fields},
+                          {"image_bytes", png.size()},
+                          {"blob", params.blob_id},
+                          {"cache_key", cache_key()},
+                          {"allowed_fields", allowed_fields(endpoint)}};
+}
+
+std::optional<BuiltRequest> request_from_preview(const nlohmann::json& preview,
+                                                 const std::vector<std::uint8_t>& png,
+                                                 std::string& error) {
+    if (!preview.is_object()) {
+        error = "request record: expected an object";
+        return std::nullopt;
+    }
+    const auto text = [&preview](const char* key) {
+        if (preview.contains(key) && preview.at(key).is_string()) {
+            return preview.at(key).get<std::string>();
+        }
+        return std::string();
+    };
+    const std::optional<Endpoint> endpoint = endpoint_from_name(text("endpoint"));
+    if (!endpoint.has_value()) {
+        error = "request record: endpoint '" + text("endpoint") + "' is not one of " +
+                endpoint_names();
+        return std::nullopt;
+    }
+    BuiltRequest request;
+    request.endpoint = *endpoint;
+    request.path = text("path");
+    if (request.path.empty()) {
+        error = "request record: no 'path'";
+        return std::nullopt;
+    }
+    request.params.server_name = text("server");
+    request.params.model_id = text("model");
+    request.params.prompt = text("prompt");
+    request.params.blob_id = text("blob");
+    request.png = png;
+    if (preview.contains("steps") && preview.at("steps").is_number_integer()) {
+        request.params.steps = static_cast<int>(preview.at("steps").get<long long>());
+    }
+    if (preview.contains("cfg_scale") && preview.at("cfg_scale").is_number()) {
+        request.params.cfg_scale = preview.at("cfg_scale").get<double>();
+    }
+    if (preview.contains("seed") && preview.at("seed").is_number_integer()) {
+        request.params.seed = preview.at("seed").get<std::uint64_t>();
+    }
+    const std::string size = text("size");
+    const std::size_t cross = size.find('x');
+    if (cross == std::string::npos) {
+        error = "request record: 'size' is '" + size + "', expected WxH";
+        return std::nullopt;
+    }
+    request.params.width = std::atoi(size.substr(0, cross).c_str());
+    request.params.height = std::atoi(size.substr(cross + 1).c_str());
+
+    if (preview.contains("fields") && preview.at("fields").is_array()) {
+        for (const nlohmann::json& pair : preview.at("fields")) {
+            if (!pair.is_array() || pair.size() != 2 || !pair[0].is_string()) {
+                error = "request record: 'fields' holds something that is not a [name, value] pair";
+                return std::nullopt;
+            }
+            const std::string name = pair[0].get<std::string>();
+            if (!field_allowed(request.endpoint, name)) {
+                error = "request record: field '" + name + "' is not allowed for " +
+                        endpoint_name(request.endpoint);
+                return std::nullopt;
+            }
+            request.fields.push_back(RequestField{name, pair[1]});
+        }
+    }
+    // The blob id is recomputed rather than trusted: the record claims what it uploaded, and the bytes
+    // are the fact.
+    const std::string actual = sha256_hex(std::span<const std::uint8_t>(png));
+    if (!request.params.blob_id.empty() && request.params.blob_id != actual) {
+        error = "request record: the blob on disk is " + actual + " but the record says " +
+                request.params.blob_id;
+        return std::nullopt;
+    }
+    request.params.blob_id = actual;
+    return request;
+}
+
+std::optional<BuiltRequest> build_request(const RequestInput& input, const SizePolicy& size_policy,
+                                         std::string& error) {
+    if (input.recipe == nullptr) {
+        error = "build_request: no recipe";
+        return std::nullopt;
+    }
+    const Recipe& recipe = *input.recipe;
+    if (recipe.endpoint == Endpoint::chat) {
+        error = "recipe '" + recipe.id + "': the chat endpoint is the `enhance` role's, and nothing "
+                                        "sends it yet";
+        return std::nullopt;
+    }
+    if (input.model_id.empty()) {
+        error = "recipe '" + recipe.id + "': role '" + recipe.role +
+                "' resolved to no model, so there is nothing to name in the 'model' field";
+        return std::nullopt;
+    }
+    if (input.width <= 0 || input.height <= 0) {
+        error = "recipe '" + recipe.id + "': size must be positive, got " +
+                size_field(input.width, input.height);
+        return std::nullopt;
+    }
+    if (input.width > kMaxDimensionPx || input.height > kMaxDimensionPx) {
+        error = "recipe '" + recipe.id + "': size " + size_field(input.width, input.height) +
+                " exceeds the " + std::to_string(kMaxDimensionPx) +
+                "px ceiling; compile a smaller region";
+        return std::nullopt;
+    }
+    if (size_policy.multiple > 1 &&
+        (input.width % size_policy.multiple != 0 || input.height % size_policy.multiple != 0)) {
+        // The region compiler rounds up to this multiple, so arriving here means a request was built
+        // around it. The engine would snap the size and answer at dimensions nobody planned.
+        error = "recipe '" + recipe.id + "': size " + size_field(input.width, input.height) +
+                " is not a multiple of the policy's " + std::to_string(size_policy.multiple) +
+                " - send this through plan_region";
+        return std::nullopt;
+    }
+
+    const bool wants_prompt =
+        recipe.endpoint == Endpoint::generations || recipe.endpoint == Endpoint::edits;
+    if (wants_prompt && blank(input.prompt)) {
+        error = "recipe '" + recipe.id + "': 'prompt' is empty, and the server refuses a request "
+                                        "without one only for some endpoints - build nothing";
+        return std::nullopt;
+    }
+    const bool wants_image =
+        recipe.endpoint == Endpoint::edits || recipe.endpoint == Endpoint::upscale;
+    if (wants_image && !is_png(input.png)) {
+        error = "recipe '" + recipe.id + "': the uploaded region is " +
+                std::to_string(input.png.size()) +
+                " bytes and does not start with a PNG header";
+        return std::nullopt;
+    }
+
+    BuiltRequest request;
+    request.endpoint = recipe.endpoint;
+    request.path = shape_of(recipe.endpoint).path;
+    request.params.server_name = input.server_name;
+    request.params.model_id = input.model_id;
+    request.params.prompt = input.prompt;
+    request.params.width = input.width;
+    request.params.height = input.height;
+    request.params.seed = input.seed;
+    request.png = input.png;
+    request.params.blob_id = sha256_hex(std::span<const std::uint8_t>(input.png));
+
+    // Steps and CFG are the model's numbers. An override is what the user asked for on the command
+    // line; guessing a number here would be the app asserting a fact the server already publishes.
+    const int steps = input.steps_override.has_value()
+                          ? *input.steps_override
+                          : (input.model != nullptr ? input.model->image_defaults.steps : 0);
+    if (steps <= 0 || steps > kMaxSteps) {
+        error = "recipe '" + recipe.id + "': no usable 'steps' for model '" + input.model_id +
+                "' (got " + std::to_string(steps) + ", ceiling " + std::to_string(kMaxSteps) +
+                "); the model's image_defaults do not carry one, so pass steps";
+        return std::nullopt;
+    }
+    const double cfg = input.cfg_scale_override.has_value()
+                           ? *input.cfg_scale_override
+                           : (input.model != nullptr ? input.model->image_defaults.cfg_scale : 0.0);
+    if (!(cfg >= 0.0) || std::isnan(cfg) || cfg > 100.0) {
+        error = "recipe '" + recipe.id + "': no usable 'cfg_scale' for model '" + input.model_id +
+                "' (got " + trimmed_double(cfg) + ")";
+        return std::nullopt;
+    }
+    request.params.steps = steps;
+    request.params.cfg_scale = cfg;
+
+    FieldSink sink(recipe.endpoint);
+    sink.add_text("model", input.model_id);
+    if (recipe.endpoint == Endpoint::upscale) {
+        sink.add_text("image", base64_encode(std::span<const std::uint8_t>(input.png)));
+    } else {
+        sink.add_text("prompt", input.prompt);
+        sink.add_text("size", size_field(input.width, input.height));
+        sink.add_integer("steps", steps);
+        sink.add_number("cfg_scale", cfg);
+        sink.add_integer("seed", static_cast<std::int64_t>(input.seed));
+        // Always b64: a `url` response hands back an address on the server's disk, which the app has
+        // no business resolving and which no test can replay.
+        sink.add_text("response_format", kResponseFormat);
+    }
+    if (!sink.ok()) {
+        error = "recipe '" + recipe.id + "': a field is not in the tier-1 set for " +
+                endpoint_name(recipe.endpoint) + " (allowed: " +
+                join(allowed_fields(recipe.endpoint)) + ")";
+        return std::nullopt;
+    }
+    request.fields = sink.fields();
+    return request;
+}
+
+}  // namespace noise::ai

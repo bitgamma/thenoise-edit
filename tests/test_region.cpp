@@ -212,19 +212,19 @@ void test_the_map_back_lands_where_the_crop_was() {
 
 // Each prep does the one thing it is named for, measured against the statistics it is supposed to
 // keep or destroy.
+// The same region sitting 16 px right and 8 px down inside a bigger one.
+Image padded_with(const Image& crop, int pad_x, int pad_y) {
+    Image big = hard_edge(Extent{crop.size().w + 2 * pad_x, crop.size().h + 2 * pad_y});
+    big.blit(crop, pad_x, pad_y);
+    return big.region(Rect{pad_x, pad_y, crop.size().w, crop.size().h});
+}
+
 void test_each_prep_keeps_what_it_says_and_loses_what_it_says() {
     const Extent size{96, 48};
     const Image base = hard_edge(size);
-    const RegionPlan plan = [&size] {
-        RegionPlan p;
-        p.mask_bounds = Rect{0, 0, size.w, size.h};
-        p.crop = Rect{0, 0, size.w, size.h};
-        p.requested = size;
-        return p;
-    }();
     const double base_mean = mean_channel(base, 0);
 
-    const Image none = prep_region(base, plan, Prep::none, 0);
+    const Image none = prep_region(base, Prep::none, 0);
     CHECK(none.size() == size);
     bool identical = true;
     for (int y = 0; y < size.h && identical; ++y) {
@@ -234,19 +234,19 @@ void test_each_prep_keeps_what_it_says_and_loses_what_it_says() {
     }
     CHECK(identical);
 
-    const Image white = prep_region(base, plan, Prep::white, 0);
+    const Image white = prep_region(base, Prep::white, 0);
     CHECK(white.size() == size);
     CHECK_EQ(static_cast<int>(white.at(10, 10)[0]), 255);
     CHECK_EQ(static_cast<int>(white.at(80, 30)[0]), 255);
 
-    const Image average = prep_region(base, plan, Prep::average, 0);
+    const Image average = prep_region(base, Prep::average, 0);
     // A flat region is the rounded mean, exactly - "average" is not an approximation of anything.
     CHECK_NEAR(mean_channel(average, 0), static_cast<double>(std::lround(base_mean)), 1e-9);
     CHECK_EQ(static_cast<int>(average.at(4, 4)[0]), static_cast<int>(average.at(91, 43)[0]));
 
-    const Image pixelated = prep_region(base, plan, Prep::pixelate, 0);
+    const Image pixelated = prep_region(base, Prep::pixelate, 0);
     CHECK_NEAR(mean_channel(pixelated, 0), base_mean, 2.0);
-    const int block = prep_blur_radius(plan.crop);
+    const int block = prep_blur_radius(size);
     bool blocked = true;
     for (int by = 0; by < size.h && blocked; by += block) {
         for (int bx = 0; bx < size.w && blocked; bx += block) {
@@ -271,16 +271,23 @@ void test_each_prep_keeps_what_it_says_and_loses_what_it_says() {
     }
     CHECK(straddling);
 
-    const Image blurred = prep_region(base, plan, Prep::blur, 0);
+    const Image blurred = prep_region(base, Prep::blur, 0);
     CHECK_NEAR(mean_channel(blurred, 0), base_mean, 2.0);
     CHECK(static_cast<int>(blurred.at(size.w / 2, 24)[0]) < 250);
     CHECK(static_cast<int>(blurred.at(size.w / 2 + 1, 24)[0]) > 5);
-    CHECK(prep_region(base, plan, Prep::blur, 0).checksum_hex() == blurred.checksum_hex());
+    CHECK(prep_region(base, Prep::blur, 0).checksum_hex() == blurred.checksum_hex());
 
-    const Image noise = prep_region(base, plan, Prep::noise, 7);
+    // Prep sees a region, not a place: the same pixels cut out of a bigger picture prep identically,
+    // because nothing in prep knows where the crop came from. (An offset applied twice, or once where it
+    // should not be, reads pixels that are not in the region at all.)
+    const Image padded = padded_with(base, 16, 8);
+    CHECK_EQ(prep_region(padded, Prep::blur, 0).checksum_hex(),
+             prep_region(base, Prep::blur, 0).checksum_hex());
+
+    const Image noise = prep_region(base, Prep::noise, 7);
     CHECK_NEAR(mean_channel(noise, 0), base_mean, 3.0);
-    CHECK(prep_region(base, plan, Prep::noise, 7).checksum_hex() == noise.checksum_hex());
-    CHECK(prep_region(base, plan, Prep::noise, 8).checksum_hex() != noise.checksum_hex());
+    CHECK(prep_region(base, Prep::noise, 7).checksum_hex() == noise.checksum_hex());
+    CHECK(prep_region(base, Prep::noise, 8).checksum_hex() != noise.checksum_hex());
 }
 
 void test_the_prep_vocabulary_is_the_one_home() {

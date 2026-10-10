@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#include "app/ai_session.h"
 #include "app/commands.h"
 #include "app/shortcuts.h"
 #include "app/state.h"
@@ -248,6 +249,10 @@ void cleanup(void) {
 int main(int argc, char** argv) {
     g.args = parse_args(argc, argv);
     g.state.runtime_dir = platform::runtime_dir();
+    // The AI tables and the transport, opened once here so no command reaches for a directory or a
+    // server of its own. A table that will not load is recorded and reported by the AI commands; the
+    // editor itself starts either way.
+    app::open_ai_session(g.state);
 
     sapp_desc app{};
     app.init_cb = init;

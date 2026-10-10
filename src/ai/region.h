@@ -73,12 +73,13 @@ struct RegionPlan {
 // compile must not invent a region nobody asked for.
 std::optional<RegionPlan> plan_region(Extent canvas, const Mask& mask, const RegionPolicy& policy);
 
-// The bytes that would go on the wire: `plan.crop` taken out of `base` and prepped. `base` is a
-// flattened picture of the region the request covers and must contain `plan.crop`; the returned image
-// is `plan.crop` sized, in the same straight-alpha space as `base` - the resample to `requested` and
-// the PNG encode are the request builder's business, and keeping them out of here is what lets the
+// The bytes that would go on the wire: a flattened picture of the region, prepped. `crop` is the region
+// as its own image - the caller has already cut it out (Document::flatten_over, then flatten_over_ring),
+// so prep knows nothing about where the region came from and the same pixels always prep the same way.
+// The output is `crop` sized, in the same straight-alpha space as the input; the resample to `requested`
+// and the PNG encode are the request builder's business, and keeping them out of here is what lets the
 // prep be checked against the statistics it is supposed to preserve.
-Image prep_region(const Image& base, const RegionPlan& plan, Prep prep, std::uint64_t seed);
+Image prep_region(const Image& crop, Prep prep, std::uint64_t seed);
 
 // Step 6, the half `prep_region` does not do: a crop with alpha flattened over a colour drawn from the
 // ring the coverage does not reach, rather than over black or white. Uploading a partly transparent crop
@@ -93,6 +94,6 @@ Image flatten_over_ring(const Image& crop, const Mask& coverage_in_crop);
 
 // The blur radius a prep uses, from the region it blurs: fine enough to remove a face at any region
 // size, coarse enough that a small crop still loses its identity.
-int prep_blur_radius(Rect crop);
+int prep_blur_radius(Extent crop);
 
 }  // namespace noise::ai

@@ -1,0 +1,351 @@
+// SPDX-License-Identifier: Apache-2.0
+#include "test.h"
+
+#include "ai/provider.h"
+#include "core/hash.h"
+#include "core/image.h"
+#include "io/png.h"
+
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <set>
+#include <string>
+#include <vector>
+
+using noise::ai::build_request;
+using noise::ai::BuiltRequest;
+using noise::ai::Endpoint;
+using noise::ai::field_allowed;
+using noise::ai::ModelEntry;
+using noise::ai::parse_recipe;
+using noise::ai::Recipe;
+using noise::ai::RequestInput;
+using noise::ai::SizePolicy;
+using noise::Image;
+using noise::io::encode_png;
+using nlohmann::json;
+
+namespace {
+
+// A real PNG of the shape a region compile produces: the builder checks the magic and the cache keys on
+// the bytes, so a fake buffer would test neither.
+std::vector<std::uint8_t> png(int width = 64, int height = 64, int fill = 128) {
+    Image image = Image::filled(noise::Extent{width, height}, 4, 5, 6, 255);
+    for (std::size_t i = 0; i < image.pixels().size(); ++i) {
+        image.pixels()[i] = static_cast<std::uint8_t>((static_cast<std::size_t>(fill) + i) % 256);
+    }
+    return encode_png(image);
+}
+
+ModelEntry model(const std::string& id = "Klein-TheNoise") {
+    ModelEntry entry;
+    entry.id = id;
+    entry.recipe = "thenoise";
+    entry.labels = {"image", "edit"};
+    entry.downloaded = true;
+    entry.image_defaults = noise::ai::ImageDefaults{4, 1.0, 1024, 1024};
+    return entry;
+}
+
+Recipe recipe_of(const json& overrides) {
+    json body = {{"id", "test"},
+                 {"endpoint", "edits"},
+                 {"role", "edit"},
+                 {"region", "selection"},
+                 {"prep", "blur"},
+                 {"prompt", json::array({"do the thing"})},
+                 {"composite", json{{"feather", "auto"}}}};
+    for (const auto& item : overrides.items()) {
+        body[item.key()] = item.value();
+    }
+    std::string error;
+    const std::optional<Recipe> parsed = parse_recipe(body, "test", error);
+    REQUIRE(parsed.has_value());
+    return *parsed;
+}
+
+std::vector<std::string> sorted(std::vector<std::string> names) {
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+// Every name the server would see: the body's fields plus the file part, which is not a field because it
+// is the blob rather than a value.
+std::vector<std::string> on_the_wire(const BuiltRequest& request) {
+    std::vector<std::string> names;
+    for (const noise::ai::RequestField& field : request.fields) {
+        names.push_back(field.name);
+    }
+    // The region is a field on a JSON endpoint (base64 inside the body) and a part on a multipart one.
+    if (request.multipart() && !request.png.empty()) {
+        names.push_back("image");
+    }
+    return sorted(names);
+}
+
+// The order is the table's, restricted to the fields this request carries: a request whose fields wander
+// is a request no diff can be read, and a field outside the table must not appear at all.
+bool follows_the_table(const BuiltRequest& request) {
+    const std::vector<std::string> table = noise::ai::allowed_fields(request.endpoint);
+    int previous = -1;
+    for (const noise::ai::RequestField& field : request.fields) {
+        const auto found = std::find(table.begin(), table.end(), field.name);
+        if (found == table.end()) {
+            return false;
+        }
+        const int at = static_cast<int>(std::distance(table.begin(), found));
+        if (at <= previous) {
+            return false;
+        }
+        previous = at;
+    }
+    return true;
+}
+
+std::string field_text(const BuiltRequest& request, const std::string& name) {
+    for (const noise::ai::RequestField& field : request.fields) {
+        if (field.name == name) {
+            return field.text();
+        }
+    }
+    return {};
+}
+
+struct Built {
+    BuiltRequest request;
+    std::string error;
+};
+
+Built build(const json& overrides, const SizePolicy& policy, std::vector<std::uint8_t> bytes) {
+    const Recipe recipe = recipe_of(overrides);
+    const ModelEntry entry = model();
+    RequestInput input;
+    input.recipe = &recipe;
+    input.server_name = "local";
+    input.model_id = entry.id;
+    input.model = &entry;
+    input.width = 64;
+    input.height = 64;
+    input.prompt = "do the thing";
+    input.seed = 7;
+    input.png = std::move(bytes);
+    std::string error;
+    std::optional<BuiltRequest> built = build_request(input, policy, error);
+    return Built{built.value_or(BuiltRequest{}), error};
+}
+
+// The table's own reach: a field is allowed only on the endpoint that lists it.
+void test_the_whitelist_is_per_endpoint() {
+    CHECK(noise::ai::field_allowed(Endpoint::generations, "prompt"));
+    CHECK(!noise::ai::field_allowed(Endpoint::upscale, "prompt"));
+    CHECK(noise::ai::field_allowed(Endpoint::upscale, "image"));
+    CHECK(!noise::ai::field_allowed(Endpoint::generations, "image"));
+    // The edits part carries the region; there is no second way to send one and no way to send a mask.
+    CHECK(noise::ai::field_allowed(Endpoint::edits, "image"));
+    for (const char* name : {"mask", "mask_image", "n", "num_images", "url", "image_url",
+                             "attachment_type", "control_net", "api_key", "authorization"}) {
+        CHECK(!field_allowed(Endpoint::edits, name));
+        CHECK(!field_allowed(Endpoint::generations, name));
+        CHECK(!field_allowed(Endpoint::upscale, name));
+    }
+    CHECK(noise::ai::allowed_fields(Endpoint::edits) ==
+          noise::ai::allowed_fields(Endpoint::edits));
+    // An endpoint the table does not describe lets nothing through, rather than everything.
+    CHECK(noise::ai::allowed_fields(Endpoint::chat).size() > 0);
+}
+
+// The load-bearing assertion of this whole layer: the fields that go out are exactly the ones the table
+// allows, checked on the serialized bytes rather than on a struct a caller could ignore.
+void test_what_goes_out_is_exactly_the_table() {
+    const SizePolicy policy{16, 1024 * 1024};
+
+    const Built edit = build(json{{"endpoint", "edits"}}, policy, png());
+    REQUIRE(edit.error.empty());
+    CHECK(on_the_wire(edit.request) == sorted(noise::ai::allowed_fields(Endpoint::edits)));
+    CHECK(follows_the_table(edit.request));
+    // The region rides as the file part and never as a text field: a second copy of the same bytes under
+    // another name is a second thing to keep consistent.
+    CHECK(!edit.request.png.empty());
+    CHECK_EQ(field_text(edit.request, "size"), std::string("64x64"));
+    CHECK_EQ(field_text(edit.request, "seed"), std::string("7"));
+    CHECK_EQ(edit.request.path, std::string("/images/edits"));
+    // A multipart request has no JSON body to speak of: a preview that showed one would describe bytes
+    // that are never sent.
+    CHECK(edit.request.json_body().is_null());
+    CHECK(edit.request.multipart());
+
+    const Built generation = build(json{{"endpoint", "generations"}}, policy, {});
+    REQUIRE(generation.error.empty());
+    CHECK(on_the_wire(generation.request) ==
+          sorted(noise::ai::allowed_fields(Endpoint::generations)));
+    CHECK(follows_the_table(generation.request));
+    CHECK(!generation.request.multipart());
+    // `size` is explicit: without it the engine answers at its own default, at a cost nobody asked for.
+    CHECK_EQ(generation.request.json_body()["size"].get<std::string>(), std::string("64x64"));
+    CHECK_EQ(generation.request.json_body()["seed"].get<std::uint64_t>(), std::uint64_t(7));
+    // Numbers stay numbers: a stringified `steps` is refused by the server, not by a taste for types.
+    CHECK(generation.request.json_body()["steps"].is_number_integer());
+    CHECK(generation.request.json_body()["cfg_scale"].is_number());
+    // The response format is asked for, because `url` points at a file on someone else's disk.
+    CHECK_EQ(generation.request.json_body()["response_format"].get<std::string>(),
+             std::string("b64_json"));
+
+    const Built up = build(json{{"endpoint", "upscale"}}, policy, png());
+    REQUIRE(up.error.empty());
+    CHECK(on_the_wire(up.request) == sorted(noise::ai::allowed_fields(Endpoint::upscale)));
+    CHECK(follows_the_table(up.request));
+    // `upscale` has no prompt and no steps: sending them would be asking for behaviour it does not have.
+    CHECK_EQ(field_text(up.request, "model"), std::string("Klein-TheNoise"));
+    CHECK(up.request.json_body()["image"].get<std::string>().size() > 16);
+
+    // Nothing outside the table reached the bytes, whatever the builder's internals did.
+    for (const std::string& text :
+         {generation.request.json_body().dump(), up.request.json_body().dump()}) {
+        for (const char* forbidden : {"mask", "\"n\"", "url", "api_key", "Bearer"}) {
+            CHECK(text.find(forbidden) == std::string::npos);
+        }
+    }
+
+    // The preview lists the same fields in the same order, and prints no key material.
+    const json preview = generation.request.preview_json();
+    CHECK_EQ(static_cast<std::size_t>(preview["fields"].size()),
+             noise::ai::allowed_fields(Endpoint::generations).size());
+    CHECK(preview.dump().find("api_key\":\"") == std::string::npos);
+    // An uploaded base64 image is described, not dumped.
+    const json upscale_preview = up.request.preview_json();
+    CHECK(upscale_preview["fields"].dump().find("<b64 ") != std::string::npos);
+}
+
+// The builder refuses what the server would refuse, and says which field: a request that costs a round
+// trip and a model swap to learn that `steps` was 5 is a bug in the builder.
+void test_a_request_the_server_could_not_answer_is_refused_here() {
+    const SizePolicy policy{16, 1024 * 1024};
+
+    // The region is uploaded, so an absent or non-PNG blob is refused before anything leaves: the server
+    // would answer 400 with a body that says nothing about which part was wrong.
+    CHECK(build(json{{"endpoint", "edits"}}, policy, {}).error.find("PNG") != std::string::npos);
+    CHECK(build(json{{"endpoint", "edits"}}, policy, std::vector<std::uint8_t>{1, 2, 3}).error.find(
+              "PNG") != std::string::npos);
+
+    RequestInput base;
+    const Recipe edit = recipe_of(json{{"endpoint", "edits"}});
+    const ModelEntry entry = model();
+    base.recipe = &edit;
+    base.server_name = "local";
+    base.model_id = entry.id;
+    base.model = &entry;
+    base.width = 64;
+    base.height = 64;
+    base.prompt = "do the thing";
+    base.seed = 7;
+    base.png = png();
+
+    auto refusal = [&](const char* expected, const RequestInput& input) {
+        std::string error;
+        const std::optional<BuiltRequest> built = build_request(input, policy, error);
+        CHECK(!built.has_value());
+        CHECK(error.find(expected) != std::string::npos);
+        if (!built.has_value()) {
+            return;
+        }
+    };
+
+    RequestInput ragged = base;
+    ragged.width = 63;
+    refusal("multiple", ragged);
+
+    RequestInput huge = base;
+    huge.width = 8192;
+    huge.height = 8192;
+    refusal("ceiling", huge);
+
+    RequestInput no_steps = base;
+    no_steps.model = nullptr;  // no discovery data and no override: there is no honest number left
+    refusal("steps", no_steps);
+
+    RequestInput too_many_steps = base;
+    too_many_steps.steps_override = 5000;
+    refusal("steps", too_many_steps);
+
+    RequestInput silly_cfg = base;
+    silly_cfg.cfg_scale_override = -1.0;
+    refusal("cfg_scale", silly_cfg);
+
+    RequestInput no_model = base;
+    no_model.model_id.clear();
+    refusal("model", no_model);
+
+    RequestInput empty_prompt = base;
+    empty_prompt.prompt = "   ";
+    refusal("prompt", empty_prompt);
+
+    // An override is honoured exactly, which is what makes the advanced field in the UI real.
+    RequestInput overridden = base;
+    overridden.steps_override = 8;
+    overridden.cfg_scale_override = 2.5;
+    std::string error;
+    const std::optional<BuiltRequest> built = build_request(overridden, policy, error);
+    REQUIRE(built.has_value());
+    CHECK_EQ(field_text(*built, "steps"), std::string("8"));
+    CHECK_EQ(field_text(*built, "cfg_scale"), std::string("2.5"));
+}
+
+// The cache key is the only thing standing between a re-run and a five-minute wait, so it has to be a
+// function of exactly the request: same bytes in, same key out; anything the server would answer
+// differently, a different key.
+void test_the_cache_key_tracks_the_request_and_nothing_else() {
+    const SizePolicy policy{16, 1024 * 1024};
+    const Built first = build(json{{"endpoint", "edits"}}, policy, png());
+    REQUIRE(first.error.empty());
+    CHECK(first.request.cache_key() == build(json{{"endpoint", "edits"}}, policy, png()).request.cache_key());
+    // A blob id is content, so a different region is a different key even at the same size.
+    CHECK(first.request.cache_key() != build(json{{"endpoint", "edits"}}, policy, png(64, 64, 200))
+                                            .request.cache_key());
+
+    const Recipe edit = recipe_of(json{{"endpoint", "edits"}});
+    const ModelEntry entry = model();
+    RequestInput input;
+    input.recipe = &edit;
+    input.server_name = "local";
+    input.model_id = entry.id;
+    input.model = &entry;
+    input.width = 64;
+    input.height = 64;
+    input.prompt = "do the thing";
+    input.seed = 8;  // one bit of the request, and the only thing that differs from `first`
+    input.png = png();
+    std::string error;
+    const std::optional<BuiltRequest> changed = build_request(input, policy, error);
+    REQUIRE(changed.has_value());
+    CHECK(changed->cache_key() != first.request.cache_key());
+
+    // The same prompt and size against another endpoint is another request: the key names the endpoint.
+    const Built generation = build(json{{"endpoint", "generations"}}, policy, {});
+    REQUIRE(generation.error.empty());
+    CHECK(generation.request.cache_key() != first.request.cache_key());
+    // A key is a blob name: 64 hex characters, nothing else, so it can be a file name anywhere the cache
+    // lives.
+    CHECK_EQ(first.request.cache_key().size(), std::size_t(64));
+    CHECK(first.request.cache_key().find_first_not_of("0123456789abcdef") == std::string::npos);
+    CHECK_EQ(first.request.cache_key(), noise::sha256_hex(first.request.canonical_text()));
+
+    // A preview round-trips: a retry after a restart rebuilds the same request from the recorded preview
+    // and the stored PNG, which is what makes a durable job re-sendable at all.
+    const json preview = first.request.preview_json();
+    std::string round_error;
+    const std::optional<BuiltRequest> again =
+        noise::ai::request_from_preview(preview, png(), round_error);
+    REQUIRE(again.has_value());
+    CHECK_EQ(again->cache_key(), first.request.cache_key());
+}
+
+}  // namespace
+
+int main() {
+    test_the_whitelist_is_per_endpoint();
+    test_what_goes_out_is_exactly_the_table();
+    test_a_request_the_server_could_not_answer_is_refused_here();
+    test_the_cache_key_tracks_the_request_and_nothing_else();
+    return noise::test::summary(__FILE__);
+}

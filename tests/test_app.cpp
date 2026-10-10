@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "test.h"
 
+#include "app/ai_session.h"
 #include "app/commands.h"
 #include "app/tools/select.h"
 #include "app/state.h"
@@ -53,8 +54,13 @@ struct Harness {
     int quits = 0;
 
     Harness() {
+        // One directory per harness, not per process: a second harness in the same test would otherwise
+        // remove the directory the first one is still writing into.
+        static int instance = 0;
         state.runtime_dir = (std::filesystem::temp_directory_path() /
-                             ("noise-app-test-" + std::to_string(platform::pid()))).string();
+                             ("noise-app-test-" + std::to_string(platform::pid()) + "-" +
+                              std::to_string(instance++)))
+                                .string();
         std::filesystem::remove_all(state.runtime_dir);
         std::filesystem::create_directories(state.runtime_dir);
         // The host publishes the canvas area every frame it draws; a harness with no
@@ -63,6 +69,14 @@ struct Harness {
         state.viewport_published = true;
         state.framebuffer = Extent{1280, 800};
         state.canvas_origin = {0.0, 0.0};
+        // The AI tables come from the tree, not from a machine's environment: a test that resolved roles
+        // against an empty table would pass by proving nothing.
+        state.ai.resource_dir = NOISE_TEST_ASSETS_DIR;
+        // The recorded server answers instead of a socket: `server.connect`, `ai.run` and `job.wait`
+        // then exercise the transport, the queue and the failure classes against the shapes the dev box
+        // was observed sending, and the default test run stays hermetic.
+        ::setenv("NOISE_AI_FIXTURES", NOISE_TEST_FIXTURES_DIR, 1);
+        app::open_ai_session(state);
         const app::HostHooks hooks{&stub_frame, [this] { ++quits; }};
         app::register_commands(state, table, wire, hooks);
     }
@@ -1995,6 +2009,131 @@ void test_the_select_gesture_draws_and_puts_down_the_selection() {
 // The result compositor, reached the way the UI will reach it: through the command table, so the
 // selection fence, the undo step and the revision all behave as they do for a stroke, and so a probe
 // can look at the pixels.
+// The whole AI path against the recorded server: discovery, role resolution, the compiled request, the
+// queue, and the answer landing through the same compositor door `ai.compose` uses. The fixtures are the
+// transport, so this runs in the default `ctest` and still proves the parts no unit test reaches - the
+// app's own wiring between them.
+void test_a_recipe_runs_against_the_recorded_server_and_lands() {
+    Harness h;
+    h.value("doc.new", json{{"width", 128}, {"height", 96}, {"fill", json::array({30, 40, 50, 255})}});
+    h.value("select.rect", json{{"rect", json::array({24, 20, 40, 28})}});
+    const std::string before = checksum_of(h);
+
+    const json connected = h.value("server.connect", json::object());
+    CHECK(connected["connected"].get<bool>());
+    CHECK_EQ(connected["models"].get<std::size_t>(), std::size_t(7));
+    // The role resolves from the table's preference and the box's list together, and the model it lands
+    // on is the one the table prefers that this box has downloaded.
+    const json roles = h.value("ai.roles", json::object());
+    std::string edit_model;
+    for (const json& role : roles["roles"]) {
+        if (role["role"].get<std::string>() == "edit") {
+            edit_model = role["model"].get<std::string>();
+            CHECK(role["resolved"].get<bool>());
+            CHECK(!edit_model.empty());
+        }
+    }
+
+    const json vars = json{{"target", "the lamp"}, {"context_desc", "a painted wall"}};
+    const json preview = h.value("ai.preview",
+                                 json{{"recipe", "inpaint-remove"}, {"vars", vars}, {"seed", 42}});
+    const json request = preview["request"];
+    CHECK_EQ(request["path"].get<std::string>(), std::string("/images/edits"));
+    CHECK_EQ(request["model"].get<std::string>(), edit_model);
+    const std::string size = request["size"].get<std::string>();
+    CHECK(size.find('x') != std::string::npos);
+    const int asked_w = std::stoi(size.substr(0, size.find('x')));
+    // The size is the region compiler's, so it is a multiple of the table's 16 and covers the selection
+    // plus the context the recipe asked for.
+    CHECK_EQ(asked_w % 16, 0);
+    CHECK(asked_w >= 40);
+    bool sent_prompt = false;
+    for (const json& pair : request["fields"]) {
+        if (pair[0].get<std::string>() == "prompt") {
+            sent_prompt = pair[1].get<std::string>().find("the lamp") != std::string::npos;
+        }
+        CHECK(pair[0].get<std::string>() != "mask");
+    }
+    CHECK(sent_prompt);
+    // The prepped region exists on disk and is what the request names by hash.
+    CHECK(std::filesystem::exists(preview["prepped"].get<std::string>()));
+    CHECK_EQ(request["image_bytes"].get<std::size_t>() > 0, true);
+
+    // Nothing has been sent yet, and nothing has been written.
+    CHECK_EQ(checksum_of(h), before);
+    CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(0));
+
+    const json run = h.value("ai.run", json{{"recipe", "inpaint-remove"}, {"vars", vars}, {"seed", 42}});
+    const std::string id = run["job"]["id"].get<std::string>();
+    CHECK(!id.empty());
+    const json waited = h.value("job.wait", json{{"id", id}, {"timeout", 30}});
+    CHECK_EQ(waited["state"].get<std::string>(), std::string("succeeded"));
+    CHECK_EQ(waited["recipe"].get<std::string>(), std::string("inpaint-remove"));
+    // The recording answers 64x64 whatever was asked, which is the case the compositor exists for.
+    CHECK_EQ(waited["result_dims"][0].get<int>(), 64);
+    CHECK_EQ(waited["result_dims"][1].get<int>(), 64);
+    CHECK(std::filesystem::exists(waited["result"].get<std::string>()));
+
+    const json applied = h.value("job.apply", json{{"id", id}, {"apply", true}});
+    CHECK(applied["applied"].get<bool>());
+    CHECK(applied["composite"]["composed"].get<bool>());
+    const std::size_t changed = applied["composite"]["pixels_changed"].get<std::size_t>();
+    CHECK(changed > 0);
+    CHECK_EQ(applied["composite"]["pixels_clipped_by_extent"].get<std::size_t>(), std::size_t(0));
+    CHECK_NE(checksum_of(h), before);
+
+    // The report describes the document: every byte that differs is one the composite counted, and the
+    // answer reached no pixel the job's own coverage did not claim.
+    // The document as it was before the answer landed: one flat fill, so the diff below is the composite
+    // and nothing else.
+    const Image scene = Image::filled(Extent{128, 96}, 30, 40, 50, 255);
+    const Image landed = h.state.doc.composite();
+    const Rect crop = [&applied] {
+        const json& region = applied["region"]["crop"];
+        return Rect{region[0].get<int>(), region[1].get<int>(), region[2].get<int>(),
+                    region[3].get<int>()};
+    }();
+    std::size_t different = 0;
+    std::size_t outside_crop = 0;
+    for (int y = 0; y < landed.size().h; ++y) {
+        for (int x = 0; x < landed.size().w; ++x) {
+            if (std::memcmp(landed.at(x, y), scene.at(x, y), kChannels) != 0) {
+                ++different;
+                if (!crop.contains(x, y)) {
+                    ++outside_crop;
+                }
+            }
+        }
+    }
+    CHECK_EQ(different, changed);
+    // A feathered mask reaches past the crop the request was compiled to, but only by the feather.
+    CHECK(outside_crop < changed);
+
+    h.value("edit.undo", json::object());
+    CHECK_EQ(checksum_of(h), before);
+
+    // The second identical request is answered from the cache rather than by the server, which is the
+    // only reason a re-run of a recipe is not another wait.
+    const std::size_t hits_before =
+        h.value("cache.stats", json::object())["hits"].get<std::size_t>();
+    const json again =
+        h.value("ai.run", json{{"recipe", "inpaint-remove"}, {"vars", vars}, {"seed", 42}});
+    const json second =
+        h.value("job.wait", json{{"id", again["job"]["id"].get<std::string>()}, {"timeout", 30}});
+    CHECK(second["from_cache"].get<bool>());
+    CHECK_EQ(h.value("cache.stats", json::object())["hits"].get<std::size_t>(), hits_before + 1);
+
+    // A job's answer outlives the moment it was made in: a preview of it writes nothing, and applying it
+    // again after undoing lands the same pixels - which is what makes an answer worth keeping on disk
+    // instead of in memory next to the document.
+    const json repreview = h.value("job.apply", json{{"id", id}, {"apply", false}});
+    CHECK(!repreview["applied"].get<bool>());
+    CHECK_EQ(checksum_of(h), before);
+    const json reapplied = h.value("job.apply", json{{"id", id}, {"apply", true}});
+    CHECK_EQ(reapplied["composite"]["pixels_changed"].get<std::size_t>(), changed);
+    CHECK_NE(checksum_of(h), before);
+}
+
 void test_an_answer_lands_on_the_document_and_undoes_completely() {
     Harness h;
     h.value("doc.new", json{{"width", 64}, {"height", 48}, {"fill", json::array({20, 60, 100, 255})}});
@@ -2110,7 +2249,7 @@ void test_an_answer_can_fill_pixels_the_layer_never_had() {
     CHECK(io::save_png(answer_path, Image::filled(Extent{96, 64}, 210, 30, 90, 255), error));
 
     const json edit = h.value("ai.compose", json{{"image", answer_path}, {"apply", true}});
-    CHECK_EQ(edit["extent"].get<std::string>(), "layer");
+    CHECK_EQ(edit["policy"]["extent"].get<std::string>(), "layer");
     CHECK_EQ(edit["composite"]["pixels_changed"].get<std::size_t>(), std::size_t(0));
     CHECK(edit["composite"]["pixels_clipped_by_extent"].get<std::size_t>() > 0);
     CHECK_EQ(checksum_of(h), empty_document);
@@ -2119,7 +2258,7 @@ void test_an_answer_can_fill_pixels_the_layer_never_had() {
 
     const json generation = h.value("ai.compose",
                                    json{{"image", answer_path}, {"apply", true}, {"extent", "canvas"}});
-    CHECK_EQ(generation["extent"].get<std::string>(), "canvas");
+    CHECK_EQ(generation["policy"]["extent"].get<std::string>(), "canvas");
     CHECK_EQ(generation["composite"]["pixels_clipped_by_extent"].get<std::size_t>(), std::size_t(0));
     CHECK(generation["composite"]["pixels_changed"].get<std::size_t>() > 0);
     CHECK_NE(checksum_of(h), empty_document);
@@ -2140,6 +2279,7 @@ void test_an_answer_can_fill_pixels_the_layer_never_had() {
 int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
+    test_a_recipe_runs_against_the_recorded_server_and_lands();
     test_an_answer_lands_on_the_document_and_undoes_completely();
     test_an_answer_can_fill_pixels_the_layer_never_had();
     test_every_command_refuses_an_argument_it_does_not_declare();

@@ -1,0 +1,17 @@
+{
+  "id": "inpaint-remove",
+  "endpoint": "edits",
+  "role": "edit",
+  "region": "selection",
+  "prep": "blur",
+  "enhance": "never",
+  "prompt": [
+    "Remove the {{target}} from this image.",
+    "Reconstruct the area behind it as a seamless continuation of the surrounding",
+    "{{context_desc}}, matching colour, brightness, light direction, perspective, texture,",
+    "focus and grain.",
+    "Change nothing else in the image."
+  ],
+  "variables": { "target": "object", "context_desc": "background" },
+  "composite": { "feather": "auto", "colour_match": true, "lock_band_px": 6, "extent": "layer" }
+}

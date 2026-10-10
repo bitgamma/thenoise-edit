@@ -1,0 +1,15 @@
+{
+ "name": "400 naming the size, which is the clamp-and-retry row",
+ "method": "POST",
+ "path": "/images/edits",
+ "match": {
+  "model": "bad-size"
+ },
+ "status": 400,
+ "json": {
+  "error": {
+   "message": "width 99999 exceeds the maximum supported width",
+   "type": "invalid_request_error"
+  }
+ }
+}

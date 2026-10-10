@@ -1,0 +1,10 @@
+{
+ "name": "200 with an HTML body - a proxy or a login page answered instead",
+ "method": "POST",
+ "path": "/images/edits",
+ "match": {
+  "model": "proxy"
+ },
+ "status": 200,
+ "text": "<html><body>502 Bad Gateway</body></html>"
+}

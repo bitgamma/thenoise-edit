@@ -1,0 +1,16 @@
+{
+ "name": "POST /images/generations - the answer for any other size, at 64x64",
+ "method": "POST",
+ "path": "/images/generations",
+ "match": {
+  "model": "Krea-v0.3.1-INT8"
+ },
+ "status": 200,
+ "json": {
+  "data": [
+   {
+    "b64_json": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAZklEQVR42u3QQREAAAQAMCH0zyOOBuRw9liBRVfOZyFAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgTct5syspW9wn9oAAAAAElFTkSuQmCC"
+   }
+  ]
+ }
+}

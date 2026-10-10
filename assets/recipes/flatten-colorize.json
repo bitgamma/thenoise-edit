@@ -1,0 +1,15 @@
+{
+  "id": "flatten-colorize",
+  "endpoint": "edits",
+  "role": "edit",
+  "region": "document",
+  "prep": "none",
+  "enhance": "never",
+  "prompt": [
+    "Colorize this image, keeping every line, edge and tonal relationship exactly where it is.",
+    "{{prompt}}",
+    "Do not move, add or remove anything; only add colour."
+  ],
+  "variables": { "prompt": "Natural, consistent lighting and palette." },
+  "composite": { "feather": "auto", "colour_match": false, "lock_band_px": 0, "extent": "layer" }
+}

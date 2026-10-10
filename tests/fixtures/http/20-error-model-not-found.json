@@ -1,0 +1,17 @@
+{
+ "name": "404 - the refusal body verbatim, because the client branches on its shape",
+ "method": "POST",
+ "path": "/images/edits",
+ "match": {
+  "model": "NoSuchModel-TheNoise"
+ },
+ "status": 404,
+ "json": {
+  "error": {
+   "code": "model_not_found",
+   "message": "model not found: NoSuchModel-TheNoise",
+   "param": "model",
+   "requested_model": "NoSuchModel-TheNoise"
+  }
+ }
+}
