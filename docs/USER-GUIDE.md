@@ -311,6 +311,7 @@ stroke and a capture, and the PNG turned up where it said.
 | view | `view.fit` `view.set` `view.pan` `view.zoom` |
 | edit | `edit.undo` `edit.redo` |
 | observe | `screenshot` `pixels.compare` |
+| ai | `ai.compose` |
 
 Things worth knowing when writing a driver:
 
@@ -327,6 +328,13 @@ Things worth knowing when writing a driver:
   into `<runtime>/captures` (or return base64 with `{"base64": true}`) and report the path and
   sha256. `pixels.compare {a, b}` decodes two images of any flat format and diffs their pixels, reporting
   `differing_bytes` / `max_channel_delta`.
+- `ai.compose {"image": path}` takes a PNG as an answer to a request the app has not sent yet: it lands on
+  the document where the **selection** is (no selection means the whole frame), feathered, colour-matched and
+  blended — so `feather` is an integer or `"auto"`, `colour_match` and `lock_band` override what a recipe would
+  have said. By default it **previews**: nothing on the document changes and it writes a PNG you can look at.
+  `{"apply": true}` performs the edit as one undo step, and `Ctrl+Z` puts every byte back. The reply reports the
+  resolved policy, the coverage that was actually pasted, `pixels_changed` and `answered_as_requested`, so
+  "everything outside the mask is untouched" is a thing a driver can check rather than admire.
 - `Escape` and `Ctrl+Q` both quit, and nothing asks about unsaved changes.
 
 The scripts in `tools/` are the same wire, already wired into `ctest`:
@@ -341,8 +349,10 @@ gestures), `stroke_probe.py` (a 5000-dab stroke with the app still drivable),
 Stated plainly, because "the button is missing" and "the feature is broken" are different
 problems and only one of them is a bug:
 
-- **No AI at all.** No server profile, no roles, no generate / remove / replace / upscale.
-  That is milestones M3 and M4.
+- **Nothing talks to a server yet.** The two ends of an AI edit exist and are drivable — the region
+  compiler (`ai/region`) and the result compositor (`ai.compose`) — but there is no server profile, no
+  roles, no recipes, no `ai.preview` / `ai.run`, no Generate panel and no `Remove` button. That is
+  milestones M3 and M4.
 - **Selections are rectangular and elliptical only.** No lasso, wand, feather or grow/shrink.
   Masks can be painted (`mask.target`), but there is nothing to enable, disable, apply or view one
   with, and no thumbnail to click.

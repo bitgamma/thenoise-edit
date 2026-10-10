@@ -227,10 +227,15 @@ Input: `(document composite, selection mask, recipe)` → one compiled request.
              below already handles it). The number lives in roles.json / the recipe policy,
              nowhere else
 5. FIT       if area > region_budget (default 1024×1024 equivalent) → uniform scale down;
-             record scale. Never upscale a region beyond the source resolution.
+             record `scale` *and* `requested` = that scale rounded **up** to the multiple, because
+             the two are not proportional and the inverse map needs the size, not the scale
 6. CROP      flattened base = visible layers below ∪ active layer; alpha flattened over a
              colour sampled from the mask ring (never over plain white/black)
-7. PREP      none | average | blur(gauss, r ≈ bbox/12) | pixelate | noise | white
+             ⚠ not built: `prep_region` takes `base` from its caller and copies `plan.crop` out of
+             it unchanged, and `Document` has no flatten-over-a-rectangle door yet — see PLAN,
+             "what the request side still needs"
+7. PREP      none | average | blur(gauss, r = max(kMinBlurRadiusPx, crop short side / 12)) |
+             pixelate (block = that radius) | noise (seeded, so the bytes are cacheable) | white
              default blur: it destroys *what* the object is while preserving the colour,
              luminance gradient and light direction of what is behind it. Pure white is the
              worst option and is offered only for experiments.
@@ -243,20 +248,54 @@ Input: `(document composite, selection mask, recipe)` → one compiled request.
 
 ## The Result Compositor
 
-Always runs; this is what makes instruction editing usable at all.
+Always runs; this is what makes instruction editing usable at all. Built as `ai/compose` +
+`ai/colour_match`, over `core/resample` and `core/blur`; asserted by `test_compose`.
 
 ```
-1. RESAMPLE     returned image (its own dims) → crop rect, Lanczos3
+1. RESAMPLE     returned image (its own dims) → the whole crop rect, Lanczos3 over premultiplied
+                alpha, support widened when shrinking so no source pixel is dropped (core/resample).
+                Premultiplied because the coverage edge is the feather, and a straight-alpha average
+                drags a transparent edge's colour into a visible pixel.
 2. COLOURMATCH  match result Lab mean/σ to the original ring *outside* the mask
-                (on for remove/heal, off for reimagine)
-3. BLEND        out = orig*(1−m) + result*m,  m = mask ⊛ gauss(feather 2–8 px, auto from
-                mask perimeter length and region size)
-4. LOCK         force outer N px of the crop rect to 100 % original → kills seam drift
-5. CLIP         apply active-layer alpha: never paint where the layer is transparent
+                (on for remove/heal, off for reimagine). Ring = crop pixels the *effective* coverage
+                does not reach and the original has alpha there; patch = where it reaches and the
+                result has alpha. Pixels with no alpha are not colour, at either end. Both moments,
+                with a floor on a spread worth matching (kMinLabDeviation) and a cap on the correction
+                (kMaxDeviationRatio): a flat ring must not flatten the patch, and a palette change is
+                the edit that was asked for.
+3. BLEND        out = orig*(1−m) + result*m,  m = mask ⊛ gauss(feather 2–8 px), through
+                Mask::restrict_to — the same premultiplied write-door mix a stroke uses, exact at
+                m = 0 and m = 255, which is what makes step 4 provable instead of approximate.
+                auto feather = mean mask thickness / 8, clamped: thickness is 2·area/perimeter, the
+                band width the ants' boundary runs already give. Region size is *not* the input — a
+                crop is grown and snapped, so a small mask in a big crop would be given a feather far
+                wider than the feature it is meant to hide.
+4. LOCK         force outer N px (policy: 6) to 100 % original → kills seam drift — but only on the
+                crop edges that have canvas outside them. At a crop edge that *is* the canvas edge
+                there is nothing to protect, and a band there eats into the region the mask covers.
+5. CLIP         apply active-layer alpha: never paint where the layer is transparent, and
+                proportionally elsewhere (coverage × alpha / 255), so a layer at half opacity
+                receives half a composite.
 ```
 
-Invariant we will test: **pixels outside the feathered mask are byte-identical to the
-original.** Every M4 acceptance run asserts it with a pixel diff.
+Invariant, asserted: **every pixel the *effective* coverage does not reach is byte-identical to the
+original** — whole-image diff, not a sampled point, and not only inside the crop. Effective coverage
+means feathered, lock-banded and alpha-clipped: the mask that ran, which `ComposeReport::coverage`
+returns, so the assertion is against what happened and not against what was asked. Every M4 acceptance
+run asserts it with `pixels.compare`.
+
+`ai.compose {image, apply?, feather?, colour_match?, lock_band?}` is that path on the wire, with the
+document's selection as the mask and no selection meaning whole-document coverage. `apply` false (the
+default) touches nothing and writes a preview PNG; `apply` true goes through `Document::paint`, so it is
+one undo step and the selection fences it like any other edit. The report carries the resolved policy,
+the effective coverage, `pixels_changed`, `pixels_clipped_by_alpha` and `answered_as_requested` — false
+on that last one is not a failure (the engine answers a snapped size and the resample copes) but it is
+where a drift investigation starts.
+
+**Open for the generations path**: proportional clipping is right for an edit into a painted layer and
+wrong for a generation into an empty one — an empty layer has no alpha to receive into, so `new-image`
+must write alpha rather than be clipped by it. `pixels_clipped_by_alpha` makes that case visible instead
+of silent; settle it before `new-image` is wired.
 
 ## Draft → Refine
 

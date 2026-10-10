@@ -93,6 +93,19 @@ src/
                        never a mask type of its own, so an added shape costs a row here and nothing in
                        the document, the composite, the format or the overlay. The ellipse is
                        anti-aliased by exact vertical strips, 16 samples for the width a pixel straddles.
+    blur.{h,cpp}       the box blur over an RGBA-ish plane, and `feathered_mask`: three passes of odd
+                       box sizes, because anything wider is a different kernel. Radius 0 is the
+                       identity, so "no feather" is a number rather than a branch, and the plane is
+                       clamped at the ends rather than wrapped - a mask feathered at the canvas edge
+                       must not pick up the far side of the image. `ai/region` prep and `ai/compose`
+                       soften with this and nothing else.
+    resample.{h,cpp}   Lanczos-3 over premultiplied alpha, with the support widened when the image
+                       shrinks so no source pixel is dropped. Premultiplied because the coverage edge
+                       of a returned image is the feather, and averaging straight alpha drags a
+                       transparent pixel's colour into a visible one; the weights are normalised among
+                       themselves, never by the coverage. At 1:1 it returns the input byte for byte -
+                       the kernel is interpolating and the weights are exact, which is what lets the
+                       result compositor resample unconditionally without breaking pixel-lock.
     heal.{h,cpp}       Telea / Chan fusion inpainting (local, offline)
     command.{h,cpp}    invokable command table: commands, titles and key bindings
     shortcut.{h,cpp}   canonical shortcut text: grammar, vocabulary, normalization
@@ -124,6 +137,9 @@ src/
                        part of the app layer)
     ui/                panels: layers, generate, journal, jobs, status, prefs
     select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
+    ai_commands.cpp     `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`: lands a
+                       result file on the document through the same doors a stroke uses, or previews
+                       it and reports what the policy resolved to
     mask_commands.cpp mask.from_selection, mask.add/remove/fill/invert, mask.target and mask.get -
                        the two directions between a selection and the active layer's mask (both copies
                        of one `Mask`), the mask's own life cycle, and where strokes are aimed at
@@ -136,9 +152,15 @@ src/
                        tier-2 only if the profile opts in)
     profile.{h,cpp}    per-model policy (size multiple/budget, steps, roles, quirks),
                        merged over discovery
-    compiler.{h,cpp}   THE region compiler (see AI-BACKEND.md)
+    region.{h,cpp}     THE region compiler (see AI-BACKEND.md): `plan_region` for the geometry
+                       (bbox → grow → clamp → snap → fit, with the inverse map carried as the two
+                       rectangles rather than a scale) and `prep_region` for the bytes that would go
+                       on the wire
     recipes.{h,cpp}    pre-shipped JSON loading + variable substitution
-    composite.{h,cpp}  result resample / colour-match / feather blend back
+    compose.{h,cpp}    the result compositor (see AI-BACKEND.md): resample onto the crop, feather,
+                       lock band, clip to layer alpha, blend through `Mask::restrict_to` - and the
+                       `ComposeReport` whose effective coverage is what pixel-lock is asserted against
+    colour_match.{h,cpp} Lab mean/σ transfer from the ring outside the coverage onto the patch inside
     queue.{h,cpp}      jobs, cancellation, ETA, durable queue
     cache.{h,cpp}      request → blob cache
     http.{h,cpp}       curl wrappers: generations / edits / upscale / health / load / chat
@@ -155,7 +177,7 @@ src/
     project.{h,cpp}    .noise read/write (the only layered format we read or write)
     psd_export.{h,cpp} (M5, optional)
     config.{h,cpp}     settings, keyring access
-tests/         core + ai/compiler unit tests (no GPU), golden-image tests
+tests/         core + ai unit tests (no GPU), golden-image tests
 shaders/       composite.glsl, blend modes, ants, resample
 ```
 
@@ -400,7 +422,7 @@ variants/<op>/<i>.png          kept AI variants not committed to a layer
 Thumbnails/thumbnail.png
 ```
 
-### What is written today: `format` 3
+### What is written today: `format` 4
 
 The subset the app can represent, read and written by `io/project.{h,cpp}`, which refuses what it
 would have to guess about. Costs of the v0 layout are in
@@ -524,10 +546,10 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | drive | `select.rect {rect, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `screenshot`, `pixels.compare`, `wire.info` |
  `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
-| ai | `ai.preview {recipe, args}` (compiled request + prepped PNG, **no send**), `ai.run`, `job.wait {id}`, `cache.stats` | verify what we *would* send before spending minutes of someone's GPU |
+| ai | `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, args}` (compiled request + prepped PNG, **no send**), `ai.run`, `job.wait {id}`, `cache.stats` | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; the rest verify what we *would* send before spending minutes of someone's GPU |
 
-Live now: the state/drive/pixels rows minus `server.state`, `job.list` and the whole ai row, which
-arrive with their milestones.
+Live now: the state/drive/pixels rows minus `server.state` and `job.list`, and `ai.compose` from the ai
+row; `ai.preview`, `ai.run`, `job.wait` and `cache.stats` arrive with their milestones.
 `app.state` reports `frame` (frames presented), `frame_ms` (last presented frame), `canvas`
 (origin + size of the canvas content area in framebuffer px) and the view transform
 (`scale`, `origin`, `image`, `fit_pending`), the brush and tool the last stroke ran with, the
