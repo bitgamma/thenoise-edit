@@ -88,7 +88,9 @@ src/
                        `scale_by_coverage(mask, …)` the same mix with nothing underneath, which is
                        how a composite reads a layer through its mask.
     maskops.{h,cpp}    coverage producers: `MaskShape` (`rect`, `ellipse`) applied to a `Rect` with a
-                       `MaskOp`, the table `kMaskShapeInfo` naming them (and so naming the commands
+                       `MaskOp`, `alpha_coverage(image)` turning an image's alpha into "how much layer is
+                       here" so a write can be limited by it with the same multiply everything else uses,
+                       and the table `kMaskShapeInfo` naming the shapes (and so naming the commands
                        and the tools that draw them). A shape writes the same coverage plane and is
                        never a mask type of its own, so an added shape costs a row here and nothing in
                        the document, the composite, the format or the overlay. The ellipse is
@@ -137,10 +139,10 @@ src/
                        part of the app layer)
     ui/                panels: layers, generate, journal, jobs, status, prefs
     select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
-    ai_commands.cpp     `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`: lands a
-                       result file on the document through `Document::paint` with `own_coverage` - one
-                       undo step, unfenced by the selection - or previews it and reports what the policy
-                       resolved to
+    ai_commands.cpp     `ai.compose {image, apply?, feather?, colour_match?, lock_band?, extent?}`:
+                       lands a result file on the document through `Document::paint` with
+                       `own_coverage` - one undo step, unfenced by the selection - or previews it, and
+                       reports what the policy, the extent and the coverage resolved to
     mask_commands.cpp mask.from_selection, mask.add/remove/fill/invert, mask.target and mask.get -
                        the two directions between a selection and the active layer's mask (both copies
                        of one `Mask`), the mask's own life cycle, and where strokes are aimed at
@@ -298,7 +300,10 @@ keep it cheap and honest:
   that arrives with coverage of its own — an AI composite's feathered mask is meant to reach past the
   selection it was compiled from, and fencing it there deletes the feather and leaves the report
   describing an edit the document did not perform. With `own_coverage` staying inside the intended region
-  is the caller's claim, and `bounds` is what the undo step was recorded against.
+  is the caller's claim, and `bounds` is what the undo step was recorded against. A composite carries one
+  more claim, also a mask rather than a fence: its `extent` says how far a write may exist (a layer's
+  `alpha_coverage` for an edit, the canvas filled for a generation) and is multiplied after the feather,
+  so confining a write to where its layer exists and keeping that write's edge soft are one operation.
   Mixing *premultiplied* rather than straight RGBA is what makes partial
   coverage mean "part of this stroke happened": straight-alpha mixing changes a pixel's colour when
   only its coverage was meant to change. `test_mask` compares the result against a separate
@@ -552,7 +557,7 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | drive | `select.rect {rect, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `screenshot`, `pixels.compare`, `wire.info` |
  `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
-| ai | `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, args}` (compiled request + prepped PNG, **no send**), `ai.run`, `job.wait {id}`, `cache.stats` | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; the rest verify what we *would* send before spending minutes of someone's GPU |
+| ai | `ai.compose {image, apply?, feather?, colour_match?, lock_band?, extent?}`, `ai.preview {recipe, args}` (compiled request + prepped PNG, **no send**), `ai.run`, `job.wait {id}`, `cache.stats` | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; the rest verify what we *would* send before spending minutes of someone's GPU |
 
 Live now: the state/drive/pixels rows minus `server.state` and `job.list`, and `ai.compose` from the ai
 row; `ai.preview`, `ai.run`, `job.wait` and `cache.stats` arrive with their milestones.

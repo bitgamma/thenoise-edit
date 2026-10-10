@@ -73,20 +73,25 @@ In order from here:
   is one more path that can silently differ from the pixel-lock proof.
 - **`answered_as_requested` is reported, not enforced.** The engine answers a snapped size and the resample
   copes; absorbing that silently is where a drift investigation would have to start over.
-- **Open: a generation into an empty layer.** Proportional alpha clipping is right for an edit into a painted
-  layer and wrong for `new-image`, which has no alpha to receive into and must write alpha instead.
-  `pixels_clipped_by_alpha` makes it visible; settle it before `new-image` is wired.
+- **How far a write may exist is a mask, not a mode** (`extent`, multiplied into the coverage after the
+  feather): an edit passes `alpha_coverage(layer)`, a generation the canvas filled. The compositor's rule
+  stays "blend by coverage", so `inpaint-remove` and `new-image` differ by data they carry and nothing
+  branches on the operation — and `extent = alpha ∩ layer.mask`, which a boolean could not have expressed,
+  comes free. Two things about it are load-bearing: it is multiplied **after** the feather (before would
+  bleed coverage past the silhouette the caller confined the write to — `test_compose` kills that mutant),
+  and the recipe will name it (`composite.extent: layer|canvas`) rather than the code guessing.
 - **Lab conversion is private to `ai/colour_match`.** One consumer, so it stays there; a second one pulls it to
   `core`, and adding the seam now would be the wrong kind of clean.
 
-**Architecture verdict (AGENTS §1).** The compositor takes `(target, result, plan, coverage, policy)` and the
+**Architecture verdict (AGENTS §1).** The compositor takes `(target, result, plan, coverage, extent, policy)` and the
 app can already reach it through the command table, so slice 5 lands in the same place rather than routing
 around it — the two narrowings found are both on the *request* side (the flatten door, the ring-colour alpha)
 and neither forces a change to what is built. Nothing here is a second representation of an existing idea: the
 coverage is the document's `Mask`, the blend is `restrict_to`, the blur and resampler moved into `core` when a
-second caller appeared (`ai/region` prep and `ai/compose` share `box_blur`). `core` grew exactly one thing for
-this slice, the `PaintFence` argument, and it grew because a second *kind* of writer arrived rather than a
-second writer: a stroke and a composite disagree about the one thing the door used to decide for itself.
+second caller appeared (`ai/region` prep and `ai/compose` share `box_blur`). `core` grew exactly two things for
+this slice — the `PaintFence` argument and the `alpha_coverage` producer — and both grew because a second
+*kind* of writer arrived rather than a second writer: a stroke and a composite disagree about the one thing
+the door used to decide for itself, and an edit and a generation disagree about how far their pixels may go.
 
 ### The one thing that was wrong, and how it was found
 

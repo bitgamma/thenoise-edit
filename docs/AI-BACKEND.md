@@ -273,9 +273,17 @@ Always runs; this is what makes instruction editing usable at all. Built as `ai/
 4. LOCK         force outer N px (policy: 6) to 100 % original → kills seam drift — but only on the
                 crop edges that have canvas outside them. At a crop edge that *is* the canvas edge
                 there is nothing to protect, and a band there eats into the region the mask covers.
-5. CLIP         apply active-layer alpha: never paint where the layer is transparent, and
-                proportionally elsewhere (coverage × alpha / 255), so a layer at half opacity
-                receives half a composite.
+5. EXTENT       coverage *= extent, where `extent` is a mask like any other: *how far a write may
+                exist*. An edit passes the active layer's alpha (so an answer cannot extend the
+                layer's silhouette, and a sheer part of it receives a proportional composite); a
+                generation passes the canvas filled to 255, because filling pixels the layer never
+                had is the point of it. Which one is a property of the operation, so the recipe
+                states it (`composite.extent`: `layer` | `canvas`) and the compositor never learns
+                what operation it is serving.
+                Multiply AFTER step 3's feather, not before: folding the extent into the mask first
+                lets the feather bleed coverage past where the layer exists, which is the silhouette
+                the caller said the write may not extend. `test_compose` kills that mutant, so the
+                order is a tested contract and not a comment.
 ```
 
 Invariant, asserted: **every pixel the *effective* coverage does not reach is byte-identical to the
@@ -284,21 +292,25 @@ means feathered, lock-banded and alpha-clipped: the mask that ran, which `Compos
 returns, so the assertion is against what happened and not against what was asked. Every M4 acceptance
 run asserts it with `pixels.compare`.
 
-`ai.compose {image, apply?, feather?, colour_match?, lock_band?}` is that path on the wire, with the
+`ai.compose {image, apply?, feather?, colour_match?, lock_band?, extent?}` is that path on the wire, with the
 document's selection as the mask and no selection meaning whole-document coverage. `apply` false (the
 default) touches nothing and writes a preview PNG; `apply` true goes through `Document::paint`, so it is
 one undo step that returns every byte — but with `PaintFence::own_coverage`, **not** fenced by the
 selection: the effective coverage is the limit, and a fence at the selection would cut the feather off and
 leave the report describing an edit the document did not perform (`test_ai_compose_probe` checks the report
 against the document's own pixels, and that the feather reaches past the selection). The report carries the resolved policy,
-the effective coverage, `pixels_changed`, `pixels_clipped_by_alpha` and `answered_as_requested` — false
+the effective coverage, `pixels_changed`, `pixels_clipped_by_extent` and `answered_as_requested` — false
 on that last one is not a failure (the engine answers a snapped size and the resample copes) but it is
 where a drift investigation starts.
 
-**Open for the generations path**: proportional clipping is right for an edit into a painted layer and
-wrong for a generation into an empty one — an empty layer has no alpha to receive into, so `new-image`
-must write alpha rather than be clipped by it. `pixels_clipped_by_alpha` makes that case visible instead
-of silent; settle it before `new-image` is wired.
+**Why the extent is a mask and not a mode.** The compositor's rule is one: blend by coverage. What an
+operation is allowed to touch is already expressible as coverage, so `new-image` and `inpaint-remove`
+differ by the mask they carry rather than by a flag the compositor branches on — and a case a boolean
+could not express comes free: clipping an edit by the active layer's **own mask** as well as its alpha is
+`extent = alpha ∩ mask`, no new vocabulary. `pixels_clipped_by_extent` reports the pixels an extent stopped
+outright, so "the edit succeeded" over a layer with nothing to receive it cannot pass for an edit (`0`
+changed, `8 992` clipped in the probe). It is called *clip* nowhere in the code: what happens is a
+multiply, and the old name implied the veto that this design removes.
 
 ## Draft → Refine
 

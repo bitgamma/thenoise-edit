@@ -331,7 +331,9 @@ Things worth knowing when writing a driver:
 - `ai.compose {"image": path}` takes a PNG as an answer to a request the app has not sent yet: it lands on
   the document where the **selection** is (no selection means the whole frame), feathered, colour-matched and
   blended — so `feather` is an integer or `"auto"`, `colour_match` and `lock_band` override what a recipe would
-  have said. By default it **previews**: nothing on the document changes and it writes a PNG you can look at.
+  have said. `extent` is `layer` (the default — an edit, received into the layer's own alpha) or `canvas`
+  (a generation, which may fill pixels the layer never had). By default it **previews**: nothing on the
+  document changes and it writes a PNG you can look at.
   `{"apply": true}` performs the edit as one undo step, and `Ctrl+Z` puts every byte back. The reply reports the
   resolved policy, the coverage that was actually pasted, `pixels_changed` and `answered_as_requested`, so
   "everything outside the mask is untouched" is a thing a driver can check rather than admire.
