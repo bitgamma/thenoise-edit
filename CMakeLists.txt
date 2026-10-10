@@ -132,6 +132,7 @@ target_link_libraries(noise_dbg PUBLIC noise_core)
 # The command table holds the app's whole behaviour surface and needs no GPU, so
 # it is its own target: tests drive real commands through it.
 add_library(noise_app STATIC
+    src/app/ai_commands.cpp
     src/app/command_args.cpp
     src/app/commands.cpp
     src/app/document_commands.cpp

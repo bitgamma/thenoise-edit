@@ -1992,9 +1992,92 @@ void test_the_select_gesture_draws_and_puts_down_the_selection() {
     CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 1);
 }
 
+// The result compositor, reached the way the UI will reach it: through the command table, so the
+// selection fence, the undo step and the revision all behave as they do for a stroke, and so a probe
+// can look at the pixels.
+void test_an_answer_lands_on_the_document_and_undoes_completely() {
+    Harness h;
+    h.value("doc.new", json{{"width", 64}, {"height", 48}, {"fill", json::array({20, 60, 100, 255})}});
+    const std::string before = checksum_of(h);
+    h.value("select.rect", json{{"rect", json::array({10, 8, 20, 14})}});
+
+    // An answer at a size nobody asked for, because that is what comes back: the engine snaps, and
+    // the compositor resamples.
+    std::string error;
+    const Image answer = Image::filled(Extent{320, 240}, 250, 10, 10, 255);
+    const std::string answer_path = h.temp("answer.png");
+    CHECK(io::save_png(answer_path, answer, error));
+
+    const json preview = h.value("ai.compose", json{{"image", answer_path}});
+    CHECK(preview["composite"]["composed"].get<bool>());
+    CHECK(!preview["applied"].get<bool>());
+    CHECK(!preview["composite"]["answered_as_requested"].get<bool>());
+    const std::size_t changed = preview["composite"]["pixels_changed"].get<std::size_t>();
+    CHECK(changed > 0);
+    CHECK(preview["composite"]["coverage_pixels"].get<std::size_t>() >= 20u * 14u);
+    CHECK_EQ(preview["composite"]["pixels_clipped_by_alpha"].get<std::size_t>(), std::size_t(0));
+    CHECK(std::filesystem::exists(preview["preview"].get<std::string>()));
+    // A preview previews: the document is untouched and no step was taken.
+    CHECK_EQ(checksum_of(h), before);
+    CHECK_EQ(undo_depth(h), 0);
+
+    const json applied = h.value("ai.compose", json{{"image", answer_path}, {"apply", true}});
+    CHECK(applied["applied"].get<bool>());
+    CHECK_EQ(applied["composite"]["pixels_changed"].get<std::size_t>(), changed);
+    CHECK_NE(checksum_of(h), before);
+    CHECK_EQ(undo_depth(h), 1);
+    h.value("edit.undo", json::object());
+    CHECK_EQ(checksum_of(h), before);
+    const std::string redone = [&h] {
+        h.value("edit.redo", json::object());
+        return checksum_of(h);
+    }();
+    CHECK_NE(redone, before);
+
+    // The feather the recipe did not name is the one the mask's shape asked for, and it is inside
+    // the range the compositor is allowed to work in.
+    const json feathered = h.value("ai.compose", json{{"image", answer_path}, {"feather", 0}});
+    CHECK_EQ(feathered["composite"]["feather_px"].get<int>(), 0);
+    CHECK_EQ(feathered["policy"]["feather"].get<int>(), 0);
+    const json autoed = h.value("ai.compose", json{{"image", answer_path}, {"feather", "auto"}});
+    CHECK_EQ(autoed["policy"]["feather"].get<std::string>(), "auto");
+    CHECK(autoed["composite"]["feather_px"].get<int>() >= 2);
+    CHECK(autoed["composite"]["feather_px"].get<int>() <= 8);
+
+    // Refused, and naming the thing: an answer that is not there, a feather that is negative, a
+    // word that is not "auto".
+    const CommandResult missing = h.run("ai.compose", json{{"image", h.temp("nope.png")}});
+    CHECK(!missing.ok);
+    CHECK(missing.error.find("nope.png") != std::string::npos);
+    const CommandResult negative =
+        h.run("ai.compose", json{{"image", answer_path}, {"feather", -3}});
+    CHECK(!negative.ok);
+    CHECK(negative.error.find("'feather'") != std::string::npos);
+    const CommandResult odd_word =
+        h.run("ai.compose", json{{"image", answer_path}, {"feather", "soft"}});
+    CHECK(!odd_word.ok);
+    CHECK(odd_word.error.find("auto") != std::string::npos);
+    // None of them touched a pixel: three refusals and the document exactly as the redo left it.
+    CHECK_EQ(checksum_of(h), redone);
+
+    // A selection that covers nothing is not a region.
+    h.value("select.rect", json{{"rect", json::array({10, 8, 20, 14})}, {"mode", "subtract"}});
+    const CommandResult nothing = h.run("ai.compose", json{{"image", answer_path}});
+    CHECK(!nothing.ok);
+    CHECK(nothing.error.find("covers nothing") != std::string::npos);
+
+    // No selection at all is the whole document, which is what a full-frame recipe means.
+    h.value("select.clear", json::object());
+    const json full = h.value("ai.compose", json{{"image", answer_path}});
+    CHECK(full["composite"]["composed"].get<bool>());
+    CHECK(full["region"]["coverage"].get<std::string>().find("whole document") != std::string::npos);
+    CHECK(full["composite"]["pixels_changed"].get<std::size_t>() > 0);
+}
+
 int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
+    test_an_answer_lands_on_the_document_and_undoes_completely();
     test_every_command_refuses_an_argument_it_does_not_declare();
     test_a_container_that_is_not_ours_is_refused_naming_what_it_met();
     test_exporting_to_a_flat_format_reports_what_the_format_could_hold();
