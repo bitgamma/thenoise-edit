@@ -297,6 +297,43 @@ PY
 /tmp/…/noise-edit/captures/demo-c68a18bc770c.png
 ```
 
+### AI from a terminal
+
+The AI path has no panel, so the wire is how it is used and watched today. Point the app at a server, or
+at recordings of one, and the sequence is the same either way:
+
+```sh
+export THENOISE_URL=https://<server>:13305/v1 THENOISE_API_KEY=*** # the dev box
+export NOISE_AI_FIXTURES=$PWD/tests/fixtures/http                # or replay instead of reaching the net
+```
+
+| Command | What it does |
+|---|---|
+| `server.connect` | `GET /health` then `GET /models`, then resolves every role against what this box actually has; answers the version, how many models, and the resolution of each role |
+| `server.state` | the session as the app believes it: server, key present, which URL prefix answered, what is resident, whether the tables loaded, the latency estimates |
+| `server.load {model, pin?}` | make one model resident. Explicit and priced: a swap is tens of seconds on a shared box, so it is never silent |
+| `ai.roles` | each role with the model it resolved to, the reason, the fix command when the box offers one, and the candidates |
+| `ai.recipes` | every recipe with its endpoint, role, region, prep, extent and composite policy, and the model its role resolves to |
+| `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` | the exact request: endpoint, ordered field list, resolved size, the prepped PNG that would be uploaded and its blob hash, the cache key. **Sends nothing** — this is what to look at before spending minutes of someone's GPU |
+| `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}` | queue it. Answers the job with the region plan and the prepped file |
+| `job.list`, `job.get {id}` | the durable record: state, timings, model, cache key, answer path, landing metadata |
+| `job.wait {id, timeout?}` | block until the job is terminal or the wait runs out |
+| `job.cancel {id}`, `job.retry {id}` | stop it (an answer that already arrived is kept, and its path is in the refusal), or send a finished job's request again under a new id |
+| `job.apply {id, apply?, into?, feather?, extent?, colour_match?}` | land the answer through the same compositor `ai.compose` uses: preview by default, `into: "new_layer"` for a full-frame answer you want to blend down locally |
+| `cache.stats` | entries, bytes, hits, misses, refused keys |
+
+Two environment variables decide where it goes: `$THENOISE_URL` / `$THENOISE_API_KEY` for the real
+server, and `$NOISE_AI_FIXTURES` pointing at a directory of recordings — set the second and the app
+replays instead of reaching the network, which is how the default test suite proves the whole path.
+`$NOISE_EDIT_ASSETS` says where `roles.json` and `recipes/` live (otherwise: `assets` beside the app, then
+the runtime directory). A URL or a key never enters a document, a log line that is written to disk with
+the repo, or this file.
+
+`tools/ai_job_probe.py` runs exactly that sequence against a live app and asserts the parts that are ours:
+the request obeyed the size policy and sent no `mask` field, the pixels that changed are the ones the
+report counted, nothing outside the job's coverage moved, and undo gives the document back byte for byte.
+With no `--live` it uses the committed recordings, so `ctest` checks the whole path without a socket.
+
 That is the session that was run against this build, not a sketch of one: a `doc.new`, a red
 stroke and a capture, and the PNG turned up where it said.
 
@@ -353,10 +390,12 @@ pixels the document actually shows),
 Stated plainly, because "the button is missing" and "the feature is broken" are different
 problems and only one of them is a bug:
 
-- **Nothing talks to a server yet.** The two ends of an AI edit exist and are drivable — the region
-  compiler (`ai/region`) and the result compositor (`ai.compose`) — but there is no server profile, no
-  roles, no recipes, no `ai.preview` / `ai.run`, no Generate panel and no `Remove` button. That is
-  milestones M3 and M4.
+- **No AI panel in the window.** Everything the AI path does is drivable and observable — connect,
+  resolve roles, compile a request, queue a job, land the answer — but none of it has a button yet: no
+  Generate panel, no `Remove`, no model-swap dialog. See "AI from a terminal" below for what works today,
+  and `docs/AI-BACKEND.md` for what is designed and not built.
+- **Nothing local replaces a server.** If the `edit` role cannot resolve, the edit recipes refuse with
+  the reason. The in-process fallbacks in the design (Telea/Chan `heal`) are not built.
 - **Selections are rectangular and elliptical only.** No lasso, wand, feather or grow/shrink.
   Masks can be painted (`mask.target`), but there is nothing to enable, disable, apply or view one
   with, and no thumbnail to click.

@@ -11,13 +11,14 @@
 | Image codecs | **libpng** (lossless, alpha), **libwebp** (opaque payloads), **turbojpeg** (export) | all present on this machine |
 | HTTP | **libcurl** (easy interface, worker threads) | ubiquitous, no TLS surprises |
 | JSON | **nlohmann/json** | config, model profiles, manifests |
-| Compression | **libzstd** for blob store; deflate for zip entries | |
+| Compression | planned: **libzstd** for blobs, deflate for zip entries | nothing is compressed yet: the blob store and `.noise` entries are stored today |
 | Container | **miniz** (single-file, MIT) for the project zip | |
 | Vector overlay | **sokol_gl** (immediate) or a tiny instanced-quad path | marching ants, brush cursor, ghost regions, selection handles |
 | Inference backend | **Lemonade Server**, `thenoise` recipe only | we are a client; the model box is AMD/ROCm, usually on the LAN, bearer-keyed |
 
-Build: CMake + `FetchContent` (sokol, imgui, miniz, nlohmann). System libs via `pkg-config`
-where available. Everything statically linkable into one binary. No OpenCV (heavy, wrong
+Build: CMake + `FetchContent` (sokol, imgui, miniz, nlohmann). System libs via `pkg-config`, all
+required: libpng16, libjpeg, libwebp and libcurl (the AI transport - there is no build of this app
+without it, and no network call at build time). Everything statically linkable into one binary. No OpenCV (heavy, wrong
 licence gravity for what we need; the ~400 lines of healing/filtering we want are ours).
 
 **Cross-platform by design, Linux-first in practice.** No Windows/macOS build scripts yet,
@@ -139,35 +140,60 @@ src/
                        part of the app layer)
     ui/                panels: layers, generate, journal, jobs, status, prefs
     select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
-    ai_commands.cpp     `ai.compose {image, apply?, feather?, colour_match?, lock_band?, extent?}`:
-                       lands a result file on the document through `Document::paint` with
-                       `own_coverage` - one undo step, unfenced by the selection - or previews it, and
-                       reports what the policy, the extent and the coverage resolved to
+    ai_commands.cpp     `ai.compose` (land a result file), `ai.roles`, `ai.recipes`, `ai.preview`
+                       (the compiled request, unsent) and `ai.run` (queue it): each reports what the
+                       policy, the extent and the coverage resolved to
+    ai_job_commands.cpp `server.connect/state/load`, `job.list/get/wait/cancel/retry/apply`,
+                       `cache.stats` - the queue and the session, observable and driveable
+    ai_session.{h,cpp} the tables, the transport (recordings if `$NOISE_AI_FIXTURES`, else libcurl),
+                       the client, cache, queue and registry: one object, opened once by the host
+    ai_landing.{h,cpp} the one door an answer goes through the document by, shared by `ai.compose`
+                       and `job.apply` so the two cannot disagree about feather, extent or coverage
     mask_commands.cpp mask.from_selection, mask.add/remove/fill/invert, mask.target and mask.get -
                        the two directions between a selection and the active layer's mask (both copies
                        of one `Mask`), the mask's own life cycle, and where strokes are aimed at
   ai/
-    server.{h,cpp}     ServerProfile: base URL, bearer key, TLS opts, adaptive timeouts;
-                       /v1/health handshake; session-model state; load/pin; latency EMA
-    registry.{h,cpp}   role resolution: `roles.json` ∩ GET /v1/models → one model per role
-                       per profile; nothing else in the codebase names a model
-    provider.{h,cpp}   request builder; the only place a field can be added (tier-1 always,
-                       tier-2 only if the profile opts in)
-    profile.{h,cpp}    per-model policy (size multiple/budget, steps, roles, quirks),
-                       merged over discovery
+    profile.{h,cpp}    what `/models` and `/health` say: a model's labels, recipe, whether it is
+                       downloaded, its `image_defaults` (steps, cfg, size). Discovery parsing only -
+                       no policy lives here, because the server publishes it
+    registry.{h,cpp}   `roles.json` ∩ discovery → one model per role: assignment, then the file's
+                       preference order, then a capability match. Nothing else in the codebase names a
+                       model, and an unresolved role carries a reason and, when the box offers it, the
+                       command that would fix it. The file also carries the size and context policy the
+                       region compiler and the request builder are not allowed to invent
+    recipes.{h,cpp}    `recipes/*.json`: endpoint, role, region scope, prep, enhance, prompt lines,
+                       variables, composite policy and extent. A recipe names a role, never a model,
+                       and refuses keys that belong to the model (`steps`) or to nothing (`mask`)
+    provider.{h,cpp}   THE request builder and the only place a field can be added: one ordered field
+                       list per request, encoded as JSON or multipart by the transport, plus the
+                       canonical text the cache key hashes
+    transport.h        the HTTP seam: method, URL, headers, body, timeouts, a cancel flag. Everything
+                       above it is the same whether the answer comes from libcurl or a recording
+    http.{h,cpp}       `Client`: health / models / load / run, and the failure classes - cancelled,
+                       server_down, timeout, auth, no_model_loaded, model_not_found, not_edit_capable,
+                       size_rejected, refusal, bad_image, interrupted - each with the thing to do
+    http_curl.cpp      the libcurl easy transport: TLS verification, timeouts, bearer header,
+                       cancellation from the transfer callback
+    recorded.{h,cpp}   the same transport from committed JSON recordings, answering on the caller's
+                       thread: captures what was sent (fields, PNG digest), replays delays, transport
+                       errors and every refusal shape. The default `ctest` run is this and nothing else
+    server.{h,cpp}     ServerProfile (base URL, key, TLS, auth form, `/v1` vs `/api/v1`) read from
+                       `$THENOISE_URL` / `$THENOISE_API_KEY`, and the latency EMA that turns a shape
+                       into an ETA and a request timeout
     region.{h,cpp}     THE region compiler (see AI-BACKEND.md): `plan_region` for the geometry
                        (bbox → grow → clamp → snap → fit, with the inverse map carried as the two
-                       rectangles rather than a scale) and `prep_region` for the bytes that would go
-                       on the wire
-    recipes.{h,cpp}    pre-shipped JSON loading + variable substitution
+                       rectangles rather than a scale), `prep_region` for the bytes that would go on
+                       the wire, and `flatten_over_ring` for the colour a transparent edge is dropped on
     compose.{h,cpp}    the result compositor (see AI-BACKEND.md): resample onto the crop, feather,
-                       lock band, clip to layer alpha, blend through `Mask::restrict_to` - and the
+                       lock band, multiply the extent, blend through `restrict_to` - and the
                        `ComposeReport` whose effective coverage is what pixel-lock is asserted against
     colour_match.{h,cpp} Lab mean/σ transfer from the ring outside the coverage onto the patch inside
-    queue.{h,cpp}      jobs, cancellation, ETA, durable queue
-    cache.{h,cpp}      request → blob cache
-    http.{h,cpp}       curl wrappers: generations / edits / upscale / health / load / chat
-                       (no variations — unsupported on the thenoise backend)
+    queue.{h,cpp}      jobs: one worker (the box holds one image model resident), cancellation that
+                       never discards an answer that arrived, retry from the stored request, and
+                       `jobs.json` plus the answer PNGs on disk so a refine outlives the app
+    cache.{h,cpp}      request digest → answer bytes, keyed by the built request's canonical text;
+                       keys that are not 64 hex characters are refused rather than joined
+
   dbg/
     wire.{h,cpp}       debug wire: JSON-lines server, request dispatch, event broadcast
     capture.{h,cpp}    viewport/window/composite → PNG on disk + sha256
@@ -553,14 +579,17 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 
 | Group | Commands | Why |
 |---|---|---|
-| state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `server.state`, `job.list`, `log.tail` | read what the app believes, cheaply |
+| state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `server.state`, `job.list`, `job.get {id}`, `cache.stats`, `ai.roles`, `ai.recipes`, `log.tail` | read what the app believes, cheaply |
 | drive | `select.rect {rect, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `screenshot`, `pixels.compare`, `wire.info` |
  `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
-| ai | `ai.compose {image, apply?, feather?, colour_match?, lock_band?, extent?}`, `ai.preview {recipe, args}` (compiled request + prepped PNG, **no send**), `ai.run`, `job.wait {id}`, `cache.stats` | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; the rest verify what we *would* send before spending minutes of someone's GPU |
+| ai | `ai.compose {image, apply?, feather?, colour_match?, lock_band?, extent?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}`, `server.connect`, `server.load {model, pin?}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.retry {id}`, `job.apply {id, apply?, into?, feather?, extent?, colour_match?}` | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact field list, size and blob digest before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel, retry and apply without a UI |
 
-Live now: the state/drive/pixels rows minus `server.state` and `job.list`, and `ai.compose` from the ai
-row; `ai.preview`, `ai.run`, `job.wait` and `cache.stats` arrive with their milestones.
+Live now: every row. The AI row is driven end to end by `tools/ai_job_probe.py` against
+`tests/fixtures/http` (a recorded server), so the whole path - discovery, role resolution, the compiled
+request, the queue, the landing, the pixels the report claims - is checked in the default `ctest`
+without a socket. `--live` runs the same probe against the dev box and asserts only what holds whatever
+model answers; it is registered under the `live` label and skips without `$THENOISE_URL`.
 `app.state` reports `frame` (frames presented), `frame_ms` (last presented frame), `canvas`
 (origin + size of the canvas content area in framebuffer px) and the view transform
 (`scale`, `origin`, `image`, `fit_pending`), the brush and tool the last stroke ran with, the
@@ -599,7 +628,7 @@ feature generating one element per canvas square or per log line shows up here f
 |---|---|---|---|
 | **unit / property** | always, `ctest` | no | region compiler round-trips, mask ops, blend reference, blob store, format round-trips |
 | **golden image** | always, `ctest` | no | named fixtures → exact bytes: codecs, mask ops, composite, heal |
-| **recorded backend** | always, `ctest` | no | `ai/` against committed HTTP fixtures: request field policy, response parsing, error mapping, cache keys |
+| **recorded backend** | always, `ctest` | no | `tests/fixtures/http` as the server: `test_roles` (resolution order, the shipped `roles.json`), `test_recipes` (policy parsing, the shipped set agreeing with the roles), `test_provider` (the field set on the serialized request, the cache key), `test_backend` (discovery, decoding, every failure class, cancellation, replay, durability), and `tools/ai_job_probe.py` driving the same through the running app |
 | **live backend** | on demand, tagged `live` | **yes** | the real contract against the dev server |
 
 Live tests are expected, not exotic. The dev Lemonade server is available when the human

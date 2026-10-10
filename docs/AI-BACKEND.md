@@ -27,14 +27,21 @@ already in the data.
 
 ### Resolution order (per profile, recomputed on connect)
 
-1. **candidates** = `GET /v1/models` filtered to `recipe == "thenoise"` (image roles) or by
-   labels (`enhance`), restricted to `downloaded: true`;
-2. narrowed by the role's capability predicate;
+1. **candidates** = `GET /v1/models` restricted to `downloaded: true` and to the role's `recipe`
+   where the role states one - image roles say `thenoise`, `enhance` states no recipe at all, because
+   which runner a vision model happens to use (`llama-cpp`, `vllm`, ...) is the server's business and a
+   role that named one would go unresolved the next time the box changed;
+2. narrowed by the role's capability predicate (`requires`, at least one label — a role with no
+   predicate would resolve to whichever model of the recipe came first, so `roles.json` refuses it);
 3. the **user's assignment** for that role, if it is still present and downloaded;
 4. else the **app preference order** from `roles.json` — INT8-ConvRot before bf16, a
    KV-cache checkpoint preferred for `edit`, ties broken by smaller download;
-5. else the role is **unresolved**: dependent commands render disabled with the reason and
-   the exact `lemonade import` / `lemonade pull` that would fix it. Never fail at click time.
+5. else the role is **unresolved**: dependent commands render disabled with the reason, plus the
+   exact `lemonade import <id>` when — and only when — the model the file prefers is offered by this
+   server and simply not downloaded. Naming a model the server does not list would send the user to an
+   import that fails, so in that case the answer is the reason and nothing else. Never fail at click
+   time: `ai.roles` answers `{role, model, resolved, reason, fix, candidates, assignment}` for every
+   role, which is what the disabled row is built from.
 
 What the dev box taught this list (`probes/2026-10-09-live-server.md`):
 
@@ -138,9 +145,12 @@ knobs we want later:
 | `film_grain` (0–10), `sharpening` (RCAS 0–1), `qwen_vae_enhance` | post-processing | **`film_grain` is a seam-hider**: grain on the generated patch masks the composite boundary; `qwen_vae_enhance` kills 2 px grid artifacts from Qwen VAEs |
 | `lora_specs` | `["style:0.8"]` | style packs — server-side files, so a settings feature, not a per-request one |
 
-Tier 2 is gated: `profile.noise_native = { <field>: value }` in the model profile, applied
-only when `profile.id` is a `thenoise` model. If a future server rejects one, the field is
-dropped and the deduction is recorded — same mechanism as tier-1 400-handling.
+Tier 2 is **not implemented**, and there is deliberately no opt-in path for it: `FieldSink` is the only
+code that can put a field on a request, it checks every name against the endpoint's tier-1 row, and
+`ai.run` refuses a field the table does not list. Adding tier 2 therefore means adding a row to that
+table and a way for a recipe to ask for it — which is the point: a knob that works cannot be reached
+by accident. When it is added, the gate is intended to be per-server rather than per-model, and a
+rejected field dropped with the deduction recorded rather than the job failed.
 
 ### `n`: we do not use it
 
@@ -172,8 +182,9 @@ so a swap is a real event: the first request that followed an unloaded model on 
 * We call `POST /v1/load {model_name, pinned:true}` when the user pins, and
   `GET /v1/health` (`model_loaded`, `all_models_loaded[] {model_name, recipe, device,
   pinned, last_use}`) to keep the panel honest. Never auto-swap silently.
-* **Warm-up**: a 256×256/1-step request right after a swap, so the first real generation
-  isn't the one that pays model init.
+* **Warm-up** (a 256×256/1-step request right after a swap, so the first real generation is not the
+  one that pays model init): designed, not built. What is built is `server.load {model, pin?}`, so the
+  swap is at least something the user chooses a moment for.
 * **Queue concurrency 1 per server**, always.
 * `GET /v1/stats` is token-oriented, not image-oriented ⇒ we measure latency **client-side**
   per `(model, w×h, steps)` and keep an EMA for ETA display. **A request the server has already
@@ -182,11 +193,16 @@ so a swap is a real event: the first request that followed an unloaded model on 
 
 ## Transport, auth, multi-server
 
-Transport is **libcurl**, found via `pkg_check_modules` like libpng/libjpeg/libwebp already are:
+Transport is **libcurl** (`pkg_check_modules(LIBCURL REQUIRED ...)`, like libpng/libjpeg/libwebp):
 connect timeout, abort of an in-flight handle for cancel, chunked bodies and TLS verification are the
-things the failure table below branches on, and they are not a slice to reimplement. It enters the
-build with the slice that speaks HTTP (see PLAN's AI order), not before — an unused dependency is a
-second way to reach the network with nothing watching it.
+things the failure table below branches on, and they are not a slice to reimplement.
+
+It sits behind one header, `ai/transport.h`: a request (method, URL, bearer, body, timeouts, a cancel
+flag) and a response. `ai/http_curl.cpp` is the easy-interface implementation; `ai/recorded.cpp` answers
+the same interface from `tests/fixtures/http` and is what the default `ctest` run talks to. Nothing above
+`ai/transport.h` knows which of the two it is on, which is why the field policy, the error classes and the
+queue are all testable without a socket — and why `NOISE_AI_FIXTURES` pointing at a recording directory
+makes even the running app replay instead of reaching the network.
 
 Lemonade is usually remote (LAN), usually with `LEMONADE_API_KEY` set.
 
@@ -194,7 +210,8 @@ Lemonade is usually remote (LAN), usually with `LEMONADE_API_KEY` set.
 ServerProfile (N of them, one active):
   name              "Studio"
   base_url          https://<server>:13305/v1         (http:// allowed on a trusted LAN)
-  api_key           from $NOISE_EDIT_API_KEY, OS keyring, or 0600 config — never in a .noise file
+  api_key           from $THENOISE_API_KEY today (the keyring and the 0600 config file are designed
+                    and not built) — never in a .noise file, never in the repo, never in a log line
   timeout_connect   5 s
   timeout_request   adaptive: max(60 s, predicted ETA × 4)   ← local diffusion is slow by design
   verify_tls        on by default; per-profile opt-out for self-signed LAN certs
@@ -339,15 +356,24 @@ The expensive thing is not inference, it is **model switching**. Design around t
 
 Supporting machinery:
 
-* **Request cache** keyed `sha256(server|model|prompt|params|prep|inputBlobIds)` — instant
-  replay of anything ever generated, survives restarts. The server keeps a cache of its own, so
-  a fast response proves neither our cache nor a model run; a job record says which one answered.
+* **Request cache** keyed on the sha256 of the built request's canonical text — `server`, `endpoint`,
+  `model`, `size`, `steps`, `cfg_scale`, `seed`, the blob id of the uploaded region and the prompt, in
+  that order, always written out by the same function. Instant replay of anything ever generated,
+  surviving restarts, because the key is a property of the request rather than of a session. The server
+  keeps a cache of its own, so a fast response proves neither our cache nor a model run; a job record
+  says which one answered (`from_cache`), and the latency EMA counts a reply inside one second as the
+  server's cache rather than as a sample.
 * **Latency EMA** per `(model, w×h, steps)` from client-measured timings → ETA before you
   commit, and it drives `timeout_request`. The engine's published benchmarks are the
   starting point, not the runtime source: every box differs.
-* **Durable queue**: jobs and results land on disk; a 20-minute full-frame job survives an
-  app crash; abandoned results are still stored (never discard a finished generation).
-* **Cancel** best effort via curl handle abort.
+* **Durable queue**: one worker per server, and `<runtime>/ai/jobs/{jobs.json,<id>-result.png,
+  <id>-request.png,<id>-coverage.png}` — a 20-minute full-frame job survives an app crash, and an answer
+  outlives the run that made it: `job.apply` works on any job in the record, including one from before
+  the restart. A job found `running` at startup is marked `failed` with the `interrupted` class: the
+  request died with the process and pretending otherwise would leave a job that never finishes.
+* **Cancel**: the transport polls a flag the job owns (`curl_handle_abort` in flight, an erase from the
+  queue while still queued), and cancelling never discards an answer that already arrived — a landed job
+  answers `already succeeded; its result stays at <path>` instead of pretending to take it back.
 
 ## Prompt Recipes
 
@@ -400,13 +426,20 @@ recipe that declares `enhance` must produce a valid request when the role is unr
 | `inpaint-remove` | edits | edit | mask bbox | the flagship |
 | `inpaint-replace` | edits | edit | mask bbox | "replace {{target}} with {{replacement}}" |
 | `region-fill` | edits | edit | mask bbox | generate into the region from prompt only |
-| `heal` | local, else edits | edit | small mask | Telea/Chan fusion in-process when the server is absent or lacks an edit model |
+| `heal` | edits | edit | selection | shipped as an edit with `prep: average`; the in-process Telea/Chan path for a box with no edit model is designed and **not built**, so `heal` currently refuses when the edit role is unresolved |
 | `flatten-colorize` | edits | edit | full doc | e.g. "colorize this line art" — the highest-value raster trick for illustration workflows |
-| `reimagine` | edits | edit | full doc | full-frame edit dropped in as a **new layer at 50 % opacity** (strength is controlled locally, since fidelity is not a server knob) |
+| `reimagine` | edits | edit | full doc | full-frame edit, `extent: canvas`. The strength control is local: `job.apply {into: "new_layer"}` lands it on an empty layer above the one the job was queued against, where the layer's own opacity is the blend slider — fidelity is not a server knob, and 50 % is a number the user owns |
 | `upscale` | upscale | — | full doc or mask bbox | ESRGAN model choice + composite back into the layer |
 | `free-command` | user's choice | user's choice | user's choice | escape hatch below |
 
 (`variations` deleted — unsupported endpoint.)
+
+**Built today.** `assets/roles.json` + `assets/recipes/*.json` (10 recipes; `free-command` is the one
+row of the table not shipped), loaded by `ai/registry` and `ai/recipes` from `$NOISE_EDIT_ASSETS`, `assets`
+beside the app, or the runtime directory — in that order, one lookup, reported by `server.state` as
+`tables`. `ai.recipes` lists each recipe with the policy it states and the model its role resolved to, so
+"a recipe that behaves oddly" is answerable from the wire. A recipe file whose name and `id` disagree is a
+refusal, not two ids for one policy.
 
 ### `free-command`
 
@@ -416,18 +449,27 @@ our own recipe-tuning workflow all depend on this panel existing early.
 
 ## Failure handling
 
-| Class | Detection | Action |
+Every class is `FailureClass` in `ai/http`, is carried on the job record (`failure`), and comes with a
+`hint` — a class without one is a bug, and a test asserts none is empty. Detection is as built:
+
+| Class | Detection | What the app does |
 |---|---|---|
-| server down | connect refused/timeout | "Is Lemonade running at `<base_url>`?" + Retry + server picker |
-| auth | 401/403 | key prompt, echo the header name we used, no retry loop |
-| no model loaded | engine `503` | offer `POST /v1/load` (and explain the swap cost) |
-| model not loaded/`downloaded:false` | discovery | greyed in picker + the `lemonade` command to pull it |
-| not edit-capable | engine `400` on `/edit` | should be impossible (role gating); if it happens, mark the profile `edit=false` and persist |
-| unsupported field | `400` | strip least-important field, retry once, persist deduction to profile |
-| size rejected | `400` naming size | clamp to profile `size_policy`, retry. Measured: a non-multiple is *not* refused, it is snapped, so this row is for a size out of range rather than an odd one |
-| policy refusal | model-specific text | rephrase via the recipe's refusal-safe template variant |
-| timeout | adaptive per-profile | Retry at lower `size`/`steps` offered |
-| bad image | blank/flat/undecodable PNG | mark blob bad, retry once with a new seed |
+| `server_down` | connect refused / DNS / transport error | "is the server reachable at `<base_url>`?", Retry, and the server picker |
+| `auth` | 401/403 | says which form the key was sent as (`Authorization: Bearer` or `?api_key=`) and to try the other; no retry loop |
+| `no_model_loaded` | 503 | offers `server.load` and says the swap costs tens of seconds |
+| `model_not_found` | 404 | the model is not on this server: re-resolve the role or import it. Discovery greys it in the picker and gives the `lemonade import` when the box offers it |
+| `not_edit_capable` | 400 whose **body** names editing (`edit`, `instruct`, `image-to-image`) | resolve the edit role elsewhere. Endpoint is not evidence of cause: a 400 from `/images/edits` because a field was missing is a `refusal`, and classifying it by path once told the user to mark a working editor as incapable |
+| `size_rejected` | 400 whose body names size/width/height/resolution | clamp to the size policy and retry — a non-multiple is *snapped*, not refused (measured), so this row means out of range |
+| `refusal` | any other non-2xx, or a 200 whose body is not JSON from a non-image path | show the field list from the preview; the server's body is kept verbatim in the job record |
+| `timeout` | transfer timeout | Retry at a smaller `size`/`steps`; the timeout was the ETA×4 the latency EMA predicted, so this is a real signal about the box |
+| `bad_image` | 2xx with no `data[0].b64_json`, undecodable base64, or a PNG that does not decode | the answer is not in the reply: nothing was composited, the job is `failed`, and the raw body is on the record |
+| `cancelled` | the job's cancel flag seen by the transport, or a queue entry dropped before it started | the job is `cancelled` and its request is retryable; a cancelled queue entry never reached the server at all |
+| `interrupted` | a job found `running` when the queue was reopened | the request died with the app: `failed`, with the answer's path if one had already arrived |
+
+Not built, from the earlier design: stripping a rejected field and retrying with the deduction
+persisted; rephrasing a prompt from a "refusal-safe" template variant; marking a blob bad and
+auto-retrying it once with a new seed. Each is a policy on top of a class that exists, not a missing
+class.
 
 Every request/response (headers redacted, image bytes replaced by blob hash, plus timings
 and HTTP status) goes to a rolling `ai.log`. That log is how we tune recipes.
@@ -456,7 +498,15 @@ server-cache hit rather than a run, and `--max-images` caps the spend (a full pa
 cmake -B build -DNOISE_LIVE_TESTS=ON && ctest --test-dir build -L live   # or run the tool directly
 ```
 
-It is registered as ctest `tn_probe_live` under label `live` and **only registered when
+`tools/ai_job_probe.py` is the second live tool, and the app-level one: it drives a running
+`noise-edit` over the wire through `server.connect` → `ai.preview` → `ai.run` → `job.wait` →
+`job.apply`, checks that the request obeyed the size policy and sent no `mask`, that the pixels which
+changed are exactly the ones the report counted, that none of them lie outside the coverage the job
+claimed, and that undo returns the document byte for byte. Without `--live` it points the app at
+`tests/fixtures/http` and runs in the default suite (`test_ai_job_probe`), which is why the whole path is
+checked hermetically and then again cheaply against the box; `--live --max-images 2` is its budget.
+
+Both live tools are registered under label `live` and **only registered when
 configured on**, so a plain `ctest` never touches the network even in a shell that exports the
 credentials; the tool still skips with a `SKIP:` line (and `SKIP:` means skip, not pass) when
 `THENOISE_URL` / `THENOISE_API_KEY` are absent. A budget that runs out mid-probe reports a skip,

@@ -6,48 +6,44 @@ live wire surface, `AGENTS.md` has the house rules. This file keeps only the rea
 carry, the decisions, and the order the rest goes in.
 
 Gate: `cmake -B build -G Ninja && cmake --build build && xvfb-run -a ctest --test-dir build` →
-**26/26 green in Debug and Release**, warnings are errors. Release tree is `build-release`. Every suite
-passes under `xvfb-run`; `test_ai_compose_probe` and the two wire-driven ones need a display and skip
-loudly without one.
+**31/31 green in Debug and Release**, warnings are errors. Release tree is `build-release`. Every suite
+passes under `xvfb-run`; the probes need a display and skip loudly without one. The live tier
+(`-DNOISE_LIVE_TESTS=ON`, label `live`: `tn_probe_live`, `ai_job_probe_live`) is not registered by
+default and skips without `$THENOISE_URL` even when registered.
 
 ## Where the AI path stands
 
-Built, hermetic, no network in the default `ctest` run:
+Built, and the default `ctest` run opens no socket — `NOISE_AI_FIXTURES` pointed at `tests/fixtures/http`
+makes even the running app replay:
 
 | piece | what it is | checks |
 |---|---|---|
-| `core/blur`, `core/resample` | the two pixel primitives the AI path needs and the app can reuse: 3-pass odd box blur / `feathered_mask`, and Lanczos-3 over premultiplied alpha | `test_blur` 81, `test_resample` 625 |
-| `ai/region` | the region compiler — geometry (`bbox → grow → clamp → snap → fit`, inverse map) and prep. No document, no request | `test_region` 105 |
-| `ai/compose`, `ai/colour_match` | the result compositor — resample onto the crop, colour-match, feather, lock band, clip to layer alpha | `test_compose` 235 762 |
-| `ai.compose` (wire) | lands a result file on the document through `Document::paint`, or previews it and reports what the policy resolved to | `test_app` 56 273 |
-| `tools/ai_compose_probe.py` | the same, on the running app, with the report checked against the exported pixels | `test_ai_compose_probe` |
+| `core/blur`, `core/resample` | the two pixel primitives: 3-pass odd box blur / `feathered_mask`, and Lanczos-3 over premultiplied alpha | `test_blur` 81, `test_resample` 625 |
+| `ai/region` | the region compiler — geometry (`bbox → grow → clamp → snap → fit`, inverse map), `prep_region`, `flatten_over_ring` | `test_region` 106 |
+| `ai/compose`, `ai/colour_match` | the result compositor — resample, colour-match, feather, lock band, extent, blend | `test_compose` 312 629 |
+| `ai/profile`, `ai/registry` | discovery parsing; `roles.json` ∩ `/models` → one model per role, with a reason and a fix command | `test_roles` 66 |
+| `ai/recipes` | `recipes/*.json` and prompt substitution; the shipped set checked against the shipped roles | `test_recipes` 113 |
+| `ai/provider` | the request builder and the field whitelist, asserted on the serialized bytes, plus the cache key | `test_provider` 115 |
+| `ai/transport`+`http`+`http_curl`+`recorded` | the HTTP seam, the libcurl implementation, and the replay transport the tests use | in `test_backend` |
+| `ai/server`, `ai/cache`, `ai/queue` | profile and latency EMA; request-digest blob cache; durable one-worker queue with cancel and retry | `test_backend` 232 |
+| `ai.*`, `server.*`, `job.*`, `cache.stats` (wire) | the whole path as commands the UI and a driver share | `test_app` 56 448 |
+| `tools/ai_compose_probe.py`, `tools/ai_job_probe.py` | the landing, and the whole recipe→request→job→landing path, on the running app | `test_ai_compose_probe`, `test_ai_job_probe` |
 
 In order from here:
 
-3. **Roles, recipes, field policy** (`ai/registry`, `ai/recipe`, `ai/provider`) over a **recorded**
-   `/v1/models` body: `roles.json` and `recipes/*.json` read with the JSON reader already in the tree,
-   then resolution order, `size_policy`, the tier-1 field set, and the builder validating its own values
-   — the server answers `200` to `seed: "not-a-number"`, so nobody downstream checks. Field policy is
-   asserted on serialized bytes, no test doubles in the request path. Recorded fixtures are the hermetic
-   tier; the default run stays offline.
-4. **Transport** (`ai/http`, `ai/queue`) — health, models, load, edits/generations/upscale, cancel, the
-   adaptive timeout, the latency EMA that must not learn from a server-cache hit, the durable queue,
-   `ai.log`. The only piece that touches the world, and where **libcurl** arrives (see decisions).
-5. **The first command end to end** — `inpaint-remove` against the recorded backend, then against the dev
-   box: preview, apply through the document doors, wire commands for each step. The apply half already
-   exists as `ai.compose`, so this slice is really the request half plus the job around it.
-
-**What the request side still needs** (each found from the other end, not guessed):
-
-- `Document` has no **flatten over a rectangle of the visible layers at or below the active one**.
-  `prep_region` takes a caller-supplied `base`, and the only flatten that exists is the whole-document
-  composite — which would bake a layer *above* the active one into the patch and then write that back into
-  the layer below. This is the first thing slice 5 has to build.
-- The crop's alpha flattened over a colour sampled from the mask ring (`AI-BACKEND.md`, Region Compiler
-  step 6, marked there as not built).
-- `prep_region` returns `plan.crop`-sized straight RGBA bytes; the resample to `plan.requested` and the PNG
-  encode belong to the request builder. Kept out of `prep` deliberately so the prep can be checked against
-  the statistics it is supposed to preserve.
+6. **The UI for it** — the Generate panel, `Remove`/`Replace` on the selection, the model-swap confirm with
+   the ETA `server.state` already carries, and the jobs tray. Every one of these is a caller of a command
+   that exists; none of them needs new AI code. Start where the P0 flow starts: select → `Remove` →
+   `ai.preview` in the confirm → `ai.run` → `job.apply`.
+7. **Live run of the app path** (`ai_job_probe.py --live --max-images 2`) on the dev box, then the first
+   recipe-tuning pass. This is the one thing that can change a decision rather than confirm one: prep
+   choice per recipe, `context.ratio`, whether `colour_match` should default off for `new-image` (it does),
+   and what an ordinary edit costs. Ask for `$THENOISE_URL` / `$THENOISE_API_KEY` before starting; ~2 images
+   for the probe, ~10 for a tuning pass.
+8. **The pieces of the design nothing has asked for yet**: the `enhance` role (a role with no preference
+   list, refused by every recipe), warm-up after a swap, tier-2 fields with a per-server gate, `ai.log` as a
+   rolling file, the keyring/0600 config for the key, and the in-process `heal` fallback. Each is listed in
+   `AI-BACKEND.md` next to the class or recipe it belongs to; none is a seam the built path routes around.
 
 ## Reasoning the code cannot carry (the compositor slice)
 
@@ -137,12 +133,66 @@ says: it had demanded 50× when the code's real Debug ratio is ~25×, and the wa
 cost is `refresh` re-tallying the rows a write touched. Factor 4 now, with 3× headroom either way, 60 Debug
 runs and 15 under 24-way load clean, the degenerate walk still red.
 
+## Reasoning the code cannot carry (the request and job slice)
+
+- **A request has one representation.** `BuiltRequest` used to carry a JSON object *and* a multipart field
+  list, filled in parallel: for `/images/edits` the JSON body was built, shown in the preview, and never
+  sent — a preview describing bytes that do not go out is exactly the kind of doc-lying that costs a day
+  later. Now it is one ordered `fields` list plus the PNG, and `json_body()` and the multipart parts are
+  both encoded from it. `multipart()` is the only branch, and the transport owns it.
+- **`prep_region` takes the region as its own image, not a canvas and a rectangle.** It used to index
+  `base.at(crop.x + x, crop.y + y)`, and the app hands it a crop that `Document::flatten_over` already cut:
+  correct for every unit test (which all put the crop at the origin) and an out-of-bounds read the moment a
+  selection sat anywhere else. The probe found it by crashing the app on a real selection; `test_region` now
+  preps the same pixels at the origin and 16 px into a bigger picture and requires the same digest.
+- **Classify a failure from the body, not from the endpoint.** A 400 from `/images/edits` was mapped to
+  "this model cannot edit" because of its path, and the hint told the user to mark a working editor as
+  incapable when the real cause was a missing field. Size, edit-capability and plain refusal now each read
+  the error object's own words, and `recorded` fixtures hold all three shapes because the client branches on
+  them.
+- **The latency model must refuse to learn before it has a real sample.** A first reply inside the server's
+  own cache ceiling used to *seed* the entry, so one cache hit promised five seconds for a five-minute job
+  forever. The ceiling is checked before anything is learned, and `predict` answers nothing until a real run
+  of that exact `(model, size, steps)` has happened on this box.
+- **Cancellation is about the job, not the transfer.** A queued entry is dropped and never reaches the
+  server (proved by counting requests per recording after the queue is joined); a running one is stopped by
+  the flag the transport polls; a landed one answers `already succeeded; its result stays at <path>`. A
+  cancelled entry is what `job.retry` is for, and retrying a *succeeded* job is refused — the same request
+  can only be a cache hit, so a retry there would pretend to re-ask.
+- **`RecordedTransport` is a server, so it is stateful and threaded and cannot be copied.** It hands out
+  captures and hit counts while the queue's worker writes them: an unguarded read produced a test that
+  passed with a `fprintf` in it and failed without one. Internal mutex, accessors by value, `unique_ptr`
+  everywhere. A recording can also hold (`delay_ms`) and fail at the transport layer
+  (`transport_error: cancelled|timeout`) — otherwise "queued", "in flight" and "cancelled" are states no
+  hermetic test can reach, and those are the ones a user presses.
+- **Two digests, two jobs.** `JobRecord::cache_key` is the hash of the *request* (what the cache is keyed
+  on, and what the latency EMA records a timing against); `JobRecord::blob` is the hash of the *answer* —
+  the one fact about the result that exists nowhere else, since the request's own blob id already sits in
+  the stored preview.
+- **A `JobQueue` cannot resume a request it did not finish**, so a record found `running` at open becomes
+  `failed`/`interrupted` on disk immediately. The alternative is a job that looks alive forever, and the
+  answer's path is kept in the record either way because an answer that arrived is never thrown away.
+- **`Document::flatten_over(bounds, top_layer)` is a document door, not an AI one**: the region must not bake
+  a layer *above* the active one into the patch it uploads and then write that back below it. `prep` and the
+  ring colour are callers enough to justify it; a whole-document composite would have been the lazy wrong answer.
+
+**Architecture verdict.** The queue never touches the document — it keeps a `Landing` (crop, requested,
+canvas, coverage PNG path, extent, policy, target layer, the pre-edit composite checksum) and the *app*
+applies it through the same `land_answer` door `ai.compose` uses, which is why `test_backend` runs the whole
+queue with no document in the process and why `job.apply` cannot disagree with `ai.compose` about feather or
+extent. `ai/` stays free of `app/`, `core/` gained nothing new this slice, and the only app-level object is
+`AiSession` (tables, transport, client, cache, queue, registry), opened once by the host: commands read it,
+nothing reconstructs it, and `server.state` reports whether the tables loaded rather than letting a command
+refuse for a reason it does not name.
+
 ## Decisions that stand
 
 - **`.ora` out** of the product and the design: one semantics for one stack. Flat PNG/JPEG/WebP in, via system
   libjpeg/libwebp/libpng found by pkg-config — that dependency question is already answered.
-- **libcurl joins with slice 4 and not one commit earlier**: an unused dependency is a second route to the
-  network with nothing watching it, and slices 1-3 are hermetic.
+- **libcurl** (`pkg_check_modules(LIBCURL REQUIRED IMPORTED_TARGET libcurl)`) — approved by the human, and it
+  arrived with the slice that speaks HTTP rather than before: an unused dependency is a second route to the
+  network with nothing watching it. It is behind `ai/transport.h`, and nothing that a test runs reaches it:
+  the recorded transport answers the same interface.
 - **`.noise`: any new field bumps `manifest.json:format`** (currently **4**) and older files are refused by
   number. No optional fields under an old version.
 - **Roles and recipes are JSON** (`roles.json`, `recipes/*.json`) like the manifest and the wire. Consequences
@@ -180,6 +230,18 @@ runs and 15 under 24-way load clean, the degenerate walk still red.
   mask-gesture test had `y = 0`, so a copy that forgot to subtract the destination's own origin survived the
   whole suite and killed the app on the first real drag. Gesture and region tests want a non-zero origin *and*
   a growth event.
+- **A test rectangle at the origin hides an offset bug once, and a second rectangle at the origin hides it
+  twice.** The prep/region tests all had `crop = {0, 0, w, h}`, so `prep_region` adding `crop.x/y` to a
+  crop-local image survived a green suite and asserted the app on the first real selection. Any function
+  taking both an image and a rectangle should be tested with the rectangle off the origin, or should not take
+  the rectangle at all (which is what it does now).
+- **A test that passes when you add a print and fails when you remove it is a thread bug.** `hits()` on the
+  recorded transport was read while the queue's worker still wrote it. Guard the state inside the transport
+  rather than reasoning about when it is safe to look, and assert on it after the thread is joined when the
+  claim is about what the server saw at all.
+- **A test process that gives every harness the same directory makes the second harness destroy the
+  first's** — `Harness` used `pid` alone, so a nested one wiped the job directory under a running queue.
+  Per-instance, not per-process.
 - **A module's own tests cannot see the door in front of it.** The compositor was green, and the document it
   wrote into was discarding its feather. Anything that crosses a seam needs one check driven through the real
   app — which is what a probe in `tools/` is for, and why `ai.compose` shipped with one.
