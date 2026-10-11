@@ -28,6 +28,9 @@ struct AiIntent {
     // `ai.run` and the panel end up compiling the same prompt.
     std::map<std::string, std::string> given;
     std::string job;
+    // Set by a `connect`, reported back so the panel's automatic ask stays a single attempt: a server
+    // that is down costs a connect timeout, and a widget retrying it every frame is a hang.
+    bool connect_attempted = false;
     // The compiled request, as `ai.preview` reported it, beside the facts it was compiled against: a
     // panel reads this every frame and must not re-encode a PNG to do it.
     nlohmann::json preview;

@@ -297,6 +297,32 @@ PY
 /tmp/…/noise-edit/captures/demo-c68a18bc770c.png
 ```
 
+### Telling the editor where the server is
+
+There is one configuration, and it is the environment:
+
+```sh
+export THENOISE_URL=https://<server>:13305/v1   # thenoise/lemonade on the LAN
+export THENOISE_API_KEY=***                     # only if the server demands one
+```
+
+The **Edit selection** panel shows the session and starts it: a `Connect` button, `not connected` in red
+until it works, and the resident model once it does. It asks once by itself, on the first frame the panel
+draws - which is at startup, because the panel is in the default layout - and never again until you press
+the button. One attempt is the whole point: a server that is switched off costs one connect timeout, not
+a retry every frame. A host that *refuses* answers instantly; a host that swallows packets can hold that
+one frame for the connect timeout (5 s), which is the price of asking instead of making you find it.
+With no `$THENOISE_URL` the row says `no server: set $THENOISE_URL` and there is no button, because none
+could work.
+
+From a terminal, the same handshake (this is the panel's button, not a side door - it is the command
+table the UI calls):
+
+```sh
+python3 tools/wire_call.py server.connect
+python3 tools/wire_call.py server.state            # what it resolved, and what is resident
+```
+
 ### Remove something from a selection
 
 Select an area (`M` for a rectangle, `Shift+M` for an ellipse, or paint a layer mask and pick it up
@@ -306,6 +332,7 @@ so the canvas does not shrink when the panel is up.
 | What you see | What it is |
 |---|---|
 | `intent` | the operations this selection can do, by name: Remove, Replace, Fill region, Heal, Upscale. They are rows of `assets/recipes/*.json`, not buttons in the code - a new recipe file appears here by itself |
+| `server` / `Connect` | the session: the resident model, or `not connected` in red with a button. It asks once at startup by itself and never again until you press - see [Telling the editor where the server is](#telling-the-editor-where-the-server-is) |
 | the grey line | the region: bounds and covered pixels, or "no selection: the whole document" |
 | `target`, `replacement`, ... | the words the recipe asks the person for. Each field holds the recipe's own default until you type, and what you type is what the request carries |
 | `seed` | the session's seed, shown because it is in the request. Nothing picks a number behind your back |
@@ -320,8 +347,8 @@ A disabled panel with a grey sentence is not a bug: the sentence is the reason (
 
 ### AI from a terminal
 
-The AI path has no panel, so the wire is how it is used and watched today. Point the app at a server, or
-at recordings of one, and the sequence is the same either way:
+Everything the panel does is a command, so the whole path runs from a terminal too - which is how it is
+tested. Point the app at a server, or at recordings of one, and the sequence is the same either way:
 
 ```sh
 export THENOISE_URL=https://<server>:13305/v1 THENOISE_API_KEY=*** # the dev box
@@ -335,7 +362,7 @@ export NOISE_AI_FIXTURES=$PWD/tests/fixtures/http                # or replay ins
 | `server.load {model, pin?}` | make one model resident. Explicit and priced: a swap is tens of seconds on a shared box, so it is never silent |
 | `ai.roles` | each role with the model it resolved to, the reason, the fix command when the box offers one, and the candidates |
 | `ai.recipes` | every recipe with its endpoint, role, region, prep, extent and composite policy, and the model its role resolves to |
-| `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?}` | the Edit-selection panel as a command: read it with no arguments (free - it does not recompile the region) and it answers the intents on offer, the values in force, whether the action could run and why not, the compiled request and the job. `run` is the Run button; with `confirm` it accepts a model swap |
+| `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?, connect?}` | the Edit-selection panel as a command: read it with no arguments (free - it does not recompile the region) and it answers the intents on offer, the values in force, whether the action could run and why not, the compiled request, the job, and the session (`connected`, `configured`, `connect_attempted`). `run` is the Run button; `confirm` accepts a model swap; `connect` is the Connect button - the handshake, with the refusal in `error` if the server is down or unconfigured |
 | `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` | the exact request: endpoint, ordered field list, resolved size, the prepped PNG that would be uploaded and its blob hash, the cache key. **Sends nothing** — this is what to look at before spending minutes of someone's GPU |
 | `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}` | queue it. Answers the job with the region plan and the prepped file |
 | `job.list`, `job.get {id}` | the durable record: state, timings, model, cache key, answer path, landing metadata |

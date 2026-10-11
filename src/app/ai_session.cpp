@@ -18,15 +18,24 @@ namespace noise::app {
 namespace {
 
 constexpr const char* kFixturesVariable = "NOISE_AI_FIXTURES";
+// A recording has no host, but a request still needs a URL to be shaped: `.invalid` is reserved and
+// can never resolve, so a replay session carries an address that says what it is and cannot leak a
+// real one into a log.
+constexpr const char* kRecordedUrl = "http://recordings.invalid/v1";
 
-ai::ServerProfile session_profile() {
+ai::ServerProfile session_profile(bool replaying) {
     std::string error;
     std::optional<ai::ServerProfile> profile = ai::profile_from_environment(error);
-    if (!profile.has_value()) {
-        log::warn("ai: " + error);
-        return ai::ServerProfile{};
+    if (profile.has_value()) {
+        return *profile;
     }
-    return *profile;
+    if (replaying) {
+        ai::ServerProfile recorded;
+        recorded.base_url = kRecordedUrl;
+        return recorded;
+    }
+    log::warn("ai: " + error);
+    return ai::ServerProfile{};
 }
 
 }  // namespace
@@ -100,12 +109,14 @@ void open_ai_session(noise::AppState& state) {
 
     // Recordings first: a probe that means to replay must never reach the network by accident, and a
     // fixture directory that fails to load is reported rather than falling through to a live server.
+    bool replaying = false;
     if (const std::optional<std::string> fixtures = platform::env(kFixturesVariable)) {
         std::string load_error;
         std::unique_ptr<ai::RecordedTransport> recorded =
             ai::RecordedTransport::load(*fixtures, load_error);
         if (recorded != nullptr) {
             ai.transport = std::move(recorded);
+            replaying = true;
             log::info("ai: replaying recordings from the directory in $" +
                       std::string(kFixturesVariable));
         } else {
@@ -117,8 +128,8 @@ void open_ai_session(noise::AppState& state) {
     }
 
     if (ai.transport != nullptr) {
-        ai::ServerProfile profile = session_profile();
-        profile.name = "server";
+        ai::ServerProfile profile = session_profile(replaying);
+        profile.name = replaying ? "recordings" : "server";
         ai.client = std::make_unique<ai::Client>(*ai.transport, std::move(profile),
                                                  [] { return platform::now_seconds(); });
         ai.jobs = std::make_unique<ai::JobQueue>(

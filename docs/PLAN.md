@@ -234,11 +234,35 @@ refuse for a reason it does not name.
   (ImGui::Button("Run"))` draws two controls and swallows the first click, because `Button` draws as it
   asks. Draw once into a `const bool`, then branch.
 
+- **The handshake belongs to the panel's command, not to the panel.** `ai.intent {connect: true}` is
+  the whole `Connect` button, so the wire starts the same session a person starts by clicking and the UI
+  holds no socket and no belief about one. It asks itself **once** - `$THENOISE_URL` names a server and
+  nobody has tried yet - and `connect_attempted`, in command state rather than a widget-local `static
+  bool`, is what keeps that to a single attempt and makes it testable.
+- **A docked tab that is not showing still draws.** The first version of this claimed the handshake
+  happened "when the panel is looked at"; the screenshot said otherwise - the app had connected with
+  *Layers* in front. A docked window's draw function runs whether or not its tab is the visible one, so
+  work gated on `ImGui::Begin` returning true is startup work, not deferred work. Anything that must
+  genuinely wait for attention needs a real trigger, and until it has one the docs say *startup*.
+
 **Architecture verdict.** The panel added no AI code and no document surface: it reads `roles.json`
 through the registry, compiles through `ai.preview`, queues through `ai.run` and lands through
 `job.apply`. `ai/` gained two parsed keys and a filter over recipes it already held; `core/` gained
 nothing. The next slice (Generate) needs the same filter with the other scope and the same landing door,
 which is the test of whether this seam was cut in the right place.
+
+**A test nobody calls is green in both directions.** Four suites closed their anonymous namespace above
+their last tests, so a test function added at the bottom of `test_app.cpp` had external linkage and
+`-Wunused-function` could not see it: the new `server.connect` refusal test compiled, sat there, never
+ran, and the run was greener for it. Those namespaces now close before `main()`, which makes an orphan a
+build error - confirmed by adding one and watching `-Werror` refuse it. A scripted `str.replace` whose
+anchor has moved is the same shape and reports nothing either: an edit that *cannot* fail quietly beats
+one that claims success, and a claim about the tree is worth a `grep` before it is worth a sentence in a
+commit message. The same hole, one layer up: the panel's `Connect` was missing from the built app while
+its command was tested and green, because nothing in a C++ test draws a window. `ai_job_probe` now checks
+the app itself - `connect_attempted` and `connected` before anything in the probe asks - and deleting the
+panel's ask turns that claim red, which is the only defence against an edit to `ui.cpp` that compiles and
+changes nothing.
 
 ## Decisions that stand
 

@@ -84,6 +84,13 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
                         state.ai.roles_error.empty() ? "no role table is loaded"
                                                      : state.ai.roles_error);
         }
+        // Named before a request is attempted: an empty URL reaches libcurl as "unsupported protocol",
+        // which is true of the string and useless about the cause.
+        if (state.ai.client->profile().base_url.empty()) {
+            return fail("server.connect",
+                        "no server is configured - set $THENOISE_URL (and $THENOISE_API_KEY "
+                        "if the server demands one)");
+        }
         ai::AiError error;
         const std::optional<ai::ServerHealth> health = state.ai.client->health(error);
         if (!health.has_value()) {

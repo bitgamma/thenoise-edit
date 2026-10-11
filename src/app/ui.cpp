@@ -377,12 +377,40 @@ void draw_tool_panel(AppState& state, CommandTable& commands) {
 // comes back from that command, so the panel cannot display a price the command would not charge and a
 // scripted test cannot set up a state the buttons would not have produced. It takes no `AppState`
 // because it has no knowledge of its own to consult.
+// The session, and the only way to start it from the window. The handshake is `ai.intent`'s
+// `connect`, so the wire drives the session a person starts by clicking and this file holds no socket
+// and no belief about one.
+void draw_server_row(CommandTable& commands, const json& view) {
+    if (!view["configured"].get<bool>()) {
+        ImGui::TextDisabled("no server: set $THENOISE_URL");
+        return;
+    }
+    if (view["connected"].get<bool>()) {
+        ImGui::Text("%s", view["resident"].get<std::string>().c_str());
+    } else {
+        ImGui::TextColored(kStopInk, "not connected");
+    }
+    ImGui::SameLine();
+    const bool again = view["connected"].get<bool>();
+    if (ImGui::SmallButton(again ? "reconnect" : "Connect")) {
+        commands.invoke("ai.intent", json{{"connect", true}});
+    }
+}
+
 void draw_ai_panel(CommandTable& commands) {
     if (!ImGui::Begin(kWindowAi)) {
         ImGui::End();
         return;
     }
-    const json view = commands.invoke("ai.intent", json::object()).value;
+    json view = commands.invoke("ai.intent", json::object()).value;
+    // The handshake, once, when the panel is actually looked at: `ImGui::Begin` returns false while the
+    // dock shows another tab, so a machine that is switched off costs one connect timeout at the moment
+    // somebody wants AI rather than holding the window shut at launch. `connect_attempted` is command
+    // state, which is what keeps this from becoming a retry every frame.
+    if (!view["connected"].get<bool>() && view["configured"].get<bool>() &&
+        !view["connect_attempted"].get<bool>()) {
+        view = commands.invoke("ai.intent", json{{"connect", true}}).value;
+    }
     if (!view.contains("intents") || !view["intents"].is_array() || view["intents"].empty()) {
         ImGui::TextDisabled("no recipe works on a selection");
         ImGui::End();
@@ -474,6 +502,7 @@ void draw_ai_panel(CommandTable& commands) {
     ImGui::PopItemWidth();
 
     ImGui::Separator();
+    draw_server_row(commands, view);
     const bool ready = view["ready"].get<bool>();
     if (!ready) {
         ImGui::TextColored(kWarnInk, "%s", view["reason"].get<std::string>().c_str());
@@ -498,9 +527,11 @@ void draw_ai_panel(CommandTable& commands) {
             ImGui::TextDisabled("no timing yet for this size");
         }
     }
-    if (view["stale"].get<bool>()) {
+    if (view["stale"].get<bool>() && !view["preview"].is_null()) {
         // Short enough to share its line with the control that fixes it: the panel is a third of the
-        // window minus a dock border, and a clipped sentence teaches nothing.
+        // window minus a dock border, and a clipped sentence teaches nothing. Only when something *was*
+        // compiled - before the first compile nothing has moved, and a warning that is always on is a
+        // warning nobody reads.
         ImGui::TextColored(kWarnInk, "the region moved");
         ImGui::SameLine();
         if (ImGui::SmallButton("recompile")) {

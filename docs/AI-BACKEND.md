@@ -222,8 +222,21 @@ Auth: `Authorization: Bearer <api_key>` (the mechanism Lemonade's own tests use)
 `?api_key=` as a legacy fallback for servers that only support the query form.
 `LEMONADE_ADMIN_API_KEY` is never used (config/admin endpoints are out of scope).
 
-Connection handshake on select/connect: `GET /v1/health` (alive? version? what's loaded?) →
+Connection handshake (`server.connect`, the panel's `Connect` button, and the app's single automatic ask
+on the first frame the panel draws): `GET /v1/health` (alive? version? what's loaded?) →
 `GET /v1/models` (filter to `recipe == "thenoise"`) → resolve roles → enable commands.
+
+One automatic attempt, recorded as `connect_attempted`, and no retry until the button is pressed:
+`$THENOISE_URL` names a machine that may be switched off, and a widget that retried it each frame would
+make the window unusable. Note that a docked tab which is *not* the visible one still runs its draw code,
+so "the first frame the panel draws" is startup, not the moment the person clicks the tab. The panel's
+draw function is therefore not a place to put work you mean to defer - and it is why the attempt lives in
+the command (`ai.intent {connect: true}`) with the flag in command state, where a test can see it, rather
+than in a widget-local `static bool`. With no URL configured the
+command refuses and names `$THENOISE_URL` — libcurl's "unsupported protocol" for an empty URL describes
+the string and hides the cause. A replay session needs no URL either: the transport answers locally and
+the profile carries `http://recordings.invalid/v1`, because `.invalid` can never resolve and no real
+host may enter a log, a preview or a fixture.
 A server with **no `edit`-capable thenoise model** still supports: all local editing,
 `new-image`, `upscale`, local Telea `heal` — the edit commands render disabled with the
 reason, plus the `lemonade import` that would fix it whenever `ai.roles` can name a model this server

@@ -289,6 +289,13 @@ nlohmann::json intent_json(AppState& state) {
                 {"seed", static_cast<std::int64_t>(state.ai.seed)},
                 {"selection", selection},
                 {"connected", state.ai.connected},
+                // Whether a server is configured at all: `$THENOISE_URL` unset means there is nothing
+                // to connect to, which the panel says instead of offering a button that cannot work.
+                {"configured",
+                 state.ai.client != nullptr && !state.ai.client->profile().base_url.empty()},
+                {"server",
+                 state.ai.client != nullptr ? state.ai.client->profile().name : std::string()},
+                {"connect_attempted", state.ai_intent.connect_attempted},
                 {"ready", readiness.ready},
                 {"reason", readiness.reason},
                 {"fix", readiness.fix},
@@ -307,7 +314,7 @@ void register_ai_intent_commands(AppState& state, CommandTable& table) {
     // the preview, because the request is the price of the action and the panel has to show it
     // before the button is pressed rather than after.
     table.add("ai.intent", "Read or set what the selection panel is asking for", {},
-              {"recipe", "vars", "seed", "job", "run", "confirm"},
+              {"recipe", "vars", "seed", "job", "run", "confirm", "connect"},
               [&state, &table](const json& args) -> CommandResult {
         // The job row is read from the queue's record, so the queue is advanced first: a panel that
         // only read would otherwise show a job as running until some other command happened to pump.
@@ -382,6 +389,23 @@ void register_ai_intent_commands(AppState& state, CommandTable& table) {
                 return fail("ai.intent", "'job' must be a job id");
             }
             intent.job = args.at("job").get<std::string>();
+        }
+
+        // The panel's first-frame handshake, and the Connect button - the same `server.connect` the
+        // wire drives. `once` is why it is a command rather than a line in the widget: the attempt
+        // has to be recorded somewhere the tests can see, and the answer must say what happened.
+        bool connect = false;
+        if (!arg_bool(args, "connect", connect)) {
+            return fail("ai.intent", "'connect' must be a boolean");
+        }
+        if (connect) {
+            // No "already tried" guard here: the caller decides. The panel asks once on its own, and
+            // afterwards only when asked to, and a refresh of a session that exists is worth having.
+            intent.connect_attempted = true;
+            const CommandResult handshake = table.invoke("server.connect", json::object());
+            if (!handshake.ok) {
+                intent.error = handshake.error;
+            }
         }
 
         bool run = false;
