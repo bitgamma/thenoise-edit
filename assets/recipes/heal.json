@@ -1,5 +1,6 @@
 {
   "id": "heal",
+  "label": "Heal",
   "endpoint": "edits",
   "role": "edit",
   "region": "selection",
@@ -11,6 +12,14 @@
     "Remove {{target}} without leaving a patch, a seam or a change in focus.",
     "Change nothing outside the marked area."
   ],
-  "variables": { "target": "the blemish", "context_desc": "surface" },
-  "composite": { "feather": "auto", "colour_match": true, "lock_band_px": 6, "extent": "layer" }
+  "variables": {
+    "target": "the blemish",
+    "context_desc": "surface"
+  },
+  "composite": {
+    "feather": "auto",
+    "colour_match": true,
+    "lock_band_px": 6,
+    "extent": "layer"
+  }
 }

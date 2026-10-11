@@ -28,6 +28,7 @@ namespace {
 
 json minimal(const char* id = "test-recipe") {
     return json{{"id", id},
+               {"label", "Test intent"},
                 {"endpoint", "edits"},
                 {"role", "edit"},
                 {"region", "selection"},
@@ -207,11 +208,96 @@ void test_the_shipped_recipes_agree_with_the_shipped_roles() {
     CHECK(!upscale->whole_document());
 }
 
+
+// What the interface calls a recipe, and what it asks a person to type: both are data, so adding an
+// operation means adding a file and not touching a panel. A missing label would be a button wearing
+// its own id, and an `ask` name the prompt does not declare would be collected from the user and then
+// refused at the request builder.
+void test_a_recipe_says_what_it_is_called_and_what_it_asks() {
+    CHECK(parse_refusal([&] {
+        json body = minimal();
+        body.erase("label");
+        return body;
+    }()).find("'label' is required") != std::string::npos);
+    CHECK(parse_refusal([&] {
+        json body = minimal();
+        body["label"] = "";
+        return body;
+    }()).find("'label'") != std::string::npos);
+
+    const std::string unknown = parse_refusal([&] {
+        json body = minimal();
+        body["variables"] = {{"target", "object"}};
+        body["ask"] = json::array({"target", "colour"});
+        return body;
+    }());
+    CHECK(unknown.find("'colour'") != std::string::npos);
+    CHECK(unknown.find("ask") != std::string::npos);
+
+    Recipe asked = parse_or_fail([&] {
+        json body = minimal();
+        body["variables"] = {{"target", "object"}, {"replacement", "another object"}};
+        body["ask"] = json::array({"replacement", "target"});
+        return body;
+    }());
+    CHECK_EQ(asked.label, std::string("Test intent"));
+    // The order the file states: a form whose fields reorder themselves every load is a form that
+    // puts words in the wrong box.
+    REQUIRE(asked.ask.size() == std::size_t(2));
+    CHECK_EQ(asked.ask[0], std::string("replacement"));
+    CHECK_EQ(asked.ask[1], std::string("target"));
+}
+
+// The intents a selection offers are the recipes whose region is the selection and whose endpoint
+// takes pixels: `new-image` and `reimagine` are not things you do to a rectangle. Derived from the
+// set, so a new recipe file appears in the palette without anything else being edited - and a recipe
+// that stopped being a selection operation disappears from it.
+void test_a_selection_offers_the_selection_recipes() {
+    std::string error;
+    const std::optional<RecipeSet> set =
+        load_recipes(std::string(NOISE_TEST_ASSETS_DIR) + "/recipes", error);
+    REQUIRE(set.has_value());
+
+    std::vector<std::string> offered;
+    for (const Recipe* intent : set->selection_intents()) {
+        offered.push_back(intent->id);
+        CHECK(intent->region == RegionScope::selection);
+        CHECK(intent->endpoint == Endpoint::edits || intent->endpoint == Endpoint::upscale);
+    }
+    const std::vector<std::string> wanted = {"heal", "inpaint-remove", "inpaint-replace",
+                                             "region-fill", "upscale"};
+    CHECK_EQ(offered, wanted);
+    for (const char* id : {"new-image", "new-image-photo", "reimagine", "flatten-colorize"}) {
+        CHECK(std::find(offered.begin(), offered.end(), std::string(id)) == offered.end());
+    }
+
+    // Words a person would recognise, not the file names, and the flagship asks the one question the
+    // flagship needs; `Replace` asks the second one.
+    for (const Recipe* intent : set->selection_intents()) {
+        CHECK(!intent->label.empty());
+        CHECK(intent->label != intent->id);
+    }
+    const Recipe* remove = set->find("inpaint-remove");
+    const Recipe* replace = set->find("inpaint-replace");
+    REQUIRE(remove != nullptr);
+    REQUIRE(replace != nullptr);
+    CHECK_EQ(remove->label, std::string("Remove"));
+    CHECK_EQ(remove->ask, (std::vector<std::string>{"target"}));
+    CHECK_EQ(replace->label, std::string("Replace"));
+    CHECK_EQ(replace->ask, (std::vector<std::string>{"target", "replacement"}));
+    // Asking nothing is legal and means nothing is asked: `heal` runs on what is under the selection
+    // and `upscale` on the whole of it, with no words from anyone.
+    CHECK(set->find("heal")->ask.empty());
+    CHECK(set->find("upscale")->ask.empty());
+}
+
 }  // namespace
 
 int main() {
     test_a_recipe_reads_as_the_policy_it_claims_to_be();
     test_a_recipe_that_states_the_impossible_is_refused_by_name();
     test_the_shipped_recipes_agree_with_the_shipped_roles();
+    test_a_recipe_says_what_it_is_called_and_what_it_asks();
+    test_a_selection_offers_the_selection_recipes();
     return noise::test::summary(__FILE__);
 }

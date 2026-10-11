@@ -1,5 +1,6 @@
 {
   "id": "region-fill",
+  "label": "Fill region",
   "endpoint": "edits",
   "role": "edit",
   "region": "selection",
@@ -11,6 +12,17 @@
     "surrounding {{context_desc}}.",
     "Change nothing outside the marked area."
   ],
-  "variables": { "prompt": "the described content", "context_desc": "background" },
-  "composite": { "feather": "auto", "colour_match": true, "lock_band_px": 4, "extent": "canvas" }
+  "variables": {
+    "prompt": "the described content",
+    "context_desc": "background"
+  },
+  "ask": [
+    "prompt"
+  ],
+  "composite": {
+    "feather": "auto",
+    "colour_match": true,
+    "lock_band_px": 4,
+    "extent": "canvas"
+  }
 }

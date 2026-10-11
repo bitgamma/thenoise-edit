@@ -48,6 +48,8 @@ std::optional<ExtentSource> extent_source_from_name(const std::string& name);
 // engine has none).
 struct Recipe {
     std::string id;
+    // What the interface offers this recipe as. The id is a key and greppable; a button is not.
+    std::string label;
     // Which file this came from. `ai.recipes` shows it and every parse error names it, so a recipe that
     // behaves oddly can be traced to the bytes that say so.
     std::string source;
@@ -66,6 +68,10 @@ struct Recipe {
     // Values `{{name}}` placeholders may take. A placeholder with neither a given value nor a default
     // is a refusal naming it.
     std::map<std::string, std::string> variables;
+    // The subset of `variables` a person is asked to fill, in the order the interface asks. A name
+    // outside `variables` is refused at parse, so the panel never collects a value the prompt
+    // builder will reject.
+    std::vector<std::string> ask;
     CompositePolicy composite{CompositePolicy{}};
     ExtentSource extent = ExtentSource::layer_alpha;
     // True when the region ignores the selection, which is what makes `new-image` work with nothing
@@ -76,6 +82,10 @@ struct Recipe {
 struct RecipeSet {
     const Recipe* find(const std::string& id) const;
     std::vector<std::string> ids() const;
+    // Everything that works on the current selection, in table order - the intents a selection
+    // offers. The scope and the endpoint are what decide, not a list of ids: adding a recipe adds a
+    // row here without anything else being told.
+    std::vector<const Recipe*> selection_intents() const;
     std::vector<Recipe> recipes;
 };
 

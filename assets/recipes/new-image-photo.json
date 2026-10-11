@@ -1,5 +1,6 @@
 {
   "id": "new-image-photo",
+  "label": "New image (photo)",
   "endpoint": "generations",
   "role": "generate.photo",
   "region": "document",
@@ -10,5 +11,10 @@
     "Photograph: natural lighting, plausible optics and depth of field, fine texture.",
     "Compose the whole frame; there is no existing image to preserve."
   ],
-  "composite": { "feather": "auto", "colour_match": false, "lock_band_px": 0, "extent": "canvas" }
+  "composite": {
+    "feather": "auto",
+    "colour_match": false,
+    "lock_band_px": 0,
+    "extent": "canvas"
+  }
 }

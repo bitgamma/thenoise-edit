@@ -50,6 +50,7 @@ ModelEntry model(const std::string& id = "Klein-TheNoise") {
 
 Recipe recipe_of(const json& overrides) {
     json body = {{"id", "test"},
+                 {"label", "Test intent"},
                  {"endpoint", "edits"},
                  {"role", "edit"},
                  {"region", "selection"},

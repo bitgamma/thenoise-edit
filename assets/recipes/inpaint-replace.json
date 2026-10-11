@@ -1,5 +1,6 @@
 {
   "id": "inpaint-replace",
+  "label": "Replace",
   "endpoint": "edits",
   "role": "edit",
   "region": "selection",
@@ -11,6 +12,19 @@
     "surrounding {{context_desc}} exactly as they are, and match the replacement to them.",
     "Change nothing else in the image."
   ],
-  "variables": { "target": "object", "replacement": "a similar object", "context_desc": "background" },
-  "composite": { "feather": "auto", "colour_match": true, "lock_band_px": 6, "extent": "layer" }
+  "variables": {
+    "target": "object",
+    "replacement": "a similar object",
+    "context_desc": "background"
+  },
+  "ask": [
+    "target",
+    "replacement"
+  ],
+  "composite": {
+    "feather": "auto",
+    "colour_match": true,
+    "lock_band_px": 6,
+    "extent": "layer"
+  }
 }

@@ -28,8 +28,8 @@ std::string join(const std::vector<std::string>& names, const char* separator) {
 
 bool key_known(const std::string& key) {
     static const std::vector<std::string> kKnown = {
-        "id",         "endpoint", "role",   "region", "prep", "enhance", "prompt",
-        "variables",  "composite", "context", "steps", "cfg_scale", "mask", "model"};
+        "id",    "label",    "endpoint", "role",      "region", "prep",   "enhance", "prompt",
+        "ask",   "variables", "composite", "context", "steps",  "cfg_scale", "mask", "model"};
     return std::find(kKnown.begin(), kKnown.end(), key) != kKnown.end();
 }
 
@@ -228,6 +228,19 @@ std::vector<std::string> RecipeSet::ids() const {
     return out;
 }
 
+std::vector<const Recipe*> RecipeSet::selection_intents() const {
+    std::vector<const Recipe*> out;
+    for (const Recipe& recipe : recipes) {
+        // An edit or an upscale aimed at the selection. A generation has nothing to select: its
+        // region is the document, and asking what to remove from it is the wrong question.
+        if (recipe.region == RegionScope::selection &&
+            (recipe.endpoint == Endpoint::edits || recipe.endpoint == Endpoint::upscale)) {
+            out.push_back(&recipe);
+        }
+    }
+    return out;
+}
+
 std::string recipe_id_of(const std::string& path) {
     const std::filesystem::path file{path};
     return file.stem().string();
@@ -252,6 +265,16 @@ std::optional<Recipe> parse_recipe(const nlohmann::json& body, const std::string
     }
     if (recipe.id.empty()) {
         error = origin + ": 'id' must not be empty";
+        return std::nullopt;
+    }
+    // Required rather than defaulted to the id: a control that reads `inpaint-replace` is a control
+    // nobody wrote, and the two-word name is the one thing a first-time user has to get right.
+    recipe.label = string_at(body, "label", {}, origin, error, ok);
+    if (!ok) {
+        return std::nullopt;
+    }
+    if (recipe.label.empty()) {
+        error = origin + ": 'label' is required (what the interface offers this recipe as)";
         return std::nullopt;
     }
     const std::string endpoint = string_at(body, "endpoint", "edits", origin, error, ok);
@@ -326,6 +349,30 @@ std::optional<Recipe> parse_recipe(const nlohmann::json& body, const std::string
                 return std::nullopt;
             }
             recipe.variables[it.key()] = it.value().get<std::string>();
+        }
+    }
+    // Which of those defaults the user is asked to replace. Everything not listed runs on its
+    // default, which is how a headless `ai.run` and the panel agree on one set of values - and how
+    // `context_desc` stays unwritten until the `enhance` role fills it.
+    if (body.contains("ask")) {
+        if (!body.at("ask").is_array()) {
+            error = origin + ": 'ask' must be an array of 'variables' names";
+            return std::nullopt;
+        }
+        for (std::size_t i = 0; i < body.at("ask").size(); ++i) {
+            const nlohmann::json& name = body.at("ask")[i];
+            if (!name.is_string()) {
+                error = origin + ": 'ask[" + std::to_string(i) + "]' must be a string";
+                return std::nullopt;
+            }
+            const std::string variable = name.get<std::string>();
+            if (!recipe.variables.contains(variable)) {
+                error = origin + ": 'ask' names '" + variable +
+                        "', which 'variables' gives no default for, so it would be asked for and "
+                        "then refused as unknown";
+                return std::nullopt;
+            }
+            recipe.ask.push_back(variable);
         }
     }
 

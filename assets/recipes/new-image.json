@@ -1,5 +1,6 @@
 {
   "id": "new-image",
+  "label": "New image",
   "endpoint": "generations",
   "role": "generate.photo",
   "region": "document",
@@ -9,5 +10,10 @@
     "{{prompt}}",
     "Compose the whole frame; there is no existing image to preserve."
   ],
-  "composite": { "feather": "auto", "colour_match": false, "lock_band_px": 0, "extent": "canvas" }
+  "composite": {
+    "feather": "auto",
+    "colour_match": false,
+    "lock_band_px": 0,
+    "extent": "canvas"
+  }
 }

@@ -1,5 +1,6 @@
 {
   "id": "inpaint-remove",
+  "label": "Remove",
   "endpoint": "edits",
   "role": "edit",
   "region": "selection",
@@ -12,6 +13,17 @@
     "focus and grain.",
     "Change nothing else in the image."
   ],
-  "variables": { "target": "object", "context_desc": "background" },
-  "composite": { "feather": "auto", "colour_match": true, "lock_band_px": 6, "extent": "layer" }
+  "variables": {
+    "target": "object",
+    "context_desc": "background"
+  },
+  "ask": [
+    "target"
+  ],
+  "composite": {
+    "feather": "auto",
+    "colour_match": true,
+    "lock_band_px": 6,
+    "extent": "layer"
+  }
 }

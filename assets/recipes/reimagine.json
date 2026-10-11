@@ -1,5 +1,6 @@
 {
   "id": "reimagine",
+  "label": "Reimagine",
   "endpoint": "edits",
   "role": "edit",
   "region": "document",
@@ -10,6 +11,13 @@
     "{{prompt}}",
     "Keep the layout and the scale of everything; change the rendering, not the picture."
   ],
-  "variables": { "prompt": "Refine the detail and the lighting." },
-  "composite": { "feather": "none", "colour_match": false, "lock_band_px": 0, "extent": "canvas" }
+  "variables": {
+    "prompt": "Refine the detail and the lighting."
+  },
+  "composite": {
+    "feather": "none",
+    "colour_match": false,
+    "lock_band_px": 0,
+    "extent": "canvas"
+  }
 }

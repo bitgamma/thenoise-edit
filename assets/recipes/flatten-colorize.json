@@ -1,5 +1,6 @@
 {
   "id": "flatten-colorize",
+  "label": "Colorize the flattened frame",
   "endpoint": "edits",
   "role": "edit",
   "region": "document",
@@ -10,6 +11,13 @@
     "{{prompt}}",
     "Do not move, add or remove anything; only add colour."
   ],
-  "variables": { "prompt": "Natural, consistent lighting and palette." },
-  "composite": { "feather": "auto", "colour_match": false, "lock_band_px": 0, "extent": "layer" }
+  "variables": {
+    "prompt": "Natural, consistent lighting and palette."
+  },
+  "composite": {
+    "feather": "auto",
+    "colour_match": false,
+    "lock_band_px": 0,
+    "extent": "layer"
+  }
 }
