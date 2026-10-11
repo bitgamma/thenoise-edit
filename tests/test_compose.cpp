@@ -837,7 +837,6 @@ void test_the_spread_correction_stops_short_of_a_palette_change() {
     CHECK(high - low <= 2 * (130 - 110) + 6);
 }
 
-}  // namespace
 
 // The other operation the compositor has to serve: a generation, whose whole point is pixels the layer
 // never had. Same rule, one argument changed - it blends by coverage either way, and how far a write may
@@ -892,6 +891,8 @@ void test_an_extent_of_the_whole_canvas_fills_where_the_layer_has_nothing() {
     // Pixel-lock is the same claim for a generation: outside the coverage it reported, nothing moved.
     CHECK_EQ(compare(f.source, generation, filled.coverage).changed_uncovered, std::size_t(0));
 }
+
+}  // namespace
 
 int main() {
     test_the_fixture_describes_the_case();

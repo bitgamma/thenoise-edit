@@ -208,7 +208,6 @@ void test_stroke_bounds_is_exactly_the_painted_rectangle() {
     }
 }
 
-}  // namespace
 
 // A live gesture stamps a few dabs per pointer event and repaints from its own buffer. If
 // growing that buffer lost what was already in it, the committed stroke would be shorter than
@@ -379,6 +378,8 @@ void test_opacity_and_the_eraser_move_coverage_both_ways() {
     const double ratio = half.area() / whole.area();
     CHECK(ratio > 0.35 && ratio < 0.7);
 }
+
+}  // namespace
 
 int main() {
     test_dabs_are_spaced_from_the_brush_size();

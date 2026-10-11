@@ -595,7 +595,6 @@ void test_a_broken_selection_is_refused_naming_the_problem() {
     }
 }
 
-}  // namespace
 
 // A layer mask is the same plane as the selection, in a member the layer's own row names, so a
 // reader that ignores masks still finds the layer PNG and shows more than the file meant - which is
@@ -718,6 +717,8 @@ void test_a_broken_layer_mask_is_refused_naming_the_problem() {
         std::filesystem::remove(path);
     }
 }
+
+}  // namespace
 
 int main() {
     test_pixels_and_layer_name_come_back_unchanged();

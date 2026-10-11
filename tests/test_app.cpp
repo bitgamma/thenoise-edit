@@ -48,12 +48,19 @@ Image stub_frame(int width, int height) {
 }
 
 struct Harness {
+    // Which server the session believes it has. `unconfigured` is where a person lands when they
+    // installed the editor and set nothing, and the answer has to name the variable.
+    enum class Config { recorded, unconfigured };
+
     AppState state;
     CommandTable table;
     dbg::DebugWire wire{table};
     int quits = 0;
+    Config config_ = Config::recorded;
 
-    Harness() {
+    Harness() : Harness(Config::recorded) {}
+
+    explicit Harness(Config config) : config_(config) {
         // One directory per harness, not per process: a second harness in the same test would otherwise
         // remove the directory the first one is still writing into.
         static int instance = 0;
@@ -75,7 +82,12 @@ struct Harness {
         // The recorded server answers instead of a socket: `server.connect`, `ai.run` and `job.wait`
         // then exercise the transport, the queue and the failure classes against the shapes the dev box
         // was observed sending, and the default test run stays hermetic.
-        ::setenv("NOISE_AI_FIXTURES", NOISE_TEST_FIXTURES_DIR, 1);
+        if (config_ == Config::recorded) {
+            ::setenv("NOISE_AI_FIXTURES", NOISE_TEST_FIXTURES_DIR, 1);
+        } else {
+            ::unsetenv("NOISE_AI_FIXTURES");
+            ::unsetenv("THENOISE_URL");
+        }
         app::open_ai_session(state);
         const app::HostHooks hooks{&stub_frame, [this] { ++quits; }};
         app::register_commands(state, table, wire, hooks);
@@ -1428,7 +1440,6 @@ void test_view_navigation_keeps_the_image_reachable() {
     CHECK_NEAR(tinier["scale"].get<double>(), tiny["scale"].get<double>(), 1e-12);
 }
 
-}  // namespace
 
 std::string rect_text(const Rect& r) {
     return "x=" + std::to_string(r.x) + " y=" + std::to_string(r.y) + " w=" + std::to_string(r.w) +
@@ -2280,6 +2291,14 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     CHECK(read["stale"].get<bool>());   // and nothing compiled is, by definition, not current
     CHECK(!read["ready"].get<bool>());
     CHECK_EQ(read["fix"].get<std::string>(), std::string("server.connect"));
+    // The panel's handshake, and the flag that keeps it to one attempt: a widget that retried a down
+    // server every frame would freeze the window on a connect timeout.
+    CHECK(!read["connect_attempted"].get<bool>());
+    CHECK(read["configured"].get<bool>());
+    const json connected = h.value("ai.intent", json{{"connect", true}});
+    CHECK(connected["connected"].get<bool>());
+    CHECK(connected["connect_attempted"].get<bool>());
+    CHECK(connected["ready"].get<bool>());
     const json& bounds = read["selection"]["bounds"];
     CHECK_EQ(bounds[0].get<int>(), 20);
     CHECK_EQ(bounds[2].get<int>(), 36);
@@ -2379,6 +2398,24 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
 // argument reader that defaults a flag here would switch off the colour correction every edit recipe
 // asks for while still reporting a composite that worked - which is exactly how it behaved, on the
 // live server, with green unit tests.
+// The state a person arrives in when they installed the editor and set nothing: the answer names the
+// variable, and the panel knows there is no button that could work.
+void test_an_unconfigured_server_names_the_variable() {
+    Harness h{Harness::Config::unconfigured};
+    const CommandResult refused = h.run("server.connect", json::object());
+    CHECK(!refused.ok);
+    CHECK(refused.error.find("THENOISE_URL") != std::string::npos);
+
+    const json read = h.value("ai.intent", json{{"recipe", "inpaint-remove"}});
+    CHECK(!read["configured"].get<bool>());
+    CHECK(!read["connected"].get<bool>());
+    // A connect ask in this state reports the same refusal instead of inventing a transport error.
+    const json asked = h.value("ai.intent", json{{"connect", true}});
+    CHECK(!asked["connected"].get<bool>());
+    CHECK(asked["connect_attempted"].get<bool>());
+    CHECK(asked["error"].get<std::string>().find("THENOISE_URL") != std::string::npos);
+}
+
 void test_an_option_left_out_keeps_the_policy_the_table_asked_for() {
     Harness h;
     h.value("doc.new", json{{"width", 64}, {"height", 48}, {"fill", json::array({20, 60, 100, 255})}});
@@ -2471,12 +2508,15 @@ void test_an_answer_can_fill_pixels_the_layer_never_had() {
     CHECK(odd.error.find("'canvas'") != std::string::npos);
 }
 
+}  // namespace
+
 int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
     test_a_recipe_runs_against_the_recorded_server_and_lands();
     test_an_answer_lands_on_the_document_and_undoes_completely();
     test_the_selection_panel_runs_its_intent_through_one_command();
+    test_an_unconfigured_server_names_the_variable();
     test_an_option_left_out_keeps_the_policy_the_table_asked_for();
     test_an_answer_can_fill_pixels_the_layer_never_had();
     test_every_command_refuses_an_argument_it_does_not_declare();
