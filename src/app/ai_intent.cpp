@@ -35,6 +35,18 @@ const ai::Recipe* intent_recipe(AppState& state) {
     return intents.empty() ? nullptr : intents.front();
 }
 
+// The arguments that change what would be sent. `job` only points the panel at a job to display, so it
+// must not pay for a region encode; the rest alter the request, and - unlike a document change - none of
+// them move the compile key, which is why an asked-for compile ignores the settle rule.
+bool changes_request(const nlohmann::json& args) {
+    for (const char* name : {"recipe", "vars", "seed", "connect", "run", "confirm"}) {
+        if (args.contains(name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::string joined(const std::vector<std::string>& names) {
     std::string out;
     for (const std::string& name : names) {
@@ -60,28 +72,6 @@ std::string recipe_ids(const AppState& state) {
         ids.push_back(intent->id);
     }
     return joined(ids);
-}
-
-// What a compiled preview is valid against. The document revision moves with every pixel write and
-// the selection moves with none of them, so the two together notice a changed canvas and a changed
-// region; a selection change that leaves the bounds, the count and the layer identical changes
-// nothing a region compile reads.
-struct CompileKey {
-    std::uint64_t revision = 0;
-    bool selection = false;
-    Rect bounds{};
-    std::size_t covered = 0;
-    std::size_t layer = 0;
-};
-
-bool key_matches(const AiIntent& intent, const CompileKey& key) {
-    return intent.has_preview && intent.compiled_revision == key.revision &&
-           intent.compiled_selection == key.selection &&
-           intent.compiled_bounds.x == key.bounds.x &&
-           intent.compiled_bounds.y == key.bounds.y &&
-           intent.compiled_bounds.w == key.bounds.w &&
-           intent.compiled_bounds.h == key.bounds.h &&
-           intent.compiled_covered == key.covered && intent.compiled_layer == key.layer;
 }
 
 CompileKey compile_key(const AppState& state) {
@@ -295,7 +285,7 @@ nlohmann::json intent_json(AppState& state) {
                  state.ai.client != nullptr && !state.ai.client->profile().base_url.empty()},
                 {"server",
                  state.ai.client != nullptr ? state.ai.client->profile().name : std::string()},
-                {"connect_attempted", state.ai_intent.connect_attempted},
+                {"connect_attempted", state.ai.connect_attempted},
                 {"ready", readiness.ready},
                 {"reason", readiness.reason},
                 {"fix", readiness.fix},
@@ -304,7 +294,7 @@ nlohmann::json intent_json(AppState& state) {
                 {"swap", needs_swap(state, readiness)},
                 {"estimate_s", estimate.has_value() ? json(*estimate) : json(nullptr)},
                 {"preview", intent.has_preview ? intent.preview : json(nullptr)},
-                {"stale", !key_matches(intent, compile_key(state))},
+                {"stale", !intent.has_preview || !(intent.compiled == compile_key(state))},
                 {"job", job},
                 {"error", intent.error}};
 }
@@ -399,9 +389,9 @@ void register_ai_intent_commands(AppState& state, CommandTable& table) {
             return fail("ai.intent", "'connect' must be a boolean");
         }
         if (connect) {
-            // No "already tried" guard here: the caller decides. The panel asks once on its own, and
-            // afterwards only when asked to, and a refresh of a session that exists is worth having.
-            intent.connect_attempted = true;
+            // No "already tried" guard here: the caller decides. The host asked once at startup, and
+            // after that only the button asks, and a refresh of a session that exists is worth having.
+            state.ai.connect_attempted = true;
             const CommandResult handshake = table.invoke("server.connect", json::object());
             if (!handshake.ok) {
                 intent.error = handshake.error;
@@ -432,24 +422,37 @@ void register_ai_intent_commands(AppState& state, CommandTable& table) {
         // A refusal is the intent's own error, and `error` carries it to the panel.
         const ai::Recipe* recipe = intent_recipe(state);
         const Readiness readiness = assess(state, recipe);
-        if (!args.empty() && recipe != nullptr && readiness.ready) {
+        // The preview is what makes Run live, so it has to follow the document without being asked -
+        // a rectangle drawn on the canvas is not an argument to this command, and a panel that only
+        // recompiled on its own widgets left Run greyed forever behind a perfectly good selection.
+        // What it must not do is encode a region on every frame of a marquee drag, so a change that
+        // this command was not told about compiles once its key has held still for one read. An
+        // argument means someone changed a value, which does not move the key at all, so that always
+        // recompiles; a compile that failed is attempted once per key rather than per frame.
+        const CompileKey key = compile_key(state);
+        const bool asked = changes_request(args);
+        const bool region_moved = !intent.has_preview || !(intent.compiled == key);
+        const bool attempted = intent.has_attempted && intent.attempted == key;
+        const bool settled = intent.has_seen && intent.seen == key;
+        if (recipe != nullptr && readiness.ready &&
+            (asked || (region_moved && settled && !attempted))) {
             const CommandResult compiled = table.invoke(
                 "ai.preview", json{{"recipe", recipe->id}, {"vars", effective_vars(*recipe, intent.given)}});
+            intent.has_attempted = true;
+            intent.attempted = key;
             if (compiled.ok) {
                 intent.preview = compiled.value;
+                intent.compiled = key;
                 intent.has_preview = true;
-                const CompileKey key = compile_key(state);
-                intent.compiled_revision = key.revision;
-                intent.compiled_selection = key.selection;
-                intent.compiled_bounds = key.bounds;
-                intent.compiled_covered = key.covered;
-                intent.compiled_layer = key.layer;
+                intent.error.clear();
             } else {
                 intent.has_preview = false;
                 intent.preview = json();
                 intent.error = compiled.error;
             }
         }
+        intent.seen = key;
+        intent.has_seen = true;
         return command_ok(intent_json(state));
     });
 }

@@ -200,6 +200,17 @@ void frame(void) {
 
     sg_end_pass();
     sg_commit();
+
+    // The handshake `$THENOISE_URL` configures, once, after a frame has been presented so the window is
+    // on screen before anything can block on a socket. The host owns it rather than the panel, because
+    // which dock tab happens to be front is not an answer to "is there a server", and one attempt is the
+    // whole cost when the machine is switched off - `server.connect` records that it was asked.
+    if (!g.state.ai.connect_attempted) {
+        const CommandResult handshake = g.commands.invoke("server.connect", json::object());
+        if (!handshake.ok) {
+            log::warn("startup handshake: " + handshake.error);
+        }
+    }
 }
 
 // Commands run through the table here too, so a key that reaches a command which cannot

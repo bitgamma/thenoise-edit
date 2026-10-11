@@ -402,15 +402,9 @@ void draw_ai_panel(CommandTable& commands) {
         ImGui::End();
         return;
     }
-    json view = commands.invoke("ai.intent", json::object()).value;
-    // The handshake, once, when the panel is actually looked at: `ImGui::Begin` returns false while the
-    // dock shows another tab, so a machine that is switched off costs one connect timeout at the moment
-    // somebody wants AI rather than holding the window shut at launch. `connect_attempted` is command
-    // state, which is what keeps this from becoming a retry every frame.
-    if (!view["connected"].get<bool>() && view["configured"].get<bool>() &&
-        !view["connect_attempted"].get<bool>()) {
-        view = commands.invoke("ai.intent", json{{"connect", true}}).value;
-    }
+    // The handshake is the host's, not this widget's: which dock tab happens to be front is not an
+    // answer to "is there a server". What the panel offers is the retry.
+    const json view = commands.invoke("ai.intent", json::object()).value;
     if (!view.contains("intents") || !view["intents"].is_array() || view["intents"].empty()) {
         ImGui::TextDisabled("no recipe works on a selection");
         ImGui::End();
@@ -528,15 +522,10 @@ void draw_ai_panel(CommandTable& commands) {
         }
     }
     if (view["stale"].get<bool>() && !view["preview"].is_null()) {
-        // Short enough to share its line with the control that fixes it: the panel is a third of the
-        // window minus a dock border, and a clipped sentence teaches nothing. Only when something *was*
-        // compiled - before the first compile nothing has moved, and a warning that is always on is a
-        // warning nobody reads.
-        ImGui::TextColored(kWarnInk, "the region moved");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("recompile")) {
-            commands.invoke("ai.intent", json{{"recipe", view["recipe"]}});
-        }
+        // Nothing to fix here and nothing to press: the preview recompiles itself the frame after the
+        // region stops moving, so the only honest statement is that the price below is a frame behind.
+        // A button that asked the user to trigger what already happens was the bug this replaced.
+        ImGui::TextDisabled("region moving - price settles");
     }
     if (view["swap"].get<bool>()) {
         ImGui::TextColored(kWarnInk, "needs %s", view["model"].get<std::string>().c_str());

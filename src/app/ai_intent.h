@@ -18,6 +18,23 @@ struct AppState;
 
 namespace noise::app {
 
+// What a compiled preview is valid against. The document revision moves with every pixel write and the
+// selection moves with none of them, so the two together notice a changed canvas and a changed region;
+// a selection change that leaves the bounds, the count and the layer identical changes nothing a region
+// compile reads.
+struct CompileKey {
+    std::uint64_t revision = 0;
+    bool selection = false;
+    Rect bounds{};
+    std::size_t covered = 0;
+    std::size_t layer = 0;
+
+    bool operator==(const CompileKey& other) const {
+        return revision == other.revision && selection == other.selection &&
+               bounds == other.bounds && covered == other.covered && layer == other.layer;
+    }
+};
+
 // What the selection panel is being asked to do: one selection-scoped recipe, the variable values a
 // person typed over the recipe's defaults, and the job those queued. The panel owns no behaviour:
 // `ai.intent` reads and writes exactly this, so a driver and a click cannot disagree about what
@@ -28,18 +45,19 @@ struct AiIntent {
     // `ai.run` and the panel end up compiling the same prompt.
     std::map<std::string, std::string> given;
     std::string job;
-    // Set by a `connect`, reported back so the panel's automatic ask stays a single attempt: a server
-    // that is down costs a connect timeout, and a widget retrying it every frame is a hang.
-    bool connect_attempted = false;
     // The compiled request, as `ai.preview` reported it, beside the facts it was compiled against: a
     // panel reads this every frame and must not re-encode a PNG to do it.
     nlohmann::json preview;
-    std::uint64_t compiled_revision = 0;
-    bool compiled_selection = false;
-    Rect compiled_bounds{};
-    std::size_t compiled_covered = 0;
-    std::size_t compiled_layer = 0;
+    CompileKey compiled{};
     bool has_preview = false;
+    // The key the previous read saw, and the key a compile was last *attempted* for (success or not).
+    // Together they are the debounce: a marquee being dragged moves the key every frame, and encoding a
+    // region on every frame of a drag is the cost this design refuses - so a preview is recompiled once
+    // the key has held still, and a compile that failed is not retried once per frame either.
+    CompileKey seen{};
+    bool has_seen = false;
+    CompileKey attempted{};
+    bool has_attempted = false;
     // The last refusal this intent produced, so the panel can show why Run is greyed out and a wire
     // client reads the same sentence. Cleared by the next attempt.
     std::string error;

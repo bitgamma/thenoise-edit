@@ -106,14 +106,14 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
 
         state = wire.call("server.state")
         p.check(state["tables"], "the role table and the recipes loaded", str(state.get("recipes_error", "")))
-        # The app shook hands by itself. Nobody in this probe asked yet, so this is the host's own
-        # behaviour - which lives in ui.cpp, where no C++ test reaches it, and which was silently
-        # absent once: a panel edit that missed its anchor still built, still tested green, and left
-        # the window with no way to connect at all.
+        # The app shook hands by itself. Nothing in this probe asked, so this is the host's own
+        # behaviour - which lives in the frame loop, where no C++ test reaches it. It started life in
+        # the panel, where a dock tab layout could swallow it entirely: an edit there that missed its
+        # anchor still built, still tested green, and left the window with no way to connect at all.
         eager = wire.call("ai.intent", {})
         p.check(bool(eager.get("configured")), "a server is configured for this run",
                 "set $THENOISE_URL (recordings count, and carry an .invalid address)")
-        p.check(bool(eager.get("connect_attempted")), "the panel asked for the handshake itself")
+        p.check(bool(eager.get("connect_attempted")), "the app asked for the handshake itself")
         p.check(bool(eager.get("connected")), "and the app connected before anyone asked it to",
                 str(eager.get("reason") or eager.get("error")))
 

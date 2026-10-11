@@ -75,6 +75,9 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
     // explicit, because a swap costs tens of seconds on a shared box.
     table.add("server.connect", "Shake hands with the server and resolve the roles", {}, {},
               [&state](const json&) -> CommandResult {
+        // Recorded before anything can refuse, so "an attempt was made this run" is true of every call
+        // and the host's once-only startup handshake cannot turn into a retry per frame.
+        state.ai.connect_attempted = true;
         CommandResult guard = need_queue("server.connect", state);
         if (!guard.ok) {
             return guard;
@@ -108,9 +111,11 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
         state.ai.connected = true;
         state.ai.connect_error.clear();
         state.ai.registry->update(*models);
-        log::info("connected to " + state.ai.client->profile().base_url + " (lemonade " +
-                  health->version + "), " + std::to_string(models->size()) + " models, " +
-                  std::to_string(health->max_models_image) + " resident");
+        log::info(std::string(state.ai.replaying
+                                  ? "handshake answered by the recordings in $NOISE_AI_FIXTURES"
+                                  : "connected to " + state.ai.client->profile().base_url) +
+                  " (lemonade " + health->version + "), " + std::to_string(models->size()) +
+                  " models, " + std::to_string(health->max_models_image) + " resident");
         return command_ok(json{{"connected", true},
                                {"server", state.ai.client->profile().name},
                                {"base_url", state.ai.client->profile().base_url},
@@ -136,7 +141,9 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
             server["model_loaded"] = state.ai.health.model_loaded;
             server["version"] = state.ai.health.version;
             server["request_timeout_s"] = state.ai.client->profile().request_timeout_s;
-            server["transport"] = state.ai.transport != nullptr ? "configured" : "none";
+            server["transport"] = state.ai.transport == nullptr
+                                      ? "none"
+                                      : (state.ai.replaying ? "recordings" : "libcurl");
         }
         if (state.ai.registry != nullptr) {
             server["roles"] = state.ai.registry->json();

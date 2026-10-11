@@ -116,6 +116,7 @@ void open_ai_session(noise::AppState& state) {
             ai::RecordedTransport::load(*fixtures, load_error);
         if (recorded != nullptr) {
             ai.transport = std::move(recorded);
+            ai.replaying = true;
             replaying = true;
             log::info("ai: replaying recordings from the directory in $" +
                       std::string(kFixturesVariable));

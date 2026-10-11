@@ -38,6 +38,10 @@ struct AiSession {
     std::string recipes_error;
 
     std::unique_ptr<ai::Transport> transport;
+    // True when that transport answers from recordings rather than a socket. Reported by `server.state`
+    // and used by the handshake's log line: without it a replay says "connected to <the URL in
+    // $THENOISE_URL>", which is a sentence about a machine that was never contacted.
+    bool replaying = false;
     std::unique_ptr<ai::Client> client;
     std::unique_ptr<ai::BlobCache> cache;
     std::unique_ptr<ai::JobQueue> jobs;
@@ -49,6 +53,10 @@ struct AiSession {
     // What the last `server.connect` decided. Not a latch: a failed connect leaves the commands refusing
     // with the reason, and the next attempt starts from nothing.
     bool connected = false;
+    // Set by whoever asks for the handshake - the host once at startup, the panel's button thereafter.
+    // The automatic attempt is a single one because a server that is switched off costs a connect
+    // timeout on the frame it happens, and a retry every frame would make the window unusable.
+    bool connect_attempted = false;
     std::string connect_error;
     ai::ServerHealth health;
 
