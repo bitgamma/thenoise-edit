@@ -107,10 +107,8 @@ outpaint would reopen the hole through which the blurred-face bug arrived.
    the brush rows appear only for a tool that paints, and the AI facts rule F asks for live on their
    own line in the status bar. Pressing Remove with nothing marked refuses ("works on a selection and
    there is none") rather than reconstructing the whole frame.
-   **Not done: the last clause of rule A.** A finished answer still waits for `Apply` (in the status
-   line) because the queue has no app-level beat that lands it. The design is in `PLAN.md`
-   ("what rule A still owes"); until it lands, the flagship is *mark → key → Apply*, one press longer
-   than agreed.
+   The last clause of rule A landed with it: a finished answer puts itself on the document, and the
+   status line says `on 'Remove j0001', Ctrl+Z back` instead of offering `Apply`.
 3. **Change** and **Fill**: the same sequence with one empty box, no defaults.
 4. **Generate**: words only, empty document allowed, new layer.
 5. **Extend** (canvas grow + outpaint) then **Upscale** (`doc.resize` does not exist yet; ordinary scaling

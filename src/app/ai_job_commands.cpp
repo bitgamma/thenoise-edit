@@ -15,6 +15,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -30,41 +31,6 @@ CommandResult need_queue(const char* command, const AppState& state) {
                              "point $NOISE_AI_FIXTURES at recordings to replay");
     }
     return command_ok(json::object());
-}
-
-ai::RegionPlan plan_of_landing(const ai::JobRecord& record) {
-    // The compositor maps by two rectangles and reads nothing else from a plan, so a reloaded job
-    // carries exactly what it needs: the crop it covered and the size the answer was asked for.
-    ai::RegionPlan plan;
-    plan.crop = record.landing.crop;
-    plan.requested = record.landing.requested;
-    plan.mask_bounds = record.landing.crop;
-    return plan;
-}
-
-Mask mask_for_landing(const ai::JobRecord& record, Extent canvas, std::string& error) {
-    if (record.landing.coverage_png_path.empty()) {
-        return whole_canvas(canvas);
-    }
-    std::vector<std::uint8_t> bytes;
-    if (!io::read_file(record.landing.coverage_png_path, bytes, error)) {
-        return Mask{};
-    }
-    std::string decode_error;
-    const Image png = io::decode_png(bytes, decode_error);
-    if (png.empty()) {
-        error = "job " + record.id + ": its coverage PNG does not decode (" + decode_error + ") at " +
-                record.landing.coverage_png_path;
-        return Mask{};
-    }
-    if (png.size() != canvas) {
-        error = "job " + record.id + ": its coverage is " + std::to_string(png.size().w) + "x" +
-                std::to_string(png.size().h) + " and the document is " +
-                std::to_string(canvas.w) + "x" + std::to_string(canvas.h) +
-                "; a job lands under the mask it was asked for, so this document is not the one it came from";
-        return Mask{};
-    }
-    return coverage_of_png(png);
 }
 
 }  // namespace
@@ -190,6 +156,7 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
             return guard;
         }
         state.ai.jobs->pump();
+        pump_ai_landings(state);
         return command_ok(state.ai.jobs->json());
     });
 
@@ -203,6 +170,7 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
             return fail("job.get", "expected string 'id'");
         }
         state.ai.jobs->pump();
+        pump_ai_landings(state);
         const std::optional<ai::JobRecord> record = state.ai.jobs->find(args.at("id").get<std::string>());
         if (!record.has_value()) {
             return fail("job.get", "no job '" + args.at("id").get<std::string>() + "'");
@@ -227,6 +195,7 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
         const std::string id = args.at("id").get<std::string>();
         const bool terminal = state.ai.jobs->wait_for(id, timeout);
         state.ai.jobs->pump();
+        pump_ai_landings(state);
         const std::optional<ai::JobRecord> record = state.ai.jobs->find(id);
         if (!record.has_value()) {
             return fail("job.wait", "no job '" + id + "'");
@@ -279,11 +248,12 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
                                {"retried", from}});
     });
 
-    // The landing door on the wire: the answer a job produced, under the coverage the job was queued
-    // with, through the same function `ai.compose` uses. Previewing is the default for the same reason
-    // it is there: an answer arriving in a tray should not move pixels by being looked at.
-    table.add("job.apply", "Land a finished job's answer on the document", {},
-              {"id", "apply", "feather", "colour_match"},
+    // The landing door on the wire. Answers land by themselves as soon as they are finished, so this is
+    // the idempotent version of the same thing: "put that answer on the document" for a job that has
+    // already landed says which layer holds it and adds nothing. There is no preview mode - the layer is
+    // the preview - and no destination: rule A.
+    table.add("job.apply", "Land a finished job's answer (idempotent: it lands by itself)", {},
+              {"id", "feather", "colour_match"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = need_queue("job.apply", state);
         if (!guard.ok) {
@@ -297,64 +267,58 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
             return fail("job.apply", "expected string 'id'");
         }
         const std::string id = args.at("id").get<std::string>();
+        std::optional<int> feather;
+        if (!arg_feather(args, "feather", feather)) {
+            return fail("job.apply", "'feather' must be a non-negative integer or \"auto\"");
+        }
+        std::optional<bool> colour_match;
+        if (args.contains("colour_match")) {
+            bool value = false;
+            if (!arg_bool(args, "colour_match", value)) {
+                return fail("job.apply", "'colour_match' must be a boolean");
+            }
+            colour_match = value;
+        }
+
         state.ai.jobs->pump();
+        pump_ai_landings(state);
         const std::optional<ai::JobRecord> found = state.ai.jobs->find(id);
         if (!found.has_value()) {
             return fail("job.apply", "no job '" + id + "'");
         }
         const ai::JobRecord& record = *found;
+        // "Landed" is a claim about the document, so it is checked against the document: undo took the
+        // layer away and the answer is still on disk, which is the one case where asking again is the
+        // right thing to do. The beat does not do this - an undo is a decision, and an auto-lander that
+        // undoes the undo is a fight with the person using the app.
+        const bool layer_still_there = std::any_of(
+            state.doc.layers().begin(), state.doc.layers().end(),
+            [&record](const Layer& layer) { return layer.name == record.landing.landed_layer; });
+        if (record.landing.landed && layer_still_there) {
+            json reply = record.landing.report.is_object() ? record.landing.report : json::object();
+            reply["already_landed"] = true;
+            reply["layer_name"] = record.landing.landed_layer;
+            reply["job"] = record.json();
+            return command_ok(reply);
+        }
         if (record.state != ai::JobState::succeeded) {
             return fail("job.apply", "job " + id + " is " + ai::job_state_name(record.state) +
                                          ", so there is no answer to land");
         }
-
-        bool apply = false;
-        if (!arg_bool(args, "apply", apply)) {
-            return fail("job.apply", "'apply' must be a boolean");
+        if (record.landing.document_epoch != state.document_epoch) {
+            return fail("job.apply",
+                        "job " + id + " was asked for a different document (it was queued under epoch " +
+                            std::to_string(record.landing.document_epoch) + ", this one is " +
+                            std::to_string(state.document_epoch) +
+                            "); its answer belongs to the file it came from");
         }
-
-        std::string error;
-        std::vector<std::uint8_t> bytes;
-        if (!state.ai.jobs->result_png(id, bytes, error)) {
-            return fail("job.apply", error);
-        }
-        const Image answer = io::decode_png(bytes, error);
-        if (answer.empty()) {
-            return fail("job.apply", error + " (" + record.result_png + ")");
-        }
-        const Mask coverage = mask_for_landing(record, state.doc.size(), error);
-        if (!coverage.sized()) {
-            return fail("job.apply", error);
-        }
-
-        ai::CompositePolicy policy;
-        policy.feather_px = record.landing.feather_px;
-        policy.colour_match = record.landing.colour_match;
-        policy.lock_band_px = record.landing.lock_band_px;
-        if (!arg_feather(args, "feather", policy.feather_px)) {
-            return fail("job.apply", "'feather' must be a non-negative integer or \"auto\"");
-        }
-        if (!arg_bool(args, "colour_match", policy.colour_match)) {
-            return fail("job.apply", "'colour_match' must be a boolean");
-        }
-        // Named for what the operation is called, not for the key that identifies it: this string is the
-        // row a person reads in the layer stack afterwards. An unknown id (a recipe file edited away
-        // since the job ran) lands under the id rather than under a guess.
-        const ai::Recipe* recipe = state.ai.recipes.find(record.recipe_id);
-        const AnswerLanding landing{
-            .answer = answer,
-            .coverage = coverage,
-            .plan = plan_of_landing(record),
-            .policy = policy,
-            .apply = apply,
-            .preview_stem = "ai-job-" + id,
-            .coverage_source = "job " + id,
-            .above_layer = record.landing.target_layer,
-            .layer_name =
-                std::string(recipe != nullptr ? recipe->label : record.recipe_id) + " " + id};
-        CommandResult result = land_answer("job.apply", state, landing);
+        CommandResult result = land_job(state, record, "job.apply", feather, colour_match,
+                                       /*record_outcome=*/true);
         if (result.ok) {
-            result.value["job"] = record.json();
+            if (const std::optional<ai::JobRecord> after = state.ai.jobs->find(id);
+                after.has_value()) {
+                result.value["job"] = after->json();
+            }
         }
         return result;
     });

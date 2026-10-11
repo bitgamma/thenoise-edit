@@ -172,8 +172,20 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
         p.check(dims[0] > 0 and dims[1] > 0, "an answer came back", str(dims))
         p.check(dims[0] % 16 == 0 and dims[1] % 16 == 0, "the answer obeys the size policy", str(dims))
 
-        applied = wire.call("job.apply", {"id": job_id, "apply": True})
-        report = applied["composite"]
+        # Rule A: waiting was the last thing anyone did. The answer is already on the document, on its
+        # own layer named for the verb and the job, and the job carries the report of that landing - so
+        # the pixel claims below are checked against the landing nobody pressed.
+        landing = waited.get("landing", {})
+        report = landing.get("report", {}).get("composite", {})
+        layer_names = [layer["name"] for layer in wire.call("layer.list")["layers"]]
+        p.check(bool(landing.get("landed")), "the answer landed itself, nothing pressed",
+                str(landing.get("landed_layer")))
+        p.check(str(landing.get("landed_layer", "")).startswith("Remove "),
+                "the layer is named for the verb and the job", str(layer_names))
+        applied = wire.call("job.apply", {"id": job_id})
+        p.check(bool(applied.get("already_landed")),
+                "asking for the same answer again adds no layer",
+                str([layer["name"] for layer in wire.call("layer.list")["layers"]]))
         p.check(bool(report["composed"]) and report["pixels_changed"] > 0,
                 "the answer composited onto the document",
                 f"changed={report['pixels_changed']} feather={report['feather_px']} "

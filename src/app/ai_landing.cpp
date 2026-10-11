@@ -5,13 +5,57 @@
 #include "app/state.h"
 
 #include "core/log.h"
+#include "io/file.h"
 #include "io/png.h"
 
 #include <string>
 
+#include "ai/registry.h"
+#include "core/log.h"
+
 namespace noise::app {
 
 using nlohmann::json;
+
+namespace {
+
+ai::RegionPlan plan_of_landing(const ai::JobRecord& record) {
+    // The compositor maps by two rectangles and reads nothing else from a plan, so a reloaded job
+    // carries exactly what it needs: the crop it covered and the size the answer was asked for.
+    ai::RegionPlan plan;
+    plan.crop = record.landing.crop;
+    plan.requested = record.landing.requested;
+    plan.mask_bounds = record.landing.crop;
+    return plan;
+}
+
+Mask mask_for_landing(const ai::JobRecord& record, Extent canvas, std::string& error) {
+    if (record.landing.coverage_png_path.empty()) {
+        return whole_canvas(canvas);
+    }
+    std::vector<std::uint8_t> bytes;
+    if (!io::read_file(record.landing.coverage_png_path, bytes, error)) {
+        return Mask{};
+    }
+    std::string decode_error;
+    const Image png = io::decode_png(bytes, decode_error);
+    if (png.empty()) {
+        error = "job " + record.id + ": its coverage PNG does not decode (" + decode_error + ") at " +
+                record.landing.coverage_png_path;
+        return Mask{};
+    }
+    if (png.size() != canvas) {
+        error = "job " + record.id + ": its coverage is " + std::to_string(png.size().w) + "x" +
+                std::to_string(png.size().h) + " and the document is " +
+                std::to_string(canvas.w) + "x" + std::to_string(canvas.h) +
+                "; an answer lands under the mask it was asked for, so this document is not the one "
+                "it came from";
+        return Mask{};
+    }
+    return coverage_of_png(png);
+}
+
+}  // namespace
 
 Mask whole_canvas(Extent size) {
     Mask all(size);
@@ -212,5 +256,92 @@ CommandResult land_answer(const char* command, AppState& state, const AnswerLand
     }
     return command_ok(result);
 }
+CommandResult land_job(AppState& state, const ai::JobRecord& record, const char* command,
+                       const std::optional<int>& feather_override,
+                       const std::optional<bool>& colour_match_override,
+                       bool record_outcome) {
+    if (state.ai.jobs == nullptr) {
+        return fail(command, "there is no queue to read job '" + record.id + "' from");
+    }
+    std::string error;
+    std::vector<std::uint8_t> bytes;
+    if (!state.ai.jobs->result_png(record.id, bytes, error)) {
+        if (record_outcome) {
+            state.ai.jobs->set_land_refusal(record.id, error);
+        }
+        return fail(command, error);
+    }
+    const Image answer = io::decode_png(bytes, error);
+    if (answer.empty()) {
+        const std::string why = error + " (" + record.result_png + ")";
+        if (record_outcome) {
+            state.ai.jobs->set_land_refusal(record.id, why);
+        }
+        return fail(command, why);
+    }
+    const Mask coverage = mask_for_landing(record, state.doc.size(), error);
+    if (!coverage.sized()) {
+        if (record_outcome) {
+            state.ai.jobs->set_land_refusal(record.id, error);
+        }
+        return fail(command, error);
+    }
 
+    ai::CompositePolicy policy;
+    policy.feather_px = record.landing.feather_px;
+    policy.colour_match = record.landing.colour_match;
+    policy.lock_band_px = record.landing.lock_band_px;
+    if (feather_override.has_value()) {
+        policy.feather_px = feather_override;
+    }
+    if (colour_match_override.has_value()) {
+        policy.colour_match = *colour_match_override;
+    }
+
+    // Named for what the operation is called, not for the key that identifies it: this string is the row
+    // a person reads in the layer stack afterwards. An id edited away since the job ran lands under the
+    // id rather than under a guess.
+    const ai::Recipe* recipe = state.ai.recipes.find(record.recipe_id);
+    const std::string layer_name =
+        std::string(recipe != nullptr ? recipe->label : record.recipe_id) + " " + record.id;
+    const AnswerLanding landing{
+        .answer = answer,
+        .coverage = coverage,
+        .plan = plan_of_landing(record),
+        .policy = policy,
+        .apply = true,
+        .preview_stem = "ai-job-" + record.id,
+        .coverage_source = "job " + record.id,
+        .above_layer = record.landing.target_layer,
+        .layer_name = layer_name};
+    CommandResult result = land_answer(command, state, landing);
+    if (!result.ok) {
+        if (record_outcome) {
+            state.ai.jobs->set_land_refusal(record.id, result.error);
+        }
+        return result;
+    }
+    if (record_outcome) {
+        state.ai.jobs->set_landed(record.id, layer_name, result.value);
+    }
+    result.value["layer_name"] = layer_name;
+    return result;
+}
+
+void pump_ai_landings(AppState& state) {
+    if (state.ai.jobs == nullptr || state.doc.empty()) {
+        return;
+    }
+    const std::vector<ai::JobRecord> pending = state.ai.jobs->pending_landings(state.document_epoch);
+    for (const ai::JobRecord& record : pending) {
+        const CommandResult landed = land_job(state, record, "answer", std::nullopt, std::nullopt,
+                                             /*record_outcome=*/true);
+        if (landed.ok) {
+            log::info("answer from " + record.id + " landed on layer '" +
+                      landed.value.value("layer_name", std::string()) + "'");
+        } else {
+            log::error("answer from " + record.id + " did not land: " + landed.error);
+        }
+    }
+}
 }  // namespace noise::app

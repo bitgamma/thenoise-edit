@@ -555,6 +555,17 @@ fidelity is not a server knob.
 
 (`variations` deleted — unsupported endpoint.)
 
+**Answers land themselves.** A succeeded job's answer is composited onto the document as soon as a door
+reads the queue (`ai.intent`, `job.list`, `job.get`, `job.wait` all call `pump_ai_landings`), onto its own
+new layer above the layer the region was flattened from, named for the recipe's label and the job. Three
+facts make that safe and they are all durable in `jobs.json`: `document_epoch` (a job may land only in the
+document that asked for it - a job that came back after the person opened another file stays out of the
+new one), `landed` + `landed_layer` (so reopening the app does not stack a second copy, and so `job.apply`
+can tell "already there" from "undo took it away"), and `report` (the compose report of that landing, so
+the pixel-lock claim is checkable after the fact whoever asked). A landing that refuses is recorded once
+with its sentence rather than retried every frame. **Undo is respected**: the beat never re-lands what
+undo removed; `job.apply` is the door back.
+
 **`ai.preview` is the only thing that preps, resamples and encodes an upload besides a run**, and both are
 on being asked. Nothing on the frame path does: the window's price line is a `RequestQuote` (endpoint, the
 size the region compiler settled on, the model, its default steps, the box's measured time), which is

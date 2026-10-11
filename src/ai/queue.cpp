@@ -107,7 +107,13 @@ nlohmann::json JobRecord::json() const {
                                 {"colour_match", landing.colour_match},
                                 {"lock_band_px", landing.lock_band_px},
                                 {"target_layer", landing.target_layer},
-                                {"document_checksum_before", landing.document_checksum_before}};
+                                {"document_checksum_before", landing.document_checksum_before},
+                                {"document_epoch", landing.document_epoch},
+                                {"landed", landing.landed},
+                                {"landed_layer", landing.landed_layer},
+                                {"report", landing.report},
+                                {"land_refused", landing.land_refused},
+                                {"land_error", landing.land_error}};
     if (landing.feather_px.has_value()) {
         landing_json["feather_px"] = *landing.feather_px;
     } else {
@@ -485,6 +491,49 @@ std::optional<JobRecord> JobQueue::find(const std::string& id) const {
     return found->second;
 }
 
+std::vector<JobRecord> JobQueue::pending_landings(std::uint64_t document_epoch) const {
+    std::vector<JobRecord> out;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const std::string& id : order_) {
+        const auto found = records_.find(id);
+        if (found == records_.end()) {
+            continue;
+        }
+        const JobRecord& record = found->second;
+        if (record.state == JobState::succeeded && !record.landing.landed &&
+            !record.landing.land_refused && record.landing.document_epoch == document_epoch) {
+            out.push_back(record);
+        }
+    }
+    return out;
+}
+
+void JobQueue::set_landed(const std::string& id, const std::string& layer_name,
+                          const nlohmann::json& report) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = records_.find(id);
+    if (found == records_.end()) {
+        return;
+    }
+    found->second.landing.landed = true;
+    found->second.landing.land_refused = false;
+    found->second.landing.land_error.clear();
+    found->second.landing.landed_layer = layer_name;
+    found->second.landing.report = report;
+    persist_locked();
+}
+
+void JobQueue::set_land_refusal(const std::string& id, const std::string& error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = records_.find(id);
+    if (found == records_.end()) {
+        return;
+    }
+    found->second.landing.land_refused = true;
+    found->second.landing.land_error = error;
+    persist_locked();
+}
+
 bool JobQueue::result_png(const std::string& id, std::vector<std::uint8_t>& png,
                           std::string& error) {
     pump();
@@ -613,6 +662,24 @@ void JobQueue::load_from_disk() {
             if (landing.contains("target_layer") && landing.at("target_layer").is_number_integer()) {
                 record.landing.target_layer =
                     static_cast<int>(landing.at("target_layer").get<long long>());
+            }
+            record.landing.landed = landing.contains("landed") &&
+                                    landing.at("landed").is_boolean() && landing.at("landed").get<bool>();
+            record.landing.land_refused = landing.contains("land_refused") &&
+                                          landing.at("land_refused").is_boolean() &&
+                                          landing.at("land_refused").get<bool>();
+            record.landing.document_epoch =
+                landing.contains("document_epoch") && landing.at("document_epoch").is_number()
+                    ? static_cast<std::uint64_t>(landing.at("document_epoch").get<double>())
+                    : 0;
+            if (landing.contains("report")) {
+                record.landing.report = landing.at("report");
+            }
+            if (landing.contains("landed_layer") && landing.at("landed_layer").is_string()) {
+                record.landing.landed_layer = landing.at("landed_layer").get<std::string>();
+            }
+            if (landing.contains("land_error") && landing.at("land_error").is_string()) {
+                record.landing.land_error = landing.at("land_error").get<std::string>();
             }
             if (landing.contains("coverage_png") && landing.at("coverage_png").is_string()) {
                 record.landing.coverage_png_path = landing.at("coverage_png").get<std::string>();

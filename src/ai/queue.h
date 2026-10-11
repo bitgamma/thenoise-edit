@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
@@ -44,6 +45,23 @@ struct Landing {
     // What the document's composite was when the job was queued, so a landing that arrives after the
     // user moved on can be seen for what it is.
     std::string document_checksum_before;
+    // Which document this answer belongs to, as `AppState::document_epoch` had it when the request was
+    // queued. An answer lands by itself, and "by itself" cannot mean "into whatever file is open when
+    // the model finally answers": the epoch is what a job may land in, and nothing else.
+    std::uint64_t document_epoch = 0;
+    // The answer is on the document, under this layer name. Durable, because reopening the project must
+    // not stack a second copy of an answer that already landed - and because a beat that lands what is
+    // finished is only safe if "finished" includes "already put there".
+    bool landed = false;
+    std::string landed_layer;
+    // What the composite reported when the answer went on the document - counts, policy, the crop, and
+    // whether anything outside the coverage moved. Kept because the claim "the answer reached no pixel
+    // the mask did not claim" has to be checkable after the landing, whoever asked for it.
+    nlohmann::json report;
+    // The landing refused, and why, once. Retrying a refusal per frame would spend a composite per
+    // frame and bury the sentence in a log.
+    bool land_refused = false;
+    std::string land_error;
 };
 
 enum class JobState {
@@ -135,6 +153,14 @@ public:
     // What a queued request would be given for a timeout, which is the ETA the UI shows before the user
     // commits to a job.
     int predicted_timeout_s(const std::string& model, Extent size, int steps) const;
+    // Answers that belong on the document and are not there yet: succeeded, not landed, and queued
+    // against the document open now. Landing them is the app's job - this only says which.
+    std::vector<JobRecord> pending_landings(std::uint64_t document_epoch) const;
+    // What the app reports once the answer is on the document, and once more when a landing refuses.
+    void set_landed(const std::string& id, const std::string& layer_name,
+                    const nlohmann::json& report);
+    void set_land_refusal(const std::string& id, const std::string& error);
+
     // The answer's bytes for a succeeded job, read from disk (or the cache, which is the same file).
     bool result_png(const std::string& id, std::vector<std::uint8_t>& png, std::string& error);
 

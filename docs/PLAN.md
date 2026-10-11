@@ -485,6 +485,64 @@ none. The status bar therefore has two lines, the canvas rect grew a little, and
 `tests/golden/view_pan_zoom.png` was re-captured with `wire_drive.py --update-golden` (verified by eye:
 same checkerboard at the same zoom, 680×481 instead of 680×445).
 
+### Rule A landed: an answer lands itself
+
+The `Apply` step is gone. Every succeeded job lands on its own layer as soon as it is finished, and the
+two things that could go wrong with that are the design, not the plumbing:
+
+| decision | why | how it is seen |
+|---|---|---|
+| `Landing::document_epoch`, stamped by `ai.run` from `AppState::document_epoch` (bumped by `note_new_document` in `doc.new`/`doc.open`) | "the answer lands by itself" cannot mean "into whatever file is open when the model finally answers". A job lands in the document that asked for it, or nowhere | `job.apply` over a foreign document refuses naming both epochs; the beat leaves it alone |
+| `landed` + `landed_layer` + `report`, durable in `jobs.json` | reopening the app must not stack a second copy, and "the answer reached no pixel the mask did not claim" has to be checkable after the landing, whoever asked | `job.get` carries the landing and its compose report; the probe reads the report rather than pressing anything |
+| one beat, `pump_ai_landings(state)`, called by every door that reads the queue (`ai.intent`, `job.list`, `job.get`, `job.wait`) | no door owns landing, so no door can be forgotten and none can double-apply | four reads after one `job.wait` leave the layer count where it was |
+| **the beat does not re-land what undo took away** | an undo is a decision; an auto-lander that undoes the undo is a fight with the person using the app. `job.apply` is the door back, and it checks whether the layer it named is still there | the same test: undo → reads → still one layer; `job.apply` → the same pixels again |
+| a refusal is recorded once (`land_refused` + `land_error`) | a beat that retried a refusal every frame would spend a composite per frame and bury the sentence in the log | `land_job` records both outcomes; a successful explicit `job.apply` clears a previous refusal |
+
+`job.apply` survives as the idempotent version of the same door: "put that answer on the document" for a
+job whose layer is still there answers with the landing's own report and adds nothing. Its `apply`
+argument is deleted — there is no preview mode, because the layer is the preview — and there is no
+destination argument either, which was already rule A.
+
+## Reasoning the code cannot carry (the verbs, and what the window is now)
+
+The interface stopped being a panel and became four keys. That moved no AI behaviour - it moved *where a
+promise is stated*, which is where the design work was.
+
+**Fact table.**
+
+| piece | what it is | how it is seen |
+|---|---|---|
+| `app::kVerbs` (`ai_verbs.{h,cpp}`) | rows `{VerbId, recipe, key}` - the surface. Label, words and scope are read from the recipe, never restated | `ai.verbs` rows; `command.list` shows `ai.remove` bound to `Ctrl+Backspace` |
+| `verb_table_error(recipes, kVerbs)` | each verb's contract over the recipe's facts, checked at session open | `test_app`: an operation swapped, an ask that grew, a recipe missing, two verbs on one recipe - each refused, all four rows then not-ready |
+| `ai.<verb> {vars?, seed?, confirm?}` | one row of the table, as a command; it calls `ai.intent` with its recipe named | `test_app` runs the flagship: mark → `ai.remove` → `job.wait` → `job.apply` → a layer named `Remove j0001` |
+| `missing_region(recipe, state)` | the region a recipe needs with nothing marked; the region door refuses on it and the readiness forecast asks it | `ai.verbs` rows grey with the reason; `ai.remove` refuses over an unmarked frame |
+| `ai.verbs` row `swap`/`resident` | whether that verb would have to load a model first | the window's confirmation names both models before the press |
+
+**A verb is not an operation and not a recipe.** `Recipe::operation` says what happens to the pixels;
+`VerbId` says what a person means when they press something; the recipe is how the AI path compiles it.
+Collapsing any two of the three is what produced the original bug: the panel offered "Replace", the
+recipe did `in_place`, and the mask was treated as a hole. Keeping them separate costs one small table
+and one load-time check, and buys the refusal that a row which drifted from its recipe cannot ship.
+
+**The key lives in the command row, not the widget.** `kVerbs` carries canonical shortcut text into
+`table.add`, and the window asks `commands.shortcuts_for(...)`/`ai.verbs` for what to print. A binding
+that collided with another refuses the registration at startup, so a verb key cannot quietly lose to
+`edit.undo`.
+
+**`vars` now accepts two kinds of name.** A recipe's `ask` fields have no defaults by rule, so the
+accept set is `variables ∪ ask` - and switching verbs forgets what the next one neither asks nor
+declares, destructively: coming back to Change after Remove shows an empty box, which the test asserts
+rather than smooths over. That is rule E behaving, not a bug to paper over with retained history.
+
+**What the window is.** The "Edit selection" panel is deleted: the verbs are a section of the Tool panel
+(one row each, keys beside them, reason on hover), the brush sliders appear only for a tool that paints
+(`core::tool_mode` decides, the panel does not), and the AI line - verb, model, ~seconds, cache digest,
+swap warning, job and Apply - sits on its own line in the status bar, because a bar that shares one line
+with zoom/size/path/undo gives the AI facts a third of the width and a clipped swap warning is worse than
+none. The status bar therefore has two lines, the canvas rect grew a little, and
+`tests/golden/view_pan_zoom.png` was re-captured with `wire_drive.py --update-golden` (verified by eye:
+same checkerboard at the same zoom, 680×481 instead of 680×445).
+
 ### What rule A still owes: the answer should land itself
 
 Rule A says *no Apply step*. `job.apply` is gone as an **option** (there is no "into the active layer"),
@@ -545,7 +603,7 @@ that triple, all from geometry and tables - and the request's digest appears wit
 | piece | rule | how it is seen |
 |---|---|---|
 | `draw_ui` reads `ai.intent` once and passes the answer down | the window is one reader; one action, one read, one price | frame time while dragging; `upload_encodes` |
-| `quote_request()` (`ai_commands.cpp`, where the region compiler lives) | what a press would send, computed without touching pixels | the status line's `edits 192x192` and `~3.4 s` |
+| `quote_request()` (`ai_commands.cpp`, where the region compiler lives) | what a press would send, computed without touching pixels | the status line's `272x224` and `~3.4 s` |
 | `AppState::upload_encodes` | the cost of the read path is a number on the wire | the test above, red at 5 checks under a one-line mutation |
 | `ai.preview` | the only thing that preps and encodes besides a run, and only on being asked | `prep_proof.py`, `ai_compose_probe.py` |
 

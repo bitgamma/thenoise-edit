@@ -529,15 +529,15 @@ void draw_ai_status_line(CommandTable& commands, const json& view) {
     ImGui::TextDisabled("%s", model.c_str());
     ImGui::SameLine();
     if (view["estimate_s"].is_number()) {
+        ImGui::SameLine();
         ImGui::TextDisabled("~%.1f s", view["estimate_s"].get<double>());
-    } else {
-        ImGui::TextDisabled("no timing yet");
     }
     if (view["quote"].is_object()) {
+        // The size and the endpoint the press would ask for; the endpoint is in `ai.intent`'s quote for
+        // anyone who wants it, and the bar has to leave room for where an answer went.
         const json& quote = view["quote"];
         ImGui::SameLine();
-        ImGui::TextDisabled("%s %dx%d", quote["endpoint"].get<std::string>().c_str(),
-                            quote["size"][0].get<int>(), quote["size"][1].get<int>());
+        ImGui::TextDisabled("%dx%d", quote["size"][0].get<int>(), quote["size"][1].get<int>());
     }
     // The seed is on screen because it is in the request; nothing draws a number behind the person's
     // back, and `ai.intent {seed: n}` is how it changes.
@@ -554,15 +554,23 @@ void draw_ai_status_line(CommandTable& commands, const json& view) {
         ImGui::SameLine();
         ImGui::TextDisabled("%s %s", job.contains("id") ? job["id"].get<std::string>().c_str() : "",
                             job_state.c_str());
-        if (job.contains("cache_key") && !job["cache_key"].get<std::string>().empty()) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("cache %s",
-                                job["cache_key"].get<std::string>().substr(0, 6).c_str());
-        }
         if (job_state == "succeeded") {
+            // No Apply button: the answer is already on the document by the time the job says so, on a
+            // layer named for the verb and the job, and `Ctrl+Z` takes the layer and its pixels together.
             ImGui::SameLine();
-            if (ImGui::SmallButton("Apply")) {
-                commands.invoke("job.apply", json{{"id", job["id"]}, {"apply", true}});
+            const json& landing = job.contains("landing") ? job["landing"] : json::object();
+            const std::string landed_layer = landing.contains("landed_layer")
+                                                 ? landing["landed_layer"].get<std::string>()
+                                                 : std::string();
+            if (landed_layer.empty()) {
+                // A digest is a fact about bytes and the bytes are on the wire (`job.get`); where the
+                // answer went is the fact a person needs next to the job.
+                ImGui::TextDisabled("cache %s, landing...",
+                                    job.contains("cache_key")
+                                        ? job["cache_key"].get<std::string>().substr(0, 6).c_str()
+                                        : "");
+            } else {
+                ImGui::TextDisabled("on '%s', Ctrl+Z", landed_layer.c_str());
             }
         } else if (job_state == "failed" || job_state == "cancelled") {
             ImGui::SameLine();

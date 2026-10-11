@@ -471,6 +471,7 @@ void register_ai_commands(AppState& state, CommandTable& table) {
         landing.lock_band_px = recipe.composite.lock_band_px;
         landing.target_layer = state.doc.active();
         landing.document_checksum_before = state.doc.composite().checksum_hex();
+        landing.document_epoch = state.document_epoch;
 
         const std::string id = state.ai.jobs->enqueue(assembled.request, recipe.id, recipe.role,
                                                       landing, coverage_png(assembled.coverage));

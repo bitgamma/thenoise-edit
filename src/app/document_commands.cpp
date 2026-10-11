@@ -19,6 +19,17 @@
 
 namespace noise::app {
 
+namespace {
+
+// One document ends and another begins. A job may land only in the document that asked for it, so every
+// door that replaces the document says so here - a door that forgot would let an answer queued against
+// the last file land in this one.
+void note_new_document(AppState& state) {
+    ++state.document_epoch;
+}
+
+}  // namespace
+
 void register_document_commands(AppState& state, CommandTable& table) {
     table.add("doc.get", "Report the document (path, size, checksum, revision, history)", {}, {},
               [&state](const json&) -> CommandResult {
@@ -48,6 +59,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         std::vector<Layer> layers;
         layers.push_back(std::move(base));
         state.doc.reset(std::move(layers), std::nullopt, std::string());
+        note_new_document(state);
         state.carried.clear();  // a new document is not tied to the file that was open
         request_fit(state);
         log::info("created image " + std::to_string(width) + "x" + std::to_string(height));
@@ -90,6 +102,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
             state.carried.clear();
         }
         state.doc.reset(std::move(loaded), std::move(opened_selection), path);
+        note_new_document(state);
         request_fit(state);
         log::info("loaded " + path + " (" + std::to_string(state.doc.layers().size()) +
                   " layers)");

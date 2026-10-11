@@ -10,6 +10,7 @@
 
 #include "ai/compose.h"
 #include "ai/recipes.h"
+#include "ai/queue.h"
 #include "ai/region.h"
 #include "core/command.h"
 #include "core/geom.h"
@@ -71,6 +72,20 @@ struct AnswerLanding {
 // what makes the pixel-lock proof in the probe apply to every path that lands an answer.
 CommandResult land_answer(const char* command, noise::AppState& state,
                            const AnswerLanding& landing);
+
+// Put one finished job's answer on the document: read the bytes back, take the coverage the job was
+// queued with (never whatever is selected now), composite through the same door as `ai.compose`, and -
+// with `record_outcome` - write the outcome onto the job so it is never landed twice. `command` names the door
+// that asked, because a refusal has to say who was refused.
+CommandResult land_job(AppState& state, const ai::JobRecord& record, const char* command,
+                       const std::optional<int>& feather_override,
+                       const std::optional<bool>& colour_match_override,
+                       bool record_outcome);
+
+// The beat that lands whatever finished while the app was busy: succeeded jobs that belong to the
+// document open now and have not landed. Called by every door that reads the queue - the status line
+// reads it every frame - so no single door owns landing and none can double-apply.
+void pump_ai_landings(AppState& state);
 
 // Shared argument shapes. `feather` is a recipe's word or a number, and both callers take it the same way.
 bool arg_feather(const nlohmann::json& args, const char* key, std::optional<int>& out);

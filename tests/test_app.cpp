@@ -2094,8 +2094,20 @@ void test_a_recipe_runs_against_the_recorded_server_and_lands() {
     // field and the frame a flat fill of another colour, so measuring the drift would - correctly - take
     // the answer to the frame's own colour and leave nothing to count. What the correction does is its
     // own test, in `test_compose`.
-    const json applied =
-        h.value("job.apply", json{{"id", id}, {"apply", true}, {"colour_match", false}});
+    // Nobody asked for it: waiting for the job is enough. The answer is on the document already, on a
+    // layer named for the verb and the job, and the job says so - which is rule A ("no Apply step")
+    // being a fact rather than a promise.
+    CHECK(waited["landing"]["landed"].get<bool>());
+    CHECK_EQ(waited["landing"]["landed_layer"].get<std::string>(), std::string("Remove " + id));
+    const json layers = h.value("layer.list", json::object());
+    CHECK_EQ(layers["layers"].size(), std::size_t(2));
+    CHECK_EQ(layers["layers"][1]["name"].get<std::string>(), std::string("Remove " + id));
+    CHECK(waited["landing"]["report"]["composite"]["composed"].get<bool>());
+
+    // Asking for the same answer again adds nothing: it is the idempotent door, and it answers with the
+    // report of the landing that already happened.
+    const json applied = h.value("job.apply", json{{"id", id}});
+    CHECK(applied["already_landed"].get<bool>());
     CHECK(applied["applied"].get<bool>());
     CHECK(applied["composite"]["composed"].get<bool>());
     const std::size_t changed = applied["composite"]["pixels_changed"].get<std::size_t>();
@@ -2125,9 +2137,12 @@ void test_a_recipe_runs_against_the_recorded_server_and_lands() {
             }
         }
     }
-    CHECK_EQ(different, changed);
-    // A feathered mask reaches past the crop the request was compiled to, but only by the feather.
-    CHECK(outside_crop < changed);
+    // What the report counted and what the document shows are the same pixels or fewer: the recipe's
+    // colour match is in force here (auto-landing uses the recipe's policy), and a flat answer matched
+    // to a flat frame legitimately changes fewer pixels than were written. What must never happen is a
+    // pixel outside the crop differing - the answer reaching somewhere the mask never claimed.
+    CHECK(different <= changed);
+    CHECK_EQ(outside_crop, std::size_t(0));
 
     h.value("edit.undo", json::object());
     CHECK_EQ(checksum_of(h), before);
@@ -2143,20 +2158,60 @@ void test_a_recipe_runs_against_the_recorded_server_and_lands() {
     CHECK(second["from_cache"].get<bool>());
     CHECK_EQ(h.value("cache.stats", json::object())["hits"].get<std::size_t>(), hits_before + 1);
 
-    // A job's answer outlives the moment it was made in: a preview of it writes nothing, and applying it
-    // again after undoing lands the same pixels - which is what makes an answer worth keeping on disk
-    // instead of in memory next to the document.
-    const json repreview = h.value("job.apply", json{{"id", id}, {"apply", false}});
-    CHECK(!repreview["applied"].get<bool>());
-    CHECK_EQ(checksum_of(h), before);
-    // The policy outlives the run: nothing was passed, and the landing still says what the recipe
-    // asked for and that the correction ran on this answer.
-    CHECK(repreview["policy"]["colour_match"].get<bool>());
-    CHECK(repreview["composite"]["colour_corrected"].get<bool>());
-    const json reapplied =
-        h.value("job.apply", json{{"id", id}, {"apply", true}, {"colour_match", false}});
+    // A job's answer outlives the moment it was made in. The answer landed by itself, undo took the
+    // layer away, and asking for the same answer again puts the same pixels back from the file on disk -
+    // which is what makes an answer worth keeping. The policy outlives the run too: nothing was passed
+    // here, and the landing still says what the recipe asked for and that the correction ran.
+    const json reapplied = h.value("job.apply", json{{"id", id}});
+    CHECK(!reapplied.contains("already_landed"));
     CHECK_EQ(reapplied["composite"]["pixels_changed"].get<std::size_t>(), changed);
+    CHECK(reapplied["policy"]["colour_match"].get<bool>());
+    CHECK(reapplied["composite"]["colour_corrected"].get<bool>());
     CHECK_NE(checksum_of(h), before);
+}
+
+// Rule A: the answer lands by itself, in the document that asked for it, exactly once. Landing is not a
+// mode a caller opts into, so the two things that could go wrong are landing twice and landing in the
+// wrong file - both asserted here, plus that an undo is respected instead of fought.
+void test_an_answer_lands_itself_into_the_document_that_asked_for_it() {
+    Harness h;
+    h.value("doc.new", json{{"width", 96}, {"height", 64}, {"fill", json::array({25, 35, 45, 255})}});
+    h.value("server.connect", json::object());
+    h.value("select.rect", json{{"rect", json::array({16, 10, 40, 24})}});
+    const json started = h.value("ai.run", json{{"recipe", "inpaint-remove"}, {"seed", 11}});
+    const std::string id = started["job"]["id"].get<std::string>();
+
+    // Every door that reads the queue lands what has finished. `job.get` is enough: no `job.apply`.
+    const json waited = h.value("job.wait", json{{"id", id}, {"timeout", 30}});
+    CHECK_EQ(waited["state"].get<std::string>(), std::string("succeeded"));
+    const std::size_t with_answer = h.value("layer.list", json::object())["layers"].size();
+    CHECK_EQ(with_answer, std::size_t(2));
+
+    // Reading the queue again - which the status line does every frame - must not stack a second copy.
+    for (int pass = 0; pass < 4; ++pass) {
+        h.value("job.list", json::object());
+        h.value("ai.intent", json::object());
+    }
+    CHECK_EQ(h.value("layer.list", json::object())["layers"].size(), with_answer);
+
+    // `Ctrl+Z` is the answer's undo, and the beat does not put the layer back: an auto-lander that
+    // undoes an undo is a fight with the person using the app. Asking for it again is how it comes back.
+    h.value("edit.undo", json::object());
+    CHECK_EQ(h.value("layer.list", json::object())["layers"].size(), std::size_t(1));
+    h.value("ai.intent", json::object());
+    CHECK_EQ(h.value("layer.list", json::object())["layers"].size(), std::size_t(1));
+    CHECK(h.value("job.apply", json{{"id", id}})["composite"].is_object());
+
+    // A different document, the same queue: the answer from the file it came from stays out of it.
+    h.value("doc.new", json{{"width", 48}, {"height", 48}, {"fill", json::array({5, 5, 5, 255})}});
+    for (int pass = 0; pass < 3; ++pass) {
+        h.value("job.list", json::object());
+        h.value("ai.intent", json::object());
+    }
+    CHECK_EQ(h.value("layer.list", json::object())["layers"].size(), std::size_t(1));
+    const CommandResult foreign = h.run("job.apply", json{{"id", id}});
+    CHECK(!foreign.ok);
+    CHECK(foreign.error.find("different document") != std::string::npos);
 }
 
 void test_an_answer_lands_on_the_document_and_undoes_completely() {
@@ -2414,11 +2469,13 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     CHECK(!id.empty());
     const json settled = h.value("job.wait", json{{"id", id}, {"timeout", 30}});
     CHECK_EQ(settled["state"].get<std::string>(), std::string("succeeded"));
-    // The job the panel is showing is this job - the panel's Apply reads the same record.
-    CHECK_EQ(started["job"]["state"].get<std::string>(), std::string("running"));
+    // In flight when the press returned, however the worker had scheduled the microsecond.
+    CHECK(started["job"]["state"].get<std::string>() == "running" ||
+          started["job"]["state"].get<std::string>() == "queued");
+    // The job the status line shows is this job: the same record the landing reads.
+    CHECK_EQ(h.value("ai.intent", json::object())["job"]["id"].get<std::string>(), id);
 
-    const json applied =
-        h.value("job.apply", json{{"id", id}, {"apply", true}, {"colour_match", false}});
+    const json applied = h.value("job.apply", json{{"id", id}});
     CHECK(applied["composite"]["composed"].get<bool>());
     CHECK(applied["composite"]["pixels_changed"].get<std::size_t>() > 0);
     CHECK_NE(checksum_of(h), before);
@@ -2592,14 +2649,17 @@ void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
     const json waited = h.value("job.wait", json{{"id", id}, {"timeout", 30}});
     CHECK_EQ(waited["state"].get<std::string>(), std::string("succeeded"));
 
-    const std::size_t layers_before = h.state.doc.layers().size();
-    const json applied = h.value("job.apply", json{{"id", id}, {"apply", true}});
-    CHECK(applied["applied"].get<bool>());
-    CHECK(applied["composite"]["composed"].get<bool>());
-    // The answer is a layer, named for the verb and the job - the whole interaction, with no box.
-    REQUIRE(h.state.doc.layers().size() == layers_before + 1);
+    // Waiting was the last thing anyone did: the answer is already a layer, named for the verb and the
+    // job - the whole interaction, with no box.
+    REQUIRE(h.state.doc.layers().size() == 2);
     CHECK_EQ(h.state.doc.layer(1).name, std::string("Remove ") + id);
     CHECK_NE(checksum_of(h), before);
+    const std::size_t landed_layers = h.state.doc.layers().size();
+    // The door is still there for a driver, and it is idempotent: it adds no layer and says so.
+    const json applied = h.value("job.apply", json{{"id", id}});
+    CHECK(applied["already_landed"].get<bool>());
+    CHECK(applied["composite"]["composed"].get<bool>());
+    CHECK_EQ(h.state.doc.layers().size(), landed_layers);
 
     // The other verbs keep their one question: the same press on Fill refuses rather than guessing
     // what the marked area should become.
@@ -2607,7 +2667,7 @@ void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
     CHECK(!wordless.ok);
     CHECK(wordless.error.find("region-fill") != std::string::npos);
     CHECK(wordless.error.find("'prompt'") != std::string::npos);
-    CHECK_EQ(h.state.doc.layers().size(), layers_before + 1);
+    CHECK_EQ(h.state.doc.layers().size(), landed_layers);
 
     // An unknown verb is not a command, and the table says so with the ids that are.
     const CommandResult bogus = h.run("ai.bleach", json::object());
@@ -2753,6 +2813,7 @@ int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
     test_a_recipe_runs_against_the_recorded_server_and_lands();
+    test_an_answer_lands_itself_into_the_document_that_asked_for_it();
     test_an_answer_lands_on_the_document_and_undoes_completely();
     test_the_selection_panel_runs_its_intent_through_one_command();
     test_an_unconfigured_server_names_the_variable();

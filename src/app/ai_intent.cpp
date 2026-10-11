@@ -283,6 +283,7 @@ void register_ai_intent_commands(AppState& state, CommandTable& table) {
         // only read would otherwise show a job as running until some other command happened to pump.
         if (state.ai.jobs != nullptr) {
             state.ai.jobs->pump();
+            pump_ai_landings(state);
         }
 
         AiIntent& intent = state.ai_intent;

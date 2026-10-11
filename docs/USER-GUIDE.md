@@ -360,9 +360,9 @@ them will act on a frame with nothing marked.
 |---|---|
 | a grey verb | the reason is its tooltip: "works on a selection and there is none", "no model fills the `edit` role: ...", "not connected" - a disabled verb is a sentence, never a mystery |
 | the words box | the field the verb on screen asks for, labelled with its own name (`prompt`, `instruction`). It starts empty because **an operation with no words is a coin toss**: press with the box blank and the run refuses, naming the recipe and the field |
-| `edits 192x192`, model, `~3.4 s` | what a press would send, priced before it costs anything: the endpoint, the size the region compiler settles on (region + context, snapped to the model's multiple), which model would answer, and the box's own measured time for that size - or "no timing for this size", which is honest rather than a guess. All of it is geometry and table lookups: **marking an area encodes nothing**, and there is no preview step, because the only honest preview of an AI edit is the answer |
+| `272x224`, model, `~3.4 s` | what a press would send, priced before it costs anything: the endpoint, the size the region compiler settles on (region + context, snapped to the model's multiple), which model would answer, and the box's own measured time for that size - or nothing at all when the box has not answered that size before, which is honest rather than a guess. All of it is geometry and table lookups: **marking an area encodes nothing**, and there is no preview step, because the only honest preview of an AI edit is the answer |
 | `will load the model (resident: …)` | this press would swap the shared server; the popup asks, and says a swap costs tens of seconds. Nothing switches silently |
-| `j0001 running`, then `Apply` | the job, and the door the answer comes through - the same compositor as `ai.compose`, feathered and pixel-locked. **The answer arrives on its own new layer** directly above the one the region was flattened from, named for the verb and the job (`Remove j0001`), so hiding it, blending it down, masking it or deleting it are ordinary layer operations, and one `Ctrl+Z` takes the layer and its pixels away together |
+| `j0001 running`, then `on 'Remove j0001', Ctrl+Z` | the job, and where its answer went. **There is nothing to press**: a finished answer composites itself - feathered, colour-matched, pixel-locked - onto **its own new layer** directly above the one the region was flattened from, named for the verb and the job. Hiding it, blending it down, masking it or deleting it are ordinary layer operations, `Ctrl+Z` takes the layer and its pixels away together, and `job.apply` brings it back (it is idempotent: the answer is already there, it says so and adds nothing) |
 | `cache 3c30717c` | the digest of the request that job actually sent; a repeat of the same request is served from the cache instantly. It appears with the job because a digest is a fact about bytes, and the bytes exist once something is compiled (`ai.preview`) or run |
 
 **Two kinds of operation, and why only one of them smears.** *Reconstruct* (Remove, Fill) throws the
@@ -397,7 +397,7 @@ export NOISE_AI_FIXTURES=$PWD/tests/fixtures/http                # or replay ins
 | `job.list`, `job.get {id}` | the durable record: state, timings, model, cache key, answer path, landing metadata |
 | `job.wait {id, timeout?}` | block until the job is terminal or the wait runs out |
 | `job.cancel {id}`, `job.retry {id}` | stop it (an answer that already arrived is kept, and its path is in the refusal), or send a finished job's request again under a new id |
-| `job.apply {id, apply?, feather?, colour_match?}` | land the answer through the same compositor `ai.compose` uses: preview by default, `apply` adds the layer. There is no "into the active layer" option and there never was a need for one — an answer that overwrote its own source could not be compared with it |
+| `job.apply {id, feather?, colour_match?}` | the idempotent landing door. Answers land by themselves when they finish, so this is for bringing one back after an undo, or for overriding the recipe's feather or colour match on the way: if the layer it made is still on the document it answers `already_landed` with the landing's own report and adds nothing. No `apply` argument any more - there is no preview mode, the layer is the preview - and no destination, ever |
 | `cache.stats` | entries, bytes, hits, misses, refused keys |
 
 `seed` is optional on `ai.preview`, `ai.run` and `ai.intent`: absent means the session's seed -
@@ -484,10 +484,8 @@ problems and only one of them is a bug:
   cache and the model swap are all reachable from the same table - see "AI from a terminal" - and
   `docs/AI-BACKEND.md` says what else is designed and not built (draft→refine stages, the variants tray,
   A/B wipe, the journal panel, warm-up).
-- **An answer still waits for `Apply`.** The verbs run and the answer lands on its own layer, but the
-  press is yours: the queue has no app-level beat that lands a finished answer (rule A says it should -
-  `docs/PLAN.md` "What rule A still owes" is the design). One seed field also went with the old panel:
-  the seed shows on the status bar and changes through `ai.intent {seed: n}`.
+- **One seed field went with the old panel**: the seed shows on the status bar and changes through
+  `ai.intent {seed: n}`; there is no box for it in the window yet.
 - **No jobs tray.** One job at a time is shown in the status bar; queueing variants (`seed+i`) and comparing
   them side by side is designed and not built.
 - **Nothing local replaces a server.** If the `edit` role cannot resolve, the edit recipes refuse with

@@ -118,6 +118,11 @@ struct AppState {
     // move it; `ai.preview` and a run must. It is a number rather than a log line because the claim
     // "choosing not to run costs nothing" has to be assertable.
     std::uint64_t upload_encodes = 0;
+    // Bumped when a *different* document becomes the open one (`doc.new`, `doc.open`). A job carries the
+    // epoch it was queued under and its answer lands only in that document: "the answer lands by
+    // itself" cannot mean "into whatever file is open when the model finally answers", and it must not
+    // mean "twice".
+    std::uint64_t document_epoch = 0;
     // Wall time of the last presented frame, as the compositor reported it.
     double frame_ms = 0.0;
     // A fit asked for before there was a canvas to measure against waits here; the host
