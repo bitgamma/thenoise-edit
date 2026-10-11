@@ -198,19 +198,5 @@ void op_shape(Mask& mask, MaskShape shape, Rect box, MaskOp op) {
     mask.op(area, ellipse_patch(box, area), op);
 }
 
-Mask alpha_coverage(const Image& layer) {
-    if (layer.empty()) {
-        return Mask{};
-    }
-    std::vector<std::uint8_t> plane(static_cast<std::size_t>(layer.size().w) *
-                                    static_cast<std::size_t>(layer.size().h));
-    for (int y = 0; y < layer.size().h; ++y) {
-        for (int x = 0; x < layer.size().w; ++x) {
-            plane[static_cast<std::size_t>(y) * static_cast<std::size_t>(layer.size().w) +
-                  static_cast<std::size_t>(x)] = layer.at(x, y)[3];
-        }
-    }
-    return Mask::from_plane(layer.size(), std::move(plane)).value();
-}
 
 }  // namespace noise

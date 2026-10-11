@@ -48,7 +48,9 @@ src/
                        names; a stack is bottom-first. `LayerPlane` names which of a layer's two
                        planes - `pixels`, `mask` - a write or a step belongs to, and its name table is
                        the vocabulary `mask.target` and `stroke.plane` speak
-    history.{h,cpp}    undo/redo as stacked (layer, plane, rectangle) deltas, budgeted by stored bytes
+    history.{h,cpp}    undo/redo as stacked (layer, plane, rectangle) deltas, budgeted by stored bytes,
+                       and as structural entries that put a layer back or take one away - an edit that
+                       created a layer is one step, not a layer plus a write
     brush.{h,cpp}      dabs, stamp coverage, stroke compositing (the CPU paint path), and the same
                        coverage handed to the other plane: `scratch_coverage` as bytes for the mask
                        door, `mask_ink` as the coverage statement of `PaintMode`, and
@@ -89,9 +91,7 @@ src/
                        `scale_by_coverage(mask, …)` the same mix with nothing underneath, which is
                        how a composite reads a layer through its mask.
     maskops.{h,cpp}    coverage producers: `MaskShape` (`rect`, `ellipse`) applied to a `Rect` with a
-                       `MaskOp`, `alpha_coverage(image)` turning an image's alpha into "how much layer is
-                       here" so a write can be limited by it with the same multiply everything else uses,
-                       and the table `kMaskShapeInfo` naming the shapes (and so naming the commands
+                       `MaskOp`, and the table `kMaskShapeInfo` naming the shapes (and so naming the commands
                        and the tools that draw them). A shape writes the same coverage plane and is
                        never a mask type of its own, so an added shape costs a row here and nothing in
                        the document, the composite, the format or the overlay. The ellipse is
@@ -142,13 +142,14 @@ src/
     select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
     ai_commands.cpp     `ai.compose` (land a result file), `ai.roles`, `ai.recipes`, `ai.preview`
                        (the compiled request, unsent) and `ai.run` (queue it): each reports what the
-                       policy, the extent and the coverage resolved to
+                       policy and the coverage resolved to
     ai_job_commands.cpp `server.connect/state/load`, `job.list/get/wait/cancel/retry/apply`,
                        `cache.stats` - the queue and the session, observable and driveable
     ai_session.{h,cpp} the tables, the transport (recordings if `$NOISE_AI_FIXTURES`, else libcurl),
                        the client, cache, queue and registry: one object, opened once by the host
     ai_landing.{h,cpp} the one door an answer goes through the document by, shared by `ai.compose`
-                       and `job.apply` so the two cannot disagree about feather, extent or coverage
+                       and `job.apply` so the two cannot disagree about feather or coverage, and so that
+                       neither of them can land an answer anywhere but on its own new layer
     ai_intent.{h,cpp}  `ai.intent`: the Edit-selection panel's state (which recipe, the values typed for
                        the variables it asks about, the session seed, the job) and its one action. The
                        window draws this command's answer and owns nothing else, so a scripted run of an
@@ -166,7 +167,7 @@ src/
                        command that would fix it. The file also carries the size and context policy the
                        region compiler and the request builder are not allowed to invent
     recipes.{h,cpp}    `recipes/*.json`: endpoint, role, operation, region scope, hole prep, enhance,
-                       prompt lines, variables, composite policy and extent. A recipe names a role,
+                       prompt lines, variables and composite policy. A recipe names a role,
                        never a model, refuses keys that belong to the model (`steps`) or to nothing
                        (`mask`), and refuses any pairing of `operation` with a hole it may not cut
     provider.{h,cpp}   THE request builder and the only place a field can be added: one ordered field
@@ -190,9 +191,11 @@ src/
                        rectangles rather than a scale), `prep_region` for the bytes that would go on
                        the wire (a hole inside the coverage, every other pixel uploaded as the document
                        holds it), and `flatten_over_ring` for the colour a transparent edge is dropped on
-    compose.{h,cpp}    the result compositor (see AI-BACKEND.md): resample onto the crop, feather,
-                       lock band, multiply the extent, blend through `restrict_to` - and the
-                       `ComposeReport` whose effective coverage is what pixel-lock is asserted against
+    compose.{h,cpp}    the result compositor (see AI-BACKEND.md): resample onto the crop, colour drift
+                       measured against the document and corrected on the answer, feather, lock band,
+                       blend through `restrict_to` - given the destination it writes and the reference it
+                       matches, which are different images now - and the `ComposeReport` whose effective
+                       coverage is what pixel-lock is asserted against
     colour_match.{h,cpp} the drift the model put on the context band, paired pixel against pixel with
                        the document, taken back off the whole answer (spread included, clamped) — never a
                        transfer of the surrounding colours onto the new content
@@ -334,10 +337,9 @@ keep it cheap and honest:
   that arrives with coverage of its own — an AI composite's feathered mask is meant to reach past the
   selection it was compiled from, and fencing it there deletes the feather and leaves the report
   describing an edit the document did not perform. With `own_coverage` staying inside the intended region
-  is the caller's claim, and `bounds` is what the undo step was recorded against. A composite carries one
-  more claim, also a mask rather than a fence: its `extent` says how far a write may exist (a layer's
-  `alpha_coverage` for an edit, the canvas filled for a generation) and is multiplied after the feather,
-  so confining a write to where its layer exists and keeping that write's edge soft are one operation.
+  is the caller's claim, and `bounds` is what the undo step was recorded against. A composite brings its
+  coverage and needs no fence of its own: the destination is a fresh empty layer, so there is nothing
+  there for a second limit to protect.
   Mixing *premultiplied* rather than straight RGBA is what makes partial
   coverage mean "part of this stroke happened": straight-alpha mixing changes a pixel's colour when
   only its coverage was meant to change. `test_mask` compares the result against a separate
@@ -591,7 +593,7 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | drive | `select.rect {rect, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `screenshot`, `pixels.compare`, `wire.info` |
  `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
-| ai | `ai.compose {image, apply?, feather?, colour_match?, lock_band?, extent?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}`, `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pin?}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.retry {id}`, `job.apply {id, apply?, into?, feather?, extent?, colour_match?}`, `cache.stats` | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact field list, size and blob digest before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel, retry and apply without a UI; `ai.intent` is the panel's whole surface, so a scripted run of "Remove the lamp" and a click cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command and means the session seed when absent - nothing draws a random one inside a request path |
+| ai | `ai.compose {image, apply?, feather?, colour_match?, lock_band?, extent?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}`, `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pin?}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.retry {id}`, `job.apply {id, apply?, feather?, colour_match?}`, `cache.stats` | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact field list, size and blob digest before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel, retry and apply without a UI; `ai.intent` is the panel's whole surface, so a scripted run of "Remove the lamp" and a click cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command and means the session seed when absent - nothing draws a random one inside a request path |
 
 Live now: every row. The AI row is driven end to end by `tools/ai_job_probe.py` against
 `tests/fixtures/http` (a recorded server), so the whole path - discovery, role resolution, the compiled

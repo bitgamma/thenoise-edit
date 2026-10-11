@@ -289,7 +289,7 @@ Input: `(document composite, selection mask, recipe)` → one compiled request.
 Always runs; this is what makes instruction editing usable at all. Built as `ai/compose` +
 `ai/colour_match`, over `core/resample` and `core/blur`; asserted by `test_compose`.
 
-**An option nobody passes is not an option that was declined.** `feather`, `colour_match` and `extent`
+**An option nobody passes is not an option that was declined.** `feather`, `colour_match` and `lock_band`
 reach the compositor through `CompositePolicy`, whose values come from the recipe, and the wire
 argument helpers leave the caller's variable alone when the key is absent. That sounds like a detail and
 was a live defect: the boolean helper used to write `false` for an absent key, so `job.apply` and
@@ -322,14 +322,16 @@ the paired one needs its own live measurement before the probe says anything abo
                 alpha, support widened when shrinking so no source pixel is dropped (core/resample).
                 Premultiplied because the coverage edge is the feather, and a straight-alpha average
                 drags a transparent edge's colour into a visible pixel.
-2. COLOURMATCH  match result Lab mean/σ to the original ring *outside* the mask
-                (on for remove/heal, off for reimagine). Ring = crop pixels the *effective* coverage
-                does not reach and the original has alpha there; patch = where it reaches and the
-                result has alpha. Pixels with no alpha are not colour, at either end. Both moments,
-                with a floor on a spread worth matching (kMinLabDeviation) and a cap on the correction
-                (kMaxDeviationRatio): a flat ring must not flatten the patch, and a palette change is
-                the edit that was asked for.
-3. BLEND        out = orig*(1−m) + result*m,  m = mask ⊛ gauss(feather 2–8 px), through
+2. COLOURMATCH  measure the drift the model put on the context band and take it off the whole answer
+                (on for remove/heal, off for reimagine). The band is paired, not two populations: a
+                pixel of the **reference** where the effective coverage does not reach, with alpha there,
+                is compared with the *same pixel* of the returned image. Drift = mean(returned) − mean(reference)
+                in Lab, subtracted from every pixel of the answer; the spread ratio comes from the same
+                paired band, floored (kMinLabDeviation) so a flat band does not flatten the answer and capped
+                (kMaxDeviationRatio) so a palette change — the edit that was asked for — survives. An answer
+                that left the band alone is therefore corrected by nothing, which is the property the old
+                two-population estimator lacked and what made a bright subject land dark against dark hair.
+3. BLEND        out = dest*(1−m) + result*m,  m = mask ⊛ gauss(feather 2–8 px), through
                 Mask::restrict_to — the same premultiplied write-door mix a stroke uses, exact at
                 m = 0 and m = 255, which is what makes step 4 provable instead of approximate.
                 auto feather = mean mask thickness / 8, clamped: thickness is 2·area/perimeter, the
@@ -339,44 +341,48 @@ the paired one needs its own live measurement before the probe says anything abo
 4. LOCK         force outer N px (policy: 6) to 100 % original → kills seam drift — but only on the
                 crop edges that have canvas outside them. At a crop edge that *is* the canvas edge
                 there is nothing to protect, and a band there eats into the region the mask covers.
-5. EXTENT       coverage *= extent, where `extent` is a mask like any other: *how far a write may
-                exist*. An edit passes the active layer's alpha (so an answer cannot extend the
-                layer's silhouette, and a sheer part of it receives a proportional composite); a
-                generation passes the canvas filled to 255, because filling pixels the layer never
-                had is the point of it. Which one is a property of the operation, so the recipe
-                states it (`composite.extent`: `layer` | `canvas`) and the compositor never learns
-                what operation it is serving.
-                Multiply AFTER step 3's feather, not before: folding the extent into the mask first
-                lets the feather bleed coverage past where the layer exists, which is the silhouette
-                the caller said the write may not extend. `test_compose` kills that mutant, so the
-                order is a tested contract and not a comment.
 ```
 
-Invariant, asserted: **every pixel the *effective* coverage does not reach is byte-identical to the
-original** — whole-image diff, not a sampled point, and not only inside the crop. Effective coverage
-means feathered, lock-banded and alpha-clipped: the mask that ran, which `ComposeReport::coverage`
-returns, so the assertion is against what happened and not against what was asked. Every M4 acceptance
-run asserts it with `pixels.compare`.
+The **destination and the reference are different images**, and the compositor says so in its signature:
+`compose_result(target, reference, result, plan, coverage, policy)`. `target` is what the answer is
+blended onto — a fresh empty layer, since rule A of `docs/TOOLS.md` — and `reference` is the document the
+request was compiled from, flattened over the crop. Step 2 measures drift against `reference` because
+that is the colour the answer has to agree with; steps 3–4 blend against `target` because that is what
+the answer covers. Passing the destination as its own reference is not a no-op any more: an empty layer
+has no colour to disagree with, so the correction finds no drift and a dark patch lands. `test_compose`
+asserts the correction runs, and runs toward the document, over an empty destination.
 
-`ai.compose {image, apply?, feather?, colour_match?, lock_band?, extent?}` is that path on the wire, with the
+Nothing else limits how far a write may exist. An earlier build multiplied in a second mask called the
+`extent` — the active layer's alpha for an edit, the canvas for a generation — and that door is gone: a
+destination that is empty by construction cannot veto a write, and the coverage the model was shown is
+the single restrictor. Which is what lets an answer fill pixels the document never had.
+
+Invariant, asserted: **every pixel of the destination the *effective* coverage does not reach is
+byte-identical to what the destination held**, and everything outside the crop is untouched — whole-image
+diff, not a sampled point. Effective coverage means feathered and lock-banded: the mask that ran, which
+`ComposeReport::coverage` returns, so the assertion is against what happened and not against what was
+asked. Every M4 acceptance run asserts it with `pixels.compare`.
+
+`ai.compose {image, apply?, feather?, colour_match?, lock_band?}` is that path on the wire, with the
 document's selection as the mask and no selection meaning whole-document coverage. `apply` false (the
-default) touches nothing and writes a preview PNG; `apply` true goes through `Document::paint`, so it is
-one undo step that returns every byte — but with `PaintFence::own_coverage`, **not** fenced by the
-selection: the effective coverage is the limit, and a fence at the selection would cut the feather off and
-leave the report describing an edit the document did not perform (`test_ai_compose_probe` checks the report
-against the document's own pixels, and that the feather reaches past the selection). The report carries the resolved policy,
-the effective coverage, `pixels_changed`, `pixels_clipped_by_extent` and `answered_as_requested` — false
-on that last one is not a failure (the engine answers a snapped size and the resample copes) but it is
-where a drift investigation starts.
+default) touches nothing and writes a preview PNG of what the new layer would hold; `apply` true adds a
+layer above the active one and goes through `Document::add_layer_written`, so **the layer and its pixels
+are one undo step** and one `Ctrl+Z` returns every byte — the write inside it is fenced by
+`PaintFence::own_coverage`, **not** by the selection, because the effective coverage is the limit and a
+fence at the selection would cut the feather off and leave the report describing an edit the document did
+not perform (`test_ai_compose_probe` checks the report against the document's own pixels, and that the
+feather reaches past the selection). The report carries the resolved policy, the effective coverage,
+`pixels_changed`, the `layer` the answer landed on and its `layer_name`, and `answered_as_requested` —
+false on that last one is not a failure (the engine answers a snapped size and the resample copes) but it
+is where a drift investigation starts.
 
-**Why the extent is a mask and not a mode.** The compositor's rule is one: blend by coverage. What an
-operation is allowed to touch is already expressible as coverage, so `new-image` and `inpaint-remove`
-differ by the mask they carry rather than by a flag the compositor branches on — and a case a boolean
-could not express comes free: clipping an edit by the active layer's **own mask** as well as its alpha is
-`extent = alpha ∩ mask`, no new vocabulary. `pixels_clipped_by_extent` reports the pixels an extent stopped
-outright, so "the edit succeeded" over a layer with nothing to receive it cannot pass for an edit (`0`
-changed, `8 992` clipped in the probe). It is called *clip* nowhere in the code: what happens is a
-multiply, and the old name implied the veto that this design removes.
+**Why coverage is the only restrictor.** The compositor's rule is one: blend by coverage. What an
+operation is allowed to touch was already expressible as coverage, and the second mask added nothing the
+first could not say once the destination stopped being the source — it only created a state where a
+correct answer was silently discarded (`0 changed`, the old probe reporting `8 992` pixels its own
+argument had vetoed). `pixels_changed` now counts what was written, and the flattened export can show
+fewer pixels different than that: a pixel the model reproduced exactly is written without being a visible
+change. Both numbers are reported and the probes compare them as a subset, not an equality.
 
 ## Draft → Refine
 
@@ -529,6 +535,10 @@ recipe that declares `enhance` must produce a valid request when the role is unr
 
 ### MVP recipes (pre-shipped)
 
+Every row obeys rule A: the answer arrives on its own layer above the one the region was flattened from,
+which is where a strength control lives when one is wanted — the layer's opacity is the blend slider, and
+fidelity is not a server knob.
+
 | id | endpoint | role | operation | hole | region | notes |
 |---|---|---|---|---|---|---|
 | `new-image` | generations | generate | from_words | none | full doc | presets from doc aspect (1:1, 3:4, 4:3, 16:9 at the model's native scale) |
@@ -539,7 +549,7 @@ recipe that declares `enhance` must produce a valid request when the role is unr
 | `region-fill` | edits | edit | reconstruct | white | mask bbox | generate into the region from prompt only |
 | `heal` | edits | edit | reconstruct | average | selection | the in-process Telea/Chan path for a box with no edit model is designed and **not built**, so `heal` refuses when the edit role is unresolved |
 | `flatten-colorize` | edits | edit | in_place | none | full doc | e.g. "colorize this line art" — the highest-value raster trick for illustration workflows |
-| `reimagine` | edits | edit | in_place | none | full doc | full-frame edit, `extent: canvas`. The strength control is local: `job.apply {into: "new_layer"}` lands it on an empty layer above the one the job was queued against, where the layer's own opacity is the blend slider — fidelity is not a server knob, and 50 % is a number the user owns |
+| `reimagine` | edits | edit | in_place | none | full doc | full-frame edit. The whole frame is the region, so there is no hole and nothing to blend at the edge; its answer lands on a layer like any other, and 50 % opacity is a number the user owns |
 | `upscale` | upscale | — | transform | none | full doc or mask bbox | ESRGAN model choice + composite back into the layer |
 | `free-command` | user's choice | user's choice | user's choice | user's choice | user's choice | escape hatch below |
 

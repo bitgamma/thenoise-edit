@@ -75,16 +75,23 @@ outpaint would reopen the hole through which the blurred-face bug arrived.
 
 * the **Edit selection panel** (`ui.cpp`'s widget). `ai.intent` the *command* stays — it is the door the UI
   and a driver share, and the probes assert through it.
-* `job.apply {into: "active"}` and `ai.compose`'s land-into-the-active-layer path.
+* `job.apply {into: "active"}` and `ai.compose`'s land-into-the-active-layer path. **Gone** — the argument
+  is refused by name, like any other the command does not declare.
 * `ExtentSource` (`layer_alpha` / `canvas`), `composite.extent` in recipes, `extent` on the wire,
-  `ComposeReport::pixels_clipped_by_extent`. Under A the destination is always a fresh empty layer, so
-  "how far a write may exist" has exactly one answer, and a knob with one value is a lie about a choice.
-  Coverage is the only restrictor. **In flight as this is written.**
+  `ComposeReport::pixels_clipped_by_extent`, and `core`'s `alpha_coverage` producer, which existed only to
+  feed it. Under A the destination is always a fresh empty layer, so "how far a write may exist" has exactly
+  one answer, and a knob with one value is a lie about a choice. Coverage is the only restrictor. **Gone.**
+* the answer going through `Document::paint`. It lands through `Document::add_layer_written` instead, so an
+  answer and the layer holding it are one undo step — see `PLAN.md`, "an answer, its layer, and its undo".
 * prefilled `ask` defaults, and `target` on the masked recipes.
 
 ## Slice order
 
-1. Landing is always a new layer; delete `into` and the extent concept. *(in flight)*
+1. Landing is always a new layer; delete `into` and the extent concept. **Done** — answers arrive on a new
+   layer named for the operation and the job (`Remove j0001`), one `Ctrl+Z` takes layer and pixels together, and
+   the drift correction now measures against the document rather than against an empty destination. Observed on
+   the wire: `ai_compose_probe` (layer count grows by one, undo returns the document byte for byte, patch mean
+   error 25.67 → 0.53) and `ai_job_probe`.
 2. A tool table (tool → policy → whether it asks for words), the **Remove** sequence
    (`mark → one key → answer as a new layer`, zero typing), and the panel deleted in the same pass.
 3. **Change** and **Fill**: the same sequence with one empty box, no defaults.

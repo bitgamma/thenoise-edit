@@ -6,7 +6,7 @@ live wire surface, `AGENTS.md` has the house rules. This file keeps only the rea
 carry, the decisions, and the order the rest goes in.
 
 Gate: `cmake -B build -G Ninja && cmake --build build && xvfb-run -a ctest --test-dir build` →
-**31/31 green in Debug and Release**, warnings are errors. Release tree is `build-release`. Every suite
+**32/32 green in Debug and Release**, warnings are errors. Release tree is `build-release`. Every suite
 passes under `xvfb-run`; the probes need a display and skip loudly without one. The live tier
 (`-DNOISE_LIVE_TESTS=ON`, label `live`: `tn_probe_live`, `ai_job_probe_live`) is not registered by
 default and skips without `$THENOISE_URL` even when registered.
@@ -28,21 +28,23 @@ makes even the running app replay:
 | piece | what it is | checks |
 |---|---|---|
 | `core/blur`, `core/resample` | the two pixel primitives: 3-pass odd box blur / `feathered_mask`, and Lanczos-3 over premultiplied alpha | `test_blur` 81, `test_resample` 625 |
-| `ai/region` | the region compiler — geometry (`bbox → grow → clamp → snap → fit`, inverse map), `prep_region`, `flatten_over_ring` | `test_region` 106 |
-| `ai/compose`, `ai/colour_match` | the result compositor — resample, colour-match, feather, lock band, extent, blend | `test_compose` 312 629 |
+| `ai/region` | the region compiler — geometry (`bbox → grow → clamp → snap → fit`, inverse map), `prep_region`, `flatten_over_ring` | `test_region` 1 279 |
+| `ai/compose`, `ai/colour_match` | the result compositor — resample, drift measured against the document and corrected on the answer, feather, lock band, blend through `restrict_to` | `test_compose` 237 643 |
+| `core/history`, `Document::add_layer_written` | an edit that creates a layer: creation and pixels are one undo step, and undo takes the layer away again | `test_history` 221 |
 | `ai/profile`, `ai/registry` | discovery parsing; `roles.json` ∩ `/models` → one model per role, with a reason and a fix command | `test_roles` 66 |
-| `ai/recipes` | `recipes/*.json` and prompt substitution; the shipped set checked against the shipped roles | `test_recipes` 113 |
+| `ai/recipes` | `recipes/*.json` and prompt substitution; the shipped set checked against the shipped roles | `test_recipes` 175 |
 | `ai/provider` | the request builder and the field whitelist, asserted on the serialized bytes, plus the cache key | `test_provider` 115 |
 | `ai/transport`+`http`+`http_curl`+`recorded` | the HTTP seam, the libcurl implementation, and the replay transport the tests use | in `test_backend` |
-| `ai/server`, `ai/cache`, `ai/queue` | profile and latency EMA; request-digest blob cache; durable one-worker queue with cancel and retry | `test_backend` 232 |
-| `ai.*`, `server.*`, `job.*`, `cache.stats` (wire) | the whole path as commands the UI and a driver share | `test_app` 56 448 |
+| `ai/server`, `ai/cache`, `ai/queue` | profile and latency EMA; request-digest blob cache; durable one-worker queue with cancel and retry | `test_backend` 363 |
+| `ai.*`, `server.*`, `job.*`, `cache.stats` (wire) | the whole path as commands the UI and a driver share | `test_app` 56 564 |
 | `tools/ai_compose_probe.py`, `tools/ai_job_probe.py` | the landing, and the whole recipe→request→job→landing path, on the running app | `test_ai_compose_probe`, `test_ai_job_probe` |
 
 In order from here:
 
 6. **The Generate panel** — the document-scoped recipes (`new-image*`, `reimagine`, `flatten-colorize`)
-   on the same seam the selection panel uses (`RecipeSet` filtered by scope instead of by `selection`),
-   with `job.apply {into: "new_layer"}` as the landing. Then the jobs tray: variants as `seed+i` jobs
+   on the same seam the selection panel uses (`RecipeSet` filtered by scope instead of by `selection`).
+   Its landing is already right for every recipe — rule A, a new layer — which is the point: nothing here
+   needs a landing argument. Then the jobs tray: variants as `seed+i` jobs
    landing one by one, A/B wipe, Accept/Discard. Draft→refine stages ride on the same queue; the EMA the
    ETA needs is already measured and read.
 
@@ -90,25 +92,32 @@ Verified on the wire and by looking: `select.rect` → `ai.intent {vars}` → `a
   is one more path that can silently differ from the pixel-lock proof.
 - **`answered_as_requested` is reported, not enforced.** The engine answers a snapped size and the resample
   copes; absorbing that silently is where a drift investigation would have to start over.
-- **How far a write may exist is a mask, not a mode** (`extent`, multiplied into the coverage after the
-  feather): an edit passes `alpha_coverage(layer)`, a generation the canvas filled. The compositor's rule
-  stays "blend by coverage", so `inpaint-remove` and `new-image` differ by data they carry and nothing
-  branches on the operation — and `extent = alpha ∩ layer.mask`, which a boolean could not have expressed,
-  comes free. Two things about it are load-bearing: it is multiplied **after** the feather (before would
-  bleed coverage past the silhouette the caller confined the write to — `test_compose` kills that mutant),
-  and the recipe will name it (`composite.extent: layer|canvas`) rather than the code guessing.
+- **The destination is not the reference.** `compose_result` is given `target` — what the answer is blended
+  onto, a fresh empty layer under rule A — and `reference`, the document the region was compiled from, and
+  measures colour drift against the second while mixing with the first. One image serving both roles is what
+  the build did while answers landed on the layer they came from; the moment that stopped being true the
+  correction had no colour to disagree with, reported "no drift", and returned the dark patch a person
+  reports as "it put a darker area there". `test_compose` pins both halves: an edit that changed only the
+  subject is left exactly alone, and a drift over an empty destination is still measured and still taken off.
+- **Coverage is the only restrictor.** The build had a second mask, `extent` — the active layer's alpha for
+  an edit, the canvas filled for a generation, named by `composite.extent` in the recipe — multiplied into
+  the coverage after the feather. Rule A removed its reason for existing: an empty destination has no
+  silhouette to protect, and what was left of the mechanism could only discard correct answers (the probe of
+  the time reported `0 changed, 8 992 clipped` for an answer that was fine). Deleting it took the recipe key,
+  the wire argument, the report counter, the queue's copy of it and `core`'s `alpha_coverage` producer, so the
+  number of places that get to say "how far may a write exist" is one again.
 - **Lab conversion is private to `ai/colour_match`.** One consumer, so it stays there; a second one pulls it to
   `core`, and adding the seam now would be the wrong kind of clean.
 
-**Architecture verdict (AGENTS §1).** The compositor takes `(target, result, plan, coverage, extent, policy)` and the
-app can already reach it through the command table, so slice 5 lands in the same place rather than routing
-around it — the two narrowings found are both on the *request* side (the flatten door, the ring-colour alpha)
-and neither forces a change to what is built. Nothing here is a second representation of an existing idea: the
-coverage is the document's `Mask`, the blend is `restrict_to`, the blur and resampler moved into `core` when a
-second caller appeared (`ai/region` prep and `ai/compose` share `box_blur`). `core` grew exactly two things for
-this slice — the `PaintFence` argument and the `alpha_coverage` producer — and both grew because a second
-*kind* of writer arrived rather than a second writer: a stroke and a composite disagree about the one thing
-the door used to decide for itself, and an edit and a generation disagree about how far their pixels may go.
+**Architecture verdict (AGENTS §1).** The compositor takes
+`(target, reference, result, plan, coverage, policy)` and the app reaches it through the command table, so the
+next slice lands in the same place rather than routing around it. Nothing in it is a second representation of
+an existing idea: the coverage is the document's `Mask`, the blend is `restrict_to`, the blur and resampler live
+in `core` because two callers share them (`ai/region` prep and `ai/compose` both use `box_blur`). `core` grew
+one thing for the composite path — the `PaintFence` argument — and it grew it because a second *kind* of writer
+arrived rather than a second writer: a stroke and a composite disagree about the one thing the door used to
+decide for itself. The other thing `core` grew for it, `alpha_coverage`, was deleted with the extent it served,
+which is the check that it was never load-bearing on its own.
 
 ### The one thing that was wrong, and how it was found
 
@@ -194,14 +203,16 @@ runs and 15 under 24-way load clean, the degenerate walk still red.
   `failed`/`interrupted` on disk immediately. The alternative is a job that looks alive forever, and the
   answer's path is kept in the record either way because an answer that arrived is never thrown away.
 - **`Document::flatten_over(bounds, top_layer)` is a document door, not an AI one**: the region must not bake
-  a layer *above* the active one into the patch it uploads and then write that back below it. `prep` and the
-  ring colour are callers enough to justify it; a whole-document composite would have been the lazy wrong answer.
+  a layer *above* the active one into the patch it uploads and then write that back below it. It has a second
+  load-bearing caller since answers started arriving on their own layer — it is the colour reference the
+  landing measures drift against — which is the usual sign: the door that was right for the request is right
+  for the answer too, because they are the same pixels seen from either side.
 
 **Architecture verdict.** The queue never touches the document — it keeps a `Landing` (crop, requested,
-canvas, coverage PNG path, extent, policy, target layer, the pre-edit composite checksum) and the *app*
-applies it through the same `land_answer` door `ai.compose` uses, which is why `test_backend` runs the whole
-queue with no document in the process and why `job.apply` cannot disagree with `ai.compose` about feather or
-extent. `ai/` stays free of `app/`, `core/` gained nothing new this slice, and the only app-level object is
+canvas, coverage PNG path, policy, the layer the region was flattened from, the pre-edit composite checksum)
+and the *app* applies it through the same `land_answer` door `ai.compose` uses, which is why `test_backend` runs the whole
+queue with no document in the process and why `job.apply` cannot disagree with `ai.compose` about feather,
+coverage or where the pixels go. `ai/` stays free of `app/`, `core/` gained nothing new this slice, and the only app-level object is
 `AiSession` (tables, transport, client, cache, queue, registry), opened once by the host: commands read it,
 nothing reconstructs it, and `server.state` reports whether the tables loaded rather than letting a command
 refuse for a reason it does not name.
@@ -362,6 +373,62 @@ Failure modes worth keeping:
 - **Untracked tools disappear.** Four throwaway probe scripts this session were gone from the tree mid-task
   (shared box), and a claim in `docs/` that points at a tool is a claim about a file. `prep_proof.py` is
   committed and registered as a test; that is the bar for a tool a document cites.
+
+## Reasoning the code cannot carry (an answer, its layer, and its undo)
+
+Rule A of [TOOLS.md](TOOLS.md) — every AI answer arrives on its own new layer — looked like a two-line change
+to the landing. It moved the ground under three things that had each assumed an answer landed *on* something.
+
+**Fact table.**
+
+| piece | what it is | how it is seen |
+|---|---|---|
+| `compose_result(target, reference, …)` | the destination and the colour reference, as two arguments | `test_compose`: drift over an empty destination is still measured, and the landed pixel moves toward the document, not toward nothing |
+| `AnswerLanding{above_layer, layer_name}` | which layer the region was flattened from, and what the new layer is called | `job.apply` names it `Remove j0001`; `ai.compose` names it `answer <digest8>`; both report `layer` and `layer_name` |
+| `Document::add_layer_written(name, bounds, write)` | creation and first pixels in one undo step, nothing added when `write` refuses | `test_history`, and `ai_compose_probe`'s layer count |
+| `History` structural entries (`layer_created`, `layer_absent`) | an edit that adds or removes a layer is a step, not a write | `test_history`: one `Ctrl+Z` returns the layer *and* its pixels |
+| `Document::retarget_active()` | undo/redo cannot leave `active_` pointing at a layer that is gone | `test_history`: `active` after undoing an answer |
+
+**The reference is not the destination, and the tests found it before a person did.** The first version passed
+the destination as its own reference, which was exactly right while an answer landed on the layer it came
+from and silently wrong the moment it did not: drift is the paired difference on the context band, an empty
+layer has no colour there, so the estimator reported "no drift" — the true answer to a question that no
+longer made sense — and the dark patch the correction was built to remove came back. The lesson is not
+"add a parameter", it is that a function whose two roles are played by one image has no way to say when the
+identity stops holding. `ComposeReport` also gained nothing to detect it: `colour_corrected` was `false`, and
+a `false` is only a finding if someone expects `true`, which is why the test asserts the correction runs
+rather than that it does not crash.
+
+**Two orders an undo has to get right, and neither fails loudly.** A step is a group of entries sharing a step
+number. A structural entry must be applied **before** the pixel entries when it re-inserts a layer (the pixels
+need somewhere to land) and **after** them when it removes one (their bytes go back first). Getting it
+backwards does not raise: the pixel entry simply finds no layer. And the entry pushed onto the opposite stack
+must carry the *new* step number — carrying the old one split the group in two, so redo re-inserted the layer
+and left its pixels stranded on the other stack. Both bugs were invisible to the eye in the window and
+impossible to miss in `test_history`.
+
+**Pixel-lock changed shape, and one probe claim with it.** The invariant used to be "outside the coverage, the
+document is byte-identical". It is now stronger where the answer is concerned and weaker where the export is:
+the layer the answer was compiled from does not change at all, while the flattened export can differ in fewer
+pixels than `pixels_changed` reports, because a pixel the model reproduced exactly is written without being
+visible. `ai_compose_probe` and `ai_job_probe` therefore assert `0 < visible ≤ written` and `0 outside the
+coverage` — a subset, not an equality. An equality assertion there would have been a lie in the new shape and
+a passing one is only luck.
+
+**Failure modes worth writing down because they are not obvious from the code.**
+
+- A layer added *before* the compose runs leaves an empty layer named after a job that produced nothing every
+  time the answer is refused for geometry. `add_layer_written` is why the refusal path adds nothing: the write
+  happens inside the creation and a `false` rolls the whole thing back.
+- `flatten_over` returns the part of the rectangle that met the canvas, region-relative, not a canvas-sized
+  image. Landing that into a canvas-sized reference is an off-by-the-crop-origin write; the assertion in
+  `Image::at` caught it as an out-of-bounds abort on the first probe run whose crop reached an edge, which is
+  the only kind of catch worth relying on here.
+- An answer whose crop lies outside the document after the user resized things must refuse naming the layer
+  it was compiled from (`…is no longer in the document…`), not land somewhere plausible.
+- The `extent` deletion looked reversible and was not worth reverting: a knob with one legal value is a
+  parallel representation of a decision already made, and it kept the report field, the queue field and
+  `core`'s alpha→mask producer alive for its sake.
 
 ## Decisions that stand
 

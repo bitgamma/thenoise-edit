@@ -348,7 +348,7 @@ exactly that area while the surroundings go up sharp - they are the only instruc
 place* (Replace) uploads the region **exactly as it stands**: blur it and you have destroyed the thing you
 asked to change, which is what an earlier build did and why its answers came back unrelated to the
 picture. `tools/prep_proof.py` renders both uploads and asserts the difference whole-image.
-| `j0001 succeeded`, `Apply` | the job, and the door the answer comes through: the same compositor as `ai.compose`, feathered and locked, undoable with `Ctrl+Z` like any other edit |
+| `j0001 succeeded`, `Apply` | the job, and the door the answer comes through: the same compositor as `ai.compose`, feathered and locked. The answer arrives on **its own new layer** directly above the one the region was flattened from, named for the operation and the job (`Remove j0001`), so hiding it, blending it down, masking it or deleting it are ordinary layer operations — and one `Ctrl+Z` takes the layer and its pixels away together |
 | `region moving - price settles` | the selection is changing under the panel; the compile follows it the frame after it stops, so nothing has to be pressed and the price shown is one frame behind |
 
 A disabled panel with a grey sentence is not a bug: the sentence is the reason ("nothing fills the
@@ -370,14 +370,14 @@ export NOISE_AI_FIXTURES=$PWD/tests/fixtures/http                # or replay ins
 | `server.state` | the session as the app believes it: server, key present, which URL prefix answered, what is resident, whether the tables loaded, the latency estimates |
 | `server.load {model, pin?}` | make one model resident. Explicit and priced: a swap is tens of seconds on a shared box, so it is never silent |
 | `ai.roles` | each role with the model it resolved to, the reason, the fix command when the box offers one, and the candidates |
-| `ai.recipes` | every recipe with its endpoint, role, region, prep, extent and composite policy, and the model its role resolves to |
+| `ai.recipes` | every recipe with its endpoint, role, operation, region, prep and composite policy, and the model its role resolves to |
 | `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?, connect?}` | the Edit-selection panel as a command: read it with no arguments (free - it does not recompile the region) and it answers the intents on offer, the values in force, whether the action could run and why not, the compiled request, the job, and the session (`connected`, `configured`, `connect_attempted`). `run` is the Run button; `confirm` accepts a model swap; `connect` is the Connect button - the handshake, with the refusal in `error` if the server is down or unconfigured |
 | `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` | the exact request: endpoint, ordered field list, resolved size, the prepped PNG that would be uploaded and its blob hash, the cache key. **Sends nothing** — this is what to look at before spending minutes of someone's GPU |
 | `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}` | queue it. Answers the job with the region plan and the prepped file |
 | `job.list`, `job.get {id}` | the durable record: state, timings, model, cache key, answer path, landing metadata |
 | `job.wait {id, timeout?}` | block until the job is terminal or the wait runs out |
 | `job.cancel {id}`, `job.retry {id}` | stop it (an answer that already arrived is kept, and its path is in the refusal), or send a finished job's request again under a new id |
-| `job.apply {id, apply?, into?, feather?, extent?, colour_match?}` | land the answer through the same compositor `ai.compose` uses: preview by default, `into: "new_layer"` for a full-frame answer you want to blend down locally |
+| `job.apply {id, apply?, feather?, colour_match?}` | land the answer through the same compositor `ai.compose` uses: preview by default, `apply` adds the layer. There is no "into the active layer" option and there never was a need for one — an answer that overwrote its own source could not be compared with it |
 | `cache.stats` | entries, bytes, hits, misses, refused keys |
 
 `seed` is optional on `ai.preview`, `ai.run` and `ai.intent`: absent means the session's seed -
@@ -431,15 +431,16 @@ Things worth knowing when writing a driver:
   into `<runtime>/captures` (or return base64 with `{"base64": true}`) and report the path and
   sha256. `pixels.compare {a, b}` decodes two images of any flat format and diffs their pixels, reporting
   `differing_bytes` / `max_channel_delta`.
-- `ai.compose {"image": path}` takes a PNG as an answer to a request the app has not sent yet: it lands on
-  the document where the **selection** is (no selection means the whole frame), feathered, colour-matched and
-  blended — so `feather` is an integer or `"auto"`, `colour_match` and `lock_band` override what a recipe would
-  have said. `extent` is `layer` (the default — an edit, received into the layer's own alpha) or `canvas`
-  (a generation, which may fill pixels the layer never had). By default it **previews**: nothing on the
-  document changes and it writes a PNG you can look at.
-  `{"apply": true}` performs the edit as one undo step, and `Ctrl+Z` puts every byte back. The reply reports the
-  resolved policy, the coverage that was actually pasted, `pixels_changed` and `answered_as_requested`, so
-  "everything outside the mask is untouched" is a thing a driver can check rather than admire.
+- `ai.compose {"image": path}` takes a PNG as an answer to a request the app has not sent yet: it lands where
+  the **selection** is (no selection means the whole frame), feathered, colour-matched and blended — so
+  `feather` is an integer or `"auto"`, `colour_match` and `lock_band` override what a recipe would have said.
+  By default it **previews**: nothing on the document changes and it writes a PNG of what the new layer would
+  hold. `{"apply": true}` adds that layer above the active one and writes the answer into it as **one undo
+  step**, so `Ctrl+Z` removes the answer and the layer together and puts every other byte back. The reply
+  reports the resolved policy, the coverage that was actually pasted, `pixels_changed`, the `layer` and its
+  `layer_name`, and `answered_as_requested`, so "everything outside the coverage is untouched" is a thing a
+  driver can check rather than admire. Note the counts: `pixels_changed` is what was *written*, and a
+  flattened export can differ in fewer pixels than that when the answer reproduced something exactly.
 - `Escape` and `Ctrl+Q` both quit, and nothing asks about unsaved changes.
 
 The scripts in `tools/` are the same wire, already wired into `ctest`:

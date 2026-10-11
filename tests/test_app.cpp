@@ -2086,8 +2086,9 @@ void test_a_recipe_runs_against_the_recorded_server_and_lands() {
     CHECK(std::filesystem::exists(waited["result"].get<std::string>()));
 
     // `colour_match: false` because the claim here is *where* the answer lands: the recording is a flat
-    // field and the frame is a flat fill, so matching a patch to its ring would - correctly - paint the
-    // frame's own colour back and leave nothing to count. What the correction does is its own test.
+    // field and the frame a flat fill of another colour, so measuring the drift would - correctly - take
+    // the answer to the frame's own colour and leave nothing to count. What the correction does is its
+    // own test, in `test_compose`.
     const json applied =
         h.value("job.apply", json{{"id", id}, {"apply", true}, {"colour_match", false}});
     CHECK(applied["applied"].get<bool>());
