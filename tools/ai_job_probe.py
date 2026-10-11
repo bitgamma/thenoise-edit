@@ -176,7 +176,11 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
         # own layer named for the verb and the job, and the job carries the report of that landing - so
         # the pixel claims below are checked against the landing nobody pressed.
         landing = waited.get("landing", {})
-        report = landing.get("report", {}).get("composite", {})
+        full_report = landing.get("report", {})
+        report = full_report.get("composite", {})
+        report.setdefault("coverage_bounds", full_report.get("coverage_bounds"))
+        report["colour_corrected"] = report.get("colour_corrected",
+                                                full_report.get("colour_corrected"))
         layer_names = [layer["name"] for layer in wire.call("layer.list")["layers"]]
         p.check(bool(landing.get("landed")), "the answer landed itself, nothing pressed",
                 str(landing.get("landed_layer")))
@@ -200,6 +204,30 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
                 f"visible={changed} written={report['pixels_changed']}")
         p.check(outside == 0, "nothing changed outside the coverage the job claimed",
                 f"{outside} pixels beyond {report['coverage_bounds']}")
+
+        if live:
+            # Colour drift, on the scene shape that showed the bug: a textured backdrop with a hole in
+            # it. An early build painted the answer far darker than the frame around it, which a flat
+            # fixture cannot reveal at all. A model may legitimately put something darker or lighter in
+            # the hole, so this is a wide band around "believably the same scene" - and the numbers are
+            # printed for docs/probes/ rather than tuned to. The estimator's own decision is reported,
+            # never required: it refuses to act when the spread says there is nothing to correct.
+            lum = lambda rgb: (0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2])
+            bx, by, bw, bh = (int(v) for v in report["coverage_bounds"])
+            inset = 12
+            patch = lum(after[by + inset:by + bh - inset, bx + inset:bx + bw - inset])
+            ring_out = 24
+            ry0, ry1 = max(by - ring_out, 0), min(by + bh + ring_out, before.shape[0])
+            rx0, rx1 = max(bx - ring_out, 0), min(bx + bw + ring_out, before.shape[1])
+            ring = lum(before[ry0:ry1, rx0:rx1])
+            patch_mean = float(patch.mean()) if patch.size else 0.0
+            context_mean = float(ring.mean()) if ring.size else 0.0
+            ratio = patch_mean / context_mean if context_mean > 0 else 0.0
+            print(f"   drift: patch mean {patch_mean:.1f} vs context ring mean {context_mean:.1f} "
+                  f"-> ratio {ratio:.2f}; colour_corrected={report.get('colour_corrected')}")
+            p.check(0.55 <= ratio <= 1.8,
+                    "the landed answer belongs to the same scene it was cut from",
+                    f"ratio {ratio:.2f} outside [0.55, 1.8] - a patch painted dark, or blown out")
 
         wire.call("edit.undo")
         undone = export(wire, tmp / ("live-undone.png" if live else "undone.png"))
