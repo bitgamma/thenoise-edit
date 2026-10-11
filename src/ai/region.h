@@ -73,13 +73,22 @@ struct RegionPlan {
 // compile must not invent a region nobody asked for.
 std::optional<RegionPlan> plan_region(Extent canvas, const Mask& mask, const RegionPolicy& policy);
 
-// The bytes that would go on the wire: a flattened picture of the region, prepped. `crop` is the region
-// as its own image - the caller has already cut it out (Document::flatten_over, then flatten_over_ring),
-// so prep knows nothing about where the region came from and the same pixels always prep the same way.
+// Destroy the identity of the *covered* pixels and leave every other pixel exactly as it was given.
+// This is the difference between asking for a hole to be reconstructed and handing the model a smeared
+// picture of everything: the surroundings are the instruction, so they go up sharp, and only the area the
+// operation means to replace is blurred / averaged / whitened. `coverage_in_crop` is in `crop`'s own
+// coordinates, the same plane `flatten_over_ring` takes; any coverage above zero is hole.
+//
+// Which recipes may ask for this is not a matter of taste: an in-place edit (`Replace the eyes with
+// green eyes`) must send `prep: none`, because destroying the subject destroys what it is to be changed
+// from - the recipes enforce that pairing and the parser refuses the contradiction.
+// `average` and `noise` fill from the mean of the *context*, not of the hole: the hole's own mean is the
+// colour of the thing being removed, and painting with it is the bug this prevents.
+//
 // The output is `crop` sized, in the same straight-alpha space as the input; the resample to `requested`
-// and the PNG encode are the request builder's business, and keeping them out of here is what lets the
-// prep be checked against the statistics it is supposed to preserve.
-Image prep_region(const Image& crop, Prep prep, std::uint64_t seed);
+// and the PNG encode are the request builder's business, and keeping them out of here is what lets prep
+// be checked against the statistics it preserves (context) and destroys (hole).
+Image prep_region(const Image& crop, const Mask& coverage_in_crop, Prep prep, std::uint64_t seed);
 
 // Step 6, the half `prep_region` does not do: a crop with alpha flattened over a colour drawn from the
 // ring the coverage does not reach, rather than over black or white. Uploading a partly transparent crop

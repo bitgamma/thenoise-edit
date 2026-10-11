@@ -43,9 +43,30 @@ enum class ExtentSource {
 const char* extent_source_name(ExtentSource source);
 std::optional<ExtentSource> extent_source_from_name(const std::string& name);
 
-// One `recipes/*.json`. A recipe is prompt template + region policy + prep policy + composite policy
-// and nothing else: no model id (a role), no step count (the model's `image_defaults`), no mask (the
-// engine has none).
+// What the operation *does*, which decides what the request may contain. These are not flavours of one
+// thing, and conflating them is what made a Replace upload a blurred face:
+//
+//  - `reconstruct` fills an area whose content is unwanted. The hole is destroyed in the upload (`prep`)
+//    and the surroundings go up sharp, because they are the only instruction it has. Zero words needed.
+//  - `in_place` changes a named thing. Nothing may be destroyed - destroying the subject destroys what
+//    it is to be changed from - so `prep` must be `none`, and the words are the whole operation.
+//  - `transform` changes the picture rather than its content (upscale). No hole, no words.
+//  - `from_words` has no source image at all, so there is nothing to prep or protect.
+//
+// `role` is a different axis and shares no value with this one: the role says which model answers, the
+// operation says what happens to the pixels. One role (`edit`) serves both `reconstruct` and `in_place`.
+enum class Operation {
+    reconstruct,
+    in_place,
+    transform,
+    from_words,
+};
+const char* operation_name(Operation operation);
+std::optional<Operation> operation_from_name(const std::string& name);
+
+// One `recipes/*.json`. A recipe is an operation + prompt template + region policy + hole policy +
+// composite policy and nothing else: no model id (a role), no step count (the model's `image_defaults`),
+// no mask (the engine has none).
 struct Recipe {
     std::string id;
     // What the interface offers this recipe as. The id is a key and greppable; a button is not.
@@ -55,7 +76,10 @@ struct Recipe {
     std::string source;
     Endpoint endpoint = Endpoint::edits;
     std::string role;
+    Operation operation = Operation::in_place;
     RegionScope region = RegionScope::selection;
+    // The hole's treatment, and only for `reconstruct`: the other operations are refused at parse if
+    // they ask for one.
     Prep prep = Prep::none;
     // "never" | "always". A recipe that says "always" must still build a valid request when the
     // `enhance` role is unresolved, which is why the MVP ships "never" everywhere.
@@ -77,6 +101,9 @@ struct Recipe {
     // True when the region ignores the selection, which is what makes `new-image` work with nothing
     // selected and `reimagine` cover a whole frame.
     bool whole_document() const { return region == RegionScope::document; }
+    // True when the upload is a picture of something that exists, so a hole in it is a claim about the
+    // world rather than about a blank canvas.
+    bool makes_a_hole() const { return operation == Operation::reconstruct; }
 };
 
 struct RecipeSet {

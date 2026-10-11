@@ -1,6 +1,7 @@
 {
   "id": "region-fill",
   "label": "Fill region",
+  "operation": "reconstruct",
   "endpoint": "edits",
   "role": "edit",
   "region": "selection",

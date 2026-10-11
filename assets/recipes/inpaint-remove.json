@@ -1,6 +1,7 @@
 {
   "id": "inpaint-remove",
   "label": "Remove",
+  "operation": "reconstruct",
   "endpoint": "edits",
   "role": "edit",
   "region": "selection",

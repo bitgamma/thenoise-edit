@@ -128,8 +128,11 @@ Attempt prep_bytes(const char* command, AppState& state, Assembly assembled, std
         attempt.failure = fail(command, "the region lies outside the document, so there is nothing to upload");
         return attempt;
     }
-    const Image flattened = ai::flatten_over_ring(base, assembled.coverage.region(plan.crop));
-    const Image prepped = ai::prep_region(flattened, assembled.recipe->prep, seed);
+    // The same crop-local coverage for both: the colour the transparency is flattened over, and the hole
+    // whose identity prep destroys. Everything else in the crop goes to the model as it stands.
+    const Mask hole = assembled.coverage.region(plan.crop);
+    const Image flattened = ai::flatten_over_ring(base, hole);
+    const Image prepped = ai::prep_region(flattened, hole, assembled.recipe->prep, seed);
     const Image uploaded = resample_lanczos3(prepped, plan.requested);
 
     std::string error;
@@ -381,10 +384,17 @@ void register_ai_commands(AppState& state, CommandTable& table) {
                                                   ? state.ai.registry->resolve(recipe.role)
                                                   : ai::Resolution{};
             rows.push_back(json{{"id", recipe.id},
+                                {"label", recipe.label},
+                                {"source", recipe.source},
                                 {"endpoint", ai::endpoint_name(recipe.endpoint)},
                                 {"role", recipe.role},
+                                // The operation, because it is the fact that decides whether the upload
+                                // has a hole in it, and a tool that offers recipes has to be able to say
+                                // which of them destroy something.
+                                {"operation", ai::operation_name(recipe.operation)},
                                 {"region", recipe.whole_document() ? "document" : "selection"},
                                 {"prep", ai::prep_name(recipe.prep)},
+                                {"ask", recipe.ask},
                                 {"enhance", recipe.enhance},
                                 {"extent", ai::extent_source_name(recipe.extent)},
                                 {"composite", composite_policy_json(recipe.composite, recipe.extent)},

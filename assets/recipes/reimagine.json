@@ -1,6 +1,7 @@
 {
   "id": "reimagine",
   "label": "Reimagine",
+  "operation": "in_place",
   "endpoint": "edits",
   "role": "edit",
   "region": "document",

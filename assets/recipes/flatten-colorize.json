@@ -1,6 +1,7 @@
 {
   "id": "flatten-colorize",
   "label": "Colorize the flattened frame",
+  "operation": "in_place",
   "endpoint": "edits",
   "role": "edit",
   "region": "document",

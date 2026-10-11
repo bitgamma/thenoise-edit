@@ -219,12 +219,102 @@ Image padded_with(const Image& crop, int pad_x, int pad_y) {
     return big.region(Rect{pad_x, pad_y, crop.size().w, crop.size().h});
 }
 
+// The hole is what prep may touch. Everything else is the instruction, and goes up as it stands.
+Mask full_coverage(Extent size) {
+    Mask coverage(size);
+    coverage.fill(255);
+    return coverage;
+}
+
+// The half that made a Replace upload a smeared face: prep touches the hole and nothing else. Asserted
+// over every mode, whole-image, because a context pixel altered by *any* prep is a context pixel the
+// model was supposed to be shown.
+void test_prep_touches_the_hole_and_never_the_context() {
+    const Extent size{96, 48};
+    const Image base = hard_edge(size);
+    // A hole that *straddles* the edge, for two reasons: on a flat area a blur has nothing to destroy
+    // and would prove nothing, and it is only when the hole holds both halves that "filled from the
+    // surroundings" is a different number from "filled from the object".
+    Mask hole(size);
+    const Rect area{edge_x(size.w) - 8, 12, 24, 24};
+    hole.op(area, MaskOp::replace);
+
+    double context_sum[4] = {0.0, 0.0, 0.0, 0.0};
+    std::size_t context_count = 0;
+    double hole_sum[4] = {0.0, 0.0, 0.0, 0.0};
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const bool inside = x >= area.x && x < area.x + area.w && y >= area.y &&
+                                y < area.y + area.h;
+            for (int c = 0; c < 4; ++c) {
+                if (inside) {
+                    hole_sum[c] += base.at(x, y)[c];
+                } else {
+                    context_sum[c] += base.at(x, y)[c];
+                }
+            }
+            if (!inside) {
+                ++context_count;
+            }
+        }
+    }
+    REQUIRE(context_count > 0);
+
+    for (Prep prep : {Prep::none, Prep::blur, Prep::average, Prep::pixelate, Prep::noise,
+                      Prep::white}) {
+        const Image prepped = prep_region(base, hole, prep, 7);
+        CHECK(prepped.size() == size);
+        bool context_intact = true;
+        bool hole_changed = false;
+        for (int y = 0; y < size.h && context_intact; ++y) {
+            for (int x = 0; x < size.w && context_intact; ++x) {
+                const bool inside = x >= area.x && x < area.x + area.w && y >= area.y &&
+                                    y < area.y + area.h;
+                if (!inside) {
+                    context_intact = std::memcmp(prepped.at(x, y), base.at(x, y), 4) == 0;
+                } else if (std::memcmp(prepped.at(x, y), base.at(x, y), 4) != 0) {
+                    hole_changed = true;
+                }
+            }
+        }
+        CHECK(context_intact);
+        // `none` is the mode that promises nothing; every other mode has to actually destroy identity.
+        CHECK_EQ(hole_changed, prep != Prep::none);
+
+        if (prep == Prep::white) {
+            for (int y = area.y; y < area.y + area.h; ++y) {
+                for (int x = area.x; x < area.x + area.w; ++x) {
+                    CHECK_EQ(static_cast<int>(prepped.at(x, y)[0]), 255);
+                }
+            }
+        }
+        if (prep == Prep::average) {
+            const int expected = static_cast<int>(std::lround(context_sum[0] /
+                                                              static_cast<double>(context_count)));
+            const int hole_own = static_cast<int>(std::lround(
+                hole_sum[0] / static_cast<double>(area.w * area.h)));
+            CHECK(expected != hole_own);  // the test can tell the two apart
+            for (int y = area.y; y < area.y + area.h; ++y) {
+                for (int x = area.x; x < area.x + area.w; ++x) {
+                    CHECK_EQ(static_cast<int>(prepped.at(x, y)[0]), expected);
+                }
+            }
+        }
+    }
+
+    // A coverage that is not the crop's own size is a caller bug, and joining it anyway would destroy
+    // pixels nobody pointed at.
+    Mask wrong{Extent{size.w, size.h - 1}};
+    wrong.fill(255);
+    CHECK(prep_region(base, wrong, Prep::blur, 0).empty());
+}
+
 void test_each_prep_keeps_what_it_says_and_loses_what_it_says() {
     const Extent size{96, 48};
     const Image base = hard_edge(size);
     const double base_mean = mean_channel(base, 0);
 
-    const Image none = prep_region(base, Prep::none, 0);
+    const Image none = prep_region(base, full_coverage(base.size()), Prep::none, 0);
     CHECK(none.size() == size);
     bool identical = true;
     for (int y = 0; y < size.h && identical; ++y) {
@@ -234,17 +324,17 @@ void test_each_prep_keeps_what_it_says_and_loses_what_it_says() {
     }
     CHECK(identical);
 
-    const Image white = prep_region(base, Prep::white, 0);
+    const Image white = prep_region(base, full_coverage(base.size()), Prep::white, 0);
     CHECK(white.size() == size);
     CHECK_EQ(static_cast<int>(white.at(10, 10)[0]), 255);
     CHECK_EQ(static_cast<int>(white.at(80, 30)[0]), 255);
 
-    const Image average = prep_region(base, Prep::average, 0);
+    const Image average = prep_region(base, full_coverage(base.size()), Prep::average, 0);
     // A flat region is the rounded mean, exactly - "average" is not an approximation of anything.
     CHECK_NEAR(mean_channel(average, 0), static_cast<double>(std::lround(base_mean)), 1e-9);
     CHECK_EQ(static_cast<int>(average.at(4, 4)[0]), static_cast<int>(average.at(91, 43)[0]));
 
-    const Image pixelated = prep_region(base, Prep::pixelate, 0);
+    const Image pixelated = prep_region(base, full_coverage(base.size()), Prep::pixelate, 0);
     CHECK_NEAR(mean_channel(pixelated, 0), base_mean, 2.0);
     const int block = prep_blur_radius(size);
     bool blocked = true;
@@ -271,23 +361,23 @@ void test_each_prep_keeps_what_it_says_and_loses_what_it_says() {
     }
     CHECK(straddling);
 
-    const Image blurred = prep_region(base, Prep::blur, 0);
+    const Image blurred = prep_region(base, full_coverage(base.size()), Prep::blur, 0);
     CHECK_NEAR(mean_channel(blurred, 0), base_mean, 2.0);
     CHECK(static_cast<int>(blurred.at(size.w / 2, 24)[0]) < 250);
     CHECK(static_cast<int>(blurred.at(size.w / 2 + 1, 24)[0]) > 5);
-    CHECK(prep_region(base, Prep::blur, 0).checksum_hex() == blurred.checksum_hex());
+    CHECK(prep_region(base, full_coverage(base.size()), Prep::blur, 0).checksum_hex() == blurred.checksum_hex());
 
     // Prep sees a region, not a place: the same pixels cut out of a bigger picture prep identically,
     // because nothing in prep knows where the crop came from. (An offset applied twice, or once where it
     // should not be, reads pixels that are not in the region at all.)
     const Image padded = padded_with(base, 16, 8);
-    CHECK_EQ(prep_region(padded, Prep::blur, 0).checksum_hex(),
-             prep_region(base, Prep::blur, 0).checksum_hex());
+    CHECK_EQ(prep_region(padded, full_coverage(padded.size()), Prep::blur, 0).checksum_hex(),
+             prep_region(base, full_coverage(base.size()), Prep::blur, 0).checksum_hex());
 
-    const Image noise = prep_region(base, Prep::noise, 7);
+    const Image noise = prep_region(base, full_coverage(base.size()), Prep::noise, 7);
     CHECK_NEAR(mean_channel(noise, 0), base_mean, 3.0);
-    CHECK(prep_region(base, Prep::noise, 7).checksum_hex() == noise.checksum_hex());
-    CHECK(prep_region(base, Prep::noise, 8).checksum_hex() != noise.checksum_hex());
+    CHECK(prep_region(base, full_coverage(base.size()), Prep::noise, 7).checksum_hex() == noise.checksum_hex());
+    CHECK(prep_region(base, full_coverage(base.size()), Prep::noise, 8).checksum_hex() != noise.checksum_hex());
 }
 
 void test_the_prep_vocabulary_is_the_one_home() {
@@ -309,6 +399,7 @@ int main() {
     test_the_crop_grows_for_context_and_stays_on_the_canvas();
     test_the_requested_size_honours_the_policy_and_the_budget();
     test_the_map_back_lands_where_the_crop_was();
+    test_prep_touches_the_hole_and_never_the_context();
     test_each_prep_keeps_what_it_says_and_loses_what_it_says();
     test_the_prep_vocabulary_is_the_one_home();
     return noise::test::summary(__FILE__);

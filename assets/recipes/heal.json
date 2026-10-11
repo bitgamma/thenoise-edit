@@ -1,6 +1,7 @@
 {
   "id": "heal",
   "label": "Heal",
+  "operation": "reconstruct",
   "endpoint": "edits",
   "role": "edit",
   "region": "selection",

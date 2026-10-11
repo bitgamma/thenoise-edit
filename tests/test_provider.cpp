@@ -54,7 +54,8 @@ Recipe recipe_of(const json& overrides) {
                  {"endpoint", "edits"},
                  {"role", "edit"},
                  {"region", "selection"},
-                 {"prep", "blur"},
+                 {"operation", "reconstruct"},
+                {"prep", "blur"},
                  {"prompt", json::array({"do the thing"})},
                  {"composite", json{{"feather", "auto"}}}};
     for (const auto& item : overrides.items()) {

@@ -1,6 +1,7 @@
 {
   "id": "new-image-photo",
   "label": "New image (photo)",
+  "operation": "from_words",
   "endpoint": "generations",
   "role": "generate.photo",
   "region": "document",

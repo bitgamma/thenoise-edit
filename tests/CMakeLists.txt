@@ -126,9 +126,6 @@ if(Python3_Interpreter_FOUND)
                          TIMEOUT 180
                          DEPENDS noise-edit)
 
-    # The result compositor on the running app: an answer lands where the selection is, the report
-    # agrees byte for byte with what the document shows, the feather reaches past the selection (a
-    # door that re-clipped it would put the hard edge back), and undo returns everything.
     # The whole AI path on the running app, against the recordings: discovery, role resolution, the
     # compiled request, the queue, the landing, and the pixels the report claims.
     add_test(NAME test_ai_job_probe
@@ -137,6 +134,17 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(test_ai_job_probe PROPERTIES
                          SKIP_REGULAR_EXPRESSION "SKIP:"
                          TIMEOUT 600)
+
+    # What the model is actually shown, whole-image: an in-place change uploads the region untouched and
+    # a reconstruction destroys only the selected area. This is the claim that was false when Replace
+    # blurred the whole crop, and only the running app's compile produces these bytes.
+    add_test(NAME test_prep_proof
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/prep_proof.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_prep_proof PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 300
+                         DEPENDS noise-edit)
 
     add_test(NAME test_ai_compose_probe
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ai_compose_probe.py

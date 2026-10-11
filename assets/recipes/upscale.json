@@ -1,6 +1,7 @@
 {
   "id": "upscale",
   "label": "Upscale",
+  "operation": "transform",
   "endpoint": "upscale",
   "role": "upscale",
   "region": "selection",

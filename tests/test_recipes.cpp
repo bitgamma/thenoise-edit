@@ -32,6 +32,7 @@ json minimal(const char* id = "test-recipe") {
                 {"endpoint", "edits"},
                 {"role", "edit"},
                 {"region", "selection"},
+                {"operation", "reconstruct"},
                 {"prep", "blur"},
                 {"enhance", "never"},
                 {"prompt", json::array({"Remove {{target}}.", "Match the {{context_desc}}."})},
@@ -60,6 +61,58 @@ std::string parse_refusal(const json& body) {
     return error;
 }
 
+// The pairing that keeps a Replace from uploading a blurred face. Asserted as refusals, because a
+// recipe file that contradicts itself has to be caught when it is loaded, not while a person waits for
+// an answer that cannot relate to their picture.
+void test_an_operation_and_a_hole_are_the_same_concept_or_neither() {
+    json edit_with_hole = minimal();
+    edit_with_hole["operation"] = "in_place";
+    CHECK(parse_refusal(edit_with_hole).find("must have prep 'none'") != std::string::npos);
+
+    json reconstruct_without_hole = minimal();
+    reconstruct_without_hole["prep"] = "none";
+    CHECK(parse_refusal(reconstruct_without_hole).find("needs a prep for the hole") !=
+          std::string::npos);
+
+    json reconstruct_whole_canvas = minimal();
+    reconstruct_whole_canvas["region"] = "document";
+    CHECK(parse_refusal(reconstruct_whole_canvas).find("works on a selection") != std::string::npos);
+
+    json generate_from_an_edit = minimal();
+    generate_from_an_edit["operation"] = "from_words";
+    generate_from_an_edit["prep"] = "none";  // so this is the contradiction reached, not the one before
+    CHECK(parse_refusal(generate_from_an_edit).find("endpoint 'generations'") != std::string::npos);
+
+    json nonsense = minimal();
+    nonsense["operation"] = "smudge";
+    CHECK(parse_refusal(nonsense).find("'operation' must be") != std::string::npos);
+
+    // A recipe is not allowed to inherit a hole by omission: no `operation` means no parse.
+    json unstated = minimal();
+    unstated.erase("operation");
+    CHECK(parse_refusal(unstated).find("'operation' is required") != std::string::npos);
+
+    // The legal shapes still load, and say what they are.
+    CHECK_EQ(operation_name(parse_or_fail(minimal()).operation), std::string("reconstruct"));
+    json edit = minimal();
+    edit["operation"] = "in_place";
+    edit["prep"] = "none";
+    CHECK(operation_name(parse_or_fail(edit).operation) == std::string("in_place"));
+    json transform = minimal();
+    transform["operation"] = "transform";
+    transform["prep"] = "none";
+    transform["endpoint"] = "upscale";
+    transform["role"] = "upscale";
+    CHECK(operation_name(parse_or_fail(transform).operation) == std::string("transform"));
+    json generate = minimal();
+    generate["operation"] = "from_words";
+    generate["prep"] = "none";
+    generate["endpoint"] = "generations";
+    generate["role"] = "generation";
+    generate["region"] = "document";
+    CHECK(operation_name(parse_or_fail(generate).operation) == std::string("from_words"));
+}
+
 void test_a_recipe_reads_as_the_policy_it_claims_to_be() {
     const Recipe recipe = parse_or_fail(minimal());
     CHECK(recipe.endpoint == Endpoint::edits);
@@ -78,6 +131,10 @@ void test_a_recipe_reads_as_the_policy_it_claims_to_be() {
     CHECK(error.empty());
 
     json wide = minimal();
+    // Whole-document and no hole, so this one has to be an edit: a `reconstruct` may not span the
+    // document (there would be no area to reconstruct) and an edit may not carry a prep.
+    wide["operation"] = "in_place";
+    wide["prep"] = "none";
     wide["region"] = "document";
     wide["context"] = {{"ratio", 0.5}, {"min_px", 96}};
     wide["composite"] = {
@@ -294,6 +351,7 @@ void test_a_selection_offers_the_selection_recipes() {
 }  // namespace
 
 int main() {
+    test_an_operation_and_a_hole_are_the_same_concept_or_neither();
     test_a_recipe_reads_as_the_policy_it_claims_to_be();
     test_a_recipe_that_states_the_impossible_is_refused_by_name();
     test_the_shipped_recipes_agree_with_the_shipped_roles();

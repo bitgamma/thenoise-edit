@@ -1,10 +1,11 @@
 {
   "id": "inpaint-replace",
   "label": "Replace",
+  "operation": "in_place",
   "endpoint": "edits",
   "role": "edit",
   "region": "selection",
-  "prep": "blur",
+  "prep": "none",
   "enhance": "never",
   "prompt": [
     "Replace the {{target}} in this image with {{replacement}}.",

@@ -183,52 +183,95 @@ int prep_blur_radius(Extent crop) {
     return std::max(kMinBlurRadiusPx, std::min(crop.w, crop.h) / kBlurDivisor);
 }
 
-Image prep_region(const Image& base, Prep prep, std::uint64_t seed) {
-    const Extent crop = base.size();
-    if (crop.w <= 0 || crop.h <= 0) {
+Image prep_region(const Image& crop, const Mask& coverage_in_crop, Prep prep,
+                  std::uint64_t seed) {
+    const Extent size = crop.size();
+    if (size.w <= 0 || size.h <= 0) {
         return Image{};
     }
+    // No coverage at all means the caller means the whole crop; a sized coverage that does not match the
+    // crop is a caller bug, and treating it as "everything" would quietly destroy the wrong pixels.
+    const bool whole = !coverage_in_crop.sized();
+    if (!whole && !(coverage_in_crop.size() == size)) {
+        return Image{};
+    }
+    const auto in_hole = [&](int x, int y) {
+        return whole || coverage_in_crop.coverage(x, y) > 0;
+    };
 
-    std::vector<int> plane(static_cast<std::size_t>(crop.w) * static_cast<std::size_t>(crop.h) *
-                           static_cast<std::size_t>(kChannels));
-    for (int y = 0; y < crop.h; ++y) {
-        for (int x = 0; x < crop.w; ++x) {
-            const std::uint8_t* from = base.at(x, y);
+    const std::size_t pixels = static_cast<std::size_t>(size.w) * static_cast<std::size_t>(size.h);
+    std::vector<int> plane(pixels * static_cast<std::size_t>(kChannels));
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const std::uint8_t* from = crop.at(x, y);
             const std::size_t to =
-                (static_cast<std::size_t>(y) * static_cast<std::size_t>(crop.w) +
+                (static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) +
                  static_cast<std::size_t>(x)) *
                 static_cast<std::size_t>(kChannels);
             for (int c = 0; c < kChannels; ++c) {
-                plane[to + static_cast<std::size_t>(c)] =
-                    static_cast<int>(from[c]);
+                plane[to + static_cast<std::size_t>(c)] = static_cast<int>(from[c]);
             }
         }
     }
 
-    if (prep == Prep::blur) {
-        box_blur(plane, Extent{crop.w, crop.h}, kChannels, prep_blur_radius(crop),
-                 kGaussianBoxPasses);
-    } else if (prep == Prep::average) {
-        const auto mean = mean_of(plane, crop.w * crop.h);
-        for (int i = 0; i < crop.w * crop.h; ++i) {
-            for (int c = 0; c < kChannels; ++c) {
-                plane[static_cast<std::size_t>(i * kChannels + c)] =
-                    static_cast<int>(std::lround(mean[static_cast<std::size_t>(c)]));
+    // Statistics of the *context*: the hole's own mean is the colour of the thing being got rid of, so
+    // filling with it paints the answer with the question.
+    std::array<double, kChannels> context_mean{};
+    {
+        std::array<double, kChannels> sum{};
+        std::size_t counted = 0;
+        for (int y = 0; y < size.h; ++y) {
+            for (int x = 0; x < size.w; ++x) {
+                if (in_hole(x, y)) {
+                    continue;
+                }
+                const std::size_t at =
+                    (static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) +
+                     static_cast<std::size_t>(x)) *
+                    static_cast<std::size_t>(kChannels);
+                for (int c = 0; c < kChannels; ++c) {
+                    sum[static_cast<std::size_t>(c)] +=
+                        static_cast<double>(plane[at + static_cast<std::size_t>(c)]);
+                }
+                ++counted;
             }
         }
-    } else if (prep == Prep::pixelate) {
-        const int block = std::max(1, prep_blur_radius(crop) / kPixelateDivisor);
-        for (int by = 0; by < crop.h; by += block) {
-            for (int bx = 0; bx < crop.w; bx += block) {
-                const int bw = std::min(block, crop.w - bx);
-                const int bh = std::min(block, crop.h - by);
+        if (counted == 0) {
+            const auto all = mean_of(plane, static_cast<int>(pixels));
+            for (int c = 0; c < kChannels; ++c) {
+                context_mean[static_cast<std::size_t>(c)] = all[static_cast<std::size_t>(c)];
+            }
+        } else {
+            for (int c = 0; c < kChannels; ++c) {
+                context_mean[static_cast<std::size_t>(c)] =
+                    sum[static_cast<std::size_t>(c)] / static_cast<double>(counted);
+            }
+        }
+    }
+
+    // The blur and the pixelation are computed over the whole plane so the hole's edge is filled with
+    // what actually surrounds it; only the hole is then written back.
+    std::vector<int> blurred;
+    if (prep == Prep::blur) {
+        blurred = plane;
+        box_blur(blurred, size, kChannels, prep_blur_radius(size), kGaussianBoxPasses);
+    }
+    const int block = prep == Prep::pixelate ? std::max(1, prep_blur_radius(size) / kPixelateDivisor)
+                                             : 1;
+    std::vector<int> blockified;
+    if (prep == Prep::pixelate) {
+        blockified = plane;
+        for (int by = 0; by < size.h; by += block) {
+            for (int bx = 0; bx < size.w; bx += block) {
+                const int bw = std::min(block, size.w - bx);
+                const int bh = std::min(block, size.h - by);
                 std::vector<int> cells;
                 cells.reserve(static_cast<std::size_t>(bw) * static_cast<std::size_t>(bh) *
                               static_cast<std::size_t>(kChannels));
                 for (int y = by; y < by + bh; ++y) {
                     for (int x = bx; x < bx + bw; ++x) {
                         const std::size_t at =
-                            (static_cast<std::size_t>(y) * static_cast<std::size_t>(crop.w) +
+                            (static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) +
                              static_cast<std::size_t>(x)) *
                             static_cast<std::size_t>(kChannels);
                         for (int c = 0; c < kChannels; ++c) {
@@ -240,51 +283,76 @@ Image prep_region(const Image& base, Prep prep, std::uint64_t seed) {
                 for (int y = by; y < by + bh; ++y) {
                     for (int x = bx; x < bx + bw; ++x) {
                         const std::size_t at =
-                            (static_cast<std::size_t>(y) * static_cast<std::size_t>(crop.w) +
+                            (static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) +
                              static_cast<std::size_t>(x)) *
                             static_cast<std::size_t>(kChannels);
                         for (int c = 0; c < kChannels; ++c) {
-                            plane[at + static_cast<std::size_t>(c)] =
+                            blockified[at + static_cast<std::size_t>(c)] =
                                 static_cast<int>(std::lround(block_mean[static_cast<std::size_t>(c)]));
                         }
                     }
                 }
             }
         }
-    } else if (prep == Prep::noise) {
-        const auto mean = mean_of(plane, crop.w * crop.h);
-        std::uint32_t state = seed == 0 ? 0x9E3779B9u : static_cast<std::uint32_t>(seed);
-        for (int i = 0; i < crop.w * crop.h; ++i) {
-            for (int c = 0; c < kChannels; ++c) {
-                const std::uint32_t draw = next_noise(state);
-                const int offset =
-                    static_cast<int>(draw % static_cast<std::uint32_t>(2 * kNoiseAmplitude + 1)) -
-                    kNoiseAmplitude;
-                const int value = static_cast<int>(
-                                      std::lround(mean[static_cast<std::size_t>(c)])) +
-                                  offset;
-                plane[static_cast<std::size_t>(i * kChannels + c)] = std::clamp(value, 0, 255);
-            }
-        }
-    } else if (prep == Prep::white) {
-        for (int i = 0; i < crop.w * crop.h; ++i) {
-            for (int c = 0; c < kChannels; ++c) {
-                plane[static_cast<std::size_t>(i * kChannels + c)] = 255;
-            }
-        }
     }
 
-    Image out = Image::filled(Extent{crop.w, crop.h}, 0, 0, 0, 0);
-    for (int y = 0; y < crop.h; ++y) {
-        for (int x = 0; x < crop.w; ++x) {
+    // The draw sequence is tied to the geometry, not to the mask, so the same crop with a different
+    // hole does not renumber the noise that lands in it.
+    std::uint32_t state = seed == 0 ? 0x9E3779B9u : static_cast<std::uint32_t>(seed);
+
+    Image out = Image::filled(size, 0, 0, 0, 0);
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
             const std::size_t at =
-                (static_cast<std::size_t>(y) * static_cast<std::size_t>(crop.w) +
+                (static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) +
                  static_cast<std::size_t>(x)) *
                 static_cast<std::size_t>(kChannels);
             std::uint8_t* to = out.at(x, y);
+            // The draw is taken for every pixel, hole or not, so the noise a hole gets depends on the
+            // crop's geometry and not on how many pixels the mask happened to cover. Only the hole is
+            // written.
+            const std::uint32_t draw = next_noise(state);
+            if (prep == Prep::noise && in_hole(x, y)) {
+                const int offset = static_cast<int>(
+                    draw % static_cast<std::uint32_t>(2 * kNoiseAmplitude + 1)) -
+                                   kNoiseAmplitude;
+                for (int c = 0; c < kChannels; ++c) {
+                    const int jittered =
+                        static_cast<int>(std::lround(context_mean[static_cast<std::size_t>(c)])) +
+                        offset;
+                    to[c] = static_cast<std::uint8_t>(std::clamp(jittered, 0, 255));
+                }
+                continue;
+            }
+            if (!in_hole(x, y)) {
+                for (int c = 0; c < kChannels; ++c) {
+                    to[c] = static_cast<std::uint8_t>(
+                        std::clamp(plane[at + static_cast<std::size_t>(c)], 0, 255));
+                }
+                continue;
+            }
             for (int c = 0; c < kChannels; ++c) {
-                to[c] = static_cast<std::uint8_t>(
-                    std::clamp(plane[at + static_cast<std::size_t>(c)], 0, 255));
+                int value = plane[at + static_cast<std::size_t>(c)];
+                switch (prep) {
+                    case Prep::none:
+                        break;
+                    case Prep::blur:
+                        value = blurred[at + static_cast<std::size_t>(c)];
+                        break;
+                    case Prep::pixelate:
+                        value = blockified[at + static_cast<std::size_t>(c)];
+                        break;
+                    case Prep::average:
+                        value = static_cast<int>(
+                            std::lround(context_mean[static_cast<std::size_t>(c)]));
+                        break;
+                    case Prep::noise:
+                        break;  // written above, and still confined to the hole by the check
+                    case Prep::white:
+                        value = 255;
+                        break;
+                }
+                to[c] = static_cast<std::uint8_t>(std::clamp(value, 0, 255));
             }
         }
     }

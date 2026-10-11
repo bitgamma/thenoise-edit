@@ -1,6 +1,7 @@
 {
   "id": "new-image-anime",
   "label": "New image (illustration)",
+  "operation": "from_words",
   "endpoint": "generations",
   "role": "generate.illustration",
   "region": "document",

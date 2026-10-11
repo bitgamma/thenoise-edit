@@ -27,9 +27,11 @@ std::string join(const std::vector<std::string>& names, const char* separator) {
 }
 
 bool key_known(const std::string& key) {
-    static const std::vector<std::string> kKnown = {
-        "id",    "label",    "endpoint", "role",      "region", "prep",   "enhance", "prompt",
-        "ask",   "variables", "composite", "context", "steps",  "cfg_scale", "mask", "model"};
+    static const std::vector<std::string> kKnown = {"id",        "label",     "operation", "endpoint",
+                                                   "role",      "region",    "prep",      "enhance",
+                                                   "prompt",    "ask",       "variables", "composite",
+                                                   "context",   "steps",     "cfg_scale", "mask",
+                                                   "model"};
     return std::find(kKnown.begin(), kKnown.end(), key) != kKnown.end();
 }
 
@@ -186,6 +188,31 @@ std::optional<Endpoint> endpoint_from_name(const std::string& name) {
     return std::nullopt;
 }
 
+const char* operation_name(Operation operation) {
+    switch (operation) {
+        case Operation::reconstruct:
+            return "reconstruct";
+        case Operation::in_place:
+            return "in_place";
+        case Operation::transform:
+            return "transform";
+        case Operation::from_words:
+            return "from_words";
+    }
+    return "?";
+}
+
+std::optional<Operation> operation_from_name(const std::string& name) {
+    for (Operation operation : {Operation::reconstruct, Operation::in_place, Operation::transform,
+                                Operation::from_words}) {
+        if (name == operation_name(operation)) {
+            return operation;
+        }
+    }
+    return std::nullopt;
+}
+
+
 std::string endpoint_names() {
     return "generations | edits | upscale | chat";
 }
@@ -314,6 +341,51 @@ std::optional<Recipe> parse_recipe(const nlohmann::json& body, const std::string
         return std::nullopt;
     }
     recipe.prep = *parsed_prep;
+
+    // What the operation is, and the pairing that keeps the two concepts from being mixed. A hole is
+    // only meaningful when the area's content is unwanted; an in-place edit that asks for one is asking
+    // to be shown a destroyed version of the thing it is meant to change, which is not a thing a model
+    // can act on. Refused here rather than noticed by a person staring at a blurred face.
+    const std::string operation = string_at(body, "operation", {}, origin, error, ok);
+    if (!ok) {
+        return std::nullopt;
+    }
+    if (operation.empty()) {
+        error = origin + ": 'operation' is required (" + operation_name(Operation::reconstruct) +
+                ", " + operation_name(Operation::in_place) + ", " +
+                operation_name(Operation::transform) + ", " + operation_name(Operation::from_words) +
+                ") - it decides whether the upload may have a hole in it";
+        return std::nullopt;
+    }
+    const std::optional<Operation> parsed_operation = operation_from_name(operation);
+    if (!parsed_operation.has_value()) {
+        error = origin + ": 'operation' must be " + operation_name(Operation::reconstruct) + ", " +
+                operation_name(Operation::in_place) + ", " + operation_name(Operation::transform) + " or " +
+                operation_name(Operation::from_words) + " (got '" + operation + "')";
+        return std::nullopt;
+    }
+    recipe.operation = *parsed_operation;
+    if (recipe.operation != Operation::reconstruct && recipe.prep != Prep::none) {
+        error = origin + ": operation '" + operation + "' must have prep 'none' - only " +
+                operation_name(Operation::reconstruct) +
+                " destroys an area on purpose, and a blurred subject is not an instruction";
+        return std::nullopt;
+    }
+    if (recipe.operation == Operation::reconstruct && recipe.prep == Prep::none) {
+        error = origin + ": operation '" + operation +
+                "' needs a prep for the hole (blur, average, pixelate, noise or white), otherwise the "
+                "upload still shows exactly what it is asking to have replaced";
+        return std::nullopt;
+    }
+    if (recipe.operation == Operation::reconstruct && recipe.whole_document()) {
+        error = origin + ": operation '" + operation +
+                "' works on a selection - with no area there is nothing to reconstruct";
+        return std::nullopt;
+    }
+    if (recipe.operation == Operation::from_words && recipe.endpoint != Endpoint::generations) {
+        error = origin + ": operation '" + operation + "' must use endpoint 'generations'";
+        return std::nullopt;
+    }
     recipe.enhance = string_at(body, "enhance", kEnhanceNever, origin, error, ok);
     if (!ok) {
         return std::nullopt;
