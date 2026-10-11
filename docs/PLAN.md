@@ -500,6 +500,32 @@ The design, when this lands:
   layer and its pixels away. Until then "mark → key → layer" is tested to the queue, and the probe says
   so in its own comment rather than claiming the last step.
 
+## Reasoning the code cannot carry (what a frame may cost)
+
+The verbs moved a per-frame reader onto the status bar, and the canvas stopped: dragging a marquee over
+a 1600x1000 document ran at ~10 fps (`frame_ms` pinned at 100.0) where it had run at ~250. The reader was
+`ai.intent`, whose auto-compile of the upload preview had a debounce, and the debounce was counting the
+wrong thing.
+
+| measured | frame_ms | region encodes during a 120-step marquee |
+|---|---|---|
+| two readers per frame, settle counted in **reads** | 100.0 | 95 |
+| one reader per frame, settle counted in **frames** | ~37 | 95 (settle won at 250 fps: 8 ms of frames is shorter than the gap between mouse moves) |
+| one reader, settle counted in **published frame time** | 4.1 idle, ~196 fps while dragging | 0, then exactly 1 after the drag stops |
+
+**Fact table.**
+
+| piece | rule | how it is seen |
+|---|---|---|
+| `ai.intent` read once per frame in `draw_ui`, passed to the verb rows and the status line | the window is one reader, not two | `test_app`: reads of a moving key never compile; `steady_ms` reports the wait in progress |
+| `kPreviewSettleMs` = 200 ms of `AppState::frame_ms` | the thing being waited for is the end of a gesture, which is a stretch of time. Frames would be a different wait at 250 fps and at 20 fps; reads are defeated by having two of them in a frame | `test_a_marquee_in_motion_costs_no_region_encode`, red at 35 checks when the constant is zeroed |
+| `AiIntent::compiles`, reported by `ai.intent` | the cost is a fact on the wire, so a claim about it is checkable and not a feeling | same test, and the marquee measurement above |
+
+Nothing here is a rule about the AI: it is that **a per-frame reader pays for whatever the command it
+reads does**, so an "expensive but only-when-something-changed" branch has to state its budget in the
+same units the reader runs at. Adding a second reader to the frame is a performance change, and this is
+the test that says so.
+
 ## Decisions that stand
 
 - **`.ora` out** of the product and the design: one semantics for one stack. Flat PNG/JPEG/WebP in, via system

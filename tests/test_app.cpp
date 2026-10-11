@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "test.h"
 
+#include "app/ai_intent.h"
 #include "app/ai_session.h"
 #include "app/ai_verbs.h"
 #include "app/commands.h"
@@ -2486,6 +2487,52 @@ void test_an_option_left_out_keeps_the_policy_the_table_asked_for() {
 // The flagship sequence as one key press: mark an area, press it, the answer arrives as a layer. The
 // verb list is what a window would draw, so this also asserts the surface a person sees - the words on
 // the buttons, the keys they answer to, and that nothing has to be typed in between.
+// The window asks `ai.intent` every frame, so the frame it answers must not contain a region encode:
+// compiling the upload is a PNG encode of the crop, and a marquee drag moves the region on every mouse
+// move. `compiles` is the intent's own counter, so this asserts the cost and not just the answer.
+void test_a_marquee_in_motion_costs_no_region_encode() {
+    Harness h;
+    h.value("doc.new", json{{"width", 96}, {"height", 64}, {"fill", json::array({30, 40, 50, 255})}});
+    h.value("server.connect", json::object());
+    h.state.frame_ms = 16.0;  // the cadence the host would publish: 200 ms is ~12 of these frames
+
+    h.value("select.rect", json{{"rect", json::array({20, 12, 36, 24})}});
+    ++h.state.frame;
+    CHECK_EQ(h.value("ai.intent", json::object())["compiles"].get<std::uint64_t>(), 0u);
+
+    for (int step = 1; step <= 8; ++step) {
+        h.value("select.rect", json{{"rect", json::array({20 + step, 12, 36, 24})}});
+        ++h.state.frame;
+        const json mid = h.value("ai.intent", json::object());
+        CHECK_EQ(mid["compiles"].get<std::uint64_t>(), 0u);
+        CHECK(mid["stale"].get<bool>());
+        CHECK(mid["steady_ms"].get<double>() < noise::app::kPreviewSettleMs);
+    }
+
+    // The drag stops. After the settle window the price is compiled, exactly once, and stays compiled.
+    h.state.frame += 20;
+    const json settled = h.value("ai.intent", json::object());
+    CHECK_EQ(settled["compiles"].get<std::uint64_t>(), 1u);
+    CHECK(!settled["stale"].get<bool>());
+    CHECK(settled["steady_ms"].get<double>() >= noise::app::kPreviewSettleMs);
+    CHECK(settled["preview"].is_object());
+
+    for (int read = 0; read < 5; ++read) {
+        h.state.frame += 10;
+        CHECK_EQ(h.value("ai.intent", json::object())["compiles"].get<std::uint64_t>(), 1u);
+    }
+
+    // Marking a different area makes the shown price wrong - said so at once - and the fix is the same
+    // settle, not an encode on the frame that noticed.
+    h.value("select.rect", json{{"rect", json::array({22, 12, 36, 24})}});
+    ++h.state.frame;
+    const json moved = h.value("ai.intent", json::object());
+    CHECK_EQ(moved["compiles"].get<std::uint64_t>(), 1u);
+    CHECK(moved["stale"].get<bool>());
+    h.state.frame += 20;
+    CHECK_EQ(h.value("ai.intent", json::object())["compiles"].get<std::uint64_t>(), 2u);
+}
+
 void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
     Harness h;
     h.value("doc.new", json{{"width", 96}, {"height", 64}, {"fill", json::array({30, 40, 50, 255})}});
@@ -2706,6 +2753,7 @@ int main() {
     test_an_unconfigured_server_names_the_variable();
     test_an_option_left_out_keeps_the_policy_the_table_asked_for();
     test_the_remove_key_runs_the_whole_sequence_with_no_words();
+    test_a_marquee_in_motion_costs_no_region_encode();
     test_a_verb_that_stops_matching_its_recipe_is_refused_at_startup();
     test_a_run_that_was_asked_for_words_refuses_without_them();
     test_an_answer_lands_on_its_own_layer_over_an_empty_one();

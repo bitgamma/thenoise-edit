@@ -261,12 +261,12 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
     ImGui::End();
 }
 
-void draw_verb_section(CommandTable& commands);
-void draw_ai_status_line(CommandTable& commands);
+void draw_verb_section(CommandTable& commands, const json& intent);
+void draw_ai_status_line(CommandTable& commands, const json& view);
 
 // Every widget here is a front-end for a command: the panel, a key and a wire client cannot
 // drift apart because there is nothing else to keep in step.
-void draw_tool_panel(AppState& state, CommandTable& commands) {
+void draw_tool_panel(AppState& state, CommandTable& commands, const json& intent) {
     ImGui::Begin(kWindowTool);
 
     for (const ToolInfo& tool : kTools) {
@@ -325,7 +325,7 @@ void draw_tool_panel(AppState& state, CommandTable& commands) {
         }
     }
 
-    draw_verb_section(commands);
+    draw_verb_section(commands, intent);
 
     // The brush belongs to the tool a person is holding: `move` and the marquees paint nothing, so
     // their panel does not spend its height on sliders they cannot use (core/brush.h knows which rows
@@ -405,7 +405,7 @@ void draw_tool_panel(AppState& state, CommandTable& commands) {
 // the key. Nothing is asked for the panel itself to remember about which verb is "the" one - the intent
 // command already holds that, and the words box below the rows is the current intent's field, so the
 // price shown is the price of the press that would follow the text on screen.
-void draw_verb_section(CommandTable& commands) {
+void draw_verb_section(CommandTable& commands, const json& intent) {
     ImGui::SeparatorText("on the marked area");
     const json view = commands.invoke("ai.verbs", json::object()).value;
     const std::string table_error = view["error"].get<std::string>();
@@ -456,7 +456,6 @@ void draw_verb_section(CommandTable& commands) {
     // One box, for the verb the intent currently holds: what is typed is sent with the press, so there
     // is nothing to commit, and an empty box is a refusal that names the field rather than a run on the
     // recipe's own guess.
-    const json intent = commands.invoke("ai.intent", json::object()).value;
     const std::string recipe = intent["recipe"].is_null() ? std::string()
                                                           : intent["recipe"].get<std::string>();
     const std::vector<std::string> ask =
@@ -505,8 +504,7 @@ void draw_verb_section(CommandTable& commands) {
 // is on screen whatever panel is docked in front - which model answers, what it costs on this box,
 // whether it has to load one first, and the job that is running or waiting to land. Every fact comes
 // from `ai.intent`, so the bar cannot quote a price the command would not charge.
-void draw_ai_status_line(CommandTable& commands) {
-    const json view = commands.invoke("ai.intent", json::object()).value;
+void draw_ai_status_line(CommandTable& commands, const json& view) {
     if (!view["configured"].get<bool>()) {
         ImGui::TextDisabled("ai: no server, set $THENOISE_URL");
         return;
@@ -761,7 +759,11 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
     }
 
     draw_canvas(state, commands, canvas_texture, checker);
-    draw_tool_panel(state, commands);
+    // One read of the AI action per frame, shared by the verb rows and the status line: the answer is
+    // what a press would do and what it costs, and asking twice would ask the settle rule to notice a
+    // change in half a frame.
+    const json ai_view = commands.invoke("ai.intent", json::object()).value;
+    draw_tool_panel(state, commands, ai_view);
     draw_layers_panel(state, commands);
     draw_log_panel();
 
@@ -797,7 +799,7 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
     ImGui::SameLine();
     ImGui::TextDisabled("wire :%u", state.wire_port);
     ImGui::NewLine();
-    draw_ai_status_line(commands);
+    draw_ai_status_line(commands, ai_view);
     ImGui::End();
 }
 

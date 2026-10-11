@@ -261,6 +261,12 @@ Readiness assess(noise::AppState& state, const ai::Recipe* recipe) {
     return out;
 }
 
+// How long the compile key has been holding still, in the frame cadence the host publishes. Reported by
+// `ai.intent` so a probe can see the settle window instead of guessing it from frame times.
+double steady_ms_of(const AppState& state, const AiIntent& intent) {
+    return static_cast<double>(state.frame - intent.seen_since_frame) * state.frame_ms;
+}
+
 nlohmann::json intent_json(AppState& state) {
     const ai::Recipe* recipe = intent_recipe(state);
     const AiIntent& intent = state.ai_intent;
@@ -316,6 +322,8 @@ nlohmann::json intent_json(AppState& state) {
                 {"estimate_s", estimate.has_value() ? json(*estimate) : json(nullptr)},
                 {"preview", intent.has_preview ? intent.preview : json(nullptr)},
                 {"stale", !intent.has_preview || !(intent.compiled == compile_key(state))},
+                {"steady_ms", steady_ms_of(state, intent)},
+                {"compiles", intent.compiles},
                 {"job", job},
                 {"error", intent.error}};
 }
@@ -448,20 +456,27 @@ void register_ai_intent_commands(AppState& state, CommandTable& table) {
         // a rectangle drawn on the canvas is not an argument to this command, and a panel that only
         // recompiled on its own widgets left Run greyed forever behind a perfectly good selection.
         // What it must not do is encode a region on every frame of a marquee drag, so a change that
-        // this command was not told about compiles once its key has held still for one read. An
-        // argument means someone changed a value, which does not move the key at all, so that always
-        // recompiles; a compile that failed is attempted once per key rather than per frame.
+        // this command was not told about compiles once its key has held still for
+        // `kPreviewSettleFrames` frames. An argument means someone changed a value, which does not move
+        // the key at all, so that always recompiles; a compile that failed is attempted once per key
+        // rather than per frame.
         const CompileKey key = compile_key(state);
+        if (!intent.has_seen || !(intent.seen == key)) {
+            intent.seen = key;
+            intent.has_seen = true;
+            intent.seen_since_frame = state.frame;
+        }
         const bool asked = changes_request(args);
         const bool region_moved = !intent.has_preview || !(intent.compiled == key);
         const bool attempted = intent.has_attempted && intent.attempted == key;
-        const bool settled = intent.has_seen && intent.seen == key;
+        const bool settled = steady_ms_of(state, intent) >= kPreviewSettleMs;
         if (recipe != nullptr && readiness.ready &&
             (asked || (region_moved && settled && !attempted))) {
             const CommandResult compiled = table.invoke(
                 "ai.preview", json{{"recipe", recipe->id}, {"vars", effective_vars(*recipe, intent.given)}});
             intent.has_attempted = true;
             intent.attempted = key;
+            ++intent.compiles;
             if (compiled.ok) {
                 intent.preview = compiled.value;
                 intent.compiled = key;
@@ -473,8 +488,6 @@ void register_ai_intent_commands(AppState& state, CommandTable& table) {
                 intent.error = compiled.error;
             }
         }
-        intent.seen = key;
-        intent.has_seen = true;
         return command_ok(intent_json(state));
     });
 }
