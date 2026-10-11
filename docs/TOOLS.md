@@ -109,7 +109,17 @@ outpaint would reopen the hole through which the blurred-face bug arrived.
    there is none") rather than reconstructing the whole frame.
    The last clause of rule A landed with it: a finished answer puts itself on the document, and the
    status line says `on 'Remove j0001', Ctrl+Z back` instead of offering `Apply`.
-3. **Change** and **Fill**: the same sequence with one empty box, no defaults.
+3. **Change** and **Fill**: the same sequence, each with its own empty box, no defaults. **Done.**
+   Each verb row that asks carries the box for the field its recipe asks for, labelled with that field's
+   name, and typing commits through `ai.intent {recipe, vars}`; the row's press and its key then carry
+   nothing, so the button, the shortcut and the wire cannot describe three different runs. One box shared
+   by the whole section - as it was - belongs to whichever recipe the intent holds, which defaults to the
+   wordless `inpaint-remove`, and it was keyed by two different things at its two ends: typing into it
+   filed words against the recipe, pressing read them back per verb, so the panel could not put words into
+   Fill or Change at all and a press ignored what was typed. `ai_job_probe` now drives all three
+   marked-area verbs end to end on the recordings (`mark → refuse-without-words → preview → commit →
+   press → landed layer named for the verb and the job → undo byte-for-byte`), and `test_app` asserts the
+   refusal for every recipe in the shipped table that asks - five of them - plus the misfiled-field case.
 4. **Generate**: words only, empty document allowed, new layer.
 5. **Extend** (canvas grow + outpaint) then **Upscale** (`doc.resize` does not exist yet; ordinary scaling
    first, AI as the option).
