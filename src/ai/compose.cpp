@@ -167,7 +167,7 @@ ComposeReport compose_result(Image& target, const Image& result, const RegionPla
                        report.pixels_clipped_by_extent);
 
     Image patch = resample_lanczos3(result, Extent{crop.w, crop.h});
-    report.colour_corrected = policy.colour_match && colour_match_ring(patch, original, crop_mask);
+    report.colour_corrected = policy.colour_match && colour_match_drift(patch, original, crop_mask);
 
     report.coverage = in_document(crop_mask, target.size(), crop);
     target.blit(patch, crop.x, crop.y);

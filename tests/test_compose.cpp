@@ -22,7 +22,7 @@
 
 using namespace noise;
 using noise::ai::auto_feather_radius;
-using noise::ai::colour_match_ring;
+using noise::ai::colour_match_drift;
 using noise::alpha_coverage;
 using noise::ai::ComposeReport;
 using noise::ai::compose_result;
@@ -578,7 +578,7 @@ void test_an_answer_lands_on_the_crop_it_came_from() {
     }
 }
 
-void test_the_flag_decides_and_a_missing_ring_matches_nothing() {
+void test_the_flag_decides_and_a_missing_band_matches_nothing() {
     Fixture f;
     // An answer that came back a different colour from the picture it belongs to.
     Image drifted = Image::filled(f.plan.requested, 250, 250, 250, 255);
@@ -594,8 +594,10 @@ void test_the_flag_decides_and_a_missing_ring_matches_nothing() {
     CHECK(!without.colour_corrected);
     CHECK(with_match.colour_corrected);
 
-    // Deep inside the selection the two differ - the match did something - and what it did was bring
-    // the paste nearer the colour of the pixels the composite left alone.
+    // Deep inside the selection the two differ - the match did something - and what it did was undo the
+    // drift the answer put on the band the composite left alone, which is measured, not assumed: a flat
+    // 250 answer over a picture that is nowhere near 250 drifted, so the paste is pulled back towards the
+    // tone of the frame it belongs to.
     const std::uint8_t* a = matched.at(60, 110);
     const std::uint8_t* b = unmatched.at(60, 110);
     CHECK_NE(a[0], b[0]);
@@ -611,11 +613,11 @@ void test_the_flag_decides_and_a_missing_ring_matches_nothing() {
             ++ring_pixels;
         }
     }
-    const double ring = ring_sum / static_cast<double>(ring_pixels);
-    CHECK(std::abs(static_cast<double>(a[0]) - ring) <
-          std::abs(static_cast<double>(b[0]) - ring));
+    const double band = ring_sum / static_cast<double>(ring_pixels);
+    CHECK(std::abs(static_cast<double>(a[0]) - band) <
+          std::abs(static_cast<double>(b[0]) - band));
 
-    // No ring, no match: a mask over the whole crop has nothing around it to match to.
+    // No band, no match: a mask over the whole crop has nothing beside it to compare the answer with.
     Mask whole(kCanvas);
     whole.fill(255);
     const RegionPlan full = plan_region(kCanvas, whole, kTightPolicy).value();
@@ -644,144 +646,159 @@ Image flat_with_holes(Extent size, std::uint8_t grey) {
     return image;
 }
 
-void test_a_drifted_answer_is_pulled_back_to_the_ring() {
-    const Extent size{64, 48};
-    Image original = Image::filled(size, 90, 90, 90, 255);
-    // A ring with real variation, so the spread has something to match.
-    for (int y = 0; y < size.h; ++y) {
-        for (int x = 0; x < size.w; ++x) {
-            const std::uint8_t value = (x / 4) % 2 == 0 ? 40 : 200;
-            std::memcpy(original.at(x, y), &value, 1);
+// A bright subject in a dark frame, which is the shape of the complaint: an answer that changed the
+// subject and nothing else must not be moved, because the frame around it is not the subject's palette.
+// `colour_match_ring` used to pull the answer to the mean of that dark frame, and a Replace on a face
+// came back as a visibly dark patch.
+Image subject_in_shadow(Extent size, Rect subject) {
+    Image image = Image::filled(size, 25, 22, 30, 255);
+    for (int y = subject.y; y < subject.bottom(); ++y) {
+        for (int x = subject.x; x < subject.right(); ++x) {
+            std::uint8_t* p = image.at(x, y);
+            p[0] = 230;
+            p[1] = 190;
+            p[2] = 170;
         }
     }
-    Image patch = original;
-    const Mask reach = blob(size, Rect{16, 12, 24, 18});
-    // The drift: the patch came back brighter, which is what an edit does to a frame.
-    for (int y = 0; y < size.h; ++y) {
-        for (int x = 0; x < size.w; ++x) {
-            if (reach.coverage(x, y) == 0) {
-                continue;
-            }
-            std::uint8_t* p = patch.at(x, y);
-            p[0] = static_cast<std::uint8_t>(std::min(255, p[0] + 60));
-            p[1] = static_cast<std::uint8_t>(std::min(255, p[1] + 60));
-            p[2] = static_cast<std::uint8_t>(std::min(255, p[2] + 60));
-        }
-    }
-
-    const auto patch_mean = [](const Image& image, const Mask& mask) {
-        double sum = 0.0;
-        std::size_t pixels = 0;
-        for (int y = 0; y < image.size().h; ++y) {
-            for (int x = 0; x < image.size().w; ++x) {
-                if (mask.coverage(x, y) == 0) {
-                    continue;
-                }
-                sum += static_cast<double>(image.at(x, y)[0]);
-                ++pixels;
-            }
-        }
-        return sum / static_cast<double>(pixels);
-    };
-    const double before = patch_mean(patch, reach);
-    colour_match_ring(patch, original, reach);
-    const double after = patch_mean(patch, reach);
-
-    // The ring's own mean is what the patch was pulled towards, and it got most of the way there.
-    double ring_sum = 0.0;
-    std::size_t ring_pixels = 0;
-    for (int y = 0; y < size.h; ++y) {
-        for (int x = 0; x < size.w; ++x) {
-            if (reach.coverage(x, y) != 0) {
-                continue;
-            }
-            ring_sum += static_cast<double>(original.at(x, y)[0]);
-            ++ring_pixels;
-        }
-    }
-    const double ring = ring_sum / static_cast<double>(ring_pixels);
-    CHECK(std::abs(after - ring) < std::abs(before - ring) / 2.0);
+    return image;
 }
 
-void test_a_match_is_identity_when_there_is_no_ring_or_nothing_to_scale() {
+void test_an_answer_that_changed_only_the_subject_is_left_exactly_alone() {
+    const Extent size{64, 48};
+    const Rect subject{20, 14, 24, 20};
+    const Image original = subject_in_shadow(size, subject);
+    Mask reach(size);
+    reach.op(subject, MaskOp::replace);
+
+    Image patch = original;
+    for (int y = subject.y; y < subject.bottom(); ++y) {
+        for (int x = subject.x; x < subject.right(); ++x) {
+            std::uint8_t* p = patch.at(x, y);
+            p[0] = 40;
+            p[1] = 170;
+            p[2] = 60;  // green eyes: the whole point of the request
+        }
+    }
+
+    const Image as_returned = patch;
+    CHECK(!colour_match_drift(patch, original, reach));
+    // Nothing written anywhere: not to the frame, and not to the change either. Comparing against the
+    // answer as it came back rather than against the document is the point - the subject is *meant* to
+    // differ, and a match that "corrected" it would be repainting the edit.
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            CHECK_EQ(std::memcmp(as_returned.at(x, y), patch.at(x, y), kChannels), 0);
+        }
+    }
+}
+
+void test_the_drift_on_the_band_is_taken_back_off_the_whole_answer() {
+    const Extent size{64, 48};
+    const Rect subject{20, 14, 24, 20};
+    Image original = subject_in_shadow(size, subject);
+    // A band with real variation, so the spread has something to be measured against.
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            if (x >= subject.x && x < subject.right() && y >= subject.y && y < subject.bottom()) {
+                continue;
+            }
+            const std::uint8_t value = (x / 4) % 2 == 0 ? 40 : 200;
+            original.at(x, y)[0] = value;
+            original.at(x, y)[1] = static_cast<std::uint8_t>(value / 2);
+            original.at(x, y)[2] = static_cast<std::uint8_t>(value / 3);
+        }
+    }
+    Mask reach(size);
+    reach.op(subject, MaskOp::replace);
+
+    // The answer came back a fifth darker, everywhere - the band as much as the subject. A proportional
+    // loss is what an edit does to a frame, and it is deliberately *not* the shape the correction models
+    // (a shift in Lab), so this measures how much drift comes back rather than inverting the arithmetic.
+    const auto darker = [](std::uint8_t value) {
+        return static_cast<std::uint8_t>(static_cast<int>(value) * 4 / 5);
+    };
+    Image patch = original;
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            std::uint8_t* p = patch.at(x, y);
+            p[0] = darker(p[0]);
+            p[1] = darker(p[1]);
+            p[2] = darker(p[2]);
+        }
+    }
+
+    // Mean |difference from the document| over one side, before and after.
+    const auto residual = [size, subject, &original](const Image& image) {
+        std::array<double, 2> sum{};
+        std::array<std::size_t, 2> count{};
+        for (int y = 0; y < size.h; ++y) {
+            for (int x = 0; x < size.w; ++x) {
+                const bool in_subject = x >= subject.x && x < subject.right() &&
+                                        y >= subject.y && y < subject.bottom();
+                for (int c = 0; c < 3; ++c) {
+                    sum[in_subject ? 1 : 0] += std::abs(static_cast<double>(original.at(x, y)[c]) -
+                                                        static_cast<double>(image.at(x, y)[c]));
+                    ++count[in_subject ? 1 : 0];
+                }
+            }
+        }
+        return std::array<double, 2>{sum[0] / static_cast<double>(count[0]),
+                                     sum[1] / static_cast<double>(count[1])};
+    };
+
+    const std::array<double, 2> before = residual(patch);
+    CHECK(before[0] > 10.0);  // the fixture really did drift
+    CHECK(colour_match_drift(patch, original, reach));
+    const std::array<double, 2> after = residual(patch);
+
+    // Most of the drift is gone where it can be checked...
+    CHECK(after[0] < before[0] / 4.0);
+    // ...and a good deal of it is gone where it cannot be checked, which is the entire reason to measure
+    // it on the band: the subject has no reference and inherits the correction the band paid for. Not the
+    // whole of it - a proportional loss is a bigger shift in Lab at L 90 than at L 30, and the band never
+    // held a tone that bright, so claiming a quarter here would be claiming the correction knows the
+    // subject's colour. It does not, and must not pretend to.
+    CHECK(after[1] < before[1] / 2.0);
+}
+
+void test_a_match_is_identity_when_there_is_no_band() {
     const Extent size{40, 30};
-    // A mask over everything has no ring: nothing around the patch to match, so the patch is left
-    // exactly as it came back.
+    // A mask over everything has no band: the answer has nothing beside it to be compared with, so the
+    // patch is left exactly as it came back. This is the full-frame case.
     Image patch = Image::filled(size, 30, 140, 90, 255);
     const Image before = patch;
     Mask whole(size);
     whole.fill(255);
-    colour_match_ring(patch, before, whole);
+    CHECK(!colour_match_drift(patch, before, whole));
     for (int y = 0; y < size.h; ++y) {
         for (int x = 0; x < size.w; ++x) {
             CHECK_EQ(std::memcmp(before.at(x, y), patch.at(x, y), kChannels), 0);
         }
     }
-
-    // A flat ring and a flat patch: the shift is what is applied, and here it is zero.
-    const Image flat = flat_with_holes(size, 120);
-    Mask centre(size);
-    centre.op(Rect{12, 9, 16, 12}, MaskOp::replace);
-    Image same_as_source = flat;
-    colour_match_ring(same_as_source, flat, centre);
-    for (int y = 0; y < size.h; ++y) {
-        for (int x = 0; x < size.w; ++x) {
-            CHECK_EQ(std::memcmp(flat.at(x, y), same_as_source.at(x, y), kChannels), 0);
-        }
-    }
 }
 
-void test_a_flat_ring_does_not_flatten_a_textured_patch() {
-    const Extent size{40, 30};
-    Image original = Image::filled(size, 120, 120, 120, 255);  // a ring with no spread at all
-    Image patch = original;
-    const Mask reach = blob(size, Rect{10, 8, 20, 14});
-    for (int y = 0; y < size.h; ++y) {
-        for (int x = 0; x < size.w; ++x) {
-            if (reach.coverage(x, y) == 0) {
-                continue;
-            }
-            std::uint8_t* p = patch.at(x, y);
-            const std::uint8_t value = (x + y) % 2 == 0 ? 60 : 180;
-            p[0] = p[1] = p[2] = value;
-        }
-    }
-    colour_match_ring(patch, original, reach);
-
-    // The spread the patch had is still there: matching a ring with no variation would otherwise
-    // flatten a textured patch to a single grey, which is not a colour correction, it is a smear.
-    int low = 255;
-    int high = 0;
-    for (int y = 8; y < 22; ++y) {
-        for (int x = 10; x < 30; ++x) {
-            low = std::min(low, static_cast<int>(patch.at(x, y)[0]));
-            high = std::max(high, static_cast<int>(patch.at(x, y)[0]));
-        }
-    }
-    CHECK(high - low > 80);
-}
-
-void test_a_ring_with_no_colour_in_it_is_not_colour() {
-    // Holes in the ring are not black pixels, they are no colour. Counting them would drag the patch
-    // towards black and darken the paste for no reason - which is exactly how a match written without
-    // looking at alpha fails.
+void test_a_band_with_no_colour_in_it_is_not_colour() {
+    // Holes in the band are not black pixels, they are no colour. Pairing one would read as a drift
+    // towards dark and darken the paste for no reason the picture can show.
     const Extent size{40, 30};
     const Image original = flat_with_holes(size, 120);
     const Rect box{20, 8, 16, 14};
     Mask reach(size);
     reach.op(box, MaskOp::replace);
     Image patch = original;
-    for (int y = box.y; y < box.bottom(); ++y) {
-        for (int x = box.x; x < box.right(); ++x) {
-            patch.at(x, y)[0] = 80;  // the answer came back dark
-            patch.at(x, y)[1] = 80;
-            patch.at(x, y)[2] = 80;
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            if (patch.at(x, y)[3] == 0) {
+                continue;  // no colour on the document side either: not part of the pairing
+            }
+            std::uint8_t* p = patch.at(x, y);
+            p[0] = p[1] = p[2] = static_cast<std::uint8_t>(p[0] > 30 ? p[0] - 30 : 0);
         }
     }
-    // A pixel of the patch with no colour, inside the area being corrected.
+    // A pixel of the answer with no colour, inside the area being corrected.
     std::memcpy(patch.at(22, 9), kEmptyPixel, kChannels);
 
-    CHECK(colour_match_ring(patch, original, reach));
+    CHECK(colour_match_drift(patch, original, reach));
     for (int y = box.y; y < box.bottom(); ++y) {
         for (int x = box.x; x < box.right(); ++x) {
             if (patch.at(x, y)[3] == 0) {
@@ -790,17 +807,56 @@ void test_a_ring_with_no_colour_in_it_is_not_colour() {
                 CHECK_EQ(std::memcmp(patch.at(x, y), kEmptyPixel, kChannels), 0);
                 continue;
             }
-            // Pulled back to the ring's 120 rather than to something the black holes dragged down.
+            // Back to the 120 the band actually is, rather than to something the colourless holes
+            // dragged down.
             CHECK(patch.at(x, y)[0] >= 115);
             CHECK(patch.at(x, y)[0] <= 125);
         }
     }
 }
 
+void test_a_flat_band_shifts_without_flattening() {
+    const Extent size{40, 30};
+    const Image original = flat_with_holes(size, 120);  // a band with no spread at all
+    const Rect box{10, 8, 20, 14};
+    Mask reach(size);
+    reach.op(box, MaskOp::replace);
+    Image patch = original;
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            if (patch.at(x, y)[3] == 0) {
+                continue;
+            }
+            std::uint8_t* p = patch.at(x, y);
+            p[0] = p[1] = p[2] = static_cast<std::uint8_t>(p[0] > 20 ? p[0] - 20 : 0);
+        }
+    }
+    for (int y = box.y; y < box.bottom(); ++y) {
+        for (int x = box.x; x < box.right(); ++x) {
+            const std::uint8_t value = (x + y) % 2 == 0 ? 60 : 180;
+            std::memcpy(patch.at(x, y), &value, 1);
+            patch.at(x, y)[1] = patch.at(x, y)[2] = value;
+        }
+    }
+
+    CHECK(colour_match_drift(patch, original, reach));
+    // The spread the answer brought with it is still there: matching a band with no variation would
+    // otherwise flatten a textured patch to one grey, which is not a correction, it is a smear.
+    int low = 255;
+    int high = 0;
+    for (int y = box.y; y < box.bottom(); ++y) {
+        for (int x = box.x; x < box.right(); ++x) {
+            low = std::min(low, static_cast<int>(patch.at(x, y)[0]));
+            high = std::max(high, static_cast<int>(patch.at(x, y)[0]));
+        }
+    }
+    CHECK(high - low > 80);
+}
+
 void test_the_spread_correction_stops_short_of_a_palette_change() {
     const Extent size{40, 30};
-    // A ring that runs the width of the range, and a patch that barely varies: matching their
-    // spreads exactly would blow the patch apart.
+    // A band running the width of the range in the document, and an answer that returned it barely
+    // varying: matching those spreads exactly would blow the new content apart.
     Image original = Image::filled(size, 0, 0, 0, 255);
     for (int y = 0; y < size.h; ++y) {
         for (int x = 0; x < size.w; ++x) {
@@ -814,15 +870,25 @@ void test_the_spread_correction_stops_short_of_a_palette_change() {
     Image patch = original;
     for (int y = 0; y < size.h; ++y) {
         for (int x = 0; x < size.w; ++x) {
-            if (reach.coverage(x, y) == 0) {
+            if (x >= box.x && x < box.right() && y >= box.y && y < box.bottom()) {
                 continue;
             }
+            if (patch.at(x, y)[3] == 0) {
+                continue;
+            }
+            // The band came back nearly flat, whatever the answer did to the subject.
+            const std::uint8_t value = (x / 3) % 2 == 0 ? 110 : 130;
+            patch.at(x, y)[0] = patch.at(x, y)[1] = patch.at(x, y)[2] = value;
+        }
+    }
+    for (int y = box.y; y < box.bottom(); ++y) {
+        for (int x = box.x; x < box.right(); ++x) {
             const std::uint8_t value = (x + y) % 2 == 0 ? 110 : 130;
             patch.at(x, y)[0] = patch.at(x, y)[1] = patch.at(x, y)[2] = value;
         }
     }
 
-    CHECK(colour_match_ring(patch, original, reach));
+    CHECK(colour_match_drift(patch, original, reach));
     int low = 255;
     int high = 0;
     for (int y = box.y; y < box.bottom(); ++y) {
@@ -831,12 +897,11 @@ void test_the_spread_correction_stops_short_of_a_palette_change() {
             high = std::max(high, static_cast<int>(patch.at(x, y)[0]));
         }
     }
-    CHECK(high > low);                                          // it did correct something
-    // The ring's spread is far wider than the patch's, so an uncapped ratio would blow this 20-step
+    CHECK(high > low);  // it did correct something
+    // The band's spread is far wider than the answer's, so an uncapped ratio would throw this 20-step
     // texture across the whole range. The cap is two, and two of a 20-step texture is 40.
     CHECK(high - low <= 2 * (130 - 110) + 6);
 }
-
 
 // The other operation the compositor has to serve: a generation, whose whole point is pixels the layer
 // never had. Same rule, one argument changed - it blends by coverage either way, and how far a write may
@@ -903,11 +968,12 @@ int main() {
     test_a_refusal_leaves_every_byte_alone();
     test_the_auto_feather_is_a_fraction_of_the_feature();
     test_an_answer_lands_on_the_crop_it_came_from();
-    test_the_flag_decides_and_a_missing_ring_matches_nothing();
-    test_a_drifted_answer_is_pulled_back_to_the_ring();
-    test_a_match_is_identity_when_there_is_no_ring_or_nothing_to_scale();
-    test_a_flat_ring_does_not_flatten_a_textured_patch();
-    test_a_ring_with_no_colour_in_it_is_not_colour();
+    test_the_flag_decides_and_a_missing_band_matches_nothing();
+    test_an_answer_that_changed_only_the_subject_is_left_exactly_alone();
+    test_the_drift_on_the_band_is_taken_back_off_the_whole_answer();
+    test_a_match_is_identity_when_there_is_no_band();
+    test_a_flat_band_shifts_without_flattening();
+    test_a_band_with_no_colour_in_it_is_not_colour();
     test_the_spread_correction_stops_short_of_a_palette_change();
     return noise::test::summary(__FILE__);
 }

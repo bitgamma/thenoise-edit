@@ -106,38 +106,38 @@ struct Spread {
 
 }  // namespace
 
-bool colour_match_ring(Image& patch, const Image& original, const Mask& reach) {
+bool colour_match_drift(Image& patch, const Image& original, const Mask& reach) {
     if (patch.empty() || patch.size() != original.size() || !reach.sized()) {
         return false;
     }
 
-    Spread ring;
-    Spread painted;
+    // One pixel set, two images. The band is the part of the crop the operation was never about - the
+    // context the region compiler grew the box by - and it is the only part of the answer that has a
+    // reference to be checked against: the document holds the same pixels.
+    Spread document;
+    Spread returned;
     for (int y = 0; y < patch.size().h; ++y) {
         for (int x = 0; x < patch.size().w; ++x) {
-            // A pixel with no alpha holds no colour. Counting one would pull the mean towards black
-            // and darken the paste for no reason the picture can show.
-            if (original.at(x, y)[3] == 0) {
-                if (reach.coverage(x, y) > 0 && patch.at(x, y)[3] > 0) {
-                    painted.add(lab_of(patch.at(x, y)));
-                }
+            if (reach.coverage(x, y) > 0) {
+                continue;  // new content, and nothing on earth to compare it with
+            }
+            // A pixel with no alpha holds no colour, and pairing a colour with black would read as a
+            // drift towards dark and darken the paste for no reason the picture can show.
+            if (original.at(x, y)[3] == 0 || patch.at(x, y)[3] == 0) {
                 continue;
             }
-            if (reach.coverage(x, y) > 0) {
-                painted.add(lab_of(patch.at(x, y)));
-            } else {
-                ring.add(lab_of(original.at(x, y)));
-            }
+            document.add(lab_of(original.at(x, y)));
+            returned.add(lab_of(patch.at(x, y)));
         }
     }
-    if (ring.pixels < 2 || painted.pixels < 2) {
+    if (document.pixels < 2) {
         return false;
     }
 
-    const std::array<double, kLabChannels> from = painted.mean();
-    const std::array<double, kLabChannels> to = ring.mean();
-    const std::array<double, kLabChannels> from_spread = painted.deviation();
-    const std::array<double, kLabChannels> to_spread = ring.deviation();
+    const std::array<double, kLabChannels> from = returned.mean();
+    const std::array<double, kLabChannels> to = document.mean();
+    const std::array<double, kLabChannels> from_spread = returned.deviation();
+    const std::array<double, kLabChannels> to_spread = document.deviation();
 
     std::array<double, kLabChannels> ratio{1.0, 1.0, 1.0};
     bool corrected = false;

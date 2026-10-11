@@ -14,27 +14,35 @@ inline constexpr double kMinLabDeviation = 1.0;
 // and a ring that happens to be far more varied than the patch can ask for one.
 inline constexpr double kMaxDeviationRatio = 2.0;
 
-// Pulls `patch` back to the colour of the picture it belongs to. An instruction edit drifts the tone
-// and the chroma of the frame it returns; the pixels around the mask are the ones the patch has to
-// continue, so `patch` takes their Lab mean, and their spread too when both sides have one.
+// Undo what the model did to the pixels it was not asked to change.
+//
+// An instruction edit drifts the tone and chroma of the frame it returns. The region compiler grows the
+// crop by a band of context the operation is not about, the answer contains that same band, and the
+// document holds the very same pixels - so the band can be *paired*, pixel against pixel, and the mean
+// Lab difference across it is the drift. Subtracting it from every pixel of the answer puts the frame
+// back where it was, including inside the area nobody has a reference for.
+//
+// What this deliberately does **not** do is pull the new content towards the colour of what surrounds
+// it. That was this function's definition (`colour_match_ring`) and it is wrong for anything but a hole:
+// a change that turns a face's eyes green also returns the face, and mapping that face onto the mean of
+// the hair and background around it is how an edit came back as a visibly dark patch. The band is a
+// reference for drift, not a palette.
 //
 // `reach` is the coverage the composite is about to paste with, in the same coordinates as the two
-// images: the **ring** is where `reach` does not reach and `original` has some alpha, and the
-// **patch set** is where `reach` does and `patch` has some alpha. A pixel with no colour tells this
-// nothing about colour, which is why both sets exclude it - including one would drag the match
-// towards black.
+// images. The band is where `reach` does not reach **and both images hold colour**: a pixel transparent
+// on either side is excluded, because pairing a colour with black reads as a drift towards dark.
 //
-// Equal weight per pixel in the patch set, not weighted by coverage: the feather band is a few
-// pixels wide and a weighted mean would make the correction depend on a radius the caller can change
-// without changing what is in the patch.
+// Spread is matched from the same paired band, which is why the two deviations are of one pixel set and
+// a scale factor between them means something.
 //
-// Identity - nothing written, and `false` - when either set holds fewer than two pixels (a mask
-// covering the whole crop has no ring, which is the full-frame case: nothing around it to match),
-// when a deviation is below `kMinLabDeviation` on either side (the mean shift is applied and the
-// spread left alone, so a flat ring does not flatten a textured patch), or when the shift and the
-// ratios come out at nothing. Pixels with no alpha are left exactly alone.
+// Identity - nothing written, and `false` - when the band holds fewer than two pixels (a mask covering
+// the whole crop has no band: nothing to compare against, which is the full-frame case), when a
+// deviation is below `kMinLabDeviation` on either side (the shift is applied and the spread left alone,
+// so a flat band does not flatten a textured patch), or when the shift and the ratios come out at
+// nothing - which is the case a correct edit in place should land in: the model changed the thing it was
+// told to change and nothing else, so there is nothing to correct.
 //
 // `patch`'s alpha is its own: this corrects colour, never coverage.
-bool colour_match_ring(Image& patch, const Image& original, const Mask& reach);
+bool colour_match_drift(Image& patch, const Image& original, const Mask& reach);
 
 }  // namespace noise::ai
