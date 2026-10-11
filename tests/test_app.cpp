@@ -2045,7 +2045,9 @@ void test_a_recipe_runs_against_the_recorded_server_and_lands() {
         }
     }
 
-    const json vars = json{{"target", "the lamp"}, {"context_desc", "a painted wall"}};
+    // Remove is asked for nothing, so the only value a caller may overrule is the line the recipe
+    // fills for itself until `enhance` does.
+    const json vars = json{{"context_desc", "a painted wall"}};
     const json preview = h.value("ai.preview",
                                  json{{"recipe", "inpaint-remove"}, {"vars", vars}, {"seed", 42}});
     const json request = preview["request"];
@@ -2058,14 +2060,15 @@ void test_a_recipe_runs_against_the_recorded_server_and_lands() {
     // plus the context the recipe asked for.
     CHECK_EQ(asked_w % 16, 0);
     CHECK(asked_w >= 40);
-    bool sent_prompt = false;
+    std::string sent_prompt;
     for (const json& pair : request["fields"]) {
         if (pair[0].get<std::string>() == "prompt") {
-            sent_prompt = pair[1].get<std::string>().find("the lamp") != std::string::npos;
+            sent_prompt = pair[1].get<std::string>();
         }
         CHECK(pair[0].get<std::string>() != "mask");
     }
-    CHECK(sent_prompt);
+    CHECK(sent_prompt.find("Remove the marked content") != std::string::npos);
+    CHECK(sent_prompt.find("a painted wall") != std::string::npos);
     // The prepped region exists on disk and is what the request names by hash.
     CHECK(std::filesystem::exists(preview["prepped"].get<std::string>()));
     CHECK_EQ(request["image_bytes"].get<std::size_t>() > 0, true);
@@ -2273,11 +2276,14 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
 
     const json read = h.value("ai.intent", json::object());
     CHECK_EQ(read["recipe"].get<std::string>(), std::string("inpaint-remove"));
+    std::fprintf(stderr, "  [mark A]\n");
     CHECK_EQ(read["label"].get<std::string>(), std::string("Remove"));
-    CHECK_EQ(read["ask"].size(), std::size_t(1));
-    CHECK_EQ(read["ask"][0].get<std::string>(), std::string("target"));
-    // Untouched, the field holds the recipe's own default, which is what a headless run gets too.
-    CHECK_EQ(read["vars"]["target"].get<std::string>(), std::string("object"));
+    // Remove asks for nothing: the marked area *is* the instruction, and a box holding the recipe's own
+    // guess is a run that spends the box's quota on words nobody typed.
+    CHECK(read["ask"].empty());
+    // What is on show is what a headless run would send: the recipe's own defaults, and no question.
+    CHECK_EQ(read["vars"]["context_desc"].get<std::string>(), std::string("background"));
+    std::fprintf(stderr, "  [mark B]\n");
     CHECK_EQ(read["intents"].size(), std::size_t(5));
     CHECK(read["preview"].is_null());   // reading pays for nothing
     CHECK(read["stale"].get<bool>());   // and nothing compiled is, by definition, not current
@@ -2287,6 +2293,7 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     // server every frame would freeze the window on a connect timeout.
     CHECK(!read["connect_attempted"].get<bool>());
     CHECK(read["configured"].get<bool>());
+    std::fprintf(stderr, "  [mark C]\n");
     const json connected = h.value("ai.intent", json{{"connect", true}});
     CHECK(connected["connected"].get<bool>());
     CHECK(connected["connect_attempted"].get<bool>());
@@ -2296,6 +2303,7 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     CHECK_EQ(bounds[2].get<int>(), 36);
 
     // Refusals name the thing that was wrong, including what *was* offered.
+    std::fprintf(stderr, "  [mark D]\n");
     const CommandResult unknown_intent = h.run("ai.intent", json{{"recipe", "spline-reticulate"}});
     CHECK(!unknown_intent.ok);
     CHECK(unknown_intent.error.find("spline-reticulate") != std::string::npos);
@@ -2311,16 +2319,21 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     CHECK_EQ(read["seed"].get<std::int64_t>(), std::int64_t(0));
     CHECK(!h.run("ai.intent", json{{"seed", -1}}).ok);
 
+    std::fprintf(stderr, "  [mark E]\n");
     h.value("server.connect", json::object());
-    const json with_words = h.value("ai.intent", json{{"vars", json{{"target", "the lamp"}}}});
+    // The one thing a caller may still overrule on Remove is a line the recipe fills for itself.
+    const json with_words = h.value("ai.intent", json{{"vars", json{{"context_desc", "a painted wall"}}}});
     CHECK(with_words["ready"].get<bool>());
     CHECK(!with_words["stale"].get<bool>());
     CHECK_EQ(with_words["preview"]["request"]["path"].get<std::string>(), std::string("/images/edits"));
-    CHECK(with_words["preview"]["prompt"].get<std::string>().find("the lamp") != std::string::npos);
+    CHECK(with_words["preview"]["prompt"].get<std::string>().find("Remove the marked content") !=
+          std::string::npos);
+    CHECK(with_words["preview"]["prompt"].get<std::string>().find("a painted wall") != std::string::npos);
     CHECK(!with_words["swap"].get<bool>());   // nothing was resident, so nothing has to change
 
     // The seed is a request field, so retyping it changes the request and therefore its key - and
     // nothing else about the compile.
+    std::fprintf(stderr, "  [mark F]\n");
     const std::string seed_before = with_words["preview"]["request"]["cache_key"].get<std::string>();
     const json reseeded = h.value("ai.intent", json{{"seed", 1234}});
     CHECK_EQ(reseeded["seed"].get<std::int64_t>(), std::int64_t(1234));
@@ -2341,19 +2354,26 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     h.value("ai.intent", json{{"recipe", "inpaint-remove"}});
     CHECK(!h.value("ai.intent", json::object())["stale"].get<bool>());
 
-    // Switching intent keeps what the next one asks and forgets what it does not, so a `replacement`
-    // cannot ride silently into a recipe that never asked for one.
+    std::fprintf(stderr, "  [mark G]\n");
+    // Switching verb keeps what the next one asks and forgets what it does not, so an instruction
+    // cannot ride silently into an operation that never asked for one. Asked fields have no defaults,
+    // so the box shows either what was typed or nothing.
     h.value("ai.intent", json{{"recipe", "inpaint-replace"}});
-    CHECK_EQ(h.value("ai.intent", json::object())["vars"]["target"].get<std::string>(),
-             std::string("the lamp"));
-    h.value("ai.intent", json{{"vars", json{{"replacement", "a floor lamp"}}}});
+    CHECK(!h.value("ai.intent", json::object())["vars"].contains("instruction"));
+    h.value("ai.intent", json{{"vars", json{{"instruction", "a floor lamp"}}}});
+    CHECK_EQ(h.value("ai.intent", json::object())["vars"]["instruction"].get<std::string>(),
+             std::string("a floor lamp"));
+    // And the forgetting is real: Remove asks for nothing, so the words typed for Change go rather
+    // than wait somewhere for its return. Asked fields have no default to fall back to, so coming back
+    // to Change shows an empty box - which is the point of asking.
     h.value("ai.intent", json{{"recipe", "inpaint-remove"}});
+    CHECK(!h.value("ai.intent", json::object())["vars"].contains("instruction"));
     h.value("ai.intent", json{{"recipe", "inpaint-replace"}});
-    CHECK_EQ(h.value("ai.intent", json::object())["vars"]["replacement"].get<std::string>(),
-             std::string("a similar object"));
+    CHECK(!h.value("ai.intent", json::object())["vars"].contains("instruction"));
 
     // A swap is priced before it happens, not discovered afterwards: load a different model, and Run
     // refuses with both names and the word that would let it through.
+    std::fprintf(stderr, "  [mark H]\n");
     h.value("server.load", json{{"model", "Krea-v0.3.1-INT8"}});
     const json swapped = h.value("ai.intent", json{{"recipe", "inpaint-remove"}});
     CHECK(swapped["swap"].get<bool>());
@@ -2462,6 +2482,46 @@ void test_an_option_left_out_keeps_the_policy_the_table_asked_for() {
              switched_off["composite"]["coverage_pixels"].get<std::size_t>());
 }
 
+// Words an operation asked for are not optional at the door: an empty instruction is no instruction,
+// and the model would invent one on the box's time. The refusal names the recipe and the field, nothing
+// is queued, and the same door with the field filled compiles the request.
+void test_a_run_that_was_asked_for_words_refuses_without_them() {
+    Harness h;
+    h.value("doc.new", json{{"width", 64}, {"height", 48}, {"fill", json::array({20, 40, 60, 255})}});
+    h.value("select.rect", json{{"rect", json::array({8, 6, 24, 16})}});
+    h.value("server.connect", json::object());
+
+    const CommandResult wordless = h.run("ai.run", json{{"recipe", "region-fill"}, {"seed", 3}});
+    CHECK(!wordless.ok);
+    CHECK(wordless.error.find("region-fill") != std::string::npos);
+    CHECK(wordless.error.find("'prompt'") != std::string::npos);
+    CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(0));
+
+    // A box of spaces is the same refusal: nothing was said.
+    const CommandResult blank =
+        h.run("ai.run", json{{"recipe", "region-fill"}, {"vars", json{{"prompt", "   "}}}, {"seed", 3}});
+    CHECK(!blank.ok);
+    CHECK(blank.error.find("whitespace") != std::string::npos);
+    CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(0));
+
+    const json filled =
+        h.value("ai.preview", json{{"recipe", "region-fill"},
+                                   {"vars", json{{"prompt", "a brass reading lamp"}}}, {"seed", 3}});
+    std::string prompt;
+    for (const json& pair : filled["request"]["fields"]) {
+        if (pair[0].get<std::string>() == "prompt") {
+            prompt = pair[1].get<std::string>();
+        }
+    }
+    CHECK(prompt.find("a brass reading lamp") != std::string::npos);
+    CHECK(prompt.find("{{") == std::string::npos);
+
+    // Remove asks for nothing, so the same door runs it with no `vars` at all - the flagship sequence
+    // has no step where a person has to type.
+    const json wordless_remove = h.value("ai.preview", json{{"recipe", "inpaint-remove"}, {"seed", 3}});
+    CHECK(wordless_remove["request"]["path"].get<std::string>() == "/images/edits");
+}
+
 // An answer arrives on **its own layer**, above the one the region was flattened from, and the pixels the
 // layer under it never had are exactly what it is there to fill. There is no "into the active layer"
 // option any more, so the claims that option existed to make are gone and two better ones take their
@@ -2515,6 +2575,7 @@ int main() {
     test_the_selection_panel_runs_its_intent_through_one_command();
     test_an_unconfigured_server_names_the_variable();
     test_an_option_left_out_keeps_the_policy_the_table_asked_for();
+    test_a_run_that_was_asked_for_words_refuses_without_them();
     test_an_answer_lands_on_its_own_layer_over_an_empty_one();
     test_every_command_refuses_an_argument_it_does_not_declare();
     test_a_container_that_is_not_ours_is_refused_naming_what_it_met();
@@ -2564,5 +2625,5 @@ int main() {
     test_screenshot_returns_exactly_what_the_capture_gave();
     test_a_shorter_image_stays_centred_under_panning();
     test_view_navigation_keeps_the_image_reachable();
-    return test::summary("app");
+    return noise::test::summary(__FILE__);
 }

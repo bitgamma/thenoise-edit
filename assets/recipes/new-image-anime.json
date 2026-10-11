@@ -16,5 +16,8 @@
     "feather": "auto",
     "colour_match": false,
     "lock_band_px": 0
-  }
+  },
+  "ask": [
+    "prompt"
+  ]
 }

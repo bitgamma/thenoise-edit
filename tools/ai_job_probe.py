@@ -36,7 +36,9 @@ import wire_drive as wd  # noqa: E402
 
 W, H = 420, 300
 RECIPE = "inpaint-remove"
-VARS = {"target": "red marker", "context_desc": "graded backdrop"}
+# Remove is asked for nothing - the marked area is the instruction - so the only value here overrules a
+# line the recipe fills for itself.
+VARS = {"context_desc": "graded backdrop"}
 
 
 def scene() -> np.ndarray:
@@ -138,8 +140,10 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
                                 "response_format"} - {"image"},
                 "the field list is exactly the tier-1 set", str(sorted(fields)))
         prompt = str(fields["prompt"])
-        p.check("{{" not in prompt and VARS["target"] in prompt,
-                "the recipe's placeholders were substituted before sending", prompt[:60] + "...")
+        p.check("{{" not in prompt and VARS["context_desc"] in prompt and
+                "Remove the marked content" in prompt,
+                "the recipe's placeholders were substituted, and the sentence is the wordless one",
+                prompt[:60] + "...")
         prepped = pathlib.Path(preview["prepped"])
         p.check(prepped.exists(), "the prepped region is on disk", prepped.name)
         with Image.open(prepped) as handle:

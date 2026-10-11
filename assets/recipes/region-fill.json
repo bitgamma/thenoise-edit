@@ -1,6 +1,6 @@
 {
   "id": "region-fill",
-  "label": "Fill region",
+  "label": "Fill",
   "operation": "reconstruct",
   "endpoint": "edits",
   "role": "edit",
@@ -14,7 +14,6 @@
     "Change nothing outside the marked area."
   ],
   "variables": {
-    "prompt": "the described content",
     "context_desc": "background"
   },
   "ask": [

@@ -404,12 +404,13 @@ std::optional<Recipe> parse_recipe(const nlohmann::json& body, const std::string
             recipe.variables[it.key()] = it.value().get<std::string>();
         }
     }
-    // Which of those defaults the user is asked to replace. Everything not listed runs on its
-    // default, which is how a headless `ai.run` and the panel agree on one set of values - and how
-    // `context_desc` stays unwritten until the `enhance` role fills it.
+    // What a person is asked to type. An asked-for name has **no default anywhere**: text sitting in the
+    // box meant for the user is text nobody chose, and it spends a model's time on a sentence the
+    // recipe wrote. Names not asked for run on their default, which is how a headless `ai.run` and the
+    // window agree on one set of values - and how `context_desc` stays unwritten until `enhance` fills it.
     if (body.contains("ask")) {
         if (!body.at("ask").is_array()) {
-            error = origin + ": 'ask' must be an array of 'variables' names";
+            error = origin + ": 'ask' must be an array of names the prompt asks for";
             return std::nullopt;
         }
         for (std::size_t i = 0; i < body.at("ask").size(); ++i) {
@@ -419,14 +420,60 @@ std::optional<Recipe> parse_recipe(const nlohmann::json& body, const std::string
                 return std::nullopt;
             }
             const std::string variable = name.get<std::string>();
-            if (!recipe.variables.contains(variable)) {
-                error = origin + ": 'ask' names '" + variable +
-                        "', which 'variables' gives no default for, so it would be asked for and "
-                        "then refused as unknown";
+            const auto prefilled = recipe.variables.find(variable);
+            if (prefilled != recipe.variables.end()) {
+                error = origin + ": 'ask' names '" + variable + "' while 'variables' prefills it with '" +
+                        prefilled->second + "'; an asked-for field starts empty, so it belongs in 'ask' "
+                        "and not in 'variables'";
+                return std::nullopt;
+            }
+            const std::string placeholder = "{{" + variable + "}}";
+            const bool referenced = std::any_of(recipe.prompt_lines.begin(), recipe.prompt_lines.end(),
+                                                [&placeholder](const std::string& line) {
+                                                    return line.find(placeholder) != std::string::npos;
+                                                });
+            if (!referenced) {
+                error = origin + ": 'ask' collects '" + variable +
+                        "' and no 'prompt' line mentions '" + placeholder +
+                        "', so the answer to the question would be thrown away";
+                return std::nullopt;
+            }
+            if (std::find(recipe.ask.begin(), recipe.ask.end(), variable) != recipe.ask.end()) {
+                error = origin + ": 'ask' names '" + variable + "' twice";
                 return std::nullopt;
             }
             recipe.ask.push_back(variable);
         }
+    }
+    // How many words an operation may need is a property of the operation, not of the prompt.
+    // `from_words` has no source image at all, so its one field is the content; `transform` is a
+    // resample and wants no prose; a reconstruction can be wordless (the mask says what to remove) and
+    // an in-place edit can be wordless (re-render this frame), but neither takes a second question.
+    switch (recipe.operation) {
+        case Operation::reconstruct:
+        case Operation::in_place:
+            if (recipe.ask.size() > 1) {
+                error = origin + ": operation '" + operation + "' asks for " +
+                        std::to_string(recipe.ask.size()) +
+                        " fields; one box at most, because two questions in one box is the "
+                        "'replace the lamp with a boat' ambiguity this table exists to remove";
+                return std::nullopt;
+            }
+            break;
+        case Operation::from_words:
+            if (recipe.ask.size() != 1) {
+                error = origin + ": operation '" + operation + "' needs exactly one 'ask' field - it has "
+                                "no source image, so without a description there is nothing to generate";
+                return std::nullopt;
+            }
+            break;
+        case Operation::transform:
+            if (!recipe.ask.empty()) {
+                error = origin + ": operation '" + operation + "' asks for '" + recipe.ask.front() +
+                        "'; a transform is given pixels and a size, not a sentence";
+                return std::nullopt;
+            }
+            break;
     }
 
     if (!body.contains("composite")) {
@@ -573,6 +620,21 @@ std::optional<RecipeSet> load_recipes(const std::string& directory, std::string&
 std::optional<std::string> build_prompt(const Recipe& recipe,
                                         const std::map<std::string, std::string>& given,
                                         std::string& error) {
+    // An asked-for field *is* what the operation was told. Blank is not a weak instruction but no
+    // instruction, and the model would invent one at the user's expense, so this refuses here - the one
+    // place a prompt is rendered - rather than letting a door forget and send a sentence with a hole in it.
+    for (const std::string& name : recipe.ask) {
+        const auto supplied = given.find(name);
+        if (supplied == given.end()) {
+            error = "recipe '" + recipe.id + "' asks for '" + name + "' and was given nothing; pass "
+                    "vars {\"" + name + "\": \"...\"} - an operation with no words is a coin toss";
+            return std::nullopt;
+        }
+        if (supplied->second.find_first_not_of(" \t\r\n") == std::string::npos) {
+            error = "recipe '" + recipe.id + "' asks for '" + name + "' and was given only whitespace";
+            return std::nullopt;
+        }
+    }
     std::string out;
     for (std::size_t line = 0; line < recipe.prompt_lines.size(); ++line) {
         const std::string& source = recipe.prompt_lines[line];

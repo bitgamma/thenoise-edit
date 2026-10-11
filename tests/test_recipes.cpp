@@ -35,6 +35,7 @@ json minimal(const char* id = "test-recipe") {
                 {"prep", "blur"},
                 {"enhance", "never"},
                 {"prompt", json::array({"Remove {{target}}.", "Match the {{context_desc}}."})},
+                {"ask", json::array({"target"})},
                 {"composite", json{{"feather", "auto"}}}};
 }
 
@@ -102,6 +103,8 @@ void test_an_operation_and_a_hole_are_the_same_concept_or_neither() {
     transform["prep"] = "none";
     transform["endpoint"] = "upscale";
     transform["role"] = "upscale";
+    transform["prompt"] = json::array({"Make this picture larger."});
+    transform["ask"] = json::array();
     CHECK(operation_name(parse_or_fail(transform).operation) == std::string("transform"));
     json generate = minimal();
     generate["operation"] = "from_words";
@@ -109,6 +112,8 @@ void test_an_operation_and_a_hole_are_the_same_concept_or_neither() {
     generate["endpoint"] = "generations";
     generate["role"] = "generation";
     generate["region"] = "document";
+    generate["prompt"] = json::array({"{{prompt}}", "Compose the whole frame."});
+    generate["ask"] = json::array({"prompt"});
     CHECK(operation_name(parse_or_fail(generate).operation) == std::string("from_words"));
 }
 
@@ -188,10 +193,96 @@ void test_a_recipe_that_states_the_impossible_is_refused_by_name() {
           }())
               .find("steps_per_second") != std::string::npos);
 
-    // A placeholder with no value and no default cannot be guessed.
+    // A placeholder with no value and no default cannot be guessed. `ask` names `target`, so the
+    // unfilled one here is `context_desc` - a default the recipe owns, not a question it asks.
     std::string error;
     CHECK(!build_prompt(parse_or_fail(minimal()), {{"target", "the lamp"}}, error).has_value());
     CHECK(error.find("context_desc") != std::string::npos);
+}
+
+// The words an operation runs on are typed by a person, or the run does not happen. Every rule here is
+// the parser refusing a file that would otherwise spend a model's time on a sentence nobody chose -
+// the prefilled default being the worst of them, because it looks exactly like a working button.
+void test_the_words_an_operation_asks_for_are_the_words_it_is_given() {
+    const auto refuses = [](json body, const char* needle) {
+        const std::string why = parse_refusal(body);
+        CHECK(why.find(needle) != std::string::npos);
+    };
+
+    // Asked for and prefilled at once: the box holds the recipe's own guess and a run sends it.
+    refuses([&] {
+        json body = minimal();
+        body["variables"] = {{"target", "object"}};
+        body["ask"] = json::array({"target"});
+        return body;
+    }(), "prefills it with 'object'");
+
+    // Asked for and nowhere in the prompt: the answer is collected and thrown away.
+    refuses([&] {
+        json body = minimal();
+        body["ask"] = json::array({"colour"});
+        return body;
+    }(), "no 'prompt' line mentions '{{colour}}'");
+
+    refuses([&] {
+        json body = minimal();
+        body["ask"] = json::array({"target", "target"});
+        return body;
+    }(), "twice");
+
+    // Two questions in one box is the `Replace` ambiguity the verb table exists to remove.
+    refuses([&] {
+        json body = minimal();
+        body["prompt"] = json::array({"Remove {{target}} and add {{extra}}."});
+        body["ask"] = json::array({"target", "extra"});
+        return body;
+    }(), "one box at most");
+
+    // `from_words` has no source image: with no field it generates from nothing.
+    refuses([&] {
+        json body = minimal();
+        body["operation"] = "from_words";
+        body["prep"] = "none";
+        body["endpoint"] = "generations";
+        body["role"] = "generation";
+        body["region"] = "document";
+        body["ask"] = json::array();
+        return body;
+    }(), "exactly one");
+
+    // A transform is given pixels and a size.
+    refuses([&] {
+        json body = minimal();
+        body["operation"] = "transform";
+        body["prep"] = "none";
+        body["endpoint"] = "upscale";
+        body["role"] = "upscale";
+        body["ask"] = json::array({"target"});
+        return body;
+    }(), "not a sentence");
+
+    // What is legal: a reconstruction with no words at all - the marked area is the instruction - and
+    // one with the single field the file states.
+    std::string why;
+    CHECK(parse_recipe([&] {
+        json body = minimal();
+        body["prompt"] = json::array({"Remove the marked content."});
+        body["ask"] = json::array();
+        return body;
+    }(), "test", why).has_value());
+    const Recipe one = parse_or_fail(minimal());
+    REQUIRE(one.ask.size() == 1);
+    CHECK_EQ(one.ask[0], std::string("target"));
+
+    // Being given nothing for an asked field is refused at the one place a prompt is rendered, so no
+    // door can send a sentence with a hole in it.
+    std::string error;
+    CHECK(!build_prompt(one, {}, error).has_value());
+    CHECK(error.find("asks for 'target'") != std::string::npos);
+    CHECK(error.find("given nothing") != std::string::npos);
+    CHECK(!build_prompt(one, {{"target", "   "}}, error).has_value());
+    CHECK(error.find("whitespace") != std::string::npos);
+    CHECK(build_prompt(one, {{"target", "the lamp"}, {"context_desc", "wall"}}, error).has_value());
 }
 
 // The shipped set is the product: it has to load, and it has to agree with the role table it names. A
@@ -277,25 +368,11 @@ void test_a_recipe_says_what_it_is_called_and_what_it_asks() {
 
     const std::string unknown = parse_refusal([&] {
         json body = minimal();
-        body["variables"] = {{"target", "object"}};
         body["ask"] = json::array({"target", "colour"});
         return body;
     }());
     CHECK(unknown.find("'colour'") != std::string::npos);
-    CHECK(unknown.find("ask") != std::string::npos);
-
-    Recipe asked = parse_or_fail([&] {
-        json body = minimal();
-        body["variables"] = {{"target", "object"}, {"replacement", "another object"}};
-        body["ask"] = json::array({"replacement", "target"});
-        return body;
-    }());
-    CHECK_EQ(asked.label, std::string("Test intent"));
-    // The order the file states: a form whose fields reorder themselves every load is a form that
-    // puts words in the wrong box.
-    REQUIRE(asked.ask.size() == std::size_t(2));
-    CHECK_EQ(asked.ask[0], std::string("replacement"));
-    CHECK_EQ(asked.ask[1], std::string("target"));
+    CHECK(unknown.find("prompt") != std::string::npos);
 }
 
 // The intents a selection offers are the recipes whose region is the selection and whose endpoint
@@ -331,14 +408,27 @@ void test_a_selection_offers_the_selection_recipes() {
     const Recipe* replace = set->find("inpaint-replace");
     REQUIRE(remove != nullptr);
     REQUIRE(replace != nullptr);
+    // The three verbs a selection offers, in the shape the docs settled on: Remove needs no words
+    // because the marked area *is* the instruction, Fill and Change get exactly one empty box each,
+    // and no recipe in the set prefills a field it asks for.
     CHECK_EQ(remove->label, std::string("Remove"));
-    CHECK_EQ(remove->ask, (std::vector<std::string>{"target"}));
-    CHECK_EQ(replace->label, std::string("Replace"));
-    CHECK_EQ(replace->ask, (std::vector<std::string>{"target", "replacement"}));
-    // Asking nothing is legal and means nothing is asked: `heal` runs on what is under the selection
-    // and `upscale` on the whole of it, with no words from anyone.
+    CHECK(remove->ask.empty());
+    CHECK_EQ(replace->label, std::string("Change"));
+    CHECK_EQ(replace->ask, (std::vector<std::string>{"instruction"}));
+    CHECK_EQ(set->find("region-fill")->ask, (std::vector<std::string>{"prompt"}));
     CHECK(set->find("heal")->ask.empty());
     CHECK(set->find("upscale")->ask.empty());
+    for (const Recipe& recipe : set->recipes) {
+        for (const std::string& name : recipe.ask) {
+            CHECK(recipe.variables.find(name) == recipe.variables.end());
+        }
+    }
+    // Generating has no source image, so every generation recipe asks for its description.
+    for (const char* id : {"new-image", "new-image-anime", "new-image-photo"}) {
+        const Recipe* recipe = set->find(id);
+        REQUIRE(recipe != nullptr);
+        CHECK_EQ(recipe->ask, (std::vector<std::string>{"prompt"}));
+    }
 }
 
 }  // namespace
@@ -348,6 +438,7 @@ int main() {
     test_a_recipe_reads_as_the_policy_it_claims_to_be();
     test_a_recipe_that_states_the_impossible_is_refused_by_name();
     test_the_shipped_recipes_agree_with_the_shipped_roles();
+    test_the_words_an_operation_asks_for_are_the_words_it_is_given();
     test_a_recipe_says_what_it_is_called_and_what_it_asks();
     test_a_selection_offers_the_selection_recipes();
     return noise::test::summary(__FILE__);

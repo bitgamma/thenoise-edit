@@ -1,6 +1,6 @@
 {
   "id": "inpaint-replace",
-  "label": "Replace",
+  "label": "Change",
   "operation": "in_place",
   "endpoint": "edits",
   "role": "edit",
@@ -8,19 +8,16 @@
   "prep": "none",
   "enhance": "never",
   "prompt": [
-    "Replace the {{target}} in this image with {{replacement}}.",
+    "Change the marked content of this image into: {{instruction}}",
     "Keep the framing, lighting, light direction, perspective, focus and grain of the",
-    "surrounding {{context_desc}} exactly as they are, and match the replacement to them.",
-    "Change nothing else in the image."
+    "surrounding {{context_desc}} exactly as they are, and match the change to them.",
+    "Change nothing outside the marked area."
   ],
   "variables": {
-    "target": "object",
-    "replacement": "a similar object",
     "context_desc": "background"
   },
   "ask": [
-    "target",
-    "replacement"
+    "instruction"
   ],
   "composite": {
     "feather": "auto",

@@ -9,12 +9,9 @@
   "enhance": "never",
   "prompt": [
     "Rework this image in the same composition, subject and palette.",
-    "{{prompt}}",
+    "Refine the rendering: detail, edges, lighting.",
     "Keep the layout and the scale of everything; change the rendering, not the picture."
   ],
-  "variables": {
-    "prompt": "Refine the detail and the lighting."
-  },
   "composite": {
     "feather": "none",
     "colour_match": false,

@@ -58,8 +58,19 @@ std::string joined(const std::vector<std::string>& names) {
     return out;
 }
 
+// The names a value may be given for a recipe: the fields it asks a person to fill, and the defaults
+// it fills for itself (`context_desc`, until `enhance` does). Anything else is a name this recipe never
+// mentioned, and the refusal says so with both lists.
+bool accepts(const ai::Recipe& recipe, const std::string& name) {
+    return recipe.variables.contains(name) ||
+           std::find(recipe.ask.begin(), recipe.ask.end(), name) != recipe.ask.end();
+}
+
 std::string declared_names(const ai::Recipe& recipe) {
     std::vector<std::string> names;
+    for (const std::string& name : recipe.ask) {
+        names.push_back(name + " (asked for)");
+    }
     for (const auto& [name, value] : recipe.variables) {
         names.push_back(name);
     }
@@ -95,7 +106,7 @@ nlohmann::json effective_vars(const ai::Recipe& recipe,
         out[name] = value;
     }
     for (const auto& [name, value] : given) {
-        if (recipe.variables.contains(name)) {
+        if (accepts(recipe, name)) {
             out[name] = value;
         }
     }
@@ -337,7 +348,7 @@ void register_ai_intent_commands(AppState& state, CommandTable& table) {
                 // Values typed for one intent carry over only where the next asks the same question,
                 // so a `replacement` cannot ride silently into a recipe that never asked for one.
                 std::erase_if(intent.given, [chosen](const auto& entry) {
-                    return !chosen->variables.contains(entry.first);
+                    return !accepts(*chosen, entry.first);
                 });
             }
         }
@@ -351,10 +362,11 @@ void register_ai_intent_commands(AppState& state, CommandTable& table) {
                 if (!it.value().is_string()) {
                     return fail("ai.intent", "vars." + it.key() + " must be a string (a prompt is text)");
                 }
-                if (chosen == nullptr || !chosen->variables.contains(it.key())) {
+                if (chosen == nullptr || !accepts(*chosen, it.key())) {
                     return fail("ai.intent", "recipe '"
                                                  + (chosen != nullptr ? chosen->id : intent.recipe) +
-                                                 "' declares no variable '" + it.key() + "' (it has " +
+                                                 "' neither asks for nor declares '" + it.key() +
+                                                 "' (it has " +
                                                  (chosen != nullptr ? declared_names(*chosen) : "none") +
                                                  ")");
                 }

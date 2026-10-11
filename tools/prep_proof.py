@@ -32,13 +32,13 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 DOC = (320, 256)
 SELECT = (96, 64, 128, 128)
 
+# Words for the only fields the shipped recipes ask for - `prompt` (Fill, Generate) and `instruction`
+# (Change) - plus the line a recipe fills for itself. Nothing else is asked: Remove is wordless, and an
+# asked field has no default, so a recipe that asked something not listed here would be sent a blank.
 SAMPLE = {
-    "target": "the eyes",
-    "replacement": "green eyes",
+    "prompt": "a brass reading lamp",
+    "instruction": "closed eyes with lashes, same lighting",
     "context_desc": "the surrounding skin",
-    "subject": "the face",
-    "style": "anime",
-    "palette": "warm",
 }
 
 
