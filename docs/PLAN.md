@@ -11,6 +11,15 @@ passes under `xvfb-run`; the probes need a display and skip loudly without one. 
 (`-DNOISE_LIVE_TESTS=ON`, label `live`: `tn_probe_live`, `ai_job_probe_live`) is not registered by
 default and skips without `$THENOISE_URL` even when registered.
 
+## The interface is being re-aligned — read [TOOLS.md](TOOLS.md) first
+
+The human gave the concept in prose and it was agreed in the abstract on 2026-10-11: AI is not a tab,
+each tool gets an AI action, the mask (however it is drawn) is the user's one way to say "the area I
+mean", an answer always arrives as a **new layer**, and the verbs are Remove / Fill / Change / Generate /
+Extend / Upscale - with `Replace` deliberately absent, because it is two operations wearing one word.
+The decisions table, the flatten boundary, the outpaint mechanism and the slice order are in
+[TOOLS.md](TOOLS.md); it wins over older prose elsewhere until the code catches up.
+
 ## Where the AI path stands
 
 Built, and the default `ctest` run opens no socket — `NOISE_AI_FIXTURES` pointed at `tests/fixtures/http`
