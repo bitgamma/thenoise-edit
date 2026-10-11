@@ -225,6 +225,7 @@ KEY_V = 0x0076         # XK_v
 KEY_M = 0x006D         # XK_m
 KEY_D = 0x0064         # XK_d
 KEY_I = 0x0069         # XK_i
+KEY_BACKSPACE = 0xFF08  # XK_BackSpace, `ai.remove` with Ctrl
 # One press of a step key, as `core/brush.h` defines it: the probe asserts a step happened rather
 # than recomputing the value, so this is the width of "one", not a copy of the arithmetic.
 BRUSH_STEP = 0.05
@@ -708,6 +709,51 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
     if [before["scale"], *before["origin"]] != [after["scale"], *after["origin"]]:
         fails.append("an unbound key moved the view")
 
+    # The flagship key, through the host's own event handling: a marquee dragged with the mouse, then
+    # Ctrl+Backspace, and the job that appears is the Remove policy - no command typed by the driver.
+    # Landing is not claimed here: rule A says the finished answer should reach a new layer with nothing
+    # pressed in between, and the queue has no app-level beat that does that yet (docs/PLAN.md, "What
+    # rule A still owes").
+    wire.call("tool.select", {})
+    wd.settle(wire)
+    inj.move(doc[0] + doc[2] * 0.25, doc[1] + doc[3] * 0.25)
+    inj.button(1, True)
+    inj.move(doc[0] + doc[2] * 0.55, doc[1] + doc[3] * 0.60)
+    inj.button(1, False)
+    wd.settle(wire)
+    marked = wire.call("select.get")
+    print(f"dragged marquee: active={marked['active']} bounds={marked['bounds']} "
+          f"covered={marked['covered']}")
+    if not marked["active"]:
+        fails.append("the dragged marquee made no selection")
+
+    inj.modified_key(KEY_BACKSPACE, KEY_CTRL_L)
+    wd.settle(wire)
+    deadline = time.monotonic() + 20.0
+    jobs: list[dict] = []
+    while time.monotonic() < deadline:
+        jobs = wire.call("job.list")["jobs"]
+        if jobs and jobs[-1]["state"] in {"succeeded", "failed", "cancelled"}:
+            break
+        time.sleep(0.2)
+    if not jobs:
+        intent = wire.call("ai.intent", {})
+        print("   no job: verbs say " + repr([
+            (row["id"], row["ready"], row["reason"]) for row in wire.call("ai.verbs")["verbs"]]))
+        print("   intent: connected=" + repr(intent.get("connected")) +
+              " configured=" + repr(intent.get("configured")) +
+              " error=" + repr(intent.get("error")) + " reason=" + repr(intent.get("reason")))
+        fails.append("Ctrl+Backspace started no job")
+    else:
+        job = jobs[-1]
+        print(f"Ctrl+Backspace -> job {job['id']} recipe={job.get('recipe')} state={job['state']}")
+        if job.get("recipe") != "inpaint-remove":
+            fails.append(f"the flagship key ran {job.get('recipe')}, not inpaint-remove")
+        if job["state"] == "failed" and "fixture" not in job.get("failure", ""):
+            # A recording miss is a pass here: the key reached the recipe, the region compiler and the
+            # transport, which is what an injected key can prove. Any other failure is a real one.
+            fails.append(f"the key's job failed for a reason other than the recording: {job.get('failure')}")
+
     # Escape is bound to app.quit, so the app must actually leave: the last thing a driver
     # can check this way, and the one that proves quitting runs through the table.
     inj.key(KEY_ESCAPE)
@@ -731,6 +777,14 @@ def run(args: argparse.Namespace) -> int:
             env["DISPLAY"] = display
             env["NOISE_RUNTIME_DIR"] = str(runtime)
             env.pop("NOISE_CONFIG_DIR", None)
+            # The verb-key section runs the AI path, and it must run it against the recordings even on a
+            # shell that exports the dev-box credentials: the recorded transport answers before a socket
+            # is opened, and this test spends no requests.
+            root = Path(__file__).resolve().parent.parent
+            env["NOISE_EDIT_ASSETS"] = str(root / "assets")
+            env["NOISE_AI_FIXTURES"] = str(root / "tests" / "fixtures" / "http")
+            env.pop("THENOISE_URL", None)
+            env.pop("THENOISE_API_KEY", None)
             with (runtime / "app-stderr.log").open("w") as app_stderr:
                 proc = subprocess.Popen(
                     [str(args.bin), f"--width={WIDTH}", f"--height={HEIGHT}",

@@ -493,10 +493,12 @@ The design, when this lands:
 - One app-level beat, `pump_ai_landings(state, table)`, called by every door that pumps
   (`ai.intent`, `job.wait`, `job.list`, `job.get`); idempotent through the `landed` flag, so no door owns
   it and none can double-apply.
-- Then `tools/wire_input.py` - which injects real X events, the only way to test the host's key handling -
-  asserts the flagship end to end: marquee, `Ctrl+Backspace`, no further interaction, a new layer whose
-  name says `Remove`, and `Ctrl+Z` taking it away. Until that exists, the claim "mark → key → layer" is
-  tested only up to the queue.
+- `tools/wire_input.py` already injects the first half: a dragged marquee, then `Ctrl+Backspace`, and the
+  job that appears is `inpaint-remove` (`j0001 ... state=succeeded` on the recordings) - the only way to
+  test the host's own key handling. When auto-land lands, extend that section to assert what rule A
+  promises with nothing pressed in between: a new layer whose name says `Remove`, and `Ctrl+Z` taking the
+  layer and its pixels away. Until then "mark → key → layer" is tested to the queue, and the probe says
+  so in its own comment rather than claiming the last step.
 
 ## Decisions that stand
 

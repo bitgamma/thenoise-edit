@@ -465,7 +465,7 @@ Things worth knowing when writing a driver:
 
 The scripts in `tools/` are the same wire, already wired into `ctest`:
 `wire_drive.py` (pan+zoom, capture, golden diff), `wire_input.py` (injected mouse and keyboard
-gestures), `stroke_probe.py` (a 5000-dab stroke with the app still drivable),
+gestures, `Ctrl+Backspace` on a dragged marquee included), `stroke_probe.py` (a 5000-dab stroke with the app still drivable),
 `container_probe.py` (a project read back by Python's `zipfile`),
 `ai_compose_probe.py` (an answer image landing on a real document, with the report checked against the
 pixels the document actually shows),
