@@ -180,9 +180,11 @@ class Display:
         if not shutil_which("Xvfb"):
             raise Skip("no DISPLAY and no Xvfb to make one")
         self.number = free_display()
-        self.proc = subprocess.Popen(
+        self.proc = wd.register_child(subprocess.Popen(
             ["Xvfb", self.number, "-screen", "0", f"{WIDTH}x{HEIGHT}x24"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
+        # Registered before the wait below, because a raise from inside `__enter__` never reaches
+        # `__exit__` - and an Xvfb left behind by a skipped run holds the display and the lock file.
         deadline = time.monotonic() + 15.0
         while not os.path.exists(f"/tmp/.X{self.number[1:]}-lock"):
             if time.monotonic() > deadline or self.proc.poll() is not None:
@@ -191,12 +193,8 @@ class Display:
         return self.number
 
     def __exit__(self, *_exc):
-        if self.proc is not None and self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
+        if self.proc is not None:
+            wd.terminate_child(self.proc)
         return False
 
 
@@ -786,9 +784,10 @@ def run(args: argparse.Namespace) -> int:
             env.pop("THENOISE_URL", None)
             env.pop("THENOISE_API_KEY", None)
             with (runtime / "app-stderr.log").open("w") as app_stderr:
-                proc = subprocess.Popen(
+                proc = wd.register_child(subprocess.Popen(
                     [str(args.bin), f"--width={WIDTH}", f"--height={HEIGHT}",
-                     "--debug-wire=0", str(fixture)], env=env, stderr=app_stderr)
+                     "--debug-wire=0", str(fixture)], env=env, stderr=app_stderr,
+                    start_new_session=True))
                 wire = None
                 fails: list[str] = []
                 try:

@@ -17,8 +17,10 @@ xvfb-run: a missing GPU/display is an unavailable resource, not a regression.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
+import signal
 import shutil
 import socket
 import struct
@@ -130,6 +132,70 @@ def app_command(args: argparse.Namespace, width: int, height: int, open_path: Pa
     return app
 
 
+# Every process a probe starts, reaped when the probe ends - including when it ends in a traceback or a
+# Ctrl+C, which is how a probe that crashed halfway left an app on the display and another on the wire
+# port. A probe may still quit its app politely (`app.quit`); this is the net under that, not a
+# replacement for it, and it is why `start_app` hands back a registered process.
+_CHILDREN: list[subprocess.Popen] = []
+
+
+def _signal_children(sig: int) -> None:
+    for proc in _CHILDREN:
+        _signal_group(proc, sig)
+
+
+def _signal_group(proc: subprocess.Popen, sig: int) -> None:
+    # The child owns a process group (`start_new_session`), and the members of it are the point: an
+    # app started through `xvfb-run` is a shell, an Xvfb and the editor, and signalling only the shell
+    # leaves the other two running on the display with nobody's name on them.
+    try:
+        os.killpg(os.getpgid(proc.pid), sig)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.send_signal(sig)
+        except Exception:  # already gone, or gone between the check and the signal
+            pass
+
+
+def terminate_child(proc: subprocess.Popen) -> None:
+    """Stop one child and everything that started with it. Polite first, then final."""
+    _signal_group(proc, signal.SIGTERM)
+    try:
+        proc.wait(timeout=5.0)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    _signal_group(proc, signal.SIGKILL)
+    try:
+        proc.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _reap_children() -> None:
+    _signal_children(signal.SIGTERM)
+    for proc in _CHILDREN:
+        terminate_child(proc)
+
+
+def register_child(proc: subprocess.Popen) -> subprocess.Popen:
+    if not _CHILDREN:
+        atexit.register(_reap_children)
+        for signal_number in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(signal_number, _reap_and_reraise)
+            except ValueError:
+                pass  # not the main thread: atexit still covers a normal exit
+    _CHILDREN.append(proc)
+    return proc
+
+
+def _reap_and_reraise(signum, _frame) -> None:
+    _reap_children()
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
 def start_app(args: argparse.Namespace, runtime_dir: Path, width: int, height: int,
               open_path: Path | None, app_stderr,
               extra: dict[str, str | None] | None = None) -> subprocess.Popen:
@@ -147,8 +213,9 @@ def start_app(args: argparse.Namespace, runtime_dir: Path, width: int, height: i
             env.pop(key, None)
         else:
             env[key] = value
-    return subprocess.Popen(app_command(args, width, height, open_path), env=env,
-                            stderr=app_stderr)
+    return register_child(
+        subprocess.Popen(app_command(args, width, height, open_path), env=env, stderr=app_stderr,
+                         start_new_session=True))
 
 
 def wire_port(runtime_dir: Path, proc: subprocess.Popen, timeout: float) -> int:

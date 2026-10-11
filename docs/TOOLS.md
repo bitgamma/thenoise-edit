@@ -116,6 +116,15 @@ outpaint would reopen the hole through which the blurred-face bug arrived.
 5. **Extend** (canvas grow + outpaint) then **Upscale** (`doc.resize` does not exist yet; ordinary scaling
    first, AI as the option).
 
+## House rule for every probe
+
+Starting the app means taking responsibility for it. `wire_drive.start_app` registers each child and
+reaps its **process group** on exit and on SIGINT/SIGTERM: the child is an `xvfb-run` shell with an Xvfb
+and the editor inside it, so signalling the shell alone leaves both of them running on the display with
+nobody's name on them. `wire_input.py` registers Xvfb with the same reaper *before* the wait that can
+fail, because a raise inside `__enter__` never reaches `__exit__`. A probe that crashes must leave no
+`noise-edit`, no `Xvfb`, and no stale `/tmp/.X*-lock`.
+
 ## What is still owed to the box
 
 * One live run measuring the paired drift correction (`colour_match_drift`) on a real answer — the numbers

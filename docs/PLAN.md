@@ -526,6 +526,16 @@ reads does**, so an "expensive but only-when-something-changed" branch has to st
 same units the reader runs at. Adding a second reader to the frame is a performance change, and this is
 the test that says so.
 
+### A probe that starts the app leaves nothing running
+
+`wire_drive.start_app` starts through a shell (`xvfb-run` when there is no display), so the process it
+hands back is a wrapper with an Xvfb and an editor inside it. Signalling only that wrapper - which is
+what an `atexit`-style cleanup did - left `Xvfb` and `noise-edit` orphaned on the display, twice a probe
+crashed, for as long as anyone left the laptop on. Children now start with `start_new_session=True` and
+`_reap_children`/`terminate_child` signal the **process group**, on exit and on SIGINT/SIGTERM. Same rule
+applies inside `wire_input.py`'s `Display`: an exception raised from `__enter__` never reaches
+`__exit__`, so Xvfb is registered with the reaper before the wait that can fail.
+
 ## Decisions that stand
 
 - **`.ora` out** of the product and the design: one semantics for one stack. Flat PNG/JPEG/WebP in, via system
