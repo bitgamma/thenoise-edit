@@ -286,7 +286,7 @@ void register_ai_commands(AppState& state, CommandTable& table) {
     // document's own selection, and the report of what landed where. Before a transport exists this is the
     // only way to see a composite on a real document - and to see it as pixels on the wire, not as a claim.
     table.add("ai.compose", "Land an answer image on the document under the feathered mask", {},
-              {"image", "apply", "feather", "colour_match", "lock_band", "extent"},
+              {"image", "apply", "feather", "colour_match", "lock_band"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
@@ -322,13 +322,6 @@ void register_ai_commands(AppState& state, CommandTable& table) {
                         "'lock_band' must not be negative (got " +
                             std::to_string(policy.lock_band_px) + ")");
         }
-        std::string extent_error;
-        const std::optional<std::string> extent_name =
-            arg_extent_name(args, "extent", "layer", extent_error);
-        if (!extent_name.has_value()) {
-            return fail("ai.compose", extent_error);
-        }
-        const std::optional<ai::ExtentSource> extent = ai::extent_source_from_name(*extent_name);
 
         // No selection is the whole canvas, which is what a full-frame recipe means; a selection that
         // covers nothing is the other thing the document distinguishes, and it compiles to no region.
@@ -355,11 +348,12 @@ void register_ai_commands(AppState& state, CommandTable& table) {
             .answer = answer,
             .coverage = coverage,
             .plan = *plan,
-            .extent = extent.value_or(ai::ExtentSource::layer_alpha),
             .policy = policy,
             .apply = apply,
             .preview_stem = "ai-compose",
-            .coverage_source = coverage_source};
+            .coverage_source = coverage_source,
+            .above_layer = state.doc.active(),
+            .layer_name = "answer " + answer.checksum_hex().substr(0, 8)};
         return land_answer("ai.compose", state, landing);
     });
 
@@ -396,8 +390,7 @@ void register_ai_commands(AppState& state, CommandTable& table) {
                                 {"prep", ai::prep_name(recipe.prep)},
                                 {"ask", recipe.ask},
                                 {"enhance", recipe.enhance},
-                                {"extent", ai::extent_source_name(recipe.extent)},
-                                {"composite", composite_policy_json(recipe.composite, recipe.extent)},
+                                {"composite", composite_policy_json(recipe.composite)},
                                 {"model", resolution.model_id},
                                 {"model_reason", resolution.reason}});
         }
@@ -419,7 +412,7 @@ void register_ai_commands(AppState& state, CommandTable& table) {
         const ai::Resolution resolution = state.ai.registry->resolve(recipe.role);
         json result = assembly_json(state, attempt.assembled, resolution.reason);
         result["model"] = resolution.model_id;
-        result["policy"] = composite_policy_json(recipe.composite, recipe.extent);
+        result["policy"] = composite_policy_json(recipe.composite);
         return command_ok(result);
     });
 
@@ -437,7 +430,6 @@ void register_ai_commands(AppState& state, CommandTable& table) {
         landing.crop = assembled.plan.crop;
         landing.requested = assembled.plan.requested;
         landing.canvas = state.doc.size();
-        landing.extent = ai::extent_source_name(recipe.extent);
         landing.feather_px = recipe.composite.feather_px;
         landing.colour_match = recipe.composite.colour_match;
         landing.lock_band_px = recipe.composite.lock_band_px;

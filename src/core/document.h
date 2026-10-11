@@ -71,6 +71,13 @@ public:
     // layer, which is where a painter expects it, and becomes active. Returns its index, or -1
     // when there is no canvas to size it from.
     int add_layer(std::string name, Rgba8 fill);
+    // A new layer that **undo takes away again**: its creation and everything `write` puts into it are one
+    // undo step, so an AI answer is a single edit - `Ctrl+Z` removes the result together with the layer it
+    // arrived on, instead of leaving an empty one named after a job. The layer is transparent, goes
+    // directly above the active one and becomes active. `write` gets the layer's own pixels; a `false`
+    // means it refused, and then nothing is added and nothing is recorded. Returns the new index, or -1.
+    int add_layer_written(std::string name, Rect bounds,
+                          const std::function<bool(Image&)>& write);
     // False when `index` is out of range or it is the last layer standing.
     bool remove_layer(int index);
     // False when `index` is out of range. Selecting changes no pixels, so it bumps no revision.
@@ -201,6 +208,9 @@ private:
     std::uint64_t next_layer_id_ = 1;
     std::vector<Layer> layers_;
     int active_ = 0;
+    // After a step that could have removed the active layer: back to it when it survived, otherwise the
+    // nearest one below where it sat. Never left pointing past the stack.
+    void retarget_active(std::uint64_t preferred);
     std::optional<Provisional> provisional_;
     std::optional<Mask> selection_;
     // What the gesture has actually painted, which is smaller than the held-aside rectangle: the

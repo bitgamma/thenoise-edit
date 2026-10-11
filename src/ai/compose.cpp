@@ -47,38 +47,25 @@ LockBand lock_band(Rect crop, Extent canvas, int px) {
 }
 
 // The coverage the blend will use, in the crop's own coordinates: the selection softened by the
-// feather, then emptied in the lock band and wherever the extent says no write may exist.
+// feather, then emptied in the lock band. This is the only thing that says how far a write reaches;
+// a second mask for "how far the destination may be written" used to be multiplied in here and went
+// with the destination that needed it - an answer now always lands on its own empty layer, where
+// every pixel exists.
 //
 // The feather is computed over the crop and not the canvas because the selection cannot reach past
 // the crop - the plan grew the crop around its bounds - so a crop-sized blur sees exactly the same
 // coverage and costs the crop.
-Mask paste_coverage(const Mask& coverage, const Mask& extent, Rect crop, int feather_px,
-                    int lock_band_px, std::size_t& clipped_by_extent) {
+Mask paste_coverage(const Mask& coverage, Rect crop, Extent canvas, int feather_px,
+                    int lock_band_px) {
     Mask soft = feathered_mask(coverage.region(crop), feather_px);
     std::vector<std::uint8_t> plane = soft.plane();
-    const Mask crop_extent = extent.region(crop);
-    const LockBand band = lock_band(crop, extent.size(), lock_band_px);
+    const LockBand band = lock_band(crop, canvas, lock_band_px);
     for (int y = 0; y < crop.h; ++y) {
         for (int x = 0; x < crop.w; ++x) {
             const std::size_t at = static_cast<std::size_t>(y) * static_cast<std::size_t>(crop.w) +
                                    static_cast<std::size_t>(x);
             if (band.holds(crop.x + x, crop.y + y, crop)) {
                 plane[at] = kMaskOut;
-                continue;
-            }
-            // The extent is multiplied after the feather rather than folded into the mask before it:
-            // pre-feather clipping lets the feather bleed coverage past where the destination exists,
-            // which is a silhouette the caller said the write may not extend.
-            const std::uint8_t allowed = crop_extent.coverage(x, y);
-            if (allowed == 0) {
-                if (plane[at] > 0) {
-                    ++clipped_by_extent;
-                }
-                plane[at] = kMaskOut;
-            } else if (allowed < kMaskIn) {
-                plane[at] = static_cast<std::uint8_t>(
-                    (static_cast<int>(plane[at]) * static_cast<int>(allowed) + kMaskIn / 2) /
-                    kMaskIn);
             }
         }
     }
@@ -119,8 +106,8 @@ int auto_feather_radius(const Mask& coverage) {
     return std::clamp(radius, kAutoFeatherMinPx, kAutoFeatherMaxPx);
 }
 
-ComposeReport compose_result(Image& target, const Image& result, const RegionPlan& plan,
-                             const Mask& coverage, const Mask& extent,
+ComposeReport compose_result(Image& target, const Image& reference, const Image& result,
+                             const RegionPlan& plan, const Mask& coverage,
                              const CompositePolicy& policy) {
     ComposeReport report;
     report.result_dims = result.size();
@@ -132,6 +119,12 @@ ComposeReport compose_result(Image& target, const Image& result, const RegionPla
     }
     if (target.empty()) {
         report.refusal = "the image being composed into is empty";
+        return report;
+    }
+    if (reference.size() != target.size()) {
+        report.refusal = "the reference is " + describe(reference.size()) + " and the destination is " +
+                         describe(target.size()) + "; drift is measured pixel against pixel, so they "
+                         "must be the same size";
         return report;
     }
     if (!plan.crop.inside(target.size())) {
@@ -161,13 +154,17 @@ ComposeReport compose_result(Image& target, const Image& result, const RegionPla
                             ? std::max(0, policy.feather_px.value())
                             : auto_feather_radius(coverage);
 
+    // Two different originals: what the answer is blended onto (the destination's own pixels) and what
+    // it has to match in colour (the document it was compiled from). They are only the same image when
+    // the answer lands on the layer it came from, which is no longer what happens.
     const Image original = target.region(crop);
+    const Image context = reference.region(crop);
     const Mask crop_mask =
-        paste_coverage(coverage, extent, crop, report.feather_px, policy.lock_band_px,
-                       report.pixels_clipped_by_extent);
+        paste_coverage(coverage, crop, target.size(), report.feather_px,
+                          policy.lock_band_px);
 
     Image patch = resample_lanczos3(result, Extent{crop.w, crop.h});
-    report.colour_corrected = policy.colour_match && colour_match_drift(patch, original, crop_mask);
+    report.colour_corrected = policy.colour_match && colour_match_drift(patch, context, crop_mask);
 
     report.coverage = in_document(crop_mask, target.size(), crop);
     target.blit(patch, crop.x, crop.y);

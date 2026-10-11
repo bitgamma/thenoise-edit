@@ -43,11 +43,42 @@ void History::record(std::uint64_t layer_id, LayerPlane plane, Rect rect,
     if (rect.empty()) {
         return;
     }
-    // One record is one step today; entries sharing a number - which an operation touching
-    // several rectangles can still produce - are undone, redone and dropped together.
-    const int step = ++next_step_;
+    // One record is one step unless a `begin_step` has a step open; entries sharing a number - which an
+    // operation touching several rectangles or the layer stack can produce - are undone, redone and
+    // dropped together.
+    const int step = open_step_ != 0 ? open_step_ : ++next_step_;
     bytes_ += before.size();
-    undo_stack_.push_back({layer_id, plane, rect, std::move(before), step});
+    undo_stack_.push_back(Stacked{.layer = layer_id,
+                                  .rect = rect,
+                                  .bytes = std::move(before),
+                                  .step = step,
+                                  .kind = Kind::pixels,
+                                  .plane = plane,
+                                  .name = {},
+                                  .index = 0,
+                                  .size = {}});
+    drop_oldest_until_within_budget();
+}
+
+void History::begin_step() { open_step_ = ++next_step_; }
+
+void History::end_step() { open_step_ = 0; }
+
+void History::record_layer_created(std::uint64_t layer_id, std::string name, int index,
+                                   Extent size) {
+    redo_stack_.clear();
+    const int step = open_step_ != 0 ? open_step_ : ++next_step_;
+    // No `bytes_`: the layer's own pixels are held by the pixel entries recorded alongside this one, and
+    // counting them twice would make the budget lie about what the history costs.
+    undo_stack_.push_back(Stacked{.layer = layer_id,
+                                  .rect = {},
+                                  .bytes = {},
+                                  .step = step,
+                                  .kind = Kind::layer_created,
+                                  .plane = LayerPlane::pixels,
+                                  .name = std::move(name),
+                                  .index = index,
+                                  .size = size});
     drop_oldest_until_within_budget();
 }
 
@@ -106,10 +137,57 @@ Layer* History::layer_of(std::vector<Layer>& layers, std::uint64_t id) {
     return nullptr;
 }
 
-bool History::fits(const Layer& layer, const Stacked& entry) {
-    return entry.plane == LayerPlane::pixels ? entry.rect.inside(layer.pixels.size())
-                                             : layer.mask.has_value() &&
-                                                   entry.rect.inside(layer.mask->size());
+bool History::fits(const Layer* layer, const Stacked& entry) {
+    switch (entry.kind) {
+        case Kind::pixels:
+            if (layer == nullptr) {
+                return false;
+            }
+            return entry.plane == LayerPlane::pixels
+                       ? entry.rect.inside(layer->pixels.size())
+                       : layer->mask.has_value() && entry.rect.inside(layer->mask->size());
+        case Kind::layer_created:
+            // Stepping back removes it, so it has to be there, and still the size it was created at.
+            return layer != nullptr && layer->pixels.size() == entry.size;
+        case Kind::layer_absent:
+            // Stepping forward re-inserts it, so it must not already be there. A document always keeps
+            // at least the layer the answer was made on, so re-inserting can never overflow a stack and
+            // removing can never empty one.
+            return layer == nullptr;
+    }
+    return false;
+}
+
+void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
+                             std::vector<Layer>& layers, int step) {
+    if (entry.kind == Kind::layer_created) {
+        for (std::size_t at = 0; at < layers.size(); ++at) {
+            if (layers[at].id != entry.layer) {
+                continue;
+            }
+            Layer gone = std::move(layers[at]);
+            layers.erase(layers.begin() + static_cast<std::ptrdiff_t>(at));
+            entry.index = static_cast<int>(at);
+            entry.size = gone.pixels.size();
+            entry.name = std::move(gone.name);
+            break;
+        }
+        entry.kind = Kind::layer_absent;
+        entry.step = step;  // the pair is one step: an old number here would split it in two
+        into.push_back(entry);
+        return;
+    }
+    Layer added;
+    added.id = entry.layer;
+    added.name = entry.name;
+    added.pixels = Image::filled(entry.size, 0, 0, 0, 0);
+    const std::size_t at = entry.index < 0 ? 0
+                                           : std::min(static_cast<std::size_t>(entry.index),
+                                                      layers.size());
+    layers.insert(layers.begin() + static_cast<std::ptrdiff_t>(at), std::move(added));
+    entry.kind = Kind::layer_created;
+    entry.step = step;
+    into.push_back(entry);
 }
 
 std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
@@ -118,38 +196,109 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
     if (from.empty()) {
         return std::nullopt;
     }
-    for (const Stacked& entry : from) {
-        Layer* target = layer_of(layers, entry.layer);
-        // A layer or mask that is gone should already have been dropped by `drop_layer` or
-        // `drop_mask`; arriving here means the caller lost track, which is the same class of lie as
-        // a resized layer.
-        if (!target || !fits(*target, entry)) {
+    std::vector<Stacked> group;
+    pop_step(from, group);
+
+    // The order a step goes back in. Pixel entries are restored newest-first, as they came. A structural
+    // entry goes **first when it re-inserts a layer** - the pixels of the same step need somewhere to
+    // land - and **last when it removes one**, because those pixels have to be put back before the layer
+    // that held them is taken away. Getting this backwards does not fail loudly: the pixel entry finds no
+    // layer at all.
+    const bool structure_first = std::any_of(group.begin(), group.end(),
+                                             [](const Stacked& entry) {
+                                                 return entry.kind == Kind::layer_absent;
+                                             });
+    std::vector<std::size_t> order;
+    order.reserve(group.size());
+    for (const bool structural : {structure_first, !structure_first}) {
+        for (std::size_t index = group.size(); index-- > 0;) {
+            if ((group[index].kind != Kind::pixels) == structural) {
+                order.push_back(index);
+            }
+        }
+    }
+
+    // Validated in that same order, tracking the layers the step itself puts back: a check against the
+    // state the step *starts* in cannot see a layer the step re-inserts, and would refuse a step that is
+    // perfectly applicable. Anything that still fails is the caller having lost track - the same class of
+    // lie as a resized layer - and the timeline goes rather than half a step being applied.
+    std::optional<Extent> reinserted;
+    std::uint64_t reinserted_id = 0;
+    for (const std::size_t index : order) {
+        const Stacked& entry = group[index];
+        Layer* found = layer_of(layers, entry.layer);
+        if (entry.kind == Kind::layer_absent) {
+            if (!fits(found, entry)) {
+                clear();
+                return std::nullopt;
+            }
+            reinserted = entry.size;
+            reinserted_id = entry.layer;
+            continue;
+        }
+        if (entry.kind == Kind::layer_created) {
+            if (!fits(found, entry)) {
+                clear();
+                return std::nullopt;
+            }
+            if (entry.layer == reinserted_id) {
+                reinserted.reset();
+                reinserted_id = 0;
+            }
+            continue;
+        }
+        const bool writable =
+            found ? fits(found, entry)
+                  : reinserted.has_value() && entry.layer == reinserted_id &&
+                        entry.plane == LayerPlane::pixels && entry.rect.inside(*reinserted);
+        if (!writable) {
             clear();
             return std::nullopt;
         }
     }
-    std::vector<Stacked> group;
-    pop_step(from, group);
+
     const int step = ++next_step_;
     Applied touched;
-    // Newest rectangle first: the step goes back in the order it came, then reversed.
-    for (auto it = group.rbegin(); it != group.rend(); ++it) {
-        Stacked entry = std::move(*it);
-        Layer& layer = *layer_of(layers, entry.layer);
+    for (const std::size_t index : order) {
+        Stacked entry = std::move(group[index]);
         touched.layer = entry.layer;
         touched.rect = unite(touched.rect, entry.rect);
+        if (entry.kind != Kind::pixels) {
+            step_structure(entry, into, layers, step);
+            touched.structure = true;
+            continue;
+        }
+        Layer& layer = *layer_of(layers, entry.layer);
         bytes_ -= entry.bytes.size();
         // The bytes this step displaces are what makes the step repeatable, and they come from the
         // same plane the entry was recorded against.
         if (entry.plane == LayerPlane::pixels) {
             const Image displaced = layer.pixels.region(entry.rect);
-            into.push_back({entry.layer, entry.plane, entry.rect, copy_of(displaced), step});
-            bytes_ += into.back().bytes.size();
-            paste_rect(layer.pixels, entry.rect, entry.bytes.data());
+            into.push_back(Stacked{.layer = entry.layer,
+                                   .rect = entry.rect,
+                                   .bytes = copy_of(displaced),
+                                   .step = step,
+                                   .kind = entry.kind,
+                                   .plane = entry.plane,
+                                   .name = {},
+                                   .index = 0,
+                                   .size = {}});
         } else {
             const Mask displaced = layer.mask->region(entry.rect);
-            into.push_back({entry.layer, entry.plane, entry.rect, displaced.plane(), step});
-            bytes_ += into.back().bytes.size();
+            into.push_back(Stacked{.layer = entry.layer,
+                                   .rect = entry.rect,
+                                   .bytes = displaced.plane(),
+                                   .step = step,
+                                   .kind = entry.kind,
+                                   .plane = entry.plane,
+                                   .name = {},
+                                   .index = 0,
+                                   .size = {}});
+        }
+        bytes_ += into.back().bytes.size();
+        if (entry.plane == LayerPlane::pixels) {
+            paste_rect(layer.pixels, entry.rect, entry.bytes.data());
+        } else {
             paste_coverage(*layer.mask, entry.rect, entry.bytes.data());
         }
     }

@@ -283,7 +283,7 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
     // with, through the same function `ai.compose` uses. Previewing is the default for the same reason
     // it is there: an answer arriving in a tray should not move pixels by being looked at.
     table.add("job.apply", "Land a finished job's answer on the document", {},
-              {"id", "apply", "into", "feather", "extent", "colour_match"},
+              {"id", "apply", "feather", "colour_match"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = need_queue("job.apply", state);
         if (!guard.ok) {
@@ -312,27 +312,6 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
         if (!arg_bool(args, "apply", apply)) {
             return fail("job.apply", "'apply' must be a boolean");
         }
-        std::string into = "active";
-        if (args.contains("into")) {
-            if (!args.at("into").is_string()) {
-                return fail("job.apply", "'into' must be 'active' or 'new_layer'");
-            }
-            into = args.at("into").get<std::string>();
-        }
-        if (into != "active" && into != "new_layer") {
-            return fail("job.apply",
-                        "'into' is 'active' (the layer the job was queued against) or 'new_layer' "
-                        "(an empty layer above it, which is how a full-frame answer gets a local "
-                        "opacity); got '" + into + "'");
-        }
-        if (into == "new_layer" && apply) {
-            // The layer is made at landing time, not at queue time: an empty layer that sat there for
-            // twenty minutes would be in the way of everything the user did meanwhile.
-            state.doc.add_layer(record.recipe_id + " " + record.id, Rgba8{0, 0, 0, 0});
-        } else if (into == "new_layer") {
-            return fail("job.apply",
-                        "a preview writes no layer; the answer is at " + record.result_png);
-        }
 
         std::string error;
         std::vector<std::uint8_t> bytes;
@@ -358,23 +337,21 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
         if (!arg_bool(args, "colour_match", policy.colour_match)) {
             return fail("job.apply", "'colour_match' must be a boolean");
         }
-        std::string extent_error;
-        const std::optional<std::string> extent_name =
-            arg_extent_name(args, "extent", record.landing.extent, extent_error);
-        if (!extent_name.has_value()) {
-            return fail("job.apply", extent_error);
-        }
-
+        // Named for what the operation is called, not for the key that identifies it: this string is the
+        // row a person reads in the layer stack afterwards. An unknown id (a recipe file edited away
+        // since the job ran) lands under the id rather than under a guess.
+        const ai::Recipe* recipe = state.ai.recipes.find(record.recipe_id);
         const AnswerLanding landing{
             .answer = answer,
             .coverage = coverage,
             .plan = plan_of_landing(record),
-            .extent = ai::extent_source_from_name(*extent_name)
-                          .value_or(ai::ExtentSource::layer_alpha),
             .policy = policy,
             .apply = apply,
             .preview_stem = "ai-job-" + id,
-            .coverage_source = "job " + id};
+            .coverage_source = "job " + id,
+            .above_layer = record.landing.target_layer,
+            .layer_name =
+                std::string(recipe != nullptr ? recipe->label : record.recipe_id) + " " + id};
         CommandResult result = land_answer("job.apply", state, landing);
         if (result.ok) {
             result.value["job"] = record.json();

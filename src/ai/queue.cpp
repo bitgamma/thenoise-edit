@@ -103,7 +103,6 @@ nlohmann::json JobRecord::json() const {
     nlohmann::json landing_json{{"crop", rect_json(landing.crop)},
                                 {"requested", extent_json(landing.requested)},
                                 {"canvas", extent_json(landing.canvas)},
-                                {"extent", landing.extent},
                                 {"coverage_png", landing.coverage_png_path},
                                 {"colour_match", landing.colour_match},
                                 {"lock_band_px", landing.lock_band_px},
@@ -600,9 +599,6 @@ void JobQueue::load_from_disk() {
                                                         : nlohmann::json());
             record.landing.canvas = extent_of(landing.contains("canvas") ? landing.at("canvas")
                                                                         : nlohmann::json());
-            if (landing.contains("extent") && landing.at("extent").is_string()) {
-                record.landing.extent = landing.at("extent").get<std::string>();
-            }
             if (landing.contains("feather_px") && landing.at("feather_px").is_number_integer()) {
                 record.landing.feather_px =
                     static_cast<int>(landing.at("feather_px").get<long long>());

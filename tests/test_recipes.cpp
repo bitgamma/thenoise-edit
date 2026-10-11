@@ -14,7 +14,6 @@
 
 using noise::ai::build_prompt;
 using noise::ai::Endpoint;
-using noise::ai::ExtentSource;
 using noise::ai::load_recipes;
 using noise::ai::load_roles;
 using noise::ai::parse_recipe;
@@ -138,7 +137,7 @@ void test_a_recipe_reads_as_the_policy_it_claims_to_be() {
     wide["region"] = "document";
     wide["context"] = {{"ratio", 0.5}, {"min_px", 96}};
     wide["composite"] = {
-        {"feather", 3}, {"colour_match", false}, {"lock_band_px", 4}, {"extent", "canvas"}};
+        {"feather", 3}, {"colour_match", false}, {"lock_band_px", 4}};
     const Recipe grown = parse_or_fail(wide);
     CHECK(grown.whole_document());
     CHECK_NEAR(*grown.context_ratio, 0.5, 1e-12);
@@ -146,7 +145,6 @@ void test_a_recipe_reads_as_the_policy_it_claims_to_be() {
     CHECK_EQ(grown.composite.feather_px.value_or(-1), 3);
     CHECK(!grown.composite.colour_match);
     CHECK_EQ(grown.composite.lock_band_px, 4);
-    CHECK(grown.extent == ExtentSource::canvas);
 
     // `"feather": "auto"` is the null the compositor asks for, not a number that happens to be zero.
     json auto_feather = minimal();
@@ -225,11 +223,6 @@ void test_the_shipped_recipes_agree_with_the_shipped_roles() {
         CHECK_EQ(recipe.enhance, std::string("never"));
         if (recipe.endpoint != Endpoint::upscale) {
             CHECK(!recipe.prompt_lines.empty());
-        }
-        // A generation has no pixels of its own to stay inside, so its answer must be allowed to fill
-        // the canvas; an edit may go either way, which is why `extent` is data and not a branch.
-        if (generation) {
-            CHECK(recipe.extent == ExtentSource::canvas);
         }
     }
 

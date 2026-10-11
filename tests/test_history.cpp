@@ -4,6 +4,7 @@
 #include "core/document.h"
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -345,7 +346,74 @@ void test_a_history_that_no_longer_fits_its_layers_is_dropped() {
 
 }  // namespace
 
+// An answer arrives as a new layer, and `Ctrl+Z` has to take the whole thing away: leaving an empty
+// layer named after a job behind is the half-undo this exists to prevent.
+void test_an_added_layer_and_its_pixels_come_back_as_one_step() {
+    Document doc;
+    doc.reset(one_layer(Image::filled(Extent{8, 8}, 10, 20, 30, 255)), std::nullopt, "");
+    const std::size_t layers_before = doc.layers().size();
+    const int depth_before = doc.history().undo_depth;
+    const Rect bounds{2, 2, 4, 4};
+
+    const int index = doc.add_layer_written("Remove j0001", bounds, [bounds](Image& image) {
+        paint_rect(image, bounds, 200);
+        return true;
+    });
+    CHECK_EQ(index, 1);
+    CHECK_EQ(doc.layers().size(), layers_before + 1);
+    // One step, not two: the layer and what landed on it are the single edit the user made.
+    CHECK_EQ(doc.history().undo_depth, depth_before + 1);
+
+    CHECK(doc.undo());
+    CHECK_EQ(doc.layers().size(), layers_before);
+    CHECK_EQ(doc.active(), 0);  // not left pointing past the stack
+
+    CHECK(doc.redo());
+    REQUIRE(doc.layers().size() == layers_before + 1);
+    CHECK_EQ(doc.layer(1).name, std::string("Remove j0001"));
+    // The pixels come back with the layer. An empty re-inserted layer would be an answer that
+    // silently vanished on redo.
+    CHECK_EQ(doc.layer(1).pixels.at(3, 3)[0], 200);
+    CHECK_EQ(doc.layer(1).pixels.at(7, 7)[3], 0);
+    CHECK_EQ(doc.layer(0).pixels.at(3, 3)[0], 10);  // the layer under it never moved
+}
+
+void test_a_refused_write_adds_no_layer_and_records_nothing() {
+    Document doc;
+    doc.reset(one_layer(Image::filled(Extent{8, 8}, 10, 20, 30, 255)), std::nullopt, "");
+    CHECK(!doc.can_undo());
+
+    const int index = doc.add_layer_written("Nothing", Rect{0, 0, 4, 4}, [](Image&) { return false; });
+    CHECK_EQ(index, -1);
+    CHECK_EQ(doc.layers().size(), std::size_t(1));
+    CHECK(!doc.can_undo());
+}
+
+void test_undoing_an_answer_leaves_the_layer_under_it_byte_for_byte() {
+    Document doc;
+    doc.reset(one_layer_masked(255), std::nullopt, "");
+    fill(doc, Rect{1, 1, 3, 3}, 90);
+    const Image base = doc.layer(0).pixels;
+    const std::uint64_t base_id = id_of(doc, 0);
+
+    doc.add_layer_written("Fill j0002", Rect{0, 0, 8, 8}, [](Image& image) {
+        paint_rect(image, Rect{0, 0, 8, 8}, 123);
+        return true;
+    });
+    CHECK(doc.undo());
+    REQUIRE(doc.layers().size() == 1u);
+    CHECK_EQ(id_of(doc, 0), base_id);
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 0; x < 8; ++x) {
+            CHECK_EQ(std::memcmp(base.at(x, y), doc.layer(0).pixels.at(x, y), 4), 0);
+        }
+    }
+}
+
 int main() {
+    test_an_added_layer_and_its_pixels_come_back_as_one_step();
+    test_a_refused_write_adds_no_layer_and_records_nothing();
+    test_undoing_an_answer_leaves_the_layer_under_it_byte_for_byte();
     test_undo_after_many_mutations_restores_every_byte();
     test_undo_touches_only_the_rectangle_it_recorded();
     test_a_mutation_after_an_undo_forks_the_timeline();

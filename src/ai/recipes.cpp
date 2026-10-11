@@ -217,25 +217,6 @@ std::string endpoint_names() {
     return "generations | edits | upscale | chat";
 }
 
-const char* extent_source_name(ExtentSource source) {
-    switch (source) {
-        case ExtentSource::layer_alpha:
-            return "layer";
-        case ExtentSource::canvas:
-            return "canvas";
-    }
-    return "layer";
-}
-
-std::optional<ExtentSource> extent_source_from_name(const std::string& name) {
-    if (name == "layer") {
-        return ExtentSource::layer_alpha;
-    }
-    if (name == "canvas") {
-        return ExtentSource::canvas;
-    }
-    return std::nullopt;
-}
 
 const Recipe* RecipeSet::find(const std::string& id) const {
     for (const Recipe& recipe : recipes) {
@@ -460,7 +441,7 @@ std::optional<Recipe> parse_recipe(const nlohmann::json& body, const std::string
     const nlohmann::json& composite = body.at("composite");
     const std::string composite_origin = origin + ".composite";
     reject_unknown_keys_named(composite, composite_origin, error, ok,
-                              {"feather", "colour_match", "lock_band_px", "extent"});
+                              {"feather", "colour_match", "lock_band_px"});
     if (!ok) {
         return std::nullopt;
     }
@@ -482,19 +463,6 @@ std::optional<Recipe> parse_recipe(const nlohmann::json& body, const std::string
         recipe.composite.lock_band_px =
             static_cast<int>(composite.at("lock_band_px").get<long long>());
     }
-    const std::string extent = string_at(composite, "extent", "layer", composite_origin, error, ok);
-    if (!ok) {
-        return std::nullopt;
-    }
-    const std::optional<ExtentSource> parsed_extent = extent_source_from_name(extent);
-    if (!parsed_extent.has_value()) {
-        error = composite_origin +
-                ": 'extent' must be 'layer' (an edit, received into the layer's own alpha) or "
-                "'canvas' (a generation) - got '" +
-                extent + "'";
-        return std::nullopt;
-    }
-    recipe.extent = *parsed_extent;
 
     if (body.contains("context")) {
         if (!body.at("context").is_object()) {

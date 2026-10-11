@@ -36,9 +36,6 @@ struct Landing {
     // later session must composite under the mask that was in force when it was asked for, not under
     // whatever is selected then.
     std::string coverage_png_path;
-    // "layer" | "canvas": which extent the compositor is handed. Stored as text so a job reloaded from
-    // disk says the same thing it said before the restart.
-    std::string extent = "layer";
     // Null is the recipe's `auto`.
     std::optional<int> feather_px;
     bool colour_match = true;

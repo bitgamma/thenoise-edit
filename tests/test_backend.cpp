@@ -540,7 +540,6 @@ void test_a_job_runs_once_and_the_second_time_is_a_cache_hit() {
     landing.crop = noise::Rect{8, 8, 64, 64};
     landing.requested = Extent{64, 64};
     landing.canvas = Extent{256, 256};
-    landing.extent = "layer";
     landing.target_layer = 0;
     landing.document_checksum_before = "before";
 
@@ -570,7 +569,6 @@ void test_a_job_runs_once_and_the_second_time_is_a_cache_hit() {
     CHECK_EQ(record->blob, noise::sha256_hex(std::span<const std::uint8_t>(png)));
 
     // Landing metadata survived the job: where the answer belongs and under which mask.
-    CHECK_EQ(record->landing.extent, std::string("layer"));
     CHECK(record->landing.crop == (noise::Rect{8, 8, 64, 64}));
     CHECK(!record->landing.coverage_png_path.empty());
     CHECK(std::filesystem::exists(record->landing.coverage_png_path));
@@ -634,7 +632,7 @@ void test_a_job_left_running_is_reported_interrupted() {
                               {{"crop", {8, 8, 64, 64}},
                                {"requested", {64, 64}},
                                {"canvas", {256, 256}},
-                               {"extent", "layer"}}}};
+                               {"target_layer", 0}}}};
     std::string error;
     REQUIRE(write_file_atomic((jobs / "jobs.json").string(),
                               bytes_of(json{{"jobs", json::array({record})}}.dump()), error));

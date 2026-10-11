@@ -2094,7 +2094,6 @@ void test_a_recipe_runs_against_the_recorded_server_and_lands() {
     CHECK(applied["composite"]["composed"].get<bool>());
     const std::size_t changed = applied["composite"]["pixels_changed"].get<std::size_t>();
     CHECK(changed > 0);
-    CHECK_EQ(applied["composite"]["pixels_clipped_by_extent"].get<std::size_t>(), std::size_t(0));
     CHECK_NE(checksum_of(h), before);
 
     // The report describes the document: every byte that differs is one the composite counted, and the
@@ -2177,7 +2176,6 @@ void test_an_answer_lands_on_the_document_and_undoes_completely() {
     const std::size_t changed = preview["composite"]["pixels_changed"].get<std::size_t>();
     CHECK(changed > 0);
     CHECK(preview["composite"]["coverage_pixels"].get<std::size_t>() >= 20u * 14u);
-    CHECK_EQ(preview["composite"]["pixels_clipped_by_extent"].get<std::size_t>(), std::size_t(0));
     CHECK(std::filesystem::exists(preview["preview"].get<std::string>()));
     // A preview previews: the document is untouched and no step was taken.
     CHECK_EQ(checksum_of(h), before);
@@ -2261,13 +2259,6 @@ void test_an_answer_lands_on_the_document_and_undoes_completely() {
     CHECK(full["composite"]["pixels_changed"].get<std::size_t>() > 0);
 }
 
-// A generation is not an edit: its point is pixels the layer never had, so the extent it names is the
-// canvas rather than the layer's alpha. Same command, same compositor, one argument - and the report
-// says which happened, because "composed successfully" over an empty layer would otherwise read as an
-// edit that worked.
-// The selection panel, driven exactly the way its buttons drive it: one command, `ai.intent`, for
-// every fact on show and every action. This is the M4 flow - select, say what to remove, run it, land
-// it - with the price shown before the button is pressed rather than after.
 void test_the_selection_panel_runs_its_intent_through_one_command() {
     Harness h;
     h.value("doc.new", json{{"width", 96}, {"height", 64}, {"fill", json::array({30, 40, 50, 255})}});
@@ -2470,44 +2461,49 @@ void test_an_option_left_out_keeps_the_policy_the_table_asked_for() {
              switched_off["composite"]["coverage_pixels"].get<std::size_t>());
 }
 
-void test_an_answer_can_fill_pixels_the_layer_never_had() {
+// An answer arrives on **its own layer**, above the one the region was flattened from, and the pixels the
+// layer under it never had are exactly what it is there to fill. There is no "into the active layer"
+// option any more, so the claims that option existed to make are gone and two better ones take their
+// place: the write is bounded by the coverage and by nothing else, and one undo removes the answer
+// together with the layer it came on.
+void test_an_answer_lands_on_its_own_layer_over_an_empty_one() {
     Harness h;
     h.value("doc.new", json{{"width", 48}, {"height", 32}});  // transparent: nothing to receive into
     h.value("select.rect", json{{"rect", json::array({10, 8, 16, 10})}});
     const std::string empty_document = checksum_of(h);
+    const std::size_t layers_before = h.state.doc.layers().size();
 
     std::string error;
     const std::string answer_path = h.temp("generated.png");
     CHECK(io::save_png(answer_path, Image::filled(Extent{96, 64}, 210, 30, 90, 255), error));
 
-    const json edit = h.value("ai.compose", json{{"image", answer_path}, {"apply", true}});
-    CHECK_EQ(edit["policy"]["extent"].get<std::string>(), "layer");
-    CHECK_EQ(edit["composite"]["pixels_changed"].get<std::size_t>(), std::size_t(0));
-    CHECK(edit["composite"]["pixels_clipped_by_extent"].get<std::size_t>() > 0);
-    CHECK_EQ(checksum_of(h), empty_document);
-    // An edit of nothing spent nothing: no step, no dirty mark, nothing to undo.
-    CHECK_EQ(undo_depth(h), 0);
-
-    const json generation = h.value("ai.compose",
-                                   json{{"image", answer_path}, {"apply", true}, {"extent", "canvas"}});
-    CHECK_EQ(generation["policy"]["extent"].get<std::string>(), "canvas");
-    CHECK_EQ(generation["composite"]["pixels_clipped_by_extent"].get<std::size_t>(), std::size_t(0));
-    CHECK(generation["composite"]["pixels_changed"].get<std::size_t>() > 0);
+    const json landed = h.value("ai.compose", json{{"image", answer_path}, {"apply", true}});
+    CHECK_EQ(landed["layer"].get<int>(), 1);
+    // Named for what it is, in the layer list a person reads afterwards.
+    CHECK(landed["layer_name"].get<std::string>().rfind("answer ", 0) == 0);
+    CHECK_EQ(h.state.doc.layer(1).name, landed["layer_name"].get<std::string>());
+    CHECK(landed["composite"]["composed"].get<bool>());
+    CHECK(landed["composite"]["pixels_changed"].get<std::size_t>() > 0);
+    // A new layer, and the one underneath is exactly what it was: an answer never overwrites a layer.
+    REQUIRE(h.state.doc.layers().size() == layers_before + 1);
+    CHECK_EQ(h.state.doc.layer(0).pixels.at(14, 12)[3], 0);
+    // Pixels the document never had, inside the region...
+    CHECK_EQ(h.state.doc.layer(1).pixels.at(14, 12)[3], 255);
+    // ...and nothing outside it: the feathered coverage is the only thing that bounds the write.
+    CHECK_EQ(h.state.doc.layer(1).pixels.at(0, 0)[3], 0);
     CHECK_NE(checksum_of(h), empty_document);
-    // Pixels the layer never had, alpha included, which is what the argument is for.
-    CHECK_EQ(h.state.doc.layer(0).pixels.at(14, 12)[3], 255);
-    CHECK_EQ(h.state.doc.layer(0).pixels.at(0, 0)[3], 0);  // the extent is still bounded by the region
-    CHECK_EQ(undo_depth(h), 1);
+    CHECK_EQ(undo_depth(h), 1);  // layer and pixels are one edit
+
     h.value("edit.undo", json::object());
+    CHECK_EQ(h.state.doc.layers().size(), layers_before);
     CHECK_EQ(checksum_of(h), empty_document);
 
+    // An argument the door no longer takes is refused, naming what it does take.
     const CommandResult odd =
-        h.run("ai.compose", json{{"image", answer_path}, {"extent", "sprite"}});
+        h.run("ai.compose", json{{"image", answer_path}, {"extent", "canvas"}});
     CHECK(!odd.ok);
-    CHECK(odd.error.find("'layer'") != std::string::npos);
-    CHECK(odd.error.find("'canvas'") != std::string::npos);
+    CHECK(odd.error.find("extent") != std::string::npos);
 }
-
 }  // namespace
 
 int main() {
@@ -2518,7 +2514,7 @@ int main() {
     test_the_selection_panel_runs_its_intent_through_one_command();
     test_an_unconfigured_server_names_the_variable();
     test_an_option_left_out_keeps_the_policy_the_table_asked_for();
-    test_an_answer_can_fill_pixels_the_layer_never_had();
+    test_an_answer_lands_on_its_own_layer_over_an_empty_one();
     test_every_command_refuses_an_argument_it_does_not_declare();
     test_a_container_that_is_not_ours_is_refused_naming_what_it_met();
     test_exporting_to_a_flat_format_reports_what_the_format_could_hold();

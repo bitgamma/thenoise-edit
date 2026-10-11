@@ -66,27 +66,6 @@ bool arg_feather(const json& args, const char* key, std::optional<int>& out) {
     return true;
 }
 
-std::optional<std::string> arg_extent_name(const json& args, const char* key,
-                                           const std::string& fallback, std::string& error) {
-    if (!args.contains(key)) {
-        return fallback;
-    }
-    if (!args.at(key).is_string()) {
-        error = std::string(key) + " must be 'layer' or 'canvas', not a " +
-                std::string(args.at(key).type_name());
-        return std::nullopt;
-    }
-    const std::string name = args.at(key).get<std::string>();
-    if (name != "layer" && name != "canvas") {
-        error = std::string(key) +
-                " is 'layer' (an edit, received into the layer's own alpha) or 'canvas' (a "
-                "generation, which may fill pixels the layer never had); got '" +
-                name + "'";
-        return std::nullopt;
-    }
-    return name;
-}
-
 bool arg_recipe_vars(const json& args, const char* key, std::map<std::string, std::string>& out,
                      std::string& error) {
     if (!args.contains(key)) {
@@ -129,7 +108,7 @@ json compose_report_json(const ai::ComposeReport& report) {
                 {"result_height", report.result_dims.h},
                 {"answered_as_requested", report.answered_as_requested},
                 {"pixels_changed", report.pixels_changed},
-                {"pixels_clipped_by_extent", report.pixels_clipped_by_extent},
+
                 {"coverage_pixels", report.coverage.covered()},
                 {"coverage_area", report.coverage.area()},
                 {"coverage_bounds", json::array({report.coverage.bounds().x,
@@ -138,12 +117,11 @@ json compose_report_json(const ai::ComposeReport& report) {
                                                  report.coverage.bounds().h})}};
 }
 
-json composite_policy_json(const ai::CompositePolicy& policy, ai::ExtentSource extent) {
+json composite_policy_json(const ai::CompositePolicy& policy) {
     return json{{"feather",
                  policy.feather_px.has_value() ? json(*policy.feather_px) : json("auto")},
                 {"colour_match", policy.colour_match},
-                {"lock_band_px", policy.lock_band_px},
-                {"extent", ai::extent_source_name(extent)}};
+                {"lock_band_px", policy.lock_band_px}};
 }
 
 CommandResult land_answer(const char* command, AppState& state, const AnswerLanding& landing) {
@@ -151,26 +129,53 @@ CommandResult land_answer(const char* command, AppState& state, const AnswerLand
     if (!guard.ok) {
         return guard;
     }
-    // The extent is the caller's claim about the destination, not the compositor's guess: an edit is
-    // received into the layer's own alpha, a generation may fill pixels the layer never had.
-    const Mask extent = landing.extent == ai::ExtentSource::canvas
-                            ? whole_canvas(state.doc.size())
-                            : alpha_coverage(state.active_layer().pixels);
+    // The pixels the answer has to agree with colour-wise: the same flattened composite the request was
+    // compiled from, taken now, so the drift corrected is the drift against what is on screen. Canvas
+    // sized, because that is the space the compositor crops in; `flatten_over` hands back only the part
+    // of the crop that met the canvas, region-relative, and the rest stays transparent - there is no
+    // document colour out there, and the drift estimate skips those pixels rather than invent one.
+    const Rect canvas_rect{0, 0, state.doc.size().w, state.doc.size().h};
+    const Rect overlap = intersect(landing.plan.crop, canvas_rect);
+    const Image band = state.doc.flatten_over(
+        overlap, static_cast<std::size_t>(std::max(landing.above_layer, 0)));
+    Image reference = Image::filled(state.doc.size(), 0, 0, 0, 0);
+    for (int y = 0; y < overlap.h; ++y) {
+        for (int x = 0; x < overlap.w; ++x) {
+            std::memcpy(reference.at(overlap.x + x, overlap.y + y), band.at(x, y), kChannels);
+        }
+    }
 
     ai::ComposeReport report;
     std::string preview;
+    int landed_layer = -1;
     if (landing.apply) {
-        // `own_coverage`, not `selection`: the feather is meant to reach past the selection it was
-        // compiled from, and fencing it there deletes the feather and leaves the report describing an
-        // edit the document did not perform.
-        state.doc.paint(landing.plan.crop, PaintFence::own_coverage, [&](Image& layer) {
-            report = compose_result(layer, landing.answer, landing.plan, landing.coverage, extent,
-                                    landing.policy);
-        });
+        // One layer per answer, made here - after every argument has been believed - so a refusal
+        // cannot leave an empty layer sitting in the stack, and one `paint` step means one `Ctrl+Z`.
+        if (!state.doc.select_layer(landing.above_layer)) {
+            return fail(command,
+                        "the answer was compiled from layer " +
+                            std::to_string(landing.above_layer) +
+                            ", which is no longer in the document, so there is nothing to land it above");
+        }
+        // The creation and the write are one undo step, so the answer comes back as the one edit it was
+        // asked to be: layer and pixels together. A refusal adds nothing - there is no empty layer left
+        // named after a job that produced no answer.
+        landed_layer = state.doc.add_layer_written(
+            landing.layer_name, landing.plan.crop, [&](Image& layer) {
+                report = compose_result(layer, reference, landing.answer, landing.plan,
+                                        landing.coverage, landing.policy);
+                return report.composed;
+            });
+        if (landed_layer < 0) {
+            return fail(command, report.composed ? "no layer could be added to receive the answer"
+                                                 : report.refusal);
+        }
     } else {
-        Image candidate = state.active_layer().pixels;
-        report = compose_result(candidate, landing.answer, landing.plan, landing.coverage, extent,
-                                landing.policy);
+        // The preview is what the new layer would hold - an empty destination receiving the answer under
+        // its coverage - not a merge into whatever is active now.
+        Image candidate = Image::filled(state.doc.size(), 0, 0, 0, 0);
+        report = compose_result(candidate, reference, landing.answer, landing.plan,
+                                landing.coverage, landing.policy);
         if (!report.composed) {
             return fail(command, report.refusal);
         }
@@ -193,8 +198,12 @@ CommandResult land_answer(const char* command, AppState& state, const AnswerLand
 
     json result{{"applied", landing.apply},
                 {"region", region_plan_json(landing.plan, landing.coverage_source)},
-                {"policy", composite_policy_json(landing.policy, landing.extent)},
+                {"policy", composite_policy_json(landing.policy)},
                 {"composite", compose_report_json(report)}};
+    if (landed_layer >= 0) {
+        result["layer"] = landed_layer;
+        result["layer_name"] = landing.layer_name;
+    }
     if (!preview.empty()) {
         result["preview"] = preview;
     }

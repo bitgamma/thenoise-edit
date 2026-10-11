@@ -176,8 +176,12 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
                 f"coverage={report['coverage_pixels']}")
         after = export(wire, tmp / ("live-after.png" if live else "after.png"))
         changed, outside = counts(before, after, report["coverage_bounds"])
-        p.check(changed == report["pixels_changed"],
-                "the report describes the document", f"diff={changed} report={report['pixels_changed']}")
+        # The report counts what was **written**, which is now onto a fresh layer; the export shows the
+        # flattened result, where a pixel the model reproduced exactly is no visible change. So the
+        # visible diff is a subset of the write, never larger, and never outside the coverage.
+        p.check(0 < changed <= report["pixels_changed"],
+                "every visible change is one the report counted",
+                f"visible={changed} written={report['pixels_changed']}")
         p.check(outside == 0, "nothing changed outside the coverage the job claimed",
                 f"{outside} pixels beyond {report['coverage_bounds']}")
 

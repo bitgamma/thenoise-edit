@@ -14,7 +14,6 @@
   "composite": {
     "feather": "auto",
     "colour_match": false,
-    "lock_band_px": 0,
-    "extent": "canvas"
+    "lock_band_px": 0
   }
 }

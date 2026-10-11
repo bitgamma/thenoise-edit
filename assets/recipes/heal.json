@@ -20,7 +20,6 @@
   "composite": {
     "feather": "auto",
     "colour_match": true,
-    "lock_band_px": 6,
-    "extent": "layer"
+    "lock_band_px": 6
   }
 }

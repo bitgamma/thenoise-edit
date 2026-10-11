@@ -32,17 +32,6 @@ enum class RegionScope {
     selection,
 };
 
-// Which mask the compositor is handed as the extent. A recipe states this because it is a claim about
-// the operation: a generation may fill pixels the layer never had, an edit cannot extend its
-// silhouette.
-enum class ExtentSource {
-    layer_alpha,
-    canvas,
-};
-
-const char* extent_source_name(ExtentSource source);
-std::optional<ExtentSource> extent_source_from_name(const std::string& name);
-
 // What the operation *does*, which decides what the request may contain. These are not flavours of one
 // thing, and conflating them is what made a Replace upload a blurred face:
 //
@@ -97,7 +86,6 @@ struct Recipe {
     // builder will reject.
     std::vector<std::string> ask;
     CompositePolicy composite{CompositePolicy{}};
-    ExtentSource extent = ExtentSource::layer_alpha;
     // True when the region ignores the selection, which is what makes `new-image` work with nothing
     // selected and `reimagine` cover a whole frame.
     bool whole_document() const { return region == RegionScope::document; }

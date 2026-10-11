@@ -12,7 +12,6 @@
   "composite": {
     "feather": "none",
     "colour_match": false,
-    "lock_band_px": 0,
-    "extent": "layer"
+    "lock_band_px": 0
   }
 }

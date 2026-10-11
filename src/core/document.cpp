@@ -64,6 +64,55 @@ int Document::add_layer(std::string name, Rgba8 fill) {
     return at;
 }
 
+int Document::add_layer_written(std::string name, Rect bounds,
+                                const std::function<bool(Image&)>& write) {
+    if (empty()) {
+        return -1;
+    }
+    const int at = active_ + 1;
+    Layer added;
+    added.id = next_layer_id_++;
+    added.name = name.empty() ? default_layer_name(layers_.size()) : std::move(name);
+    added.pixels = Image::filled(size(), 0, 0, 0, 0);
+
+    const Rect touched = intersect(bounds, Rect{0, 0, width(), height()});
+    const Image before = touched.empty() ? Image{} : added.pixels.region(touched);
+    if (!write(added.pixels)) {
+        return -1;  // nothing was added, and nothing can be recorded against a layer that does not exist
+    }
+
+    layers_.insert(layers_.begin() + at, std::move(added));
+    active_ = at;
+    const std::uint64_t id = layers_[static_cast<std::size_t>(at)].id;
+    history_.begin_step();
+    history_.record_layer_created(id, layers_[static_cast<std::size_t>(at)].name, at, size());
+    if (!touched.empty()) {
+        history_.record(id, LayerPlane::pixels, touched,
+                        {before.pixels().begin(), before.pixels().end()});
+    }
+    history_.end_step();
+    pending_ = unite(pending_, touched);
+    dirty_ = true;
+    ++revision_;
+    return at;
+}
+
+void Document::retarget_active(std::uint64_t preferred) {
+    if (layers_.empty()) {
+        active_ = 0;
+        return;
+    }
+    for (std::size_t at = 0; at < layers_.size(); ++at) {
+        if (layers_[at].id == preferred) {
+            active_ = static_cast<int>(at);
+            return;
+        }
+    }
+    if (active_ >= static_cast<int>(layers_.size())) {
+        active_ = static_cast<int>(layers_.size()) - 1;
+    }
+}
+
 bool Document::remove_layer(int index) {
     if (index < 0 || static_cast<std::size_t>(index) >= layers_.size()) {
         return false;
@@ -635,22 +684,34 @@ Mask Document::held_aside_coverage(Rect absolute) const {
 
 bool Document::undo() {
     discard_provisional();
+    const std::uint64_t was =
+        layers_.empty() ? 0 : layers_[static_cast<std::size_t>(active_)].id;
     const auto moved = history_.undo(layers_);
     if (!moved) {
         return false;
     }
+    retarget_active(was);
     pending_ = unite(pending_, moved->rect);
+    if (moved->structure) {
+        pending_ = Rect{0, 0, width(), height()};
+    }
     ++revision_;
     return true;
 }
 
 bool Document::redo() {
     discard_provisional();
+    const std::uint64_t was =
+        layers_.empty() ? 0 : layers_[static_cast<std::size_t>(active_)].id;
     const auto moved = history_.redo(layers_);
     if (!moved) {
         return false;
     }
+    retarget_active(was);
     pending_ = unite(pending_, moved->rect);
+    if (moved->structure) {
+        pending_ = Rect{0, 0, width(), height()};
+    }
     ++revision_;
     return true;
 }

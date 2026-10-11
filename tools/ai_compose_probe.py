@@ -73,8 +73,10 @@ def export(wire: wd.Wire, path: pathlib.Path) -> np.ndarray:
 
 
 def lock_claims(diff: np.ndarray, reported: int, bounds, label: str) -> int:
-    """Two claims, both of which the app can get wrong independently: the count it printed is the count
-    the pixels show, and nothing outside the coverage it reported moved at all."""
+    """Two claims, both of which the app can get wrong independently: the export changes only where the
+    report says pixels were written, and nowhere else. Not equality: the report counts what was written
+    onto the answer's own layer, and a pixel the model reproduced exactly is written without being a
+    visible change once the layer is flattened down for the export."""
     failed = 0
     changed = int(diff.sum())
     outside = np.zeros_like(diff)
@@ -82,8 +84,8 @@ def lock_claims(diff: np.ndarray, reported: int, bounds, label: str) -> int:
     leaked = int((diff & ~outside).sum())
     print(f"{label}: {changed} pixels differ (reported {reported}), "
           f"{leaked} of them outside the reported coverage")
-    if changed != reported:
-        print(f"FAIL {label}: the report and the pixels disagree about how much moved")
+    if not 0 < changed <= reported:
+        print(f"FAIL {label}: {changed} pixels moved, which is not a subset of the {reported} written")
         failed += 1
     if leaked:
         print(f"FAIL {label}: pixel-lock - bytes changed where the coverage says nothing was pasted")
@@ -159,7 +161,6 @@ def main() -> int:
         comp = preview["composite"]
         print(f"preview: feather={comp['feather_px']}px changed={comp['pixels_changed']} "
               f"coverage={comp['coverage_pixels']} px / area {comp['coverage_area']} "
-              f"clipped_by_extent={comp['pixels_clipped_by_extent']} "
               f"answered_as_requested={comp['answered_as_requested']} "
               f"colour_corrected={comp['colour_corrected']}")
         print(f"preview png: {preview.get('preview')}")
@@ -225,33 +226,41 @@ def main() -> int:
                   "from the truth, which is not a correction")
             fail += 1
 
-        # A generation, which is the other operation the compositor serves: its own empty layer, so the
-        # extent is the canvas and "nothing there to receive it" is not an answer.
-        wire.call("layer.add")
+        # The other thing an answer can be: pixels the document never had. There is no option for where
+        # they go - every answer arrives on its own layer - so the claim is about that layer, and about
+        # the one undo that takes the layer away with it.
+        wire.call("layer.add")  # an empty layer on top: nothing there to receive anything
         blank = layer_checksum(wire)
+        layers_before = len(wire.call("layer.list")["layers"])
+        doc_before = export(wire, tmp / "gen-before.png")
         wire.call("select.rect", {"rect": [cx - 40, cy - 40, 80, 80]})
-        as_edit = wire.call("ai.compose", {"image": str(patch_png), "apply": True})
-        print(f"generation into an empty layer, extent=layer: changed="
-              f"{as_edit['composite']['pixels_changed']} "
-              f"clipped_by_extent={as_edit['composite']['pixels_clipped_by_extent']}")
-        if as_edit["composite"]["pixels_changed"] or layer_checksum(wire) != blank:
-            print("FAIL: an edit wrote pixels into a layer that has none to give")
+
+        landed = wire.call("ai.compose", {"image": str(patch_png), "apply": True})
+        layers_after = len(wire.call("layer.list")["layers"])
+        print(f"answer over an empty layer: layer={landed.get('layer')} "
+              f"name={landed.get('layer_name')!r} changed={landed['composite']['pixels_changed']}")
+        if layers_after != layers_before + 1:
+            print("FAIL: the answer landed on a layer that already existed")
             fail += 1
-        as_generation = wire.call("ai.compose", {"image": str(patch_png), "apply": True,
-                                                 "extent": "canvas"})
-        print(f"generation into an empty layer, extent=canvas: changed="
-              f"{as_generation['composite']['pixels_changed']} "
-              f"clipped_by_extent={as_generation['composite']['pixels_clipped_by_extent']}")
-        if as_generation["composite"]["pixels_clipped_by_extent"] or \
-                not as_generation["composite"]["pixels_changed"]:
-            print("FAIL: the canvas extent neither filled the layer nor reported a clean run")
+        if landed.get("layer") != layers_after - 1:
+            print("FAIL: the answer's layer is not the one directly above the source")
+            fail += 1
+        if not landed["composite"]["pixels_changed"]:
+            print("FAIL: an answer wrote nothing at all")
             fail += 1
         if layer_checksum(wire) == blank:
-            print("FAIL: the top layer still holds no pixels after a generation")
+            print("FAIL: the top layer still holds no pixels after an answer")
             fail += 1
+        if np.array_equal(export(wire, tmp / "gen-after.png"), doc_before):
+            print("FAIL: the document looks exactly as it did before the answer")
+            fail += 1
+
         wire.call("edit.undo")
-        if layer_checksum(wire) != blank:
-            print("FAIL: undo left the generated pixels behind")
+        if len(wire.call("layer.list")["layers"]) != layers_before:
+            print("FAIL: undo left the answer's layer behind")
+            fail += 1
+        if not np.array_equal(export(wire, tmp / "gen-undone.png"), doc_before):
+            print("FAIL: undo left the answer's pixels behind")
             fail += 1
 
         wire.call("app.quit")

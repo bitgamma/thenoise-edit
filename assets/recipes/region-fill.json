@@ -23,7 +23,6 @@
   "composite": {
     "feather": "auto",
     "colour_match": true,
-    "lock_band_px": 4,
-    "extent": "canvas"
+    "lock_band_px": 4
   }
 }
