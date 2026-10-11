@@ -747,10 +747,28 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
         print(f"Ctrl+Backspace -> job {job['id']} recipe={job.get('recipe')} state={job['state']}")
         if job.get("recipe") != "inpaint-remove":
             fails.append(f"the flagship key ran {job.get('recipe')}, not inpaint-remove")
-        if job["state"] == "failed" and "fixture" not in job.get("failure", ""):
+        if job["state"] == "failed" and "fixture" not in (job.get("failure") or "") + str(
+                job.get("error", "")):
             # A recording miss is a pass here: the key reached the recipe, the region compiler and the
             # transport, which is what an injected key can prove. Any other failure is a real one.
             fails.append(f"the key's job failed for a reason other than the recording: {job.get('failure')}")
+        else:
+            # And rule A, end to end through real events: nothing else was pressed, and the answer is a
+            # layer of its own named for the verb. `Ctrl+Z` then takes the layer and its pixels away
+            # together, which is the undo a person would expect from one keystroke.
+            layers = wire.call("layer.list")["layers"]
+            print(f"landed without a press: {[layer['name'] for layer in layers]}")
+            if len(layers) < 2:
+                fails.append("the answer did not arrive as a new layer")
+            elif not str(layers[-1]["name"]).startswith("Remove "):
+                fails.append(f"the layer is named {layers[-1]['name']!r}, not 'Remove <job>'")
+            else:
+                inj.modified_key(KEY_Z, KEY_CTRL_L)
+                wd.settle(wire)
+                after = wire.call("layer.list")["layers"]
+                print(f"Ctrl+Z: {[layer['name'] for layer in after]}")
+                if len(after) != len(layers) - 1:
+                    fails.append("Ctrl+Z did not take the answer's layer away")
 
     # Escape is bound to app.quit, so the app must actually leave: the last thing a driver
     # can check this way, and the one that proves quitting runs through the table.

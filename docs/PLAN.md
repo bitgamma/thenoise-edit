@@ -556,12 +556,11 @@ The design, when this lands:
 - One app-level beat, `pump_ai_landings(state, table)`, called by every door that pumps
   (`ai.intent`, `job.wait`, `job.list`, `job.get`); idempotent through the `landed` flag, so no door owns
   it and none can double-apply.
-- `tools/wire_input.py` already injects the first half: a dragged marquee, then `Ctrl+Backspace`, and the
-  job that appears is `inpaint-remove` (`j0001 ... state=succeeded` on the recordings) - the only way to
-  test the host's own key handling. When auto-land lands, extend that section to assert what rule A
-  promises with nothing pressed in between: a new layer whose name says `Remove`, and `Ctrl+Z` taking the
-  layer and its pixels away. Until then "mark → key → layer" is tested to the queue, and the probe says
-  so in its own comment rather than claiming the last step.
+`tools/wire_input.py` drives the whole thing through injected X events, which is the only way to test the
+host's own key handling: a marquee dragged with the mouse, `Ctrl+Backspace`, and then
+`['Layer 1', 'Remove j0001']` with nothing else pressed, and `Ctrl+Z` back to `['Layer 1']`. That is
+rule A asserted end to end at the level a person touches - real events, no `job.apply`, no command the
+probe typed to make the layer appear.
 
 ## Reasoning the code cannot carry (what a frame may cost, and what a preview is)
 
