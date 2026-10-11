@@ -12,6 +12,7 @@
 #include "ai/recipes.h"
 #include "ai/region.h"
 #include "core/command.h"
+#include "core/geom.h"
 #include "core/image.h"
 #include "core/mask.h"
 
@@ -75,6 +76,20 @@ CommandResult land_answer(const char* command, noise::AppState& state,
 bool arg_feather(const nlohmann::json& args, const char* key, std::optional<int>& out);
 bool arg_recipe_vars(const nlohmann::json& args, const char* key,
                      std::map<std::string, std::string>& out, std::string& error);
+
+// What a recipe would ask for, as far as that is known **without touching pixels**: the endpoint, the
+// size the region compiler settles on, the model that would answer and the steps it would take. The
+// status bar shows this every frame, so it is geometry and table lookups only - the upload itself is
+// prepped and encoded by `ai.preview` and by a run, and by nothing else.
+struct RequestQuote {
+    std::string endpoint;
+    Extent size{0, 0};
+    std::string model;
+    std::optional<int> steps;
+};
+
+// Empty when the region cannot be planned (no document, nothing marked for a selection recipe).
+std::optional<RequestQuote> quote_request(AppState& state, const ai::Recipe& recipe);
 
 nlohmann::json region_plan_json(const ai::RegionPlan& plan, const std::string& coverage_source);
 nlohmann::json compose_report_json(const ai::ComposeReport& report);

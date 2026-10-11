@@ -235,7 +235,9 @@ refuse for a reason it does not name.
   about, and a scripted "remove the lamp" is the same sequence of table calls the buttons make. A second
   way to set the intent - a widget writing straight into state - is how a UI and a probe start meaning
   different things.
-- **A read must be free, so the preview is compiled by whoever changed something.** The panel calls
+- **A read must be free, so the preview is compiled by whoever changed something.** *(Superseded: the
+  read path now encodes nothing at all, and the `key`/`stale` machinery was deleted - see "what a frame
+  may cost, and what a preview is".)* The panel calls
   `ai.intent {}` every frame; recompiling there would encode a region each frame. Instead the intent
   stores the request beside a key (`document revision`, `selection bounds`, `covered`, `active layer`) -
   the revision moves with every pixel write and the selection moves with none of them, so the pair
@@ -301,10 +303,13 @@ an API. ThreadSanitizer named it exactly (`data race ... LatencyModel::predict_l
 removed, and reports nothing with it in; that red/green pair is the new concurrency test in `test_backend`,
 which asserts exact final values rather than merely not crashing.
 
-**A panel that only reacts to its own widgets is a dead end.** `Run` stayed greyed after a rectangle was
+**A panel that only reacts to its own widgets is a dead end.** *(The compile-when-settled answer below is
+superseded; the lesson - a reader that only reacts to its own widgets is broken, and so is one that
+re-encodes behind them - stands.)* `Run` stayed greyed after a rectangle was
 drawn, and only moved when the combo was switched: the preview was compiled `if (!args.empty())`, and a
-marquee on the canvas passes no arguments to anything. The rule is now that an argument always recompiles,
-and a change the command was not told about recompiles **once its key has held still for one read** - so a
+marquee on the canvas passes no arguments to anything. The rule then was that an argument always
+recompiled, and a change the command was not told about recompiles **once its key has held still for one
+read** - so a
 dragged marquee does not encode a region per frame, and the price becomes correct a frame after the hand
 stops. `stale` remains true during that window, and `Run` refuses a stale preview, so the panel cannot
 charge for a request it did not show.
@@ -500,41 +505,53 @@ The design, when this lands:
   layer and its pixels away. Until then "mark → key → layer" is tested to the queue, and the probe says
   so in its own comment rather than claiming the last step.
 
-## Reasoning the code cannot carry (what a frame may cost)
+## Reasoning the code cannot carry (what a frame may cost, and what a preview is)
 
-The verbs moved a per-frame reader onto the status bar, and the canvas stopped: dragging a marquee over
-a 1600x1000 document ran at ~10 fps (`frame_ms` pinned at 100.0) where it had run at ~250. The reader was
-`ai.intent`, whose auto-compile of the upload preview had a debounce, and the debounce was counting the
-wrong thing.
+The verbs put `ai.intent` on the status bar, which is to say on every frame, and the canvas stopped: a
+marquee over a 1600x1000 document ran at ~10 fps (`frame_ms` pinned at 100.0) where the same window had
+run at ~250. The command auto-compiled the upload preview, its debounce counted the wrong thing, and two
+readers per frame (verb rows, then status line) defeated it: the second ask settled the key the first had
+just seen, so a region prep + resample + PNG encode - ~30 ms release, ~10x that in Debug - went onto every
+frame of a drag. The panel had the same branch and nobody noticed, because it usually sat tabbed behind
+Layers and Log.
 
-| measured | frame_ms | region encodes during a 120-step marquee |
+Two fixes were tried in order and the second is the one that survived:
+
+| attempt | frame_ms while dragging | upload encodes in a 120-step marquee |
 |---|---|---|
-| two readers per frame, settle counted in **reads** | 100.0 | 95 |
-| one reader per frame, settle counted in **frames** | ~37 | 95 (settle won at 250 fps: 8 ms of frames is shorter than the gap between mouse moves) |
-| one reader, settle counted in **published frame time** | 4.1 idle, ~196 fps while dragging | 0, then exactly 1 after the drag stops |
+| as shipped (settle counted in reads, two readers) | 100.0 | 95 |
+| one reader per frame, settle counted in frames | ~37 | 95 — at 250 fps two frames is 8 ms, shorter than the gap between mouse moves |
+| one reader per frame, settle counted in published `frame_ms` | ~196 fps | 0, then 1 once the drag stopped |
+| **nothing on the read path encodes at all** (what shipped) | 4.1 idle, ~250 fps | **0**, at any frame rate, however long the drag |
 
-**Fact table.**
+**The rule the last line states.** Reading the AI action may plan geometry and read tables and nothing
+else. `AppState::upload_encodes` counts the one place a region is prepped, resampled and PNG-encoded, and
+`ai.intent` reports it, so "choosing not to run costs nothing" is an assertion rather than a claim:
+`test_choosing_not_to_run_costs_no_upload_encode` marks an area 25 times, reads the action 75 times, and
+requires the counter to not move; then `ai.preview` (+1) and `ai.run` (+1). Muting it - adding one encode
+to the quote - turns 5 checks red. Debounce windows, settle constants and `steady_ms` were all deleted on
+the way here: a window is a guess about cadence, and the invariant needs none.
+
+**What a preview of an AI edit is not.** There is no cheap preview of an *answer*: the answer is what the
+model takes 30 seconds to say. What `ai.preview` produces is the **request** - endpoint, the size the
+region compiler settled on, the field list, the prepped upload PNG and its blob digest, the cache key. Its
+value is that the upload is a claim about the document, and uploads are exactly where the bugs were (a
+patch sent dark, a subject blurred because `in_place` was treated as a hole); `tools/prep_proof.py` renders
+those uploads for every recipe and asserts whole-image differences, and that is how both were caught. So it
+stays, where it always was: **a command a person or a probe asks for**, never something the frame does.
+The window shows a `RequestQuote` instead - endpoint, size, model, steps, and the box's measured time for
+that triple, all from geometry and tables - and the request's digest appears with the job that had it.
 
 | piece | rule | how it is seen |
 |---|---|---|
-| `ai.intent` read once per frame in `draw_ui`, passed to the verb rows and the status line | the window is one reader, not two | `test_app`: reads of a moving key never compile; `steady_ms` reports the wait in progress |
-| `kPreviewSettleMs` = 200 ms of `AppState::frame_ms` | the thing being waited for is the end of a gesture, which is a stretch of time. Frames would be a different wait at 250 fps and at 20 fps; reads are defeated by having two of them in a frame | `test_a_marquee_in_motion_costs_no_region_encode`, red at 35 checks when the constant is zeroed |
-| `AiIntent::compiles`, reported by `ai.intent` | the cost is a fact on the wire, so a claim about it is checkable and not a feeling | same test, and the marquee measurement above |
+| `draw_ui` reads `ai.intent` once and passes the answer down | the window is one reader; one action, one read, one price | frame time while dragging; `upload_encodes` |
+| `quote_request()` (`ai_commands.cpp`, where the region compiler lives) | what a press would send, computed without touching pixels | the status line's `edits 192x192` and `~3.4 s` |
+| `AppState::upload_encodes` | the cost of the read path is a number on the wire | the test above, red at 5 checks under a one-line mutation |
+| `ai.preview` | the only thing that preps and encodes besides a run, and only on being asked | `prep_proof.py`, `ai_compose_probe.py` |
 
-Nothing here is a rule about the AI: it is that **a per-frame reader pays for whatever the command it
-reads does**, so an "expensive but only-when-something-changed" branch has to state its budget in the
-same units the reader runs at. Adding a second reader to the frame is a performance change, and this is
-the test that says so.
-
-### A probe that starts the app leaves nothing running
-
-`wire_drive.start_app` starts through a shell (`xvfb-run` when there is no display), so the process it
-hands back is a wrapper with an Xvfb and an editor inside it. Signalling only that wrapper - which is
-what an `atexit`-style cleanup did - left `Xvfb` and `noise-edit` orphaned on the display, twice a probe
-crashed, for as long as anyone left the laptop on. Children now start with `start_new_session=True` and
-`_reap_children`/`terminate_child` signal the **process group**, on exit and on SIGINT/SIGTERM. Same rule
-applies inside `wire_input.py`'s `Display`: an exception raised from `__enter__` never reaches
-`__exit__`, so Xvfb is registered with the reaper before the wait that can fail.
+Nothing here is a rule about AI: it is that **a per-frame reader pays for whatever the command it reads
+does**, so either the command is cheap by construction or the frame has to stop reading it. "Cheap when
+nothing changed" is not cheap by construction; a debounce is a bet on how fast a person moves the mouse.
 
 ## Decisions that stand
 

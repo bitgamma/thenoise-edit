@@ -143,6 +143,7 @@ Attempt prep_bytes(const char* command, AppState& state, Assembly assembled, std
         attempt.failure = fail(command, error);
         return attempt;
     }
+    ++state.upload_encodes;
     assembled.png = io::encode_png(uploaded);
     attempt.assembled = std::move(assembled);
     attempt.ok = true;
@@ -264,7 +265,7 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
     return done;
 }
 
-json assembly_json(const AppState& state, const Assembly& assembled,
+nlohmann::json assembly_json(const AppState& state, const Assembly& assembled,
                    const std::string& role_reason) {
     return json{{"recipe", assembled.recipe->id},
                 {"role", assembled.recipe->role},
@@ -281,6 +282,40 @@ json assembly_json(const AppState& state, const Assembly& assembled,
 }
 
 }  // namespace
+
+std::optional<RequestQuote> quote_request(AppState& state, const ai::Recipe& recipe) {
+    if (state.doc.empty()) {
+        return std::nullopt;
+    }
+    Mask coverage;
+    if (recipe.whole_document()) {
+        coverage = whole_canvas(state.doc.size());
+    } else {
+        const std::optional<Mask> selection = state.doc.selection();
+        if (!selection.has_value()) {
+            return std::nullopt;
+        }
+        coverage = *selection;
+    }
+    const std::optional<ai::RegionPlan> plan =
+        ai::plan_region(state.doc.size(), coverage, policy_for(state, &recipe));
+    if (!plan.has_value()) {
+        return std::nullopt;
+    }
+    RequestQuote quote;
+    quote.endpoint = ai::request_path(recipe.endpoint);
+    quote.size = plan->requested;
+    if (state.ai.registry != nullptr) {
+        const ai::ModelEntry* entry = state.ai.registry->resolved_model(recipe.role);
+        if (entry != nullptr) {
+            quote.model = entry->id;
+            if (entry->image_defaults.steps > 0) {
+                quote.steps = entry->image_defaults.steps;
+            }
+        }
+    }
+    return quote;
+}
 
 void register_ai_commands(AppState& state, CommandTable& table) {
     // The result compositor, reached through the same table the UI uses: an answer image from disk, the

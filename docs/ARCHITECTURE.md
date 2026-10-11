@@ -155,11 +155,11 @@ src/
     ai_intent.{h,cpp}  `ai.intent`: the AI action's state (which recipe the last verb chose, the values
                        typed for the fields it asks about, the session seed, the job) and its one action,
                        plus the readiness every door forecasts from (`assess`, `missing_region`,
-                       `needs_swap`), and the debounce that keeps the region encode out of a frame: the
-                       preview is recompiled once the compile key has held still for `kPreviewSettleMs` of
-                       the host's published `frame_ms` - not of reads, which two readers in one frame would
-                       defeat, and not of frames, which would be a different wait at 250 fps and at 20.
-                       `compiles` and `steady_ms` make that cost and that wait readable. The window draws this command's answer and owns nothing else, so a
+                       `needs_swap`) The window reads it once a
+                       frame (status line and verb rows share that one read), which is why it encodes
+                       nothing: what a press would send comes from `quote_request` - the region compiler's
+                       geometry and the model's own defaults - and `upload_encodes` counts every prep +
+                       resample + PNG encode, so "not running costs nothing" is a number on the wire. The window draws this command's answer and owns nothing else, so a
                        scripted run of an intent and a click are the same call sequence
     ai_verbs.{h,cpp}   `kVerbs`: one row per verb - `{VerbId, recipe, key}` - generating `ai.remove`,
                        `ai.fill`, `ai.change`, `ai.generate` and the readable `ai.verbs`. A row names no

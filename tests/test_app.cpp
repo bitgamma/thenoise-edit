@@ -2287,8 +2287,12 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     CHECK_EQ(read["vars"]["context_desc"].get<std::string>(), std::string("background"));
     std::fprintf(stderr, "  [mark B]\n");
     CHECK_EQ(read["intents"].size(), std::size_t(5));
-    CHECK(read["preview"].is_null());   // reading pays for nothing
-    CHECK(read["stale"].get<bool>());   // and nothing compiled is, by definition, not current
+    // Reading the action costs an upload encode nothing, and still says what a press would send: the
+    // price line is a quote from the region compiler and the model's defaults, not a compiled request.
+    CHECK_EQ(read["upload_encodes"].get<std::uint64_t>(), std::uint64_t(0));
+    CHECK_EQ(read["quote"]["endpoint"].get<std::string>(), std::string("/images/edits"));
+    CHECK(read["quote"]["size"][0].get<int>() >= 36);
+    CHECK(read["quote"]["size"][0].get<int>() <= 512);
     CHECK(!read["ready"].get<bool>());
     CHECK_EQ(read["fix"].get<std::string>(), std::string("server.connect"));
     // The panel's handshake, and the flag that keeps it to one attempt: a widget that retried a down
@@ -2326,35 +2330,49 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     // The one thing a caller may still overrule on Remove is a line the recipe fills for itself.
     const json with_words = h.value("ai.intent", json{{"vars", json{{"context_desc", "a painted wall"}}}});
     CHECK(with_words["ready"].get<bool>());
-    CHECK(!with_words["stale"].get<bool>());
-    CHECK_EQ(with_words["preview"]["request"]["path"].get<std::string>(), std::string("/images/edits"));
-    CHECK(with_words["preview"]["prompt"].get<std::string>().find("Remove the marked content") !=
-          std::string::npos);
-    CHECK(with_words["preview"]["prompt"].get<std::string>().find("a painted wall") != std::string::npos);
     CHECK(!with_words["swap"].get<bool>());   // nothing was resident, so nothing has to change
+
+    // The exact request is a thing a person asks for - `ai.preview` - and asking for it is what encodes
+    // the upload. Nothing on the frame path does.
+    const json exact = h.value("ai.preview", json{{"recipe", "inpaint-remove"},
+                                                 {"vars", json{{"context_desc", "a painted wall"}}}});
+    CHECK_EQ(exact["request"]["path"].get<std::string>(), std::string("/images/edits"));
+    CHECK(exact["prompt"].get<std::string>().find("Remove the marked content") != std::string::npos);
+    CHECK(exact["prompt"].get<std::string>().find("a painted wall") != std::string::npos);
+    const std::uint64_t encoded = h.state.upload_encodes;
+    for (int pass = 0; pass < 10; ++pass) {
+        h.value("ai.intent", json::object());
+    }
+    CHECK_EQ(h.state.upload_encodes, encoded);
 
     // The seed is a request field, so retyping it changes the request and therefore its key - and
     // nothing else about the compile.
     std::fprintf(stderr, "  [mark F]\n");
-    const std::string seed_before = with_words["preview"]["request"]["cache_key"].get<std::string>();
+    const std::string seed_before = exact["request"]["cache_key"].get<std::string>();
     const json reseeded = h.value("ai.intent", json{{"seed", 1234}});
     CHECK_EQ(reseeded["seed"].get<std::int64_t>(), std::int64_t(1234));
     CHECK_EQ(h.value("server.state", json::object())["seed"].get<std::int64_t>(), std::int64_t(1234));
-    CHECK(reseeded["preview"]["request"]["cache_key"].get<std::string>() != seed_before);
+    CHECK(h.value("ai.preview", json{{"recipe", "inpaint-remove"}})["request"]["cache_key"]
+              .get<std::string>() != seed_before);
     h.value("ai.intent", json{{"seed", 0}});
 
-    // A read after a change is still a read: the same compiled request, byte for byte, and no second
-    // region encode.
-    const json again = h.value("ai.intent", json::object());
-    CHECK_EQ(again["preview"]["request"]["cache_key"].get<std::string>(),
-             with_words["preview"]["request"]["cache_key"].get<std::string>());
+    // The same compile twice gives the same digest: the request is a function of what is in the
+    // document and the words, and of nothing the app drew at random.
+    CHECK_EQ(h.value("ai.preview", json{{"recipe", "inpaint-remove"},
+                                        {"vars", json{{"context_desc", "a painted wall"}}}})
+                 ["request"]["cache_key"]
+                 .get<std::string>(),
+             seed_before);
 
-    // Move the region and the price on screen is no longer the price that would be charged.
-    h.value("select.rect", json{{"rect", json::array({8, 6, 48, 32})}});
-    CHECK(h.value("ai.intent", json::object())["stale"].get<bool>());
-    // The refusal of the last attempt is still on show after a read: the panel reads every frame.
-    h.value("ai.intent", json{{"recipe", "inpaint-remove"}});
-    CHECK(!h.value("ai.intent", json::object())["stale"].get<bool>());
+    // The quote is not an estimate of the request, it is the request's own endpoint and size - so there
+    // is nothing to go stale, and nothing to re-check after the region moves.
+    const json grown = h.value("ai.preview", json{{"recipe", "inpaint-remove"}});
+    const std::string grown_size = grown["request"]["size"].get<std::string>();
+    const std::string::size_type cross = grown_size.find('x');
+    const json shown = h.value("ai.intent", json::object())["quote"];
+    CHECK_EQ(shown["endpoint"].get<std::string>(), grown["request"]["path"].get<std::string>());
+    CHECK_EQ(shown["size"][0].get<int>(), std::stoi(grown_size.substr(0, cross)));
+    CHECK_EQ(shown["size"][1].get<int>(), std::stoi(grown_size.substr(cross + 1)));
 
     std::fprintf(stderr, "  [mark G]\n");
     // Switching verb keeps what the next one asks and forgets what it does not, so an instruction
@@ -2487,50 +2505,37 @@ void test_an_option_left_out_keeps_the_policy_the_table_asked_for() {
 // The flagship sequence as one key press: mark an area, press it, the answer arrives as a layer. The
 // verb list is what a window would draw, so this also asserts the surface a person sees - the words on
 // the buttons, the keys they answer to, and that nothing has to be typed in between.
-// The window asks `ai.intent` every frame, so the frame it answers must not contain a region encode:
-// compiling the upload is a PNG encode of the crop, and a marquee drag moves the region on every mouse
-// move. `compiles` is the intent's own counter, so this asserts the cost and not just the answer.
-void test_a_marquee_in_motion_costs_no_region_encode() {
+// Choosing not to run must cost nothing. The window reads `ai.intent` on every frame - it is the status
+// line - so the read path may plan geometry and read tables, but it may not prep a region, resample it
+// or encode a PNG. `AppState::upload_encodes` counts the one place that does, so this asserts the cost
+// rather than the answer.
+void test_choosing_not_to_run_costs_no_upload_encode() {
     Harness h;
-    h.value("doc.new", json{{"width", 96}, {"height", 64}, {"fill", json::array({30, 40, 50, 255})}});
+    h.value("doc.new", json{{"width", 160}, {"height", 110}, {"fill", json::array({30, 40, 50, 255})}});
     h.value("server.connect", json::object());
-    h.state.frame_ms = 16.0;  // the cadence the host would publish: 200 ms is ~12 of these frames
-
     h.value("select.rect", json{{"rect", json::array({20, 12, 36, 24})}});
-    ++h.state.frame;
-    CHECK_EQ(h.value("ai.intent", json::object())["compiles"].get<std::uint64_t>(), 0u);
 
-    for (int step = 1; step <= 8; ++step) {
-        h.value("select.rect", json{{"rect", json::array({20 + step, 12, 36, 24})}});
-        ++h.state.frame;
-        const json mid = h.value("ai.intent", json::object());
-        CHECK_EQ(mid["compiles"].get<std::uint64_t>(), 0u);
-        CHECK(mid["stale"].get<bool>());
-        CHECK(mid["steady_ms"].get<double>() < noise::app::kPreviewSettleMs);
+    const std::uint64_t before = h.state.upload_encodes;
+    for (int step = 0; step < 25; ++step) {
+        h.value("select.rect", json{{"rect", json::array({20 + step, 12, 36 + step, 24})}});
+        for (int reader = 0; reader < 3; ++reader) {
+            h.value("ai.intent", json::object());
+        }
     }
+    CHECK_EQ(h.state.upload_encodes, before);
 
-    // The drag stops. After the settle window the price is compiled, exactly once, and stays compiled.
-    h.state.frame += 20;
-    const json settled = h.value("ai.intent", json::object());
-    CHECK_EQ(settled["compiles"].get<std::uint64_t>(), 1u);
-    CHECK(!settled["stale"].get<bool>());
-    CHECK(settled["steady_ms"].get<double>() >= noise::app::kPreviewSettleMs);
-    CHECK(settled["preview"].is_object());
+    // And what it says instead is worth something: the endpoint, the size the region compiler settled
+    // on, and the model that would answer.
+    const json quote = h.value("ai.intent", json::object())["quote"];
+    CHECK_EQ(quote["endpoint"].get<std::string>(), std::string("/images/edits"));
+    CHECK(quote["size"][0].get<int>() > 0);
+    CHECK(quote["size"][1].get<int>() > 0);
 
-    for (int read = 0; read < 5; ++read) {
-        h.state.frame += 10;
-        CHECK_EQ(h.value("ai.intent", json::object())["compiles"].get<std::uint64_t>(), 1u);
-    }
-
-    // Marking a different area makes the shown price wrong - said so at once - and the fix is the same
-    // settle, not an encode on the frame that noticed.
-    h.value("select.rect", json{{"rect", json::array({22, 12, 36, 24})}});
-    ++h.state.frame;
-    const json moved = h.value("ai.intent", json::object());
-    CHECK_EQ(moved["compiles"].get<std::uint64_t>(), 1u);
-    CHECK(moved["stale"].get<bool>());
-    h.state.frame += 20;
-    CHECK_EQ(h.value("ai.intent", json::object())["compiles"].get<std::uint64_t>(), 2u);
+    // Asking for the exact request is what encodes, once. Running encodes once more, no more.
+    h.value("ai.preview", json{{"recipe", "inpaint-remove"}});
+    CHECK_EQ(h.state.upload_encodes, before + 1);
+    h.value("ai.run", json{{"recipe", "inpaint-remove"}, {"seed", 3}});
+    CHECK_EQ(h.state.upload_encodes, before + 2);
 }
 
 void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
@@ -2753,7 +2758,7 @@ int main() {
     test_an_unconfigured_server_names_the_variable();
     test_an_option_left_out_keeps_the_policy_the_table_asked_for();
     test_the_remove_key_runs_the_whole_sequence_with_no_words();
-    test_a_marquee_in_motion_costs_no_region_encode();
+    test_choosing_not_to_run_costs_no_upload_encode();
     test_a_verb_that_stops_matching_its_recipe_is_refused_at_startup();
     test_a_run_that_was_asked_for_words_refuses_without_them();
     test_an_answer_lands_on_its_own_layer_over_an_empty_one();

@@ -139,6 +139,8 @@ bool field_allowed(Endpoint endpoint, const std::string& name) {
 
 std::vector<std::string> allowed_fields(Endpoint endpoint) { return shape_of(endpoint).fields; }
 
+std::string request_path(Endpoint endpoint) { return shape_of(endpoint).path; }
+
 std::string BuiltRequest::canonical_text() const {
     // Sorted by hand rather than by map order: this text is a cache key's whole input, and a key that
     // changes because a field was inserted in a different order would silently double every blob.

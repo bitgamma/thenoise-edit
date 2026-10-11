@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/ai_intent.h"
 
+#include "app/ai_landing.h"
+
 #include "ai/queue.h"
 #include "ai/recipes.h"
 #include "ai/registry.h"
@@ -34,18 +36,6 @@ const ai::Recipe* intent_recipe(AppState& state) {
     }
     const std::vector<const ai::Recipe*> intents = state.ai.recipes.selection_intents();
     return intents.empty() ? nullptr : intents.front();
-}
-
-// The arguments that change what would be sent. `job` only points the panel at a job to display, so it
-// must not pay for a region encode; the rest alter the request, and - unlike a document change - none of
-// them move the compile key, which is why an asked-for compile ignores the settle rule.
-bool changes_request(const nlohmann::json& args) {
-    for (const char* name : {"recipe", "vars", "seed", "connect", "run", "confirm"}) {
-        if (args.contains(name)) {
-            return true;
-        }
-    }
-    return false;
 }
 
 std::string joined(const std::vector<std::string>& names) {
@@ -86,18 +76,6 @@ std::string recipe_ids(const AppState& state) {
     return joined(ids);
 }
 
-CompileKey compile_key(const AppState& state) {
-    CompileKey key;
-    key.revision = state.doc.revision();
-    key.layer = static_cast<std::size_t>(state.doc.active());
-    if (const std::optional<Mask>& selection = state.doc.selection(); selection.has_value()) {
-        key.selection = true;
-        key.bounds = selection->bounds();
-        key.covered = selection->covered();
-    }
-    return key;
-}
-
 // The values in force: the recipe's defaults with what the caller gave on top. Names the recipe does
 // not declare never get here - the command refuses them where they were typed.
 nlohmann::json effective_vars(const ai::Recipe& recipe,
@@ -116,52 +94,16 @@ nlohmann::json effective_vars(const ai::Recipe& recipe,
 
 
 
-std::string field_text(const nlohmann::json& preview, std::string_view name) {
-    if (!preview.is_object() || !preview.contains("request") ||
-        !preview["request"].contains("fields")) {
-        return {};
-    }
-    for (const json& pair : preview["request"]["fields"]) {
-        if (pair.is_array() && pair.size() == 2 && pair[0].is_string() &&
-            pair[0].get<std::string>() == name) {
-            return pair[1].is_string() ? pair[1].get<std::string>() : pair[1].dump();
-        }
-    }
-    return {};
-}
-
-std::optional<Extent> preview_size(const nlohmann::json& preview) {
-    if (!preview.is_object() || !preview.contains("request") ||
-        !preview["request"].contains("size") || !preview["request"]["size"].is_string()) {
-        return std::nullopt;
-    }
-    const std::string size = preview["request"]["size"].get<std::string>();
-    const std::string::size_type cross = size.find('x');
-    if (cross == std::string::npos) {
-        return std::nullopt;
-    }
-    try {
-        return Extent{std::stoi(size.substr(0, cross)), std::stoi(size.substr(cross + 1))};
-    } catch (const std::exception&) {
-        return std::nullopt;
-    }
-}
-
-// The box's own measured time for this exact (model, size, steps). Nothing is invented when it has
-// not answered one yet - the panel says there is no estimate, which is why `server.state` reports the
+// The box's own measured time for this exact (model, size, steps). Nothing is invented when it has not
+// answered one yet - the status bar says there is no estimate, which is why `server.state` reports the
 // samples it is built from.
 std::optional<double> estimate_seconds(AppState& state, const std::string& model,
-                                       const nlohmann::json& preview) {
-    const std::optional<Extent> size = preview_size(preview);
-    const std::string steps = field_text(preview, "steps");
-    if (!size.has_value() || steps.empty() || model.empty() || state.ai.jobs == nullptr) {
+                                       const std::optional<RequestQuote>& quote) {
+    if (!quote.has_value() || !quote->steps.has_value() || model.empty() ||
+        state.ai.jobs == nullptr) {
         return std::nullopt;
     }
-    try {
-        return state.ai.jobs->latency().predict(model, *size, std::stoi(steps));
-    } catch (const std::exception&) {
-        return std::nullopt;
-    }
+    return state.ai.jobs->latency().predict(model, quote->size, *quote->steps);
 }
 
 // The Run button. A swap is the expensive thing in this design, so it is confirmed rather than
@@ -261,12 +203,6 @@ Readiness assess(noise::AppState& state, const ai::Recipe* recipe) {
     return out;
 }
 
-// How long the compile key has been holding still, in the frame cadence the host publishes. Reported by
-// `ai.intent` so a probe can see the settle window instead of guessing it from frame times.
-double steady_ms_of(const AppState& state, const AiIntent& intent) {
-    return static_cast<double>(state.frame - intent.seen_since_frame) * state.frame_ms;
-}
-
 nlohmann::json intent_json(AppState& state) {
     const ai::Recipe* recipe = intent_recipe(state);
     const AiIntent& intent = state.ai_intent;
@@ -294,8 +230,15 @@ nlohmann::json intent_json(AppState& state) {
         }
     }
 
-    const std::optional<double> estimate =
-        estimate_seconds(state, readiness.model, intent.preview);
+    const std::optional<RequestQuote> quote =
+        recipe != nullptr ? quote_request(state, *recipe) : std::nullopt;
+    json quote_json = nullptr;
+    if (quote.has_value()) {
+        quote_json = json{{"endpoint", quote->endpoint},
+                          {"size", json::array({quote->size.w, quote->size.h})},
+                          {"steps", quote->steps.has_value() ? json(*quote->steps) : json(nullptr)}};
+    }
+    const std::optional<double> estimate = estimate_seconds(state, readiness.model, quote);
 
     return json{{"recipe", recipe != nullptr ? json(recipe->id) : json(nullptr)},
                 {"label", recipe != nullptr ? json(recipe->label) : json(nullptr)},
@@ -320,10 +263,11 @@ nlohmann::json intent_json(AppState& state) {
                 {"resident", state.ai.health.model_loaded},
                 {"swap", needs_swap(state, readiness)},
                 {"estimate_s", estimate.has_value() ? json(*estimate) : json(nullptr)},
-                {"preview", intent.has_preview ? intent.preview : json(nullptr)},
-                {"stale", !intent.has_preview || !(intent.compiled == compile_key(state))},
-                {"steady_ms", steady_ms_of(state, intent)},
-                {"compiles", intent.compiles},
+                // Geometry and tables only: what a press would send and roughly how long it takes. The
+                // request itself - and the digest a repeat is served from - exists once something is
+                // compiled: `ai.preview` on purpose, or a run.
+                {"quote", quote_json},
+                {"upload_encodes", state.upload_encodes},
                 {"job", job},
                 {"error", intent.error}};
 }
@@ -446,48 +390,10 @@ void register_ai_intent_commands(AppState& state, CommandTable& table) {
             }
         }
 
-        // Reading costs nothing: a panel asks this every frame. The preview is compiled by whoever
-        // changed something, and a reader that found it out of date is told through `stale` rather
-        // than paying for a region encode on a frame that only wanted the selection bounds.
-        // A refusal is the intent's own error, and `error` carries it to the panel.
-        const ai::Recipe* recipe = intent_recipe(state);
-        const Readiness readiness = assess(state, recipe);
-        // The preview is what makes Run live, so it has to follow the document without being asked -
-        // a rectangle drawn on the canvas is not an argument to this command, and a panel that only
-        // recompiled on its own widgets left Run greyed forever behind a perfectly good selection.
-        // What it must not do is encode a region on every frame of a marquee drag, so a change that
-        // this command was not told about compiles once its key has held still for
-        // `kPreviewSettleFrames` frames. An argument means someone changed a value, which does not move
-        // the key at all, so that always recompiles; a compile that failed is attempted once per key
-        // rather than per frame.
-        const CompileKey key = compile_key(state);
-        if (!intent.has_seen || !(intent.seen == key)) {
-            intent.seen = key;
-            intent.has_seen = true;
-            intent.seen_since_frame = state.frame;
-        }
-        const bool asked = changes_request(args);
-        const bool region_moved = !intent.has_preview || !(intent.compiled == key);
-        const bool attempted = intent.has_attempted && intent.attempted == key;
-        const bool settled = steady_ms_of(state, intent) >= kPreviewSettleMs;
-        if (recipe != nullptr && readiness.ready &&
-            (asked || (region_moved && settled && !attempted))) {
-            const CommandResult compiled = table.invoke(
-                "ai.preview", json{{"recipe", recipe->id}, {"vars", effective_vars(*recipe, intent.given)}});
-            intent.has_attempted = true;
-            intent.attempted = key;
-            ++intent.compiles;
-            if (compiled.ok) {
-                intent.preview = compiled.value;
-                intent.compiled = key;
-                intent.has_preview = true;
-                intent.error.clear();
-            } else {
-                intent.has_preview = false;
-                intent.preview = json();
-                intent.error = compiled.error;
-            }
-        }
+        // Reading costs nothing, and a reader exists on every frame (the status line). So nothing here
+        // compiles: no prep, no resample, no PNG encode. The price on screen is `quote_request` - the
+        // region compiler's geometry and the model's own defaults - and the exact request, its digest
+        // and its bytes appear when someone asks for them (`ai.preview`) or runs.
         return command_ok(intent_json(state));
     });
 }

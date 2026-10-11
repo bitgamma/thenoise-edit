@@ -114,6 +114,10 @@ struct AppState {
     // Bumped once per presented frame: a wire client waits on it so captures and
     // assertions land on a frame the app actually drew.
     std::uint64_t frame = 0;
+    // How many times an upload has been prepped and PNG-encoded this run. Reading the AI action must not
+    // move it; `ai.preview` and a run must. It is a number rather than a log line because the claim
+    // "choosing not to run costs nothing" has to be assertable.
+    std::uint64_t upload_encodes = 0;
     // Wall time of the last presented frame, as the compositor reported it.
     double frame_ms = 0.0;
     // A fit asked for before there was a canvas to measure against waits here; the host

@@ -555,6 +555,15 @@ fidelity is not a server knob.
 
 (`variations` deleted — unsupported endpoint.)
 
+**`ai.preview` is the only thing that preps, resamples and encodes an upload besides a run**, and both are
+on being asked. Nothing on the frame path does: the window's price line is a `RequestQuote` (endpoint, the
+size the region compiler settled on, the model, its default steps, the box's measured time), which is
+geometry and table lookups. `AppState::upload_encodes` counts the encodes and `ai.intent` reports it, so a
+regression that puts an encode back on a read is a red test rather than a slow window. The reason to keep
+`ai.preview` at all is that the *upload* is a claim about the document - `tools/prep_proof.py` renders it
+for every recipe, and that is how a dark patch and a blurred subject were caught - not that anyone can
+preview an answer before the model makes one.
+
 ### What a recipe may ask for
 
 `ask` names the fields **the person** supplies, and the parser enforces its shape, because the verb rows,

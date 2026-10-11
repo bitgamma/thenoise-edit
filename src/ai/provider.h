@@ -21,6 +21,10 @@ namespace noise::ai {
 bool field_allowed(Endpoint endpoint, const std::string& name);
 std::vector<std::string> allowed_fields(Endpoint endpoint);
 
+// The path an endpoint answers on, out of the same table that says which fields it may carry: a price
+// that named another path than the request would be a price for something else.
+std::string request_path(Endpoint endpoint);
+
 // What a request is, in the terms the cache keys on. Every value here went into the bytes the server
 // sees, and nothing the server does not see (a key, a hostname beyond the profile name) is here.
 struct RequestParams {

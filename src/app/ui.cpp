@@ -531,21 +531,18 @@ void draw_ai_status_line(CommandTable& commands, const json& view) {
     if (view["estimate_s"].is_number()) {
         ImGui::TextDisabled("~%.1f s", view["estimate_s"].get<double>());
     } else {
-        ImGui::TextDisabled("no timing for this size");
+        ImGui::TextDisabled("no timing yet");
     }
-    if (!view["preview"].is_null() && view["preview"]["request"].contains("cache_key")) {
+    if (view["quote"].is_object()) {
+        const json& quote = view["quote"];
         ImGui::SameLine();
-        ImGui::TextDisabled(
-            "cache %s", view["preview"]["request"]["cache_key"].get<std::string>().substr(0, 8).c_str());
+        ImGui::TextDisabled("%s %dx%d", quote["endpoint"].get<std::string>().c_str(),
+                            quote["size"][0].get<int>(), quote["size"][1].get<int>());
     }
     // The seed is on screen because it is in the request; nothing draws a number behind the person's
     // back, and `ai.intent {seed: n}` is how it changes.
     ImGui::SameLine();
     ImGui::TextDisabled("seed %llu", static_cast<unsigned long long>(view["seed"].get<std::uint64_t>()));
-    if (view["stale"].get<bool>() && !view["preview"].is_null()) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("region moving - price settles");
-    }
     if (view["swap"].get<bool>()) {
         ImGui::SameLine();
         ImGui::TextColored(kWarnInk, "will load the model (resident: %s)",
@@ -557,6 +554,11 @@ void draw_ai_status_line(CommandTable& commands, const json& view) {
         ImGui::SameLine();
         ImGui::TextDisabled("%s %s", job.contains("id") ? job["id"].get<std::string>().c_str() : "",
                             job_state.c_str());
+        if (job.contains("cache_key") && !job["cache_key"].get<std::string>().empty()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("cache %s",
+                                job["cache_key"].get<std::string>().substr(0, 6).c_str());
+        }
         if (job_state == "succeeded") {
             ImGui::SameLine();
             if (ImGui::SmallButton("Apply")) {
