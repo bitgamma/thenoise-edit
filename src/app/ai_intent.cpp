@@ -272,130 +272,148 @@ nlohmann::json intent_json(AppState& state) {
                 {"error", intent.error}};
 }
 
+namespace {
+
+// What `ai.intent` does with its arguments. Nothing here records the refusal on the intent: the caller
+// that owns the command does, so there is one place where a failed write becomes something the panel can
+// show and one place where a successful one clears it.
+CommandResult apply_intent(AppState& state, CommandTable& table, const json& args) {
+    // The job row is read from the queue's record, so the queue is advanced first: a panel that
+    // only read would otherwise show a job as running until some other command happened to pump.
+    if (state.ai.jobs != nullptr) {
+        state.ai.jobs->pump();
+        pump_ai_landings(state);
+    }
+
+    AiIntent& intent = state.ai_intent;
+    if (!args.empty()) {
+        intent.error.clear();
+    }
+
+    if (args.contains("recipe")) {
+        if (!args.at("recipe").is_string()) {
+            return fail("ai.intent", "'recipe' must be a recipe id from its 'intents' list");
+        }
+        const std::string requested = args.at("recipe").get<std::string>();
+        if (requested != intent.recipe) {
+            const ai::Recipe* chosen = state.ai.recipes.find(requested);
+            if (chosen == nullptr) {
+                const std::string known = recipe_ids(state);
+                return fail("ai.intent", "no intent '" + requested + "' on a selection (" +
+                                             (known.empty() ? "this table offers none"
+                                                             : "this table offers " + known) +
+                                             ")");
+            }
+            intent.recipe = requested;
+            // Values typed for one intent carry over only where the next asks the same question,
+            // so a `replacement` cannot ride silently into a recipe that never asked for one.
+            std::erase_if(intent.given, [chosen](const auto& entry) {
+                return !accepts(*chosen, entry.first);
+            });
+        }
+    }
+
+    if (args.contains("vars")) {
+        if (!args.at("vars").is_object()) {
+            return fail("ai.intent", "'vars' must be an object of string values");
+        }
+        const ai::Recipe* chosen = intent_recipe(state);
+        for (auto it = args.at("vars").begin(); it != args.at("vars").end(); ++it) {
+            if (!it.value().is_string()) {
+                return fail("ai.intent", "vars." + it.key() + " must be a string (a prompt is text)");
+            }
+            if (chosen == nullptr || !accepts(*chosen, it.key())) {
+                return fail("ai.intent", "recipe '"
+                                             + (chosen != nullptr ? chosen->id : intent.recipe) +
+                                             "' neither asks for nor declares '" + it.key() +
+                                             "' (it has " +
+                                             (chosen != nullptr ? declared_names(*chosen) : "none") +
+                                             ")");
+            }
+            intent.given[it.key()] = it.value().get<std::string>();
+        }
+    }
+
+    // The seed the panel shows is the session's, so typing one changes what every later run
+    // without an explicit seed would send. That is deliberate: the number on the screen is the
+    // number the request carried.
+    int seed = static_cast<int>(state.ai.seed);
+    if (!arg_int(args, "seed", seed)) {
+        return fail("ai.intent", "'seed' must be an integer");
+    }
+    if (seed < 0) {
+        return fail("ai.intent", "'seed' must not be negative (got " + std::to_string(seed) + ")");
+    }
+    state.ai.seed = static_cast<std::uint64_t>(seed);
+
+    if (args.contains("job")) {
+        if (!args.at("job").is_string()) {
+            return fail("ai.intent", "'job' must be a job id");
+        }
+        intent.job = args.at("job").get<std::string>();
+    }
+
+    // The panel's first-frame handshake, and the Connect button - the same `server.connect` the
+    // wire drives. `once` is why it is a command rather than a line in the widget: the attempt
+    // has to be recorded somewhere the tests can see, and the answer must say what happened.
+    bool connect = false;
+    if (!arg_bool(args, "connect", connect)) {
+        return fail("ai.intent", "'connect' must be a boolean");
+    }
+    if (connect) {
+        // No "already tried" guard here: the caller decides. The host asked once at startup, and
+        // after that only the button asks, and a refresh of a session that exists is worth having.
+        state.ai.connect_attempted = true;
+        const CommandResult handshake = table.invoke("server.connect", json::object());
+        if (!handshake.ok) {
+            intent.error = handshake.error;
+        }
+    }
+
+    bool run = false;
+    if (!arg_bool(args, "run", run)) {
+        return fail("ai.intent", "'run' must be a boolean");
+    }
+    bool confirm = false;
+    if (!arg_bool(args, "confirm", confirm)) {
+        return fail("ai.intent", "'confirm' must be a boolean");
+    }
+    if (run) {
+        const CommandResult started =
+            start_intent(state, table, intent_recipe(state), assess(state, intent_recipe(state)),
+                         confirm);
+        if (!started.ok) {
+            return started;
+        }
+    }
+
+    // Reading costs nothing, and a reader exists on every frame (the status line). So nothing here
+    // compiles: no prep, no resample, no PNG encode. The price on screen is `quote_request` - the
+    // region compiler's geometry and the model's own defaults - and the exact request, its digest
+    // and its bytes appear when someone asks for them (`ai.preview`) or runs.
+    return command_ok(intent_json(state));
+
+}
+
+}  // namespace
+
 void register_ai_intent_commands(AppState& state, CommandTable& table) {
     // The panel's whole surface. Reading it with no arguments is free; passing anything recompiles
-    // the preview, because the request is the price of the action and the panel has to show it
-    // before the button is pressed rather than after.
+    // the preview, because the request is the price of the action and the panel has to show it before
+    // the button is pressed rather than after.
+    //
+    // A refusal is recorded here rather than inside `apply_intent`, so that there is one place where a
+    // failed write becomes something the panel can show. Without it a words box that will not take what
+    // was typed - a field its recipe never asked for, a recipe that no longer exists - draws nothing,
+    // and the person is left typing into a widget connected to nothing.
     table.add("ai.intent", "Read or set what the selection panel is asking for", {},
               {"recipe", "vars", "seed", "job", "run", "confirm", "connect"},
               [&state, &table](const json& args) -> CommandResult {
-        // The job row is read from the queue's record, so the queue is advanced first: a panel that
-        // only read would otherwise show a job as running until some other command happened to pump.
-        if (state.ai.jobs != nullptr) {
-            state.ai.jobs->pump();
-            pump_ai_landings(state);
+        const CommandResult applied = apply_intent(state, table, args);
+        if (!applied.ok && !args.empty()) {
+            state.ai_intent.error = applied.error;
         }
-
-        AiIntent& intent = state.ai_intent;
-        // A read does not forget the refusal it is being asked to display: the panel calls this every
-        // frame, so clearing on a read would make the reason flash once and vanish.
-        if (!args.empty()) {
-            intent.error.clear();
-        }
-
-        if (args.contains("recipe")) {
-            if (!args.at("recipe").is_string()) {
-                return fail("ai.intent", "'recipe' must be a recipe id from its 'intents' list");
-            }
-            const std::string requested = args.at("recipe").get<std::string>();
-            if (requested != intent.recipe) {
-                const ai::Recipe* chosen = state.ai.recipes.find(requested);
-                if (chosen == nullptr) {
-                    const std::string known = recipe_ids(state);
-                    return fail("ai.intent", "no intent '" + requested + "' on a selection (" +
-                                                 (known.empty() ? "this table offers none"
-                                                                 : "this table offers " + known) +
-                                                 ")");
-                }
-                intent.recipe = requested;
-                // Values typed for one intent carry over only where the next asks the same question,
-                // so a `replacement` cannot ride silently into a recipe that never asked for one.
-                std::erase_if(intent.given, [chosen](const auto& entry) {
-                    return !accepts(*chosen, entry.first);
-                });
-            }
-        }
-
-        if (args.contains("vars")) {
-            if (!args.at("vars").is_object()) {
-                return fail("ai.intent", "'vars' must be an object of string values");
-            }
-            const ai::Recipe* chosen = intent_recipe(state);
-            for (auto it = args.at("vars").begin(); it != args.at("vars").end(); ++it) {
-                if (!it.value().is_string()) {
-                    return fail("ai.intent", "vars." + it.key() + " must be a string (a prompt is text)");
-                }
-                if (chosen == nullptr || !accepts(*chosen, it.key())) {
-                    return fail("ai.intent", "recipe '"
-                                                 + (chosen != nullptr ? chosen->id : intent.recipe) +
-                                                 "' neither asks for nor declares '" + it.key() +
-                                                 "' (it has " +
-                                                 (chosen != nullptr ? declared_names(*chosen) : "none") +
-                                                 ")");
-                }
-                intent.given[it.key()] = it.value().get<std::string>();
-            }
-        }
-
-        // The seed the panel shows is the session's, so typing one changes what every later run
-        // without an explicit seed would send. That is deliberate: the number on the screen is the
-        // number the request carried.
-        int seed = static_cast<int>(state.ai.seed);
-        if (!arg_int(args, "seed", seed)) {
-            return fail("ai.intent", "'seed' must be an integer");
-        }
-        if (seed < 0) {
-            return fail("ai.intent", "'seed' must not be negative (got " + std::to_string(seed) + ")");
-        }
-        state.ai.seed = static_cast<std::uint64_t>(seed);
-
-        if (args.contains("job")) {
-            if (!args.at("job").is_string()) {
-                return fail("ai.intent", "'job' must be a job id");
-            }
-            intent.job = args.at("job").get<std::string>();
-        }
-
-        // The panel's first-frame handshake, and the Connect button - the same `server.connect` the
-        // wire drives. `once` is why it is a command rather than a line in the widget: the attempt
-        // has to be recorded somewhere the tests can see, and the answer must say what happened.
-        bool connect = false;
-        if (!arg_bool(args, "connect", connect)) {
-            return fail("ai.intent", "'connect' must be a boolean");
-        }
-        if (connect) {
-            // No "already tried" guard here: the caller decides. The host asked once at startup, and
-            // after that only the button asks, and a refresh of a session that exists is worth having.
-            state.ai.connect_attempted = true;
-            const CommandResult handshake = table.invoke("server.connect", json::object());
-            if (!handshake.ok) {
-                intent.error = handshake.error;
-            }
-        }
-
-        bool run = false;
-        if (!arg_bool(args, "run", run)) {
-            return fail("ai.intent", "'run' must be a boolean");
-        }
-        bool confirm = false;
-        if (!arg_bool(args, "confirm", confirm)) {
-            return fail("ai.intent", "'confirm' must be a boolean");
-        }
-        if (run) {
-            const CommandResult started =
-                start_intent(state, table, intent_recipe(state), assess(state, intent_recipe(state)),
-                             confirm);
-            if (!started.ok) {
-                intent.error = started.error;
-                return started;
-            }
-        }
-
-        // Reading costs nothing, and a reader exists on every frame (the status line). So nothing here
-        // compiles: no prep, no resample, no PNG encode. The price on screen is `quote_request` - the
-        // region compiler's geometry and the model's own defaults - and the exact request, its digest
-        // and its bytes appear when someone asks for them (`ai.preview`) or runs.
-        return command_ok(intent_json(state));
+        return applied;
     });
 }
 
