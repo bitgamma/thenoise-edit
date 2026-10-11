@@ -21,7 +21,7 @@ already in the data.
 |---|---|---|---|---|
 | `generate.photo` | `recipe==thenoise` + `image` | photoreal, quality anchor | slow = more detail | ✓ |
 | `generate.illustration` | `recipe==thenoise` + `image` | fast, stylised/anime-friendly | fast = iterate on prompts | ✓ |
-| `edit` | `recipe==thenoise` + `image` + `edit` | instruction-based editing | FLUX.2 Klein (4 steps, fast) ↔ Qwen-Image-2.1 (28 steps, higher fidelity) | ✓ |
+| `edit` | `recipe==thenoise` + `image` + `edit` | instruction-based editing | a fast Klein ↔ a slower higher-fidelity Qwen checkpoint; the pair rotates as the box changes, which is why the order lives in `roles.json` and not here | ✓ |
 | `upscale` | `recipe==thenoise` + `upscaling` | pixel-space upscaler | factor + fidelity | ✓ |
 | `enhance` | `chat` + `vision` | prompt rewriting / scene description | cheap-and-fast ↔ capable | declared, **unused in MVP** |
 
@@ -74,7 +74,7 @@ over rows that already exist.
 | `Krea-2-Turbo-INT8` / `Krea-2-better-VAE` | `generate.photo` | 8 | 1.0 | 1024×1024 | ~21–35 GB | quality anchor (~19–26 s) |
 | `Flux-2-Klein-4B-TheNoise` / `-INT8` | `edit` (speed tier), `generate.*` | 4 | 1.0 | 1024×1024 | ~12–15 GB | ~15 s edit |
 | `Flux-2-Klein-9B-TheNoise` / `-INT8` / `-KV-INT8` | `edit` (quality tier), `generate.*` | 4 | 1.0 | 1024×1024 | ~25 GB | `-KV` enables the reference KV cache (19.2 s → **13.4 s**) |
-| `Qwen-Image-2.1` / `-INT8` | `edit`, `generate.*` — one checkpoint, both jobs | 28 (6–8 with a turbo `sigmas` grid) | 1.0 | 1024×1024 | ~17–30 GB | RGBA VAE; KV cache exact & on by default; ~12.3 s edit |
+| `Qwen-Image-2.1-Turbo` / `-INT8` | `edit`, `generate.*` — one checkpoint, both jobs | fewer than the 28 the predecessor needed | 1.0 | 1024×1024 | ~17–30 GB | replaces `Qwen-Image-2.1`, which is leaving the box; the RGBA-VAE/KV-cache notes and the ~12.3 s edit below were measured on the predecessor and need re-measuring on Turbo |
 | `Qwen-Image-Edit-2511` (+`-4steps`, `-INT8`) | `edit` | 4–28 | 1.0 | 1024×1024 | — | edit-specialised, a candidate once measured |
 | `RealESRGAN-{2x,4x}plus`, `LSDIR-4x`, `Remacri-4x`, `NMKD-Siax-CX-200k` (all `-TheNoise`) | `upscale` | — | — | — | ~70 MB | work with no DiT loaded |
 
@@ -168,9 +168,9 @@ with `seed = base + i` against the normal endpoint.
 ## Server session & model switching (the constraint that shapes the UX)
 
 TheNoise **loads one model at a time** — `/health` says so in the data:
-`max_models.image == 1`, and `model_loaded` is `None` until something is asked for. Krea 2
-(21–35 GB) and Qwen-Image-2.1 (17–30 GB) are the same size class as the machine's memory budget,
-so a swap is a real event: the first request that followed an unloaded model on the dev box cost
+`max_models.image == 1`, and `model_loaded` is `None` until something is asked for. The
+image checkpoints a box of this class holds are 17–35 GB, the same size class as its memory budget, so a
+swap is a real event: the first request that followed an unloaded model on the dev box cost
 32.0 s for a 512² image. Tens of seconds, sometimes minutes, on a LAN box. Therefore:
 
 * The app has a **session model** concept, shown persistently in the status bar:
@@ -226,7 +226,8 @@ Connection handshake on select/connect: `GET /v1/health` (alive? version? what's
 `GET /v1/models` (filter to `recipe == "thenoise"`) → resolve roles → enable commands.
 A server with **no `edit`-capable thenoise model** still supports: all local editing,
 `new-image`, `upscale`, local Telea `heal` — the edit commands render disabled with the
-reason and the `lemonade` command needed to pull Klein or Qwen-2.1. No privacy/consent
+reason, plus the `lemonade import` that would fix it whenever `ai.roles` can name a model this server
+actually offers (and no command at all when it cannot — see the resolution order above). No privacy/consent
 badge: the server is user-controlled by definition, wherever it lives.
 
 ## The Region Compiler
@@ -267,6 +268,16 @@ Input: `(document composite, selection mask, recipe)` → one compiled request.
 
 Always runs; this is what makes instruction editing usable at all. Built as `ai/compose` +
 `ai/colour_match`, over `core/resample` and `core/blur`; asserted by `test_compose`.
+
+**An option nobody passes is not an option that was declined.** `feather`, `colour_match` and `extent`
+reach the compositor through `CompositePolicy`, whose values come from the recipe, and the wire
+argument helpers leave the caller's variable alone when the key is absent. That sounds like a detail and
+was a live defect: the boolean helper used to write `false` for an absent key, so `job.apply` and
+`ai.compose` ran with the colour correction switched off while the recipe and the report both said it
+was on. On the dev box the result was a patch **9.0 L units lighter than the ring it landed in**
+(`probes/2026-10-11-ai-job-live.md`); with the correction running, the same request lands 0.08 L off.
+The unit tests had been green throughout, because their fixtures are flat fields — see the lesson in
+`PLAN.md` about a flat fixture being a degenerate input for a colour operation.
 
 ```
 1. RESAMPLE     returned image (its own dims) → the whole crop rect, Lanczos3 over premultiplied

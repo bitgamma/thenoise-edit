@@ -135,13 +135,19 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
             p.check(handle.size == (w_px, h_px), "the uploaded region is the size requested",
                     f"{handle.size} vs {size}")
 
+        # The box is shared and holds one image model, so whatever was resident when the probe
+        # started goes back there whether or not the checks below pass.
+        resident_before = str(connected.get("model_loaded") or "")
+
         before_path = tmp / ("live-before.png" if live else "before.png")
         before = export(wire, before_path)
 
         started = time.time()
         run = wire.call("ai.run", {"recipe": RECIPE, "vars": VARS, "seed": args.seed})
         job_id = run["job"]["id"]
-        waited = wire.call("job.wait", {"id": job_id, "timeout": 900 if live else 30})
+        # A resolved model that is not the resident one costs a swap first: tens of seconds,
+        # sometimes minutes. This is the wait the UI will show an ETA for.
+        waited = wire.call("job.wait", {"id": job_id, "timeout": 1800 if live else 30})
         took = time.time() - started
         p.check(waited["state"] == "succeeded", f"job {job_id} succeeded",
                 f"{took:.1f}s failure={waited.get('failure')} error={waited.get('error', '')}")
@@ -183,6 +189,17 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
                     "the repeat request keyed on the same bytes")
         print(f"  shots: {before_path.parent}")
     finally:
+        settled = ""
+        if live and wire is not None:
+            settled = str(wire.call("server.state").get("model_loaded") or "")
+        if live and wire is not None and resident_before and settled != resident_before:
+            try:
+                loaded = wire.call("server.load", {"model": resident_before, "pin": True})
+                print(f"  ok   the model the box was running is back: {resident_before} "
+                      f"({loaded.get('elapsed_ms', 0)} ms)")
+            except Exception as exc:  # a failed restore is said out loud, never hidden
+                p.failed += 1
+                print(f"  FAIL could not put {resident_before} back: {exc}")
         wd.shutdown(proc, wire)
         stderr.close()
 

@@ -12,30 +12,66 @@
     {
       "id": "generate.photo",
       "recipe": "thenoise",
-      "requires": ["image"],
-      "preference": ["Krea-2-Turbo-INT8", "Krea-2-Turbo", "Flux-2-Klein-9B-TheNoise", "Qwen-Image-2.1"]
+      "requires": [
+        "image"
+      ],
+      "preference": [
+        "Krea-2-Turbo-INT8",
+        "Krea-2-Turbo",
+        "Flux-2-Klein-9B-TheNoise",
+        "Qwen-Image-2.1-Turbo-INT8",
+        "Qwen-Image-2.1-Turbo"
+      ]
     },
     {
       "id": "generate.illustration",
       "recipe": "thenoise",
-      "requires": ["image"],
-      "preference": ["Anima-Turbo-INT8", "Anima-Turbo", "Flux-2-Klein-4B-TheNoise", "Qwen-Image-2.1"]
+      "requires": [
+        "image"
+      ],
+      "preference": [
+        "Anima-Turbo-INT8",
+        "Anima-Turbo",
+        "Flux-2-Klein-4B-TheNoise",
+        "Qwen-Image-2.1-Turbo-INT8",
+        "Qwen-Image-2.1-Turbo"
+      ]
     },
     {
       "id": "edit",
       "recipe": "thenoise",
-      "requires": ["image", "edit"],
-      "preference": ["Flux-2-Klein-9B-TheNoise-KV-INT8", "Flux-2-Klein-9B-TheNoise", "Flux-2-Klein-4B-TheNoise", "Qwen-Image-Edit-2511-4steps", "Qwen-Image-2.1"]
+      "requires": [
+        "image",
+        "edit"
+      ],
+      "preference": [
+        "Flux-2-Klein-9B-TheNoise-KV-INT8",
+        "Flux-2-Klein-9B-TheNoise",
+        "Flux-2-Klein-4B-TheNoise",
+        "Qwen-Image-Edit-2511-4steps",
+        "Qwen-Image-2.1-Turbo-INT8",
+        "Qwen-Image-2.1-Turbo"
+      ]
     },
     {
       "id": "upscale",
       "recipe": "thenoise",
-      "requires": ["upscaling"],
-      "preference": ["RealESRGAN-2xplus-TheNoise", "RealESRGAN-4xplus-TheNoise", "LSDIR-4x-TheNoise", "Remacri-4x-TheNoise"]
+      "requires": [
+        "upscaling"
+      ],
+      "preference": [
+        "RealESRGAN-2xplus-TheNoise",
+        "RealESRGAN-4xplus-TheNoise",
+        "LSDIR-4x-TheNoise",
+        "Remacri-4x-TheNoise"
+      ]
     },
     {
       "id": "enhance",
-      "requires": ["chat", "vision"],
+      "requires": [
+        "chat",
+        "vision"
+      ],
       "preference": []
     }
   ]

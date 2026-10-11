@@ -624,6 +624,12 @@ feature generating one element per canvas square or per log line shows up here f
 
 ## Testing
 
+Measured records, newest first: `probes/2026-10-11-ai-job-live.md` (the whole AI path driven through
+the app against the dev box — request field list, timings including the server's own cache, and what a
+switched-off colour correction looks like in Lab) and
+`probes/2026-10-09-live-server.md` (the engine's contract).
+
+
 | Tier | Runs | Needs network | Content |
 |---|---|---|---|
 | **unit / property** | always, `ctest` | no | region compiler round-trips, mask ops, blend reference, blob store, format round-trips |

@@ -322,6 +322,10 @@ export NOISE_AI_FIXTURES=$PWD/tests/fixtures/http                # or replay ins
 | `job.apply {id, apply?, into?, feather?, extent?, colour_match?}` | land the answer through the same compositor `ai.compose` uses: preview by default, `into: "new_layer"` for a full-frame answer you want to blend down locally |
 | `cache.stats` | entries, bytes, hits, misses, refused keys |
 
+Where an option is optional, leaving it out means **the recipe's policy**, not "off": `ai.compose` and
+`job.apply` without `colour_match` land with the correction the recipe asked for, and the report's
+`policy` block says what was actually used, so the claim is checkable rather than implied.
+
 Two environment variables decide where it goes: `$THENOISE_URL` / `$THENOISE_API_KEY` for the real
 server, and `$NOISE_AI_FIXTURES` pointing at a directory of recordings — set the second and the app
 replays instead of reaching the network, which is how the default test suite proves the whole path.

@@ -35,11 +35,13 @@ In order from here:
    the ETA `server.state` already carries, and the jobs tray. Every one of these is a caller of a command
    that exists; none of them needs new AI code. Start where the P0 flow starts: select → `Remove` →
    `ai.preview` in the confirm → `ai.run` → `job.apply`.
-7. **Live run of the app path** (`ai_job_probe.py --live --max-images 2`) on the dev box, then the first
-   recipe-tuning pass. This is the one thing that can change a decision rather than confirm one: prep
-   choice per recipe, `context.ratio`, whether `colour_match` should default off for `new-image` (it does),
-   and what an ordinary edit costs. Ask for `$THENOISE_URL` / `$THENOISE_API_KEY` before starting; ~2 images
-   for the probe, ~10 for a tuning pass.
+7. **The recipe-tuning pass**, now that the app path is measured live
+   (`probes/2026-10-11-ai-job-live.md`: 3.4 s for a 256² edit on a resident Klein-9B, 0.7 s when the
+   server's own cache answered, and the landing exact). What the picture still shows is **texture**: the
+   replacement carries a finer grain than its frame (L std 4.4 against 2.0) and a faint rectangular edge
+   survives the 8 px feather. So the questions are `prep` per recipe (`blur` at small crops is the suspect),
+   `context.ratio`, and whether `inpaint-remove` wants more steps below ~384 px. ~10 images; ask first, and
+   the probe is the harness — it already re-lands the same request and re-measures.
 8. **The pieces of the design nothing has asked for yet**: the `enhance` role (a role with no preference
    list, refused by every recipe), warm-up after a swap, tier-2 fields with a per-server gate, `ai.log` as a
    rolling file, the keyring/0600 config for the key, and the in-process `heal` fallback. Each is listed in
@@ -230,6 +232,14 @@ refuse for a reason it does not name.
   mask-gesture test had `y = 0`, so a copy that forgot to subtract the destination's own origin survived the
   whole suite and killed the app on the first real drag. Gesture and region tests want a non-zero origin *and*
   a growth event.
+- **An optional argument whose reader defaults it silently switches the feature off, and flat fixtures
+  hide the fact.** `arg_bool` wrote `false` when the key was absent, so `job.apply` and `ai.compose` ran
+  without the colour correction every edit recipe asks for — while `policy` in the report echoed whatever
+  the caller had initialised, which is how it stayed green. A live answer was 9.0 L units lighter than the
+  ring it landed in; the fix makes the same request land 0.08 L off. Two rules: an absent optional argument
+  leaves the caller's value alone (the default belongs to the table, and the report must come from the value
+  that ran), and a colour test needs a frame with structure, because matching a flat patch to a flat ring
+  reproduces the ring and both settings then "work".
 - **A test rectangle at the origin hides an offset bug once, and a second rectangle at the origin hides it
   twice.** The prep/region tests all had `crop = {0, 0, w, h}`, so `prep_region` adding `crop.x/y` to a
   crop-local image survived a green suite and asserted the app on the first real selection. Any function
