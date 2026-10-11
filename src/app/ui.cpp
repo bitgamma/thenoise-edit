@@ -14,6 +14,7 @@
 #include "sokol_imgui.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -46,10 +47,9 @@ constexpr float kLayerOpacitySliderPx = 88.0f;
 constexpr ImU32 kAntLight = IM_COL32(255, 255, 255, 255);
 constexpr ImU32 kAntDark = IM_COL32(20, 20, 20, 255);
 constexpr float kLayerNameMinPx = 40.0f;
-// A prompt field holds a phrase, not a paragraph, and the panel asks for at most the number of
-// variables the shipped recipes ask for - plus room for one more without touching this file.
-// One words box per verb row, however many verbs the table grows to; the text is a prompt line, not a
-// document, so a fixed buffer per row is enough and no field is scrolled.
+// A prompt field holds a phrase, not a paragraph. One box per asking verb row, and ImGui writes into
+// the buffer it was handed, so each row owns a buffer of its own rather than sharing one between the
+// boxes drawn around it.
 constexpr int kVerbFieldChars = 220;
 
 // What the swap confirmation is about, remembered between the frame that opened the popup and the one
@@ -402,9 +402,15 @@ void draw_tool_panel(AppState& state, CommandTable& commands, const json& intent
 
 // The verbs, read from the table the commands are generated from and pressed as those commands: a row
 // here cannot mean something other than `ai.<verb>`, because it asks the command table for the name and
-// the key. Nothing is asked for the panel itself to remember about which verb is "the" one - the intent
-// command already holds that, and the words box below the rows is the current intent's field, so the
-// price shown is the price of the press that would follow the text on screen.
+// the key.
+//
+// The words a verb asks for are typed into that verb's own box and committed through `ai.intent`, which
+// is also the door the row's press and the key go through - so the text on screen, the button, the
+// shortcut and the wire cannot describe four different runs. Committing selects the row's recipe as
+// well as filling its field, which is what makes the price on the status line the price of the press
+// that would follow the text. The panel keeps no copy of the words of its own: the app's intent holds
+// the words for one recipe at a time (Rule E prunes the rest when the intent moves), so a row whose
+// recipe is not the intent's shows an empty box - which is the truth, and what asking means.
 void draw_verb_section(CommandTable& commands, const json& intent) {
     ImGui::SeparatorText("on the marked area");
     const json view = commands.invoke("ai.verbs", json::object()).value;
@@ -414,21 +420,21 @@ void draw_verb_section(CommandTable& commands, const json& intent) {
         return;
     }
 
-    static std::map<std::string, std::string> words;
-    static std::string typed;
-    static bool editing = false;
+    const std::string intended =
+        intent["recipe"].is_null() ? std::string() : intent["recipe"].get<std::string>();
+    // The row whose box currently owns the keyboard: only that box may be left as ImGui last wrote it.
+    static std::string editing;
+    static std::map<std::string, std::array<char, kVerbFieldChars>> boxes;
 
     for (const json& verb : view["verbs"]) {
         const std::string id = verb["id"].get<std::string>();
         const std::string label = verb["label"].is_null() ? id : verb["label"].get<std::string>();
         const std::string reason = verb["reason"].get<std::string>();
-        json args = json::object();
-        if (!words[id].empty()) {
-            const json ask = verb["ask"];
-            if (ask.is_array() && !ask.empty()) {
-                args["vars"] = json{{ask[0].get<std::string>(), words[id]}};
-            }
-        }
+        const std::string recipe = verb["recipe"].get<std::string>();
+        const json ask = verb["ask"];
+        const std::string field =
+            ask.is_array() && !ask.empty() ? ask[0].get<std::string>() : std::string();
+
         ImGui::PushID(id.c_str());
         ImGui::BeginDisabled(!verb["ready"].get<bool>());
         const bool pressed = ImGui::Button(label.c_str());
@@ -439,48 +445,39 @@ void draw_verb_section(CommandTable& commands, const json& intent) {
             ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
             ImGui::SetTooltip("%s", reason.c_str());
         }
+
+        if (!field.empty()) {
+            std::array<char, kVerbFieldChars>& box = boxes[id];
+            if (editing != id) {
+                const std::string shown =
+                    recipe == intended ? intent["vars"].value(field, std::string()) : std::string();
+                std::snprintf(box.data(), box.size(), "%s", shown.c_str());
+            }
+            ImGui::TextDisabled("%s", field.c_str());
+            ImGui::SetNextItemWidth(-1.0f);
+            // The value goes in as typed, blanks included: clearing the box clears the words, and the
+            // press then refuses naming the field rather than running on the recipe's own guess.
+            if (ImGui::InputText("##words", box.data(), box.size() - 1)) {
+                commands.invoke("ai.intent",
+                                json{{"recipe", recipe}, {"vars", json{{field, box.data()}}}});
+            }
+            editing = ImGui::IsItemActive() ? id : std::string();
+        }
+
+        // No `vars` on the press: the commit above already put the words where the command reads them,
+        // and `Ctrl+Shift+F` - which carries nothing - has to mean the same run as this button.
         if (pressed) {
             if (verb["swap"].get<bool>()) {
                 pending_command = verb["command"].get<std::string>();
-                pending_args = args;
+                pending_args = json::object();
                 pending_needs = verb["model"].get<std::string>();
                 pending_resident = verb["resident"].get<std::string>();
                 ImGui::OpenPopup("Switch model?");
             } else {
-                commands.invoke(verb["command"].get<std::string>(), args);
+                commands.invoke(verb["command"].get<std::string>(), json::object());
             }
         }
         ImGui::PopID();
-    }
-
-    // One box, for the verb the intent currently holds: what is typed is sent with the press, so there
-    // is nothing to commit, and an empty box is a refusal that names the field rather than a run on the
-    // recipe's own guess.
-    const std::string recipe = intent["recipe"].is_null() ? std::string()
-                                                          : intent["recipe"].get<std::string>();
-    const std::vector<std::string> ask =
-        intent["ask"].is_array() ? intent["ask"].get<std::vector<std::string>>()
-                                 : std::vector<std::string>{};
-    if (!ask.empty()) {
-        const std::string field = ask[0];
-        if (!editing) {
-            typed = words[recipe];
-        }
-        ImGui::TextDisabled("%s", field.c_str());
-        ImGui::SetNextItemWidth(-1.0f);
-        char buffer[kVerbFieldChars] = {0};
-        std::snprintf(buffer, sizeof(buffer), "%s", typed.c_str());
-        ImGui::InputText("##words", buffer, sizeof(buffer) - 1);
-        const std::string now = buffer;
-        if (now != typed) {
-            typed = now;
-            words[recipe] = now;
-        }
-        editing = ImGui::IsItemActive();
-        if (ImGui::IsItemDeactivatedAfterEdit() && !now.empty()) {
-            // Committed, so the request - and the price below - recompiles with the words in it.
-            commands.invoke("ai.intent", json{{"vars", json{{field, now}}}});
-        }
     }
 
     if (ImGui::BeginPopupModal("Switch model?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {

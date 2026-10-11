@@ -41,7 +41,11 @@ One dockspace, four panes and a status bar:
 │                                              │ ─ on the marked ─   │
 │                                              │  Remove [Ctrl+Bksp] │
 │                                              │  Fill   [Ctrl+Sh+F] │
+│                                              │   prompt            │
+│                                              │   [____________]    │
 │                                              │  Change [Ctrl+Sh+C] │
+│                                              │   instruction       │
+│                                              │   [____________]    │
 │                                              │  Generate [Ctrl+G]  │
 │                                              │  (brush fields only │
 │                                              │   for painting tools)│
@@ -360,7 +364,7 @@ them will act on a frame with nothing marked.
 | What you see | What it is |
 |---|---|
 | a grey verb | the reason is its tooltip: "works on a selection and there is none", "no model fills the `edit` role: ...", "not connected" - a disabled verb is a sentence, never a mystery |
-| the words box | the field the verb on screen asks for, labelled with its own name (`prompt`, `instruction`). It starts empty because **an operation with no words is a coin toss**: press with the box blank and the run refuses, naming the recipe and the field |
+| the words box | one per verb that asks, under that verb, labelled with the field's own name (`prompt`, `instruction`) - so the sentence typed for Fill is visible where Fill will use it, not in a box belonging to whichever verb was last chosen. It starts empty because **an operation with no words is a coin toss**: press with the box blank and the run refuses, naming the recipe and the field. What is typed is committed as it is typed, and the key carries nothing of its own |
 | `272x224`, model, `~3.4 s` | what a press would send, priced before it costs anything: the endpoint, the size the region compiler settles on (region + context, snapped to the model's multiple), which model would answer, and the box's own measured time for that size - or nothing at all when the box has not answered that size before, which is honest rather than a guess. All of it is geometry and table lookups: **marking an area encodes nothing**, and there is no preview step, because the only honest preview of an AI edit is the answer |
 | `will load the model (resident: …)` | this press would swap the shared server; the popup asks, and says a swap costs tens of seconds. Nothing switches silently |
 | `j0001 running`, then `on 'Remove j0001', Ctrl+Z` | the job, and where its answer went. **There is nothing to press**: a finished answer composites itself - feathered, colour-matched, pixel-locked - onto **its own new layer** directly above the one the region was flattened from, named for the verb and the job. Hiding it, blending it down, masking it or deleting it are ordinary layer operations, `Ctrl+Z` takes the layer and its pixels away together, and `job.apply` brings it back (it is idempotent: the answer is already there, it says so and adds nothing) |

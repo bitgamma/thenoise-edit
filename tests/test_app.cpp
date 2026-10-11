@@ -2678,6 +2678,104 @@ void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
     CHECK(bogus.error.find("ai.bleach") != std::string::npos);
 }
 
+// Fill and Change are the two verbs with a word in them, so their sequence is mark, type, press. What
+// is asserted is not that a box can hold text but that the words reach the request the job actually
+// sent, that the answer arrives on a layer named for the verb, and that the press of a key which
+// carries no arguments at all - the only kind a keyboard can send - runs with the words the intent was
+// given. That last one is how the panel works: its box commits and then presses bare.
+void test_the_typed_verbs_carry_their_words_to_their_own_layer() {
+    struct Typed {
+        const char* name;
+        const char* recipe;
+        const char* field;
+        const char* label;
+        const char* words;
+    };
+    // The field each recipe asks for, and the label its answer's layer is named for - both read from
+    // the recipe rather than restated, so a rename in the table cannot silently pass.
+    const std::vector<Typed> verbs{
+        {"fill", "region-fill", "prompt", "Fill", "a brass reading lamp"},
+        {"change", "inpaint-replace", "instruction", "Change", "the marker as a waxing moon"},
+    };
+
+    Harness h;
+    h.value("doc.new", json{{"width", 96}, {"height", 64}, {"fill", json::array({30, 40, 50, 255})}});
+    h.value("tool.stroke", json{{"points", json::array({json::array({0, 40}), json::array({95, 40})})},
+                                {"size", 10.0}, {"hardness", 1.0}, {"opacity", 1.0}, {"flow", 1.0},
+                                {"spacing", 0.25}, {"color", json::array({0, 200, 60, 255})}});
+    h.value("server.connect", json::object());
+    h.value("select.rect", json{{"rect", json::array({20, 12, 36, 24})}});
+
+    for (const Typed& verb : verbs) {
+        const std::string recipe = verb.recipe;
+        const std::string field = verb.field;
+        const std::string command = std::string("ai.") + verb.name;
+        const std::string scene = checksum_of(h);
+        const Image before = h.state.doc.composite();
+        const std::size_t layers_before = h.state.doc.layers().size();
+
+        // A word given where this recipe never asked for one is no words: the refusal names the field it
+        // was handed as well as the one it wanted, so a driver cannot file `prompt` against Change and
+        // get an answer to a different question.
+        const std::string other = field == "prompt" ? "instruction" : "prompt";
+        json misfiled{{other, verb.words}};
+        json misfiled_args{{"vars", misfiled}, {"seed", 9}};
+        const CommandResult wrong_field = h.run(command, misfiled_args);
+        CHECK(!wrong_field.ok);
+        CHECK(wrong_field.error.find(other) != std::string::npos);
+        CHECK(wrong_field.error.find(recipe) != std::string::npos);
+        CHECK_EQ(h.state.doc.layers().size(), layers_before);
+
+        // The panel's door exactly: the box commits the words, then the key - which carries nothing -
+        // presses. A commit that selected the recipe without filing the words, or words filed against a
+        // recipe the press then refused to run, both fail here.
+        json given{{field, verb.words}};
+        h.value("ai.intent", json{{"recipe", recipe}, {"vars", given}});
+        const json ran = h.value(command, json{{"seed", 9}});
+        CHECK_EQ(ran["verb"].get<std::string>(), std::string(verb.name));
+        const std::string id = ran["job"]["id"].get<std::string>();
+        const json settled = h.value("job.wait", json{{"id", id}, {"timeout", 30}});
+        CHECK_EQ(settled["state"].get<std::string>(), std::string("succeeded"));
+        CHECK_EQ(settled["recipe"].get<std::string>(), recipe);
+
+        // The words are in the request that went out, not only in the box: the job's own record answers.
+        const std::string prompt = settled["request"]["prompt"].get<std::string>();
+        CHECK(prompt.find(verb.words) != std::string::npos);
+        CHECK(prompt.find("{{") == std::string::npos);
+        CHECK_EQ(settled["request"]["path"].get<std::string>(), std::string("/images/edits"));
+
+        // Rule A, per verb: nobody pressed anything after the wait, and the answer is a layer of its own
+        // named for what the recipe is called.
+        CHECK(settled["landing"]["landed"].get<bool>());
+        CHECK_EQ(settled["landing"]["landed_layer"].get<std::string>(),
+                 std::string(verb.label) + " " + id);
+        REQUIRE(h.state.doc.layers().size() == layers_before + 1);
+        CHECK_EQ(h.state.doc.layer(layers_before).name, std::string(verb.label) + " " + id);
+
+        // Nothing reached a pixel the compiled region did not claim, and the layer the region was
+        // flattened from kept every byte it had.
+        const json& crop = settled["landing"]["report"]["region"]["crop"];
+        const Rect box{crop[0].get<int>(), crop[1].get<int>(), crop[2].get<int>(), crop[3].get<int>()};
+        const Image after = h.state.doc.composite();
+        std::size_t outside = 0;
+        for (int y = 0; y < after.size().h; ++y) {
+            for (int x = 0; x < after.size().w; ++x) {
+                if (std::memcmp(after.at(x, y), before.at(x, y), kChannels) != 0 &&
+                    !box.contains(x, y)) {
+                    ++outside;
+                }
+            }
+        }
+        CHECK_EQ(outside, std::size_t(0));
+        CHECK_NE(checksum_of(h), scene);
+
+        // One `Ctrl+Z` takes the answer and the layer holding it together, back to the scene.
+        h.value("edit.undo", json::object());
+        CHECK_EQ(h.state.doc.layers().size(), layers_before);
+        CHECK_EQ(checksum_of(h), scene);
+    }
+}
+
 // A verb row is a promise about a recipe. The check runs at startup and gates every verb command,
 // because the alternative is a button that reads "Remove" while sending something else.
 void test_a_verb_that_stops_matching_its_recipe_is_refused_at_startup() {
@@ -2728,26 +2826,53 @@ void test_a_verb_that_stops_matching_its_recipe_is_refused_at_startup() {
 }
 
 // Words an operation asked for are not optional at the door: an empty instruction is no instruction,
-// and the model would invent one on the box's time. The refusal names the recipe and the field, nothing
-// is queued, and the same door with the field filled compiles the request.
-void test_a_run_that_was_asked_for_words_refuses_without_them() {
+// and the model would invent one on the box's time. Asserted against **every** recipe in the table that
+// asks for something, in the field that recipe names, so a recipe added tomorrow cannot run on words it
+// made up - and so a recipe whose `ask` was dropped by accident is caught rather than silently sent
+// blank. A refusal costs nothing at the door: no job, and no upload encoded to discover it was refused.
+void test_every_recipe_that_asks_for_words_refuses_without_them() {
     Harness h;
     h.value("doc.new", json{{"width", 64}, {"height", 48}, {"fill", json::array({20, 40, 60, 255})}});
     h.value("select.rect", json{{"rect", json::array({8, 6, 24, 16})}});
     h.value("server.connect", json::object());
 
+    std::size_t asked_recipes = 0;
+    // Hoisted, because `h.value(...)` returns by value: ranging over a subobject of that temporary
+    // would walk memory the loop had already freed.
+    const json table = h.value("ai.recipes", json::object());
+    for (const json& row : table["recipes"]) {
+        if (row["ask"].empty()) {
+            continue;
+        }
+        ++asked_recipes;
+        const std::string recipe = row["id"].get<std::string>();
+        const std::string field = row["ask"][0].get<std::string>();
+        const std::string quoted = "'" + field + "'";
+
+        const CommandResult wordless = h.run("ai.run", json{{"recipe", recipe}, {"seed", 3}});
+        CHECK(!wordless.ok);
+        CHECK(wordless.error.find(recipe) != std::string::npos);
+        CHECK(wordless.error.find(quoted) != std::string::npos);
+
+        // A box of spaces is the same refusal: nothing was said.
+        json blank_vars{{field, "   "}};
+        const CommandResult blank = h.run(
+            "ai.run", json{{"recipe", recipe}, {"vars", blank_vars}, {"seed", 3}});
+        CHECK(!blank.ok);
+        CHECK(blank.error.find("whitespace") != std::string::npos);
+
+        // The refusal happens at the rendering of the prompt, which is before the upload is built, so
+        // being turned away costs neither a request nor an encode.
+        CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(0));
+        CHECK_EQ(h.state.upload_encodes, std::uint64_t(0));
+    }
+    // A vacuous loop would be the worst kind of green: the shipped table asks in five places.
+    CHECK_EQ(asked_recipes, std::size_t(5));
+
     const CommandResult wordless = h.run("ai.run", json{{"recipe", "region-fill"}, {"seed", 3}});
     CHECK(!wordless.ok);
     CHECK(wordless.error.find("region-fill") != std::string::npos);
     CHECK(wordless.error.find("'prompt'") != std::string::npos);
-    CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(0));
-
-    // A box of spaces is the same refusal: nothing was said.
-    const CommandResult blank =
-        h.run("ai.run", json{{"recipe", "region-fill"}, {"vars", json{{"prompt", "   "}}}, {"seed", 3}});
-    CHECK(!blank.ok);
-    CHECK(blank.error.find("whitespace") != std::string::npos);
-    CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(0));
 
     const json filled =
         h.value("ai.preview", json{{"recipe", "region-fill"},
@@ -2822,9 +2947,10 @@ int main() {
     test_an_unconfigured_server_names_the_variable();
     test_an_option_left_out_keeps_the_policy_the_table_asked_for();
     test_the_remove_key_runs_the_whole_sequence_with_no_words();
+    test_the_typed_verbs_carry_their_words_to_their_own_layer();
     test_choosing_not_to_run_costs_no_upload_encode();
     test_a_verb_that_stops_matching_its_recipe_is_refused_at_startup();
-    test_a_run_that_was_asked_for_words_refuses_without_them();
+    test_every_recipe_that_asks_for_words_refuses_without_them();
     test_an_answer_lands_on_its_own_layer_over_an_empty_one();
     test_every_command_refuses_an_argument_it_does_not_declare();
     test_a_container_that_is_not_ours_is_refused_naming_what_it_met();
