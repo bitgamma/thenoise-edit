@@ -7,6 +7,7 @@
 #include <map>
 #include <string>
 
+#include "ai/recipes.h"
 #include "core/command.h"
 #include "core/geom.h"
 
@@ -64,6 +65,27 @@ struct AiIntent {
 };
 
 void register_ai_intent_commands(AppState& state, CommandTable& table);
+
+// Whether a recipe could run here, in the words `ai.intent` reports: the same assessment behind a
+// greyed Run button, a refusal and the verb list, so those three cannot disagree about why not.
+struct Readiness {
+    bool ready = false;
+    std::string reason;
+    std::string fix;
+    std::string model;
+};
+
+Readiness assess(AppState& state, const ai::Recipe* recipe);
+
+// A recipe whose region is the selection, with nothing marked. The region door refuses it and the
+// readiness forecast asks the same question, so a greyed row and a refused press cannot say different
+// things - and a wordless verb over an unmarked frame cannot quietly become a whole-document
+// reconstruction. Empty when nothing is missing.
+std::string missing_region(const ai::Recipe& recipe, AppState& state);
+
+// Whether running this recipe would first have to load a different model onto the box - tens of
+// seconds on a shared machine, so it is priced before the press rather than discovered after it.
+bool needs_swap(const AppState& state, const Readiness& readiness);
 
 // Everything the panel shows, from the intent and the document: the intents the selection offers, the
 // values in force, whether the action could run and what it would cost. Reads the stored preview;

@@ -7,6 +7,7 @@
 #include "ai/server.h"
 #include "app/command_args.h"
 #include "app/state.h"
+#include "core/brush.h"
 #include "core/log.h"
 
 #include <algorithm>
@@ -113,61 +114,7 @@ nlohmann::json effective_vars(const ai::Recipe& recipe,
     return out;
 }
 
-struct Readiness {
-    bool ready = false;
-    std::string reason;
-    std::string fix;
-    std::string model;
-};
 
-// Whether this intent could run here, and what stops it if it cannot. The panel greys the button from
-// this and the refusal repeats it, so a disabled control and an error message cannot disagree.
-Readiness assess(AppState& state, const ai::Recipe* recipe) {
-    Readiness out;
-    if (!state.ai.roles_error.empty()) {
-        out.reason = state.ai.roles_error;
-        out.fix = "$NOISE_EDIT_ASSETS";
-        return out;
-    }
-    if (!state.ai.recipes_error.empty()) {
-        out.reason = state.ai.recipes_error;
-        out.fix = "$NOISE_EDIT_ASSETS";
-        return out;
-    }
-    if (state.doc.empty()) {
-        out.reason = "no document is open";
-        return out;
-    }
-    if (recipe == nullptr) {
-        out.reason = "no recipe that works on a selection is loaded";
-        out.fix = "assets/recipes/*.json";
-        return out;
-    }
-    if (!state.ai.connected) {
-        out.reason = state.ai.connect_error.empty() ? "not connected to a server"
-                                                   : state.ai.connect_error;
-        out.fix = "server.connect";
-        return out;
-    }
-    if (state.ai.registry == nullptr) {
-        out.reason = "no role table is loaded";
-        return out;
-    }
-    const ai::Resolution resolution = state.ai.registry->resolve(recipe->role);
-    if (!resolution.resolved()) {
-        out.reason = "nothing fills the '" + recipe->role + "' role: " + resolution.reason;
-        out.fix = resolution.fix_command;
-        return out;
-    }
-    out.ready = true;
-    out.model = resolution.model_id;
-    return out;
-}
-
-bool needs_swap(const AppState& state, const Readiness& readiness) {
-    return readiness.ready && !readiness.model.empty() && !state.ai.health.model_loaded.empty() &&
-           readiness.model != state.ai.health.model_loaded;
-}
 
 std::string field_text(const nlohmann::json& preview, std::string_view name) {
     if (!preview.is_object() || !preview.contains("request") ||
@@ -250,6 +197,69 @@ CommandResult start_intent(AppState& state, CommandTable& table, const ai::Recip
 }
 
 }  // namespace
+
+// Whether this intent could run here, and what stops it if it cannot. The panel greys the button from
+// this and the refusal repeats it, so a disabled control and an error message cannot disagree.
+std::string missing_region(const ai::Recipe& recipe, noise::AppState& state) {
+    if (recipe.whole_document() || state.doc.selection().has_value()) {
+        return {};
+    }
+    return "recipe '" + recipe.id + "' works on a selection and there is none: mark the area (" +
+           std::string(tool_names()) + " draw one, or `select.rect`), or use a recipe whose region "
+           "is the document";
+}
+
+bool needs_swap(const noise::AppState& state, const Readiness& readiness) {
+    return readiness.ready && !readiness.model.empty() && !state.ai.health.model_loaded.empty() &&
+           readiness.model != state.ai.health.model_loaded;
+}
+
+Readiness assess(noise::AppState& state, const ai::Recipe* recipe) {
+    Readiness out;
+    if (!state.ai.roles_error.empty()) {
+        out.reason = state.ai.roles_error;
+        out.fix = "$NOISE_EDIT_ASSETS";
+        return out;
+    }
+    if (!state.ai.recipes_error.empty()) {
+        out.reason = state.ai.recipes_error;
+        out.fix = "$NOISE_EDIT_ASSETS";
+        return out;
+    }
+    if (state.doc.empty()) {
+        out.reason = "no document is open";
+        return out;
+    }
+    if (recipe == nullptr) {
+        out.reason = "no recipe that works on a selection is loaded";
+        out.fix = "assets/recipes/*.json";
+        return out;
+    }
+    if (!missing_region(*recipe, state).empty()) {
+        out.reason = missing_region(*recipe, state);
+        out.fix = "select.rect";
+        return out;
+    }
+    if (!state.ai.connected) {
+        out.reason = state.ai.connect_error.empty() ? "not connected to a server"
+                                                   : state.ai.connect_error;
+        out.fix = "server.connect";
+        return out;
+    }
+    if (state.ai.registry == nullptr) {
+        out.reason = "no role table is loaded";
+        return out;
+    }
+    const ai::Resolution resolution = state.ai.registry->resolve(recipe->role);
+    if (!resolution.resolved()) {
+        out.reason = "nothing fills the '" + recipe->role + "' role: " + resolution.reason;
+        out.fix = resolution.fix_command;
+        return out;
+    }
+    out.ready = true;
+    out.model = resolution.model_id;
+    return out;
+}
 
 nlohmann::json intent_json(AppState& state) {
     const ai::Recipe* recipe = intent_recipe(state);

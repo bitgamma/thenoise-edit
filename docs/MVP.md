@@ -70,20 +70,21 @@ Constraints that shape everything (see `AI-BACKEND.md`):
 - `New image from prompt` → new layer, aspect presets at the model's native scale,
   presets steered toward the model's strength (`-anime` on Anima, `-photo` on Krea 2)
 - `Remove object` (flagship): paint → blur-prep → remove prompt → local composite
-  **implemented**: the "Edit selection" panel (tabbed with Layers and Log, so the canvas never
-  shrinks for it) lists the selection recipes by their `label`, collects the ones in `ask`, shows the
-  compiled request - endpoint, size, model, cache digest, measured-or-no ETA - before Run, prices a
-  model swap and asks for the second click, then lands the answer through the compositor with Apply.
-  Driven end to end by `ai.intent`, so the click and a script mean the same thing.
-- `Replace`, `Fill region` — same plumbing, different template. **Same panel**: they are rows of
-  `recipes/*.json`, not buttons in the source; the palette is derived from the table
+  **implemented**, as a **verb**: mark an area, `Ctrl+Backspace`, and the answer arrives on its own new
+  layer. No words, no preview press, no scope choice, no destination. `ai.verbs` and `ai.intent` are the
+  same surface the key goes through, the compiled request is priced in the status bar before it costs
+  anything, and a model swap asks first.
+- `Change` (in-place edit), `Fill`, `New image` — same plumbing, different recipe, one key each
+  (`Ctrl+Shift+C`, `Ctrl+Shift+F`, `Ctrl+G`). The verbs are rows of `ai_verbs.cpp` over rows of
+  `recipes/*.json`; the panel lists them from `ai.verbs`, so neither the buttons nor the words they ask
+  for are written twice
 - `Heal` — in-process Telea/Chan fusion when there is no server or no edit model; backend
   when available ("no network, no problem")
 - `Upscale region / document`
 - `Reimagine` — full-frame edit dropped in as a new layer at 50 % opacity
 - `Free command` with exact-request preview (fields + the actual prepped PNG)
 - draft (≤512 px) → refine → commit flow; ETA from client-measured latency EMA — the EMA is built
-  and read (`server.state.latency`, `~X s` in the panel when the box has answered that size before);
+  and read (`server.state.latency`, `~X s` on the status bar when the box has answered that size before);
   the draft/refine *stages* are not
 - variants = N queued jobs with `seed+i` (not the `n` param), landing one-by-one in a tray;
   A/B wipe; Accept/Discard; every result journaled and cached

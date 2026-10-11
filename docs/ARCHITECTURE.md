@@ -138,7 +138,9 @@ src/
                        mid-gesture cannot change the shape already being drawn
     shortcuts.{h,cpp}  platform key event -> canonical shortcut text (the only sokol-aware
                        part of the app layer)
-    ui/                panels: layers, generate, journal, jobs, status, prefs
+    ui.cpp             the window: canvas, the tool panel (tools, selection, mask, the verb rows,
+                       brush fields for the tools that paint), layers, log, and a two-line status bar
+                       whose second line is the AI line - model, ~seconds, cache, swap warning, job
     select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
     ai_commands.cpp     `ai.compose` (land a result file), `ai.roles`, `ai.recipes`, `ai.preview`
                        (the compiled request, unsent) and `ai.run` (queue it): each reports what the
@@ -150,10 +152,16 @@ src/
     ai_landing.{h,cpp} the one door an answer goes through the document by, shared by `ai.compose`
                        and `job.apply` so the two cannot disagree about feather or coverage, and so that
                        neither of them can land an answer anywhere but on its own new layer
-    ai_intent.{h,cpp}  `ai.intent`: the Edit-selection panel's state (which recipe, the values typed for
-                       the variables it asks about, the session seed, the job) and its one action. The
-                       window draws this command's answer and owns nothing else, so a scripted run of an
-                       intent and a click are the same call sequence
+    ai_intent.{h,cpp}  `ai.intent`: the AI action's state (which recipe the last verb chose, the values
+                       typed for the fields it asks about, the session seed, the job) and its one action,
+                       plus the readiness every door forecasts from (`assess`, `missing_region`,
+                       `needs_swap`). The window draws this command's answer and owns nothing else, so a
+                       scripted run of an intent and a click are the same call sequence
+    ai_verbs.{h,cpp}   `kVerbs`: one row per verb - `{VerbId, recipe, key}` - generating `ai.remove`,
+                       `ai.fill`, `ai.change`, `ai.generate` and the readable `ai.verbs`. A row names no
+                       label, no words and no scope of its own: those are the recipe's, and
+                       `verb_table_error` refuses the table at session open when a row has drifted from
+                       what its recipe does
     mask_commands.cpp mask.from_selection, mask.add/remove/fill/invert, mask.target and mask.get -
                        the two directions between a selection and the active layer's mask (both copies
                        of one `Mask`), the mask's own life cycle, and where strokes are aimed at
@@ -593,7 +601,7 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | drive | `select.rect {rect, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `screenshot`, `pixels.compare`, `wire.info` |
  `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
-| ai | `ai.compose {image, apply?, feather?, colour_match?, lock_band?, extent?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}`, `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pin?}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.retry {id}`, `job.apply {id, apply?, feather?, colour_match?}`, `cache.stats` | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact field list, size and blob digest before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel, retry and apply without a UI; `ai.intent` is the panel's whole surface, so a scripted run of "Remove the lamp" and a click cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command and means the session seed when absent - nothing draws a random one inside a request path |
+| ai | `ai.verbs` (the verb rows: id, command, key, recipe, label, operation, `ask`, scope, `ready`, `reason`, `model`, `resident`, `swap`), `ai.remove` / `ai.fill` / `ai.change` / `ai.generate` `{vars?, seed?, confirm?}` (one verb row pressed - they call `ai.intent` with their recipe named, so a key and a scripted intent cannot diverge), `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}`, `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pin?}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.retry {id}`, `job.apply {id, apply?, feather?, colour_match?}`, `cache.stats` | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact field list, size and blob digest before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel, retry and apply without a UI; `ai.intent` is the whole surface of the action, so a scripted run and a key press cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command and means the session seed when absent - nothing draws a random one inside a request path |
 
 Live now: every row. The AI row is driven end to end by `tools/ai_job_probe.py` against
 `tests/fixtures/http` (a recorded server), so the whole path - discovery, role resolution, the compiled

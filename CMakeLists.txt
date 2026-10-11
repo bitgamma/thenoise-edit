@@ -151,6 +151,7 @@ add_library(noise_app STATIC
     src/app/ai_intent.cpp
     src/app/ai_landing.cpp
     src/app/ai_session.cpp
+    src/app/ai_verbs.cpp
     src/app/command_args.cpp
     src/app/commands.cpp
     src/app/document_commands.cpp

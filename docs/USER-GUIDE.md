@@ -30,29 +30,42 @@ goes to one directory — `$NOISE_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR/noise-edi
 One dockspace, four panes and a status bar:
 
 ```
-┌──────────────────────────────────────────────┬────────────────┐
-│                                              │ Brush          │
-│   Canvas                                     │  brush  [B]    │
-│   (checkerboard where the layer is           │  eraser [E]    │
-│    transparent, one image on top)            │  size  ───●─── │
-│                                              │  hardness …    │
-│                                              ├────────────────┤
-│                                              │ Layers         │
-│                                              │  Layer 2    ●  │
-│                                              │  Layer 1       │
-│                                              │  [Add][Delete] │
-│                                              ├────────────────┤
-│                                              │ Log            │
-├──────────────────────────────────────────────┴────────────────┤
-│ 72.5%  1600 x 1000  ~/sketch.noise  brush 24 px  undo 3 / redo 0  5.7 ms  wire :41823 │
-└───────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┬─────────────────────┐
+│                                              │ Brush               │
+│   Canvas                                     │  brush  [B]         │
+│   (checkerboard where the layer is           │  eraser [E]         │
+│    transparent, one image on top)            │  move   [V]         │
+│                                              │  select [M]         │
+│                                              │ ─ selection ─       │
+│                                              │  70x50  [All][None] │
+│                                              │ ─ on the marked ─   │
+│                                              │  Remove [Ctrl+Bksp] │
+│                                              │  Fill   [Ctrl+Sh+F] │
+│                                              │  Change [Ctrl+Sh+C] │
+│                                              │  Generate [Ctrl+G]  │
+│                                              │  (brush fields only │
+│                                              │   for painting tools)│
+│                                              ├─────────────────────┤
+│                                              │ Layers | Log        │
+│                                              │  Layer 2    ●       │
+│                                              │  Layer 1            │
+│                                              │  [Add][Delete]      │
+├──────────────────────────────────────────────┴─────────────────────┤
+│ 450.0%  160 x 110  unsaved  select 24 px  sel 70x50  undo 0 / redo 0  4.6 ms  wire :35429 │
+│ ai: Remove  Flux-2-Klein-9B-TheNoise  ~3.4 s  cache b97d4769  j0001 succeeded [Apply]      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 Panes are ordinary ImGui windows: drag a tab to dock them somewhere else, and the layout is
-remembered in `imgui.ini` inside the runtime directory. The status bar reads out the zoom, the
-document size, its path (or `unsaved`), the tool and brush size, `painting N dabs` during a
-live stroke, the undo/redo depth, the last frame time and the wire port — enough to reproduce a
-screenshot from the picture alone.
+remembered in `imgui.ini` inside the runtime directory. The status bar's first
+line reads out the zoom, the document size, its path (or `unsaved`), the tool and brush size,
+`painting N dabs` during a live stroke, the undo/redo depth, the last frame time and the wire port;
+its **second line is the AI's**: which model would answer the verb on screen, what it costs on this
+box, the cache digest of the request, whether a press would have to load a model first, and the job
+that is running or waiting to land. Enough to reproduce a screenshot from the picture alone.
+
+**There is no AI tab.** The verbs live beside the tools that draw the area they act on, and on the
+keys - see [the verbs](#the-verbs).
 
 **There is no New/Open dialog.** A document comes from a command-line argument or from the wire
 (`doc.new`, `doc.open`). That is a missing piece of UI, not a hidden feature.
@@ -306,7 +319,7 @@ export THENOISE_URL=https://<server>:13305/v1   # thenoise/lemonade on the LAN
 export THENOISE_API_KEY=***                     # only if the server demands one
 ```
 
-The **Edit selection** panel shows the session and starts it: a `Connect` button, `not connected` in red
+The status bar's AI line shows the session and starts it: a `Connect` button, `not connected` in red
 until it works, and the resident model once it does. It connects **by itself at startup**, once, after the
 window is on screen and whatever tab is showing. One attempt is the whole point: a server that is switched
 off costs one connect timeout, not a retry every frame. A host that *refuses* answers instantly; a host
@@ -317,42 +330,47 @@ is what you want after the box downloads a model.
 With no `$THENOISE_URL` the row says `no server: set $THENOISE_URL`, there is no button, and the log says
 why once (`startup handshake: no server is configured`).
 
-From a terminal, the same handshake (this is the panel's button, not a side door - it is the command
-table the UI calls):
+From a terminal, the same handshake (this is the status line's `Connect` button, not a side door - it is
+the command table the UI calls):
 
 ```sh
 python3 tools/wire_call.py server.connect
 python3 tools/wire_call.py server.state            # what it resolved, and what is resident
 ```
 
-### Remove something from a selection
+### The verbs
 
-Select an area (`M` for a rectangle, `Shift+M` for an ellipse, or paint a layer mask and pick it up
-with `select.from_mask`), then open the **Edit selection** tab - it shares a dock with Layers and Log,
-so the canvas does not shrink when the panel is up.
+Four operations, each an ordinary command with a key, listed under **"on the marked area"** in the Tool
+panel because the panel is where the area gets drawn:
+
+| Verb | Key | Needs marked | Asks you to type | What it does |
+|---|---|---|---|---|
+| **Remove** | `Ctrl+Backspace` | a selection (yours or the active layer's mask) | nothing | reconstructs the marked area; the area is the whole instruction |
+| **Fill** | `Ctrl+Shift+F` | a selection | what should appear | reconstructs the marked area from those words |
+| **Change** | `Ctrl+Shift+C` | a selection | what should change | changes the marked area in place, from those words |
+| **Generate** | `Ctrl+G` | nothing (document scope) | the picture | makes a new image on a new layer |
+
+They are commands first and buttons second: `command.list` shows `ai.remove` bound to `Ctrl+Backspace`,
+`ai.verbs` answers the same rows, and the panel asks the table for the labels and keys rather than
+owning any. Select an area first (`M` rectangle, `Shift+M` ellipse, or paint a layer mask and pick it up
+with `select.from_mask`) - Remove and Fill throw the marked pixels away, Change keeps them, and none of
+them will act on a frame with nothing marked.
 
 | What you see | What it is |
 |---|---|
-| `intent` | the operations this selection can do, by name: Remove, Replace, Fill region, Heal, Upscale. They are rows of `assets/recipes/*.json`, not buttons in the code - a new recipe file appears here by itself |
-| `server` / `Connect` | the session: the resident model, or `not connected` in red with a button. It asks once at startup by itself and never again until you press - see [Telling the editor where the server is](#telling-the-editor-where-the-server-is) |
-| the grey line | the region: bounds and covered pixels, or "no selection: the whole document" |
-| `target`, `replacement`, ... | the words the recipe asks the person for. Each field holds the recipe's own default until you type, and what you type is what the request carries |
-| `seed` | the session's seed, shown because it is in the request. Nothing picks a number behind your back |
-| `/images/edits 192x192` | the compiled request, before you pay for it: endpoint and the size the region compiler settled on (selection + context, snapped to the model's multiple) |
-| model, `cache 3c30717c`, ETA | which model would answer, the digest of *this* request (a repeat is served instantly), and the box's own measured time for that size - or "no timing yet for this size", which is honest rather than a guess |
-| `Run` | queues it. If the intent needs a model other than the resident one, this asks first and says the swap costs tens of seconds; nothing switches silently. Passing a value, or changing the seed, recompiles; a change the panel was not told about recompiles once it has held still for one read, so dragging a marquee does not encode a region per frame |
+| a grey verb | the reason is its tooltip: "works on a selection and there is none", "no model fills the `edit` role: ...", "not connected" - a disabled verb is a sentence, never a mystery |
+| the words box | the field the verb on screen asks for, labelled with its own name (`prompt`, `instruction`). It starts empty because **an operation with no words is a coin toss**: press with the box blank and the run refuses, naming the recipe and the field |
+| `/images/edits 192x192`, model, `cache 3c30717c`, `~3.4 s` | the compiled request, priced before you pay for it: the size the region compiler settled on (region + context, snapped to the model's multiple), which model would answer, this request's digest (a repeat is served instantly), and the box's own measured time for that size - or "no timing yet for this size", which is honest rather than a guess |
+| `will load the model (resident: …)` | this press would swap the shared server; the popup asks, and says a swap costs tens of seconds. Nothing switches silently |
+| `j0001 running`, then `Apply` | the job, and the door the answer comes through - the same compositor as `ai.compose`, feathered and pixel-locked. **The answer arrives on its own new layer** directly above the one the region was flattened from, named for the verb and the job (`Remove j0001`), so hiding it, blending it down, masking it or deleting it are ordinary layer operations, and one `Ctrl+Z` takes the layer and its pixels away together |
+| `region moving - price settles` | the selection changed under the read; the compile follows it the frame after it stops, so nothing has to be pressed and the price shown is one frame behind |
 
-**Two kinds of operation, and why only one of them smears.** *Reconstruct* (Remove, Heal, Fill region)
-throws the selected content away on purpose, so the uploaded picture has a blurred or flattened hole in
-exactly that area while the surroundings go up sharp - they are the only instruction it gets. *Change in
-place* (Replace) uploads the region **exactly as it stands**: blur it and you have destroyed the thing you
-asked to change, which is what an earlier build did and why its answers came back unrelated to the
-picture. `tools/prep_proof.py` renders both uploads and asserts the difference whole-image.
-| `j0001 succeeded`, `Apply` | the job, and the door the answer comes through: the same compositor as `ai.compose`, feathered and locked. The answer arrives on **its own new layer** directly above the one the region was flattened from, named for the operation and the job (`Remove j0001`), so hiding it, blending it down, masking it or deleting it are ordinary layer operations — and one `Ctrl+Z` takes the layer and its pixels away together |
-| `region moving - price settles` | the selection is changing under the panel; the compile follows it the frame after it stops, so nothing has to be pressed and the price shown is one frame behind |
-
-A disabled panel with a grey sentence is not a bug: the sentence is the reason ("nothing fills the
-`edit` role: ...", with the `lemonade import` that would fix it when the box offers the model).
+**Two kinds of operation, and why only one of them smears.** *Reconstruct* (Remove, Fill) throws the
+selected content away on purpose, so the uploaded picture has a blurred or flattened hole in exactly that
+area while the surroundings go up sharp - they are the only instruction it gets. *Change in place* uploads
+the region **exactly as it stands**: blur it and you have destroyed the thing you asked to change, which
+is what an earlier build did and why its answers came back unrelated to the picture.
+`tools/prep_proof.py` renders both uploads and asserts the difference whole-image.
 
 ### AI from a terminal
 
@@ -371,7 +389,9 @@ export NOISE_AI_FIXTURES=$PWD/tests/fixtures/http                # or replay ins
 | `server.load {model, pin?}` | make one model resident. Explicit and priced: a swap is tens of seconds on a shared box, so it is never silent |
 | `ai.roles` | each role with the model it resolved to, the reason, the fix command when the box offers one, and the candidates |
 | `ai.recipes` | every recipe with its endpoint, role, operation, region, prep and composite policy, and the model its role resolves to |
-| `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?, connect?}` | the Edit-selection panel as a command: read it with no arguments (free - it does not recompile the region) and it answers the intents on offer, the values in force, whether the action could run and why not, the compiled request, the job, and the session (`connected`, `configured`, `connect_attempted`). `run` is the Run button; `confirm` accepts a model swap; `connect` is the Connect button - the handshake, with the refusal in `error` if the server is down or unconfigured |
+| `ai.verbs` | the verb rows as the panel sees them: id, command, key, recipe, label, operation, the fields each asks for, its scope, whether it could run and why not, the model it would use and whether that would mean a swap |
+| `ai.remove`, `ai.fill`, `ai.change`, `ai.generate` `{vars?, seed?, confirm?}` | one verb pressed. Each names its recipe to `ai.intent` with `run` set, so the key and a scripted intent are the same call sequence; the table is checked against the recipes at startup and a verb that no longer matches its recipe is refused |
+| `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?, connect?}` | the action as a command: read it with no arguments (free - it does not recompile the region) and it answers the intents on offer, the values in force, whether the action could run and why not, the compiled request, the job, and the session (`connected`, `configured`, `connect_attempted`). `run` is the Run button; `confirm` accepts a model swap; `connect` is the Connect button - the handshake, with the refusal in `error` if the server is down or unconfigured |
 | `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` | the exact request: endpoint, ordered field list, resolved size, the prepped PNG that would be uploaded and its blob hash, the cache key. **Sends nothing** — this is what to look at before spending minutes of someone's GPU |
 | `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}` | queue it. Answers the job with the region plan and the prepped file |
 | `job.list`, `job.get {id}` | the durable record: state, timings, model, cache key, answer path, landing metadata |
@@ -381,7 +401,7 @@ export NOISE_AI_FIXTURES=$PWD/tests/fixtures/http                # or replay ins
 | `cache.stats` | entries, bytes, hits, misses, refused keys |
 
 `seed` is optional on `ai.preview`, `ai.run` and `ai.intent`: absent means the session's seed -
-`server.state` says what that is, `ai.intent {seed: n}` sets it, and the panel shows it. Nothing draws
+`server.state` says what that is, `ai.intent {seed: n}` sets it, and the status line reports it. Nothing draws
 a random number inside a request path, so "run that again" gives the same picture.
 
 Where an option is optional, leaving it out means **the recipe's policy**, not "off": `ai.compose` and
@@ -457,12 +477,18 @@ pixels the document actually shows),
 Stated plainly, because "the button is missing" and "the feature is broken" are different
 problems and only one of them is a bug:
 
-- **No Generate panel yet.** Remove / Replace / Fill region / Heal / Upscale have a panel ("Edit
-  selection"); generation into a new layer, `Reimagine` and `Colorize the flattened frame` are drivable
-  and observable on the wire but still have no button. Roles, jobs, the cache and the model swap are all
-  reachable from the same table - see "AI from a terminal" - and `docs/AI-BACKEND.md` says what is
-  designed and not built (draft→refine stages, the variants tray, A/B wipe, the journal panel, warm-up).
-- **No jobs tray.** One job at a time is shown in the panel; queueing variants (`seed+i`) and comparing
+- **No answers yet for `Heal`, `Upscale`, `Reimagine`, `Colorize the flattened frame` or the two image
+  styles** (`tools/prep_proof.py` names them: they need a `super_resolution` model and a stronger
+  inpainting model than the box has). They are recipes, so they are drivable and observable on the wire -
+  `ai.run {recipe: "heal"}` etc. - and a box with the right models would answer them. Roles, jobs, the
+  cache and the model swap are all reachable from the same table - see "AI from a terminal" - and
+  `docs/AI-BACKEND.md` says what else is designed and not built (draft→refine stages, the variants tray,
+  A/B wipe, the journal panel, warm-up).
+- **An answer still waits for `Apply`.** The verbs run and the answer lands on its own layer, but the
+  press is yours: the queue has no app-level beat that lands a finished answer (rule A says it should -
+  `docs/PLAN.md` "What rule A still owes" is the design). One seed field also went with the old panel:
+  the seed shows on the status bar and changes through `ai.intent {seed: n}`.
+- **No jobs tray.** One job at a time is shown in the status bar; queueing variants (`seed+i`) and comparing
   them side by side is designed and not built.
 - **Nothing local replaces a server.** If the `edit` role cannot resolve, the edit recipes refuse with
   the reason. The in-process fallbacks in the design (Telea/Chan `heal`) are not built.

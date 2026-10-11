@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/command_groups.h"
 
+#include "app/ai_intent.h"
 #include "app/ai_landing.h"
 #include "app/ai_session.h"
 #include "app/command_args.h"
@@ -89,13 +90,13 @@ Attempt compile_region(const char* command, AppState& state, const ai::Recipe& r
         coverage = whole_canvas(state.doc.size());
         coverage_source = "whole document (recipe region)";
     } else {
-        const std::optional<Mask> selection = state.doc.selection();
-        if (!selection.has_value()) {
-            attempt.failure = fail(command, "recipe '" + recipe.id +
-                                                "' works on a selection and there is none; select the "
-                                                "region, or use a recipe whose region is the document");
+        if (const std::string why = missing_region(recipe, state); !why.empty()) {
+            attempt.failure = fail(command, why);
             return attempt;
         }
+        // The refusal above is what proves this holds: nothing reaches here for a selection-scope
+        // recipe without a selection.
+        const std::optional<Mask> selection = state.doc.selection();
         coverage = *selection;
         coverage_source = "selection";
     }

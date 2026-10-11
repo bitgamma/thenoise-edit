@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -29,8 +31,13 @@ namespace {
 constexpr ImU32 kBackdrop = IM_COL32(38, 38, 42, 255);
 constexpr ImU32 kCanvasBorder = IM_COL32(90, 90, 100, 255);
 constexpr float kRightPanelFraction = 0.30f;
-constexpr float kStatusBarHeightPx = 40.0f;
-constexpr float kToolPanelFraction = 0.36f;
+// Two lines: the document's own facts, and beneath them the AI line rule F asks for. A bar with one
+// line gives the AI line about a third of its width after the zoom, size, path and undo counts, and a
+// clipped warning about a model swap is worse than no warning.
+constexpr float kStatusBarHeightPx = 86.0f;
+// The Tool panel holds the verbs as well as the tool rows, and the brush rows appear only for a tool
+// that paints, so this is the height at which the verbs fit without the panel scrolling.
+constexpr float kToolPanelFraction = 0.52f;
 // A layer row is eye + name + opacity on one line and a blend-mode dropdown on the next. The
 // slider gets a fixed slice so a long name clips instead of pushing the control off the panel, and
 // the name keeps a slice of its own so a narrow panel still shows which layer is which. The mode
@@ -41,8 +48,17 @@ constexpr ImU32 kAntDark = IM_COL32(20, 20, 20, 255);
 constexpr float kLayerNameMinPx = 40.0f;
 // A prompt field holds a phrase, not a paragraph, and the panel asks for at most the number of
 // variables the shipped recipes ask for - plus room for one more without touching this file.
-constexpr std::size_t kMaxIntentFields = 4u;
-constexpr int kIntentFieldChars = 160;
+// One words box per verb row, however many verbs the table grows to; the text is a prompt line, not a
+// document, so a fixed buffer per row is enough and no field is scrolled.
+constexpr int kVerbFieldChars = 220;
+
+// What the swap confirmation is about, remembered between the frame that opened the popup and the one
+// whose button answers it: the verb row is gone by then, and a modal that re-read the table would ask
+// about whatever the table said next rather than what was pressed.
+std::string pending_command;
+json pending_args;
+std::string pending_needs;
+std::string pending_resident;
 const ImVec4 kWarnInk{0.92f, 0.69f, 0.27f, 1.0f};
 const ImVec4 kStopInk{0.91f, 0.38f, 0.33f, 1.0f};
 
@@ -51,7 +67,6 @@ constexpr const char* kWindowCanvas = "Canvas";
 constexpr const char* kWindowTool = "Brush";
 constexpr const char* kWindowLayers = "Layers";
 constexpr const char* kWindowLog = "Log";
-constexpr const char* kWindowAi = "Edit selection";
 constexpr const char* kWindowStatus = "Status";
 
 // Hand the dashes to ImGui: one-device-pixel filled rectangles with their ends snapped to whole
@@ -246,6 +261,9 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
     ImGui::End();
 }
 
+void draw_verb_section(CommandTable& commands);
+void draw_ai_status_line(CommandTable& commands);
+
 // Every widget here is a front-end for a command: the panel, a key and a wire client cannot
 // drift apart because there is nothing else to keep in step.
 void draw_tool_panel(AppState& state, CommandTable& commands) {
@@ -305,6 +323,16 @@ void draw_tool_panel(AppState& state, CommandTable& commands) {
             ImGui::TextDisabled("mask on '%s': %d px shown", active.name.c_str(),
                                 static_cast<int>(active.mask->covered()));
         }
+    }
+
+    draw_verb_section(commands);
+
+    // The brush belongs to the tool a person is holding: `move` and the marquees paint nothing, so
+    // their panel does not spend its height on sliders they cannot use (core/brush.h knows which rows
+    // paint - this does not decide it again).
+    if (!tool_mode(state.tool).has_value()) {
+        ImGui::End();
+        return;
     }
 
     // Sliders write one field at a time through tool.set, so a drag of the size slider and a
@@ -372,187 +400,97 @@ void draw_tool_panel(AppState& state, CommandTable& commands) {
     ImGui::End();
 }
 
-// The one door an AI operation has: the same `ai.intent` the wire drives. Every fact on show - the
-// intents this selection offers, the values in force, what running would cost, what the last job did -
-// comes back from that command, so the panel cannot display a price the command would not charge and a
-// scripted test cannot set up a state the buttons would not have produced. It takes no `AppState`
-// because it has no knowledge of its own to consult.
-// The session, and the only way to start it from the window. The handshake is `ai.intent`'s
-// `connect`, so the wire drives the session a person starts by clicking and this file holds no socket
-// and no belief about one.
-void draw_server_row(CommandTable& commands, const json& view) {
-    if (!view["configured"].get<bool>()) {
-        ImGui::TextDisabled("no server: set $THENOISE_URL");
-        return;
-    }
-    if (view["connected"].get<bool>()) {
-        ImGui::Text("%s", view["resident"].get<std::string>().c_str());
-    } else {
-        ImGui::TextColored(kStopInk, "not connected");
-    }
-    ImGui::SameLine();
-    const bool again = view["connected"].get<bool>();
-    if (ImGui::SmallButton(again ? "reconnect" : "Connect")) {
-        commands.invoke("ai.intent", json{{"connect", true}});
-    }
-}
-
-void draw_ai_panel(CommandTable& commands) {
-    if (!ImGui::Begin(kWindowAi)) {
-        ImGui::End();
-        return;
-    }
-    // The handshake is the host's, not this widget's: which dock tab happens to be front is not an
-    // answer to "is there a server". What the panel offers is the retry.
-    const json view = commands.invoke("ai.intent", json::object()).value;
-    if (!view.contains("intents") || !view["intents"].is_array() || view["intents"].empty()) {
-        ImGui::TextDisabled("no recipe works on a selection");
-        ImGui::End();
+// The verbs, read from the table the commands are generated from and pressed as those commands: a row
+// here cannot mean something other than `ai.<verb>`, because it asks the command table for the name and
+// the key. Nothing is asked for the panel itself to remember about which verb is "the" one - the intent
+// command already holds that, and the words box below the rows is the current intent's field, so the
+// price shown is the price of the press that would follow the text on screen.
+void draw_verb_section(CommandTable& commands) {
+    ImGui::SeparatorText("on the marked area");
+    const json view = commands.invoke("ai.verbs", json::object()).value;
+    const std::string table_error = view["error"].get<std::string>();
+    if (!table_error.empty()) {
+        ImGui::TextColored(kStopInk, "%s", table_error.c_str());
         return;
     }
 
-    const json& intents = view["intents"];
-    std::size_t chosen = 0;
-    for (std::size_t row = 0; row < intents.size(); ++row) {
-        if (intents[row]["id"] == view["recipe"]) {
-            chosen = row;
-        }
-    }
-    const std::string chosen_label = intents[chosen]["label"].get<std::string>();
-    // Names above their controls, in the panel's own grey: a widget set to the panel's width leaves
-    // ImGui no room for the label on its right, and a clipped "t" is not a field name.
-    ImGui::TextDisabled("intent");
-    ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::BeginCombo("##intent", chosen_label.c_str())) {
-        for (std::size_t row = 0; row < intents.size(); ++row) {
-            const bool picked = row == chosen;
-            if (ImGui::Selectable(intents[row]["label"].get<std::string>().c_str(), picked)) {
-                commands.invoke("ai.intent", json{{"recipe", intents[row]["id"]}});
-            }
-            if (picked) {
-                ImGui::SetItemDefaultFocus();
+    static std::map<std::string, std::string> words;
+    static std::string typed;
+    static bool editing = false;
+
+    for (const json& verb : view["verbs"]) {
+        const std::string id = verb["id"].get<std::string>();
+        const std::string label = verb["label"].is_null() ? id : verb["label"].get<std::string>();
+        const std::string reason = verb["reason"].get<std::string>();
+        json args = json::object();
+        if (!words[id].empty()) {
+            const json ask = verb["ask"];
+            if (ask.is_array() && !ask.empty()) {
+                args["vars"] = json{{ask[0].get<std::string>(), words[id]}};
             }
         }
-        ImGui::EndCombo();
-    }
-
-    const json& selection = view["selection"];
-    if (selection["whole_document"].get<bool>()) {
-        ImGui::TextDisabled("no selection: the whole document");
-    } else {
-        const json& bounds = selection["bounds"];
-        ImGui::TextDisabled("%d x %d at %d,%d  (%llu px)", bounds[2].get<int>(), bounds[3].get<int>(),
-                            bounds[0].get<int>(), bounds[1].get<int>(),
-                            static_cast<unsigned long long>(selection["pixels"].get<std::uint64_t>()));
-    }
-
-    // One field per variable the recipe asks for, in the order its file states them. The text lives
-    // here rather than in `AiIntent` because a widget holds its own edit buffer: the value is sent
-    // when the field commits (Enter, or a click away), which is also when the request is recompiled,
-    // so no region is encoded for a keystroke.
-    const std::vector<std::string> ask = view["ask"].get<std::vector<std::string>>();
-    static std::vector<std::string> shown;
-    static char text[kMaxIntentFields][kIntentFieldChars];
-    static bool editing[kMaxIntentFields] = {false};
-    if (shown != ask) {
-        shown = ask;
-        for (char& byte : text[0]) {
-            byte = 0;
+        ImGui::PushID(id.c_str());
+        ImGui::BeginDisabled(!verb["ready"].get<bool>());
+        const bool pressed = ImGui::Button(label.c_str());
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextDisabled("[%s]", verb["key"].get<std::string>().c_str());
+        if (!verb["ready"].get<bool>() && !reason.empty() &&
+            ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("%s", reason.c_str());
         }
-        for (char& byte : text[1]) {
-            byte = 0;
+        if (pressed) {
+            if (verb["swap"].get<bool>()) {
+                pending_command = verb["command"].get<std::string>();
+                pending_args = args;
+                pending_needs = verb["model"].get<std::string>();
+                pending_resident = verb["resident"].get<std::string>();
+                ImGui::OpenPopup("Switch model?");
+            } else {
+                commands.invoke(verb["command"].get<std::string>(), args);
+            }
         }
-        for (bool& flag : editing) {
-            flag = false;
-        }
-    }
-    for (std::size_t row = 0; row < ask.size() && row < kMaxIntentFields; ++row) {
-        const std::string value =
-            view["vars"].contains(ask[row]) ? view["vars"][ask[row]].get<std::string>() : std::string();
-        if (!editing[row]) {
-            std::snprintf(text[row], kIntentFieldChars, "%s", value.c_str());
-        }
-        ImGui::TextDisabled("%s", ask[row].c_str());
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::PushID(ask[row].c_str());
-        ImGui::InputText("##field", text[row], kIntentFieldChars - 1);
         ImGui::PopID();
-        editing[row] = ImGui::IsItemActive();
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            commands.invoke("ai.intent", json{{"vars", json{{ask[row], std::string(text[row])}}}});
+    }
+
+    // One box, for the verb the intent currently holds: what is typed is sent with the press, so there
+    // is nothing to commit, and an empty box is a refusal that names the field rather than a run on the
+    // recipe's own guess.
+    const json intent = commands.invoke("ai.intent", json::object()).value;
+    const std::string recipe = intent["recipe"].is_null() ? std::string()
+                                                          : intent["recipe"].get<std::string>();
+    const std::vector<std::string> ask =
+        intent["ask"].is_array() ? intent["ask"].get<std::vector<std::string>>()
+                                 : std::vector<std::string>{};
+    if (!ask.empty()) {
+        const std::string field = ask[0];
+        if (!editing) {
+            typed = words[recipe];
+        }
+        ImGui::TextDisabled("%s", field.c_str());
+        ImGui::SetNextItemWidth(-1.0f);
+        char buffer[kVerbFieldChars] = {0};
+        std::snprintf(buffer, sizeof(buffer), "%s", typed.c_str());
+        ImGui::InputText("##words", buffer, sizeof(buffer) - 1);
+        const std::string now = buffer;
+        if (now != typed) {
+            typed = now;
+            words[recipe] = now;
+        }
+        editing = ImGui::IsItemActive();
+        if (ImGui::IsItemDeactivatedAfterEdit() && !now.empty()) {
+            // Committed, so the request - and the price below - recompiles with the words in it.
+            commands.invoke("ai.intent", json{{"vars", json{{field, now}}}});
         }
     }
 
-    ImGui::TextDisabled("seed");
-    int seed = static_cast<int>(view["seed"].get<std::int64_t>());
-    ImGui::PushItemWidth(90.0f);
-    if (ImGui::InputInt("##seed", &seed)) {
-        // Committed, like the text fields: every seed is a different request, and a region is
-        // encoded when it is recompiled rather than for each keystroke on the way there.
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            commands.invoke("ai.intent", json{{"seed", seed}});
-        }
-    }
-    ImGui::PopItemWidth();
-
-    ImGui::Separator();
-    draw_server_row(commands, view);
-    const bool ready = view["ready"].get<bool>();
-    if (!ready) {
-        ImGui::TextColored(kWarnInk, "%s", view["reason"].get<std::string>().c_str());
-        const std::string fix = view["fix"].get<std::string>();
-        if (!fix.empty()) {
-            ImGui::TextDisabled("fix: %s", fix.c_str());
-        }
-    } else if (view["preview"].is_null()) {
-        ImGui::TextDisabled("nothing compiled yet");
-    } else {
-        const json& request = view["preview"]["request"];
-        ImGui::Text("%s  %s", request["path"].get<std::string>().c_str(),
-                    request["size"].get<std::string>().c_str());
-        // Three short lines rather than one long one: a model id and a cache digest in the same row
-        // clip at the panel's edge, and the digest is the part that tells you whether this run is a
-        // repeat - which is the whole reason to show it before the press.
-        ImGui::TextDisabled("%s", view["model"].get<std::string>().c_str());
-        ImGui::TextDisabled("cache %s", request["cache_key"].get<std::string>().substr(0, 8).c_str());
-        if (view["estimate_s"].is_number()) {
-            ImGui::TextDisabled("~%.1f s on this box", view["estimate_s"].get<double>());
-        } else {
-            ImGui::TextDisabled("no timing yet for this size");
-        }
-    }
-    if (view["stale"].get<bool>() && !view["preview"].is_null()) {
-        // Nothing to fix here and nothing to press: the preview recompiles itself the frame after the
-        // region stops moving, so the only honest statement is that the price below is a frame behind.
-        // A button that asked the user to trigger what already happens was the bug this replaced.
-        ImGui::TextDisabled("region moving - price settles");
-    }
-    if (view["swap"].get<bool>()) {
-        ImGui::TextColored(kWarnInk, "needs %s", view["model"].get<std::string>().c_str());
-        ImGui::TextDisabled("the server is running %s", view["resident"].get<std::string>().c_str());
-        ImGui::TextDisabled("loading it costs tens of seconds");
-    }
-
-    ImGui::Separator();
-    const bool can_run = ready && !view["preview"].is_null() && !view["stale"].get<bool>();
-    ImGui::BeginDisabled(!can_run);
-    // One button per frame: `ImGui::Button` draws as it asks, so two calls are two controls and the
-    // first click would be swallowed by the branch it was drawn in. A swap is priced rather than
-    // discovered, so that press asks, and says what it will cost.
-    const bool pressed_run = ImGui::Button("Run");
-    ImGui::EndDisabled();
-    if (pressed_run && view["swap"].get<bool>()) {
-        ImGui::OpenPopup("Switch model?");
-    } else if (pressed_run) {
-        commands.invoke("ai.intent", json{{"run", true}});
-    }
     if (ImGui::BeginPopupModal("Switch model?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Run this with %s instead of the resident %s?",
-                    view["model"].get<std::string>().c_str(),
-                    view["resident"].get<std::string>().c_str());
+        ImGui::Text("That verb needs %s; the server is running %s.", pending_needs.c_str(),
+                    pending_resident.c_str());
         ImGui::TextDisabled("Loading it costs tens of seconds on a shared box.");
         if (ImGui::Button("Run anyway")) {
-            commands.invoke("ai.intent", json{{"run", true}, {"confirm", true}});
+            pending_args["confirm"] = true;
+            commands.invoke(pending_command, pending_args);
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -561,29 +499,83 @@ void draw_ai_panel(CommandTable& commands) {
         }
         ImGui::EndPopup();
     }
+}
 
+// Rule F: no AI tab, but never an invisible AI. What the next press will do is stated in the bar that
+// is on screen whatever panel is docked in front - which model answers, what it costs on this box,
+// whether it has to load one first, and the job that is running or waiting to land. Every fact comes
+// from `ai.intent`, so the bar cannot quote a price the command would not charge.
+void draw_ai_status_line(CommandTable& commands) {
+    const json view = commands.invoke("ai.intent", json::object()).value;
+    if (!view["configured"].get<bool>()) {
+        ImGui::TextDisabled("ai: no server, set $THENOISE_URL");
+        return;
+    }
+    if (!view["connected"].get<bool>()) {
+        ImGui::TextColored(kStopInk, "ai: offline");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Connect")) {
+            commands.invoke("ai.intent", json{{"connect", true}});
+        }
+        return;
+    }
+    const std::string model = view["model"].get<std::string>();
+    if (view["label"].is_null() || model.empty()) {
+        ImGui::TextDisabled("ai: %s", view["reason"].get<std::string>().c_str());
+        return;
+    }
+    // The verb the intent holds names the line: the price on screen belongs to the key a person would
+    // press next, not to an operation they never chose.
+    ImGui::Text("ai: %s", view["label"].get<std::string>().c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", model.c_str());
+    ImGui::SameLine();
+    if (view["estimate_s"].is_number()) {
+        ImGui::TextDisabled("~%.1f s", view["estimate_s"].get<double>());
+    } else {
+        ImGui::TextDisabled("no timing for this size");
+    }
+    if (!view["preview"].is_null() && view["preview"]["request"].contains("cache_key")) {
+        ImGui::SameLine();
+        ImGui::TextDisabled(
+            "cache %s", view["preview"]["request"]["cache_key"].get<std::string>().substr(0, 8).c_str());
+    }
+    // The seed is on screen because it is in the request; nothing draws a number behind the person's
+    // back, and `ai.intent {seed: n}` is how it changes.
+    ImGui::SameLine();
+    ImGui::TextDisabled("seed %llu", static_cast<unsigned long long>(view["seed"].get<std::uint64_t>()));
+    if (view["stale"].get<bool>() && !view["preview"].is_null()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("region moving - price settles");
+    }
+    if (view["swap"].get<bool>()) {
+        ImGui::SameLine();
+        ImGui::TextColored(kWarnInk, "will load the model (resident: %s)",
+                           view["resident"].get<std::string>().c_str());
+    }
     if (view["job"].is_object()) {
         const json& job = view["job"];
         const std::string job_state = job.contains("state") ? job["state"].get<std::string>() : "?";
         ImGui::SameLine();
-        ImGui::TextDisabled("%s  %s", job.contains("id") ? job["id"].get<std::string>().c_str() : "",
+        ImGui::TextDisabled("%s %s", job.contains("id") ? job["id"].get<std::string>().c_str() : "",
                             job_state.c_str());
         if (job_state == "succeeded") {
+            ImGui::SameLine();
             if (ImGui::SmallButton("Apply")) {
                 commands.invoke("job.apply", json{{"id", job["id"]}, {"apply", true}});
             }
-            ImGui::SameLine();
-            ImGui::TextDisabled("Ctrl+Z undoes");
         } else if (job_state == "failed" || job_state == "cancelled") {
-            ImGui::TextColored(kStopInk, "%s: %s", job.contains("failure") ? job["failure"].get<std::string>().c_str() : "",
-                               job.contains("hint") ? job["hint"].get<std::string>().c_str() : "");
+            ImGui::SameLine();
+            ImGui::TextColored(kStopInk, "%s",
+                               job.contains("failure") ? job["failure"].get<std::string>().c_str()
+                                                       : "");
         }
     }
     const std::string error = view["error"].get<std::string>();
     if (!error.empty()) {
+        ImGui::SameLine();
         ImGui::TextColored(kStopInk, "%s", error.c_str());
     }
-    ImGui::End();
 }
 
 void draw_layers_panel(AppState& state, CommandTable& commands) {
@@ -752,9 +744,6 @@ void build_default_dock(ImGuiID dockspace, const ImVec2& size) {
     ImGui::DockBuilderDockWindow(kWindowTool, tool_slot);
     ImGui::DockBuilderDockWindow(kWindowLayers, lower_right);
     ImGui::DockBuilderDockWindow(kWindowLog, lower_right);
-    // Tabbed with Layers and Log rather than split in: the canvas is the product and its area must
-    // not shrink because a panel was added.
-    ImGui::DockBuilderDockWindow(kWindowAi, lower_right);
     ImGui::DockBuilderDockWindow(kWindowStatus, down);
     ImGui::DockBuilderFinish(dockspace);
 }
@@ -774,7 +763,6 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
     draw_canvas(state, commands, canvas_texture, checker);
     draw_tool_panel(state, commands);
     draw_layers_panel(state, commands);
-    draw_ai_panel(commands);
     draw_log_panel();
 
     ImGui::Begin(kWindowStatus, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
@@ -808,6 +796,8 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
     ImGui::TextDisabled("%.1f ms", state.frame_ms);
     ImGui::SameLine();
     ImGui::TextDisabled("wire :%u", state.wire_port);
+    ImGui::NewLine();
+    draw_ai_status_line(commands);
     ImGui::End();
 }
 

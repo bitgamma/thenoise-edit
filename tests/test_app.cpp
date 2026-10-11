@@ -2,6 +2,7 @@
 #include "test.h"
 
 #include "app/ai_session.h"
+#include "app/ai_verbs.h"
 #include "app/commands.h"
 #include "app/tools/select.h"
 #include "app/state.h"
@@ -2482,6 +2483,135 @@ void test_an_option_left_out_keeps_the_policy_the_table_asked_for() {
              switched_off["composite"]["coverage_pixels"].get<std::size_t>());
 }
 
+// The flagship sequence as one key press: mark an area, press it, the answer arrives as a layer. The
+// verb list is what a window would draw, so this also asserts the surface a person sees - the words on
+// the buttons, the keys they answer to, and that nothing has to be typed in between.
+void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
+    Harness h;
+    h.value("doc.new", json{{"width", 96}, {"height", 64}, {"fill", json::array({30, 40, 50, 255})}});
+    h.value("tool.stroke", json{{"points", json::array({json::array({0, 40}), json::array({95, 40})})},
+                                {"size", 10.0}, {"hardness", 1.0}, {"opacity", 1.0}, {"flow", 1.0},
+                                {"spacing", 0.25}, {"color", json::array({0, 200, 60, 255})}});
+    h.value("server.connect", json::object());
+
+    // Nothing marked yet. The three verbs that work on a marked area say so, and the press refuses:
+    // a wordless Remove over an unmarked frame is not "remove nothing", it is "remove everything".
+    const json unmarked = h.value("ai.verbs", json::object());
+    for (const json& row : unmarked["verbs"]) {
+        const bool needs_mark = row["scope"].get<std::string>() == "selection";
+        CHECK_EQ(row["ready"].get<bool>(), !needs_mark);
+        if (needs_mark) {
+            CHECK(row["reason"].get<std::string>().find("works on a selection") != std::string::npos);
+        }
+    }
+    const CommandResult nothing_marked = h.run("ai.remove", json{{"seed", 7}});
+    CHECK(!nothing_marked.ok);
+    CHECK(nothing_marked.error.find("works on a selection") != std::string::npos);
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(1));
+
+    h.value("select.rect", json{{"rect", json::array({20, 12, 36, 24})}});
+    const json verbs = h.value("ai.verbs", json::object());
+    CHECK(verbs["error"].get<std::string>().empty());
+    REQUIRE(verbs["verbs"].size() == std::size_t(4));
+    const json& remove = verbs["verbs"][0];
+    CHECK_EQ(remove["id"].get<std::string>(), std::string("remove"));
+    CHECK_EQ(remove["command"].get<std::string>(), std::string("ai.remove"));
+    CHECK_EQ(remove["recipe"].get<std::string>(), std::string("inpaint-remove"));
+    CHECK_EQ(remove["label"].get<std::string>(), std::string("Remove"));
+    // No words, and the key the table itself reports: the window prints this binding, it does not
+    // own one.
+    CHECK(remove["ask"].empty());
+    CHECK_EQ(h.table.shortcuts_for("ai.remove"), std::vector<std::string>{"Ctrl+Backspace"});
+    CHECK_EQ(remove["key"].get<std::string>(), std::string("Ctrl+Backspace"));
+    // The rest of the surface, in the order a person meets it.
+    CHECK_EQ(verbs["verbs"][1]["id"].get<std::string>(), std::string("fill"));
+    CHECK_EQ(verbs["verbs"][1]["ask"], (std::vector<std::string>{"prompt"}));
+    CHECK_EQ(verbs["verbs"][2]["label"].get<std::string>(), std::string("Change"));
+    CHECK_EQ(verbs["verbs"][3]["scope"].get<std::string>(), std::string("document"));
+    for (const json& row : verbs["verbs"]) {
+        CHECK(row["ready"].get<bool>());
+    }
+
+    const std::string before = checksum_of(h);
+    const json ran = h.value("ai.remove", json{{"seed", 7}});
+    CHECK_EQ(ran["verb"].get<std::string>(), std::string("remove"));
+    REQUIRE(!ran["job"].is_null());
+    const std::string id = ran["job"]["id"].get<std::string>();
+    const json waited = h.value("job.wait", json{{"id", id}, {"timeout", 30}});
+    CHECK_EQ(waited["state"].get<std::string>(), std::string("succeeded"));
+
+    const std::size_t layers_before = h.state.doc.layers().size();
+    const json applied = h.value("job.apply", json{{"id", id}, {"apply", true}});
+    CHECK(applied["applied"].get<bool>());
+    CHECK(applied["composite"]["composed"].get<bool>());
+    // The answer is a layer, named for the verb and the job - the whole interaction, with no box.
+    REQUIRE(h.state.doc.layers().size() == layers_before + 1);
+    CHECK_EQ(h.state.doc.layer(1).name, std::string("Remove ") + id);
+    CHECK_NE(checksum_of(h), before);
+
+    // The other verbs keep their one question: the same press on Fill refuses rather than guessing
+    // what the marked area should become.
+    const CommandResult wordless = h.run("ai.fill", json{{"seed", 7}});
+    CHECK(!wordless.ok);
+    CHECK(wordless.error.find("region-fill") != std::string::npos);
+    CHECK(wordless.error.find("'prompt'") != std::string::npos);
+    CHECK_EQ(h.state.doc.layers().size(), layers_before + 1);
+
+    // An unknown verb is not a command, and the table says so with the ids that are.
+    const CommandResult bogus = h.run("ai.bleach", json::object());
+    CHECK(!bogus.ok);
+    CHECK(bogus.error.find("ai.bleach") != std::string::npos);
+}
+
+// A verb row is a promise about a recipe. The check runs at startup and gates every verb command,
+// because the alternative is a button that reads "Remove" while sending something else.
+void test_a_verb_that_stops_matching_its_recipe_is_refused_at_startup() {
+    Harness h;
+    CHECK(h.state.ai.verbs_error.empty());
+
+    // The recipe behind a key stopped being that kind of operation.
+    ai::RecipeSet changed = h.state.ai.recipes;
+    for (ai::Recipe& recipe : changed.recipes) {
+        if (recipe.id == "inpaint-remove") {
+            recipe.operation = ai::Operation::in_place;
+        }
+    }
+    const std::string why = app::verb_table_error(changed, app::kVerbs);
+    CHECK(why.find("remove") != std::string::npos);
+    CHECK(why.find("inpaint-remove") != std::string::npos);
+    CHECK(why.find("reconstruct") != std::string::npos);
+
+    // An ask that grew: a Remove that demands a word is not the key that promises zero typing.
+    ai::RecipeSet talkative = h.state.ai.recipes;
+    for (ai::Recipe& recipe : talkative.recipes) {
+        if (recipe.id == "inpaint-remove") {
+            recipe.ask.push_back("target");
+        }
+    }
+    CHECK(app::verb_table_error(talkative, app::kVerbs).find("asking for 1 field(s)") != std::string::npos);
+
+    // A recipe that went away.
+    ai::RecipeSet emptied;
+    CHECK(app::verb_table_error(emptied, app::kVerbs).find("does not define") != std::string::npos);
+
+    // Two keys, one policy.
+    const std::vector<app::VerbInfo> twins{
+        {app::VerbId::remove, "inpaint-remove", "Ctrl+Backspace"},
+        {app::VerbId::fill, "inpaint-remove", "Ctrl+Shift+F"}};
+    CHECK(app::verb_table_error(h.state.ai.recipes, twins).find("two keys") != std::string::npos);
+
+    // And the gate itself: a broken table stops a press, with the sentence the table was refused for.
+    h.state.ai.verbs_error = "the verb 'remove' drives recipe 'gone', which the recipe table does not define";
+    const CommandResult refused = h.run("ai.remove", json::object());
+    CHECK(!refused.ok);
+    CHECK(refused.error.find("does not define") != std::string::npos);
+    const json verbs = h.value("ai.verbs", json::object());
+    CHECK_EQ(verbs["error"].get<std::string>(), h.state.ai.verbs_error);
+    for (const json& row : verbs["verbs"]) {
+        CHECK(!row["ready"].get<bool>());
+    }
+}
+
 // Words an operation asked for are not optional at the door: an empty instruction is no instruction,
 // and the model would invent one on the box's time. The refusal names the recipe and the field, nothing
 // is queued, and the same door with the field filled compiles the request.
@@ -2575,6 +2705,8 @@ int main() {
     test_the_selection_panel_runs_its_intent_through_one_command();
     test_an_unconfigured_server_names_the_variable();
     test_an_option_left_out_keeps_the_policy_the_table_asked_for();
+    test_the_remove_key_runs_the_whole_sequence_with_no_words();
+    test_a_verb_that_stops_matching_its_recipe_is_refused_at_startup();
     test_a_run_that_was_asked_for_words_refuses_without_them();
     test_an_answer_lands_on_its_own_layer_over_an_empty_one();
     test_every_command_refuses_an_argument_it_does_not_declare();

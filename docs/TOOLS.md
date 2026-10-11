@@ -29,14 +29,18 @@ the *cost*.
 `Replace` is deliberately not a verb: it is two operations wearing one word, and that ambiguity is what
 produced the blurred-face bug.
 
-| verb | operation | hole in the upload | words | lands |
-|---|---|---|---|---|
-| **Remove** | `reconstruct` | yes — the marked area blurred/averaged away | none | new layer |
-| **Fill** | `reconstruct` | yes — the marked area destroyed | what should appear | new layer |
-| **Change** | `in_place` | never (the pixels are the reference) | what should change | new layer |
-| **Generate** | `from_words` | no source image | the picture | new layer |
-| **Extend** | `extend` (planned) | the added transparent area | optional | new layer, cut out to the new area |
-| **Upscale** | `transform` | never | none | new layer, or the document when the document is resized |
+| verb | command · key | recipe | operation | hole in the upload | words | lands |
+|---|---|---|---|---|---|---|
+| **Remove** | `ai.remove` · `Ctrl+Backspace` | `inpaint-remove` | `reconstruct` | yes — the marked area blurred away | none | new layer |
+| **Fill** | `ai.fill` · `Ctrl+Shift+F` | `region-fill` | `reconstruct` | yes — the marked area destroyed | what should appear | new layer |
+| **Change** | `ai.change` · `Ctrl+Shift+C` | `inpaint-replace` | `in_place` | never (the pixels are the reference) | what should change | new layer |
+| **Generate** | `ai.generate` · `Ctrl+G` | `new-image` | `from_words` | no source image | the picture | new layer |
+| **Extend** | — planned | — | `extend` (planned) | the added transparent area | optional | new layer, cut out to the new area |
+| **Upscale** | — planned | `upscale` | `transform` | never | none | new layer, or the document when the document is resized |
+
+Built rows are in `kVerbs`; a row is `{verb, recipe, key}` and nothing else — the label, the words and
+the scope all come from the recipe, so there is no second copy of them to keep in step. Loading checks
+each row against its recipe (`verb_table_error`) and refuses the whole table when one contradicts it.
 
 Tools are the surface; these are the policies. Several tools drive the same policy (Eraser and Brush both
 drive `reconstruct`, differing only in the polarity of the stroke — a brush adds to the mask, an eraser
@@ -83,7 +87,9 @@ outpaint would reopen the hole through which the blurred-face bug arrived.
   one answer, and a knob with one value is a lie about a choice. Coverage is the only restrictor. **Gone.**
 * the answer going through `Document::paint`. It lands through `Document::add_layer_written` instead, so an
   answer and the layer holding it are one undo step — see `PLAN.md`, "an answer, its layer, and its undo".
-* prefilled `ask` defaults, and `target` on the masked recipes.
+* prefilled `ask` defaults, and `target` on the masked recipes. **Gone** (`7442538`): an asked-for name
+  may not also be in `variables`, `from_words` needs exactly one field, a transform none, and
+  `build_prompt` refuses a run where an asked field is blank - so Remove really is zero typing.
 
 ## Slice order
 
@@ -94,6 +100,17 @@ outpaint would reopen the hole through which the blurred-face bug arrived.
    error 25.67 → 0.53) and `ai_job_probe`.
 2. A tool table (tool → policy → whether it asks for words), the **Remove** sequence
    (`mark → one key → answer as a new layer`, zero typing), and the panel deleted in the same pass.
+   **Done.** `src/app/ai_verbs.{h,cpp}` is the table (`VerbId` → recipe → key) and the commands it
+   generates — `ai.remove` `Ctrl+Backspace`, `ai.fill` `Ctrl+Shift+F`, `ai.change` `Ctrl+Shift+C`,
+   `ai.generate` `Ctrl+G` — with `ai.verbs` answering the same rows for the window. The
+   "Edit selection" panel is gone: the verbs are a section of the Tool panel and keys on the keyboard,
+   the brush rows appear only for a tool that paints, and the AI facts rule F asks for live on their
+   own line in the status bar. Pressing Remove with nothing marked refuses ("works on a selection and
+   there is none") rather than reconstructing the whole frame.
+   **Not done: the last clause of rule A.** A finished answer still waits for `Apply` (in the status
+   line) because the queue has no app-level beat that lands it. The design is in `PLAN.md`
+   ("what rule A still owes"); until it lands, the flagship is *mark → key → Apply*, one press longer
+   than agreed.
 3. **Change** and **Fill**: the same sequence with one empty box, no defaults.
 4. **Generate**: words only, empty document allowed, new layer.
 5. **Extend** (canvas grow + outpaint) then **Upscale** (`doc.resize` does not exist yet; ordinary scaling

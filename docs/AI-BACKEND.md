@@ -181,7 +181,7 @@ swap is a real event: the first request that followed an unloaded model on the d
   loaded, the confirm dialog says "this switches the server model (~Xs)" and offers to pin.
 * We call `POST /v1/load {model_name, pinned:true}` when the user pins, and
   `GET /v1/health` (`model_loaded`, `all_models_loaded[] {model_name, recipe, device,
-  pinned, last_use}`) to keep the panel honest. Never auto-swap silently.
+  pinned, last_use}`) to keep the status line honest. Never auto-swap silently.
 * **Warm-up** (a 256×256/1-step request right after a swap, so the first real generation is not the
   one that pays model init): designed, not built. What is built is `server.load {model, pin?}`, so the
   swap is at least something the user chooses a moment for.
@@ -222,11 +222,11 @@ Auth: `Authorization: Bearer <api_key>` (the mechanism Lemonade's own tests use)
 `?api_key=` as a legacy fallback for servers that only support the query form.
 `LEMONADE_ADMIN_API_KEY` is never used (config/admin endpoints are out of scope).
 
-Connection handshake (`server.connect`; the panel's `Connect` button and the host's one automatic ask
+Connection handshake (`server.connect`; the status line's `Connect` button and the host's one automatic ask
 both call it): `GET /v1/health` (alive? version? what's loaded?) →
 `GET /v1/models` (filter to `recipe == "thenoise"`) → resolve roles → enable commands.
 
-The automatic ask belongs to **the host, not the panel**, and runs once after a frame has been presented:
+The automatic ask belongs to **the host, not the widget**, and runs once after a frame has been presented:
 which dock tab happens to be front is not an answer to "is there a server", and a docked window that is
 not the visible tab does not draw at all, so a panel-driven handshake only fires by luck of the layout.
 `server.connect` records `connect_attempted` before anything can refuse it, which is what makes the host's
@@ -484,7 +484,7 @@ The parser refuses the contradictions — `in_place` with a prep, `reconstruct` 
 states no operation at all — each naming the file and the reason. This is not tidiness: `inpaint-replace`
 declared `prep: blur`, so "replace the eyes with green eyes" uploaded a smeared face, and the model
 returned an unrelated face because the only thing it was shown was a smudge. `tools/prep_proof.py`
-(`xvfb-run -a python3 tools/prep_proof.py`) renders the upload for every recipe in the panel and asserts,
+(`xvfb-run -a python3 tools/prep_proof.py`) renders the upload for every recipe the verbs can drive and asserts,
 whole-image, that an `in_place` upload is byte-identical to the document (0 px changed) while a
 `reconstruct` upload changes 0 context pixels and destroys the hole (16 384 of 16 384 for `heal`,
 16 204 for the blur, where the rest is area a blur genuinely cannot alter).
@@ -523,7 +523,7 @@ a selection operation leaves the palette on its own.
 
 Variables come from the user's instruction (whatever the recipe's `ask` lists), the layer name and the
 document aspect. **The seed is the session's**: `ai.preview` and `ai.run` take `seed` optionally and use
-`AiSession::seed` when the call names none, and the panel shows that number in its own field. Nothing
+`AiSession::seed` when the call names none, and the status line shows that number. Nothing
 draws a random seed inside a request path - the number on the screen is the number the request carried,
 which is what makes "run that again" and "why does this one look different" answerable. Variants are the
 explicit case: `seed + i`, asked for by name. The
@@ -545,8 +545,8 @@ fidelity is not a server knob.
 | `new-image-anime` | generations | generate | from_words | none | full doc | Anima-oriented phrasing hints, Anima preferred |
 | `new-image-photo` | generations | generate | from_words | none | full doc | Krea-2-oriented phrasing hints |
 | `inpaint-remove` | edits | edit | reconstruct | blur | mask bbox | the flagship: the only operation whose blur is a feature |
-| `inpaint-replace` | edits | edit | in_place | none | mask bbox | "replace {{target}} with {{replacement}}" |
-| `region-fill` | edits | edit | reconstruct | white | mask bbox | generate into the region from prompt only |
+| `inpaint-replace` | edits | edit | in_place | none | mask bbox | one field of words from the person (`instruction`): "Change this picture: …" |
+| `region-fill` | edits | edit | reconstruct | average | mask bbox | generate into the region from one field of words (`prompt`); the fill takes the surrounding colour, never the hole's own |
 | `heal` | edits | edit | reconstruct | average | selection | the in-process Telea/Chan path for a box with no edit model is designed and **not built**, so `heal` refuses when the edit role is unresolved |
 | `flatten-colorize` | edits | edit | in_place | none | full doc | e.g. "colorize this line art" — the highest-value raster trick for illustration workflows |
 | `reimagine` | edits | edit | in_place | none | full doc | full-frame edit. The whole frame is the region, so there is no hole and nothing to blend at the edge; its answer lands on a layer like any other, and 50 % opacity is a number the user owns |
@@ -554,6 +554,23 @@ fidelity is not a server knob.
 | `free-command` | user's choice | user's choice | user's choice | user's choice | user's choice | escape hatch below |
 
 (`variations` deleted — unsupported endpoint.)
+
+### What a recipe may ask for
+
+`ask` names the fields **the person** supplies, and the parser enforces its shape, because the verb rows,
+the panel's words box and the refusal messages are all built from it:
+
+- an asked name may not also appear in `variables` — an asked field has no prefilled default, and a
+  prefilled one is a guess shipped as the user's own words;
+- an asked name must appear in at least one prompt line, and may be asked once;
+- `reconstruct` and `in_place` ask at most one field (one box, beside the tool rows); `from_words` asks
+  exactly one; `transform` asks none.
+
+`build_prompt` refuses a run where an asked field is blank — `recipe 'region-fill' asks for 'prompt' and
+was given nothing; pass vars {"prompt": "..."} - an operation with no words is a coin toss` — whitespace
+included. `target` is gone from the masked recipes: the masked pixels are what the prompt already
+describes, and prefilling it with "the marked area" produced answers that commented on the selection
+instead of editing it.
 
 **Built today.** `assets/roles.json` + `assets/recipes/*.json` (10 recipes; `free-command` is the one
 row of the table not shipped), loaded by `ai/registry` and `ai/recipes` from `$NOISE_EDIT_ASSETS`, `assets`

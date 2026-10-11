@@ -36,6 +36,9 @@ struct AiSession {
     std::string roles_error;
     ai::RecipeSet recipes;
     std::string recipes_error;
+    // Non-empty when a verb row no longer matches the recipe it drives (ai_verbs.h). Every verb
+    // command then refuses with this: half a verb surface working is half the labels lying.
+    std::string verbs_error;
 
     std::unique_ptr<ai::Transport> transport;
     // True when that transport answers from recordings rather than a socket. Reported by `server.state`

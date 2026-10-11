@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/ai_session.h"
 
+#include "app/ai_verbs.h"
+
 #include "app/state.h"
 
 #include "ai/recorded.h"
@@ -102,6 +104,13 @@ void open_ai_session(noise::AppState& state) {
         ai::load_recipes(ai.resource_dir + "/recipes", error);
     if (recipes.has_value()) {
         ai.recipes = *recipes;
+        // The verbs are only as true as the recipes they point at, and they are checked here rather
+        // than at the press: a key whose recipe stopped being what the key says is caught once, at
+        // startup, and every verb command then refuses with the same sentence.
+        ai.verbs_error = verb_table_error(ai.recipes, kVerbs);
+        if (!ai.verbs_error.empty()) {
+            log::error("ai: " + ai.verbs_error);
+        }
     } else {
         ai.recipes_error = error;
         log::error("ai: " + error);
