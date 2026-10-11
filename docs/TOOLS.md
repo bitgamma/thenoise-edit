@@ -116,12 +116,18 @@ outpaint would reopen the hole through which the blurred-face bug arrived.
 
 ## House rule for every probe
 
-Starting the app means taking responsibility for it. `wire_drive.start_app` registers each child and
-reaps its **process group** on exit and on SIGINT/SIGTERM: the child is an `xvfb-run` shell with an Xvfb
-and the editor inside it, so signalling the shell alone leaves both of them running on the display with
-nobody's name on them. `wire_input.py` registers Xvfb with the same reaper *before* the wait that can
-fail, because a raise inside `__enter__` never reaches `__exit__`. A probe that crashes must leave no
-`noise-edit`, no `Xvfb`, and no stale `/tmp/.X*-lock`.
+Starting the app means taking responsibility for it. With no `DISPLAY`, `wire_drive.start_app` raises its
+own Xvfb on a display number it **claimed** first: creating `/tmp/.X11-lock/X<n>` with `O_EXCL` and the
+owner's pid inside, and treating a lock whose pid is gone as stale. `xvfb-run -a` is not usable here - it
+picks a number by *listing* `/tmp/.X*-lock` and then creating the one it saw free, so probes starting
+together take the same number, and the loser spends its run against an X server the winner shut down
+(`XIO: fatal IO error on X server`, a reset wire, and a probe reporting an app defect that never
+happened; measured at 3 failures in 8 concurrent runs before the claim, 0 in 16 after).
+
+`wire_drive.start_app` registers each child and reaps its **process group** on exit and on
+SIGINT/SIGTERM, Xvfb included, and releases the lock it claimed. `wire_input.py` registers Xvfb with the
+same reaper *before* the wait that can fail, because a raise inside `__enter__` never reaches `__exit__`.
+A probe that crashes must leave no `noise-edit`, no `Xvfb`, and no stale `/tmp/.X11-lock/X*`.
 
 ## What is still owed to the box
 

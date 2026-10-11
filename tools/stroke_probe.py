@@ -18,7 +18,6 @@ import argparse
 import os
 import shutil
 import statistics
-import subprocess
 import sys
 import tempfile
 import threading
@@ -202,14 +201,9 @@ def measure_gesture(wire: wd.Wire, port: int, doc: int, layers: int,
 
 def run(args: argparse.Namespace) -> int:
     runtime = Path(tempfile.mkdtemp(prefix="noise-stroke-"))
-    env = dict(os.environ)
-    env["NOISE_RUNTIME_DIR"] = str(runtime)
-    env.pop("NOISE_CONFIG_DIR", None)
     try:
         with (runtime / "app-stderr.log").open("w") as app_stderr:
-            proc = subprocess.Popen(
-                [str(args.bin), "--width=900", "--height=600", "--debug-wire=0"],
-                env=env, stderr=app_stderr)
+            proc = wd.start_app(args, runtime, 900, 600, None, app_stderr)
             wire = None
             fails: list[str] = []
             sampler: FrameSampler | None = None
@@ -281,13 +275,9 @@ def main() -> int:
     if not args.bin.exists():
         print(f"FAIL: no binary at {args.bin}")
         return 1
-    if not (os.environ.get("DISPLAY") or shutil.which("xvfb-run")):
-        print("SKIP: no DISPLAY and no xvfb-run, so nothing can render")
+    if reason := wd.display_skip():
+        print(f"SKIP: {reason}")
         return 0
-    if not os.environ.get("DISPLAY"):
-        os.execvpe("xvfb-run", ["xvfb-run", "-a", sys.executable, __file__,
-                                "--bin", str(args.bin),
-                                "--startup-timeout", str(args.startup_timeout)], os.environ)
     return run(args)
 
 

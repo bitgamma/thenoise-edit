@@ -22,7 +22,6 @@ import ctypes
 import math
 import shutil
 import os
-import socket
 import subprocess
 import sys
 import tempfile
@@ -159,42 +158,34 @@ class Injector:
         self._flush()
 
 
-def free_display() -> str:
-    for number in range(70, 100):
-        if not os.path.exists(f"/tmp/.X{number}-lock"):
-            try:
-                with socket.socket(socket.AF_UNIX) as probe:
-                    probe.connect(f"\0/tmp/.X11-unix/X{number}")
-            except OSError:
-                return f":{number}"
-    raise wd.WireError("no free X display number in 70..99")
-
-
 class Display:
     """The display the app and the injector share: ours only if we had to start one."""
 
     def __enter__(self):
+        self.proc = None
         if os.environ.get("DISPLAY"):
-            self.proc = None
             return os.environ["DISPLAY"]
         if not shutil_which("Xvfb"):
             raise Skip("no DISPLAY and no Xvfb to make one")
-        self.number = free_display()
-        self.proc = wd.register_child(subprocess.Popen(
-            ["Xvfb", self.number, "-screen", "0", f"{WIDTH}x{HEIGHT}x24"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
+        self.number, self.lock = wd.claim_display()
         # Registered before the wait below, because a raise from inside `__enter__` never reaches
-        # `__exit__` - and an Xvfb left behind by a skipped run holds the display and the lock file.
-        deadline = time.monotonic() + 15.0
-        while not os.path.exists(f"/tmp/.X{self.number[1:]}-lock"):
-            if time.monotonic() > deadline or self.proc.poll() is not None:
-                raise Skip("Xvfb did not come up")
-            time.sleep(0.05)
-        return self.number
+        # `__exit__` - and an Xvfb left behind by a skipped run holds the display and its lock.
+        self.proc = wd.register_child(subprocess.Popen(
+            ["Xvfb", f":{self.number}", "-screen", "0", f"{WIDTH}x{HEIGHT}x24", "-nolisten", "tcp"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
+        try:
+            wd.wait_for_display(self.number, 15.0)
+        except wd.WireError as exc:
+            wd.terminate_child(self.proc)
+            wd.release_display(self.lock)
+            self.proc = None
+            raise Skip(str(exc)) from exc
+        return f":{self.number}"
 
     def __exit__(self, *_exc):
         if self.proc is not None:
             wd.terminate_child(self.proc)
+            wd.release_display(self.lock)
         return False
 
 

@@ -96,8 +96,8 @@ def lock_claims(diff: np.ndarray, reported: int, bounds, label: str) -> int:
 def skip_reason(bin_path: pathlib.Path) -> str | None:
     if not bin_path.exists():
         return f"{bin_path} does not exist"
-    if not (os.environ.get("DISPLAY") or shutil.which("xvfb-run")):
-        return "no DISPLAY and no xvfb-run, so nothing can render"
+    if reason := wd.display_skip():
+        return reason
     try:
         import numpy  # noqa: F401
         from PIL import Image  # noqa: F401

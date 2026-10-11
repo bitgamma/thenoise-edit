@@ -10,8 +10,9 @@ Run through ctest (`test_view_golden`) or directly:
 
     python3 tools/wire_drive.py --bin build/noise-edit --golden tests/golden/view_pan_zoom.png
 
-Skips loudly (exit 0, "SKIP:" on stdout) when there is neither a display nor
-xvfb-run: a missing GPU/display is an unavailable resource, not a regression.
+Skips loudly (exit 0, "SKIP:" on stdout) when there is neither a display nor Xvfb: a missing
+GPU/display is an unavailable resource, not a regression. With no DISPLAY, `start_app` raises its own
+Xvfb on a display number it claimed for itself, so probes running in parallel never share one.
 """
 
 from __future__ import annotations
@@ -127,9 +128,84 @@ def app_command(args: argparse.Namespace, width: int, height: int, open_path: Pa
     ]
     if open_path is not None:
         app.append(str(open_path))
-    if shutil.which("xvfb-run") and not os.environ.get("DISPLAY"):
-        return ["xvfb-run", "-a", "--server-args", f"-screen 0 {width}x{height}x24", *app]
     return app
+
+
+# A display number is a machine-wide resource, and `xvfb-run -a` allocates one by listing /tmp/.X*-lock
+# and then creating the file it found free: two probes started together can both see the same number,
+# and the loser spends its run talking to an X server the winner shut down - `XIO: fatal IO error on X
+# server ":101"`, a reset wire, and a probe that reports an app defect that never happened. Claiming the
+# lock file with O_EXCL is the same decision, made atomically.
+_X_LOCK_DIR = Path(tempfile.gettempdir()) / ".X11-lock"
+_x_locks: list[Path] = []
+
+
+def _display_live(number: int) -> bool:
+    """Whether an X server answers on this number, through the abstract socket: where /tmp/.X11-unix is
+    not ours to write, that is the only address it has."""
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(0.5)
+    try:
+        probe.connect(f"\0/tmp/.X11-unix/X{number}")
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def _lock_stale(lock: Path) -> bool:
+    # The owner's pid, not a connection attempt, decides: a probe of the socket can time out on a busy
+    # box, and a display judged stale while its server is live means a second server on the same number
+    # and an app whose X server is pulled out from under it.
+    try:
+        owner = int(lock.read_text().strip() or 0)
+    except (OSError, ValueError):
+        return True
+    if owner <= 0:
+        return True
+    try:
+        os.kill(owner, 0)
+        return False
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+
+
+def claim_display() -> tuple[int, Path]:
+    """Reserve a display number for this process. A lock left by a dead probe is stale and gets taken."""
+    _X_LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    for number in range(100, 1000):
+        lock = _X_LOCK_DIR / f"X{number}"
+        if lock.exists():
+            if not _lock_stale(lock):
+                continue
+            lock.unlink(missing_ok=True)
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "w") as handle:
+            handle.write(f"{os.getpid():>10}\n")
+        _x_locks.append(lock)
+        return number, lock
+    raise WireError("no X display number below :1000 is free")
+
+
+def release_display(lock: Path) -> None:
+    # Xvfb removes its own lock when it exits cleanly; a probe that had to kill it did not get that.
+    lock.unlink(missing_ok=True)
+    if lock in _x_locks:
+        _x_locks.remove(lock)
+
+
+def wait_for_display(number: int, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while not _display_live(number):
+        if time.monotonic() >= deadline:
+            raise WireError(f"Xvfb :{number} never answered within {timeout}s")
+        time.sleep(0.02)
 
 
 # Every process a probe starts, reaped when the probe ends - including when it ends in a traceback or a
@@ -145,9 +221,9 @@ def _signal_children(sig: int) -> None:
 
 
 def _signal_group(proc: subprocess.Popen, sig: int) -> None:
-    # The child owns a process group (`start_new_session`), and the members of it are the point: an
-    # app started through `xvfb-run` is a shell, an Xvfb and the editor, and signalling only the shell
-    # leaves the other two running on the display with nobody's name on them.
+    # The child owns a process group (`start_new_session`), and the members of it are the point: an app
+    # left running on a display with nobody's name on it holds the wire port and the X server, and the
+    # next probe inherits the mess.
     try:
         os.killpg(os.getpgid(proc.pid), sig)
     except (ProcessLookupError, PermissionError):
@@ -176,6 +252,8 @@ def _reap_children() -> None:
     _signal_children(signal.SIGTERM)
     for proc in _CHILDREN:
         terminate_child(proc)
+    for lock in list(_x_locks):
+        release_display(lock)
 
 
 def register_child(proc: subprocess.Popen) -> subprocess.Popen:
@@ -213,9 +291,30 @@ def start_app(args: argparse.Namespace, runtime_dir: Path, width: int, height: i
             env.pop(key, None)
         else:
             env[key] = value
+    if not env.get("DISPLAY") and shutil.which("Xvfb"):
+        number, lock = claim_display()
+        xvfb_log = open(runtime_dir / "xvfb.log", "wb")
+        xvfb = register_child(subprocess.Popen(
+            ["Xvfb", f":{number}", "-screen", "0", f"{width}x{height}x24", "-nolisten", "tcp"],
+            stdout=xvfb_log, stderr=xvfb_log, start_new_session=True))
+        try:
+            wait_for_display(number, 15.0)
+        except WireError:
+            terminate_child(xvfb)
+            release_display(lock)
+            raise
+        env["DISPLAY"] = f":{number}"
     return register_child(
         subprocess.Popen(app_command(args, width, height, open_path), env=env, stderr=app_stderr,
                          start_new_session=True))
+
+
+def display_skip() -> str | None:
+    """Why nothing can render in this environment, or None. A missing display is an unavailable
+    resource rather than a regression, and every probe says it in these same words."""
+    if os.environ.get("DISPLAY") or shutil.which("Xvfb"):
+        return None
+    return "no DISPLAY and no Xvfb, so nothing can render"
 
 
 def wire_port(runtime_dir: Path, proc: subprocess.Popen, timeout: float) -> int:
@@ -477,8 +576,8 @@ def main() -> int:
     if not args.bin.exists():
         print(f"FAIL: no binary at {args.bin}")
         return 1
-    if not os.environ.get("DISPLAY") and not shutil.which("xvfb-run"):
-        print("SKIP: no DISPLAY and no xvfb-run, cannot render a viewport capture")
+    if reason := display_skip():
+        print(f"SKIP: {reason}")
         return 0
     try:
         return run(args)

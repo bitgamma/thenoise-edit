@@ -9,7 +9,8 @@ reads it back with Python's `zipfile`, which knows nothing about us.
 
     python3 tools/container_probe.py --bin build/noise-edit
 
-Skips loudly (exit 0, "SKIP:" on stdout) when it cannot render.
+Skips loudly (exit 0, "SKIP:" on stdout) when it cannot render at all: with no DISPLAY
+it gets its own Xvfb, so a headless box runs it rather than skipping it.
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ import io
 import json
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -346,17 +346,12 @@ def run(args: argparse.Namespace) -> int:
     runtime = Path(tempfile.mkdtemp(prefix="noise-container-"))
     work = Path(tempfile.mkdtemp(prefix="noise-container-files-"))
 
-    env = dict(os.environ)
-    env["NOISE_RUNTIME_DIR"] = str(runtime)
-    env.pop("NOISE_CONFIG_DIR", None)
     project = work / "shot.noise"
     flat = work / "flat.png"
     fails: list[str] = []
     try:
         with (runtime / "app-stderr.log").open("w") as app_stderr:
-            proc = subprocess.Popen(
-                [str(args.bin), "--width=700", "--height=500", "--debug-wire=0"],
-                env=env, stderr=app_stderr)
+            proc = wd.start_app(args, runtime, 700, 500, None, app_stderr)
             wire = None
             try:
                 port = wd.wire_port(runtime, proc, args.startup_timeout)
@@ -464,11 +459,8 @@ def main() -> int:
     if not Path(args.bin).exists():
         print(f"SKIP: {args.bin} does not exist")
         return 0
-    if not (os.environ.get("DISPLAY") or shutil.which("xvfb-run")):
-        print("SKIP: no DISPLAY and no xvfb-run, so nothing can render")
-        return 0
-    if not os.environ.get("DISPLAY"):
-        print("SKIP: needs a display; run under xvfb-run")
+    if reason := wd.display_skip():
+        print(f"SKIP: {reason}")
         return 0
     try:
         from PIL import Image  # noqa: F401

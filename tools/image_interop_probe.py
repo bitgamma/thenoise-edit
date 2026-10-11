@@ -252,8 +252,8 @@ def main() -> int:
     if not Path(args.bin).exists():
         print(f"SKIP: {args.bin} does not exist")
         return 0
-    if not (os.environ.get("DISPLAY") or shutil.which("xvfb-run")):
-        print("SKIP: no DISPLAY and no xvfb-run, so nothing can render")
+    if reason := wd.display_skip():
+        print(f"SKIP: {reason}")
         return 0
     if MISSING_IMAGE_STACK:
         print(f"SKIP: no numpy/Pillow to read pixels with: {MISSING_IMAGE_STACK}")

@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from collections import Counter
@@ -56,12 +55,8 @@ def main() -> int:
     runtime = Path(tempfile.mkdtemp(prefix='noise-ants-'))
     fixture = runtime / 'fixture.png'
     wd.write_fixture_png(fixture, SIDE, SIDE)
-    env = dict(os.environ)
-    env['NOISE_RUNTIME_DIR'] = str(runtime)
-    env.pop('NOISE_CONFIG_DIR', None)
     with (runtime / 'stderr.log').open('w') as log:
-        proc = subprocess.Popen([str(binary), '--width=1280', '--height=800',
-                                 '--debug-wire=0', str(fixture)], env=env, stderr=log)
+        proc = wd.start_app(args, runtime, 1280, 800, fixture, log)
     fails: list[str] = []
     try:
         wire = wd.Wire(wd.wire_port(runtime, proc, args.startup_timeout))
