@@ -340,9 +340,16 @@ so the canvas does not shrink when the panel is up.
 | `seed` | the session's seed, shown because it is in the request. Nothing picks a number behind your back |
 | `/images/edits 192x192` | the compiled request, before you pay for it: endpoint and the size the region compiler settled on (selection + context, snapped to the model's multiple) |
 | model, `cache 3c30717c`, ETA | which model would answer, the digest of *this* request (a repeat is served instantly), and the box's own measured time for that size - or "no timing yet for this size", which is honest rather than a guess |
-| `Run` | queues it. If the intent needs a model other than the resident one, this asks first and says the swap costs tens of seconds; nothing switches silently |
+| `Run` | queues it. If the intent needs a model other than the resident one, this asks first and says the swap costs tens of seconds; nothing switches silently. Passing a value, or changing the seed, recompiles; a change the panel was not told about recompiles once it has held still for one read, so dragging a marquee does not encode a region per frame |
+
+**Two kinds of operation, and why only one of them smears.** *Reconstruct* (Remove, Heal, Fill region)
+throws the selected content away on purpose, so the uploaded picture has a blurred or flattened hole in
+exactly that area while the surroundings go up sharp - they are the only instruction it gets. *Change in
+place* (Replace) uploads the region **exactly as it stands**: blur it and you have destroyed the thing you
+asked to change, which is what an earlier build did and why its answers came back unrelated to the
+picture. `tools/prep_proof.py` renders both uploads and asserts the difference whole-image.
 | `j0001 succeeded`, `Apply` | the job, and the door the answer comes through: the same compositor as `ai.compose`, feathered and locked, undoable with `Ctrl+Z` like any other edit |
-| orange `the region moved` + `recompile` | the canvas or the selection changed after the request was compiled, so the price on screen is no longer the price that would be charged |
+| `region moving - price settles` | the selection is changing under the panel; the compile follows it the frame after it stops, so nothing has to be pressed and the price shown is one frame behind |
 
 A disabled panel with a grey sentence is not a bug: the sentence is the reason ("nothing fills the
 `edit` role: ...", with the `lemonade import` that would fix it when the box offers the model).

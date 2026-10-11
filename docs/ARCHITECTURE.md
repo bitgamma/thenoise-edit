@@ -165,9 +165,10 @@ src/
                        model, and an unresolved role carries a reason and, when the box offers it, the
                        command that would fix it. The file also carries the size and context policy the
                        region compiler and the request builder are not allowed to invent
-    recipes.{h,cpp}    `recipes/*.json`: endpoint, role, region scope, prep, enhance, prompt lines,
-                       variables, composite policy and extent. A recipe names a role, never a model,
-                       and refuses keys that belong to the model (`steps`) or to nothing (`mask`)
+    recipes.{h,cpp}    `recipes/*.json`: endpoint, role, operation, region scope, hole prep, enhance,
+                       prompt lines, variables, composite policy and extent. A recipe names a role,
+                       never a model, refuses keys that belong to the model (`steps`) or to nothing
+                       (`mask`), and refuses any pairing of `operation` with a hole it may not cut
     provider.{h,cpp}   THE request builder and the only place a field can be added: one ordered field
                        list per request, encoded as JSON or multipart by the transport, plus the
                        canonical text the cache key hashes
@@ -187,11 +188,14 @@ src/
     region.{h,cpp}     THE region compiler (see AI-BACKEND.md): `plan_region` for the geometry
                        (bbox → grow → clamp → snap → fit, with the inverse map carried as the two
                        rectangles rather than a scale), `prep_region` for the bytes that would go on
-                       the wire, and `flatten_over_ring` for the colour a transparent edge is dropped on
+                       the wire (a hole inside the coverage, every other pixel uploaded as the document
+                       holds it), and `flatten_over_ring` for the colour a transparent edge is dropped on
     compose.{h,cpp}    the result compositor (see AI-BACKEND.md): resample onto the crop, feather,
                        lock band, multiply the extent, blend through `restrict_to` - and the
                        `ComposeReport` whose effective coverage is what pixel-lock is asserted against
-    colour_match.{h,cpp} Lab mean/σ transfer from the ring outside the coverage onto the patch inside
+    colour_match.{h,cpp} the drift the model put on the context band, paired pixel against pixel with
+                       the document, taken back off the whole answer (spread included, clamped) — never a
+                       transfer of the surrounding colours onto the new content
     queue.{h,cpp}      jobs: one worker (the box holds one image model resident), cancellation that
                        never discards an answer that arrived, retry from the stored request, and
                        `jobs.json` plus the answer PNGs on disk so a refine outlives the app

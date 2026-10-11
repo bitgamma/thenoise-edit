@@ -296,6 +296,64 @@ the app itself - `connect_attempted` and `connected` before anything in the prob
 defence against an edit to the host or to `ui.cpp` that compiles, tests green, and changes nothing a person
 can use.
 
+## Reasoning the code cannot carry (what an operation is)
+
+Three separate facts were living in one field, and the UI inherited the confusion:
+
+| fact | question it answers | home |
+|---|---|---|
+| the region | what does the model get shown? | `ai/region` `plan_region` |
+| the hole | what is destroyed on purpose, inside the mask? | `Recipe::prep`, applied by `prep_region` |
+| the coverage | where is the answer allowed to land? | the selection/mask, through `ai/compose` |
+
+Blurring belongs to the middle row only. `prep` was a recipe-level field applied to the whole crop, so
+`inpaint-replace` - "replace the eyes with green eyes" - uploaded a smeared face and returned something
+unrelated to the picture, and the panel offered the same knob for both kinds of job. The concept that was
+missing from the data is now in it: `Recipe::operation` is `reconstruct | in_place | transform |
+from_words`, and the parser refuses a hole on anything but `reconstruct`, a `reconstruct` without a hole,
+a `reconstruct` spanning the document, `from_words` on the `edits` endpoint, and a recipe that states no
+operation at all. Parse-time, not runtime: a recipe that contradicts itself spends a person's time and the
+box's quota every time it runs.
+
+`role` is the other axis and shares no value with it - one role (`edit`) serves both `reconstruct` and
+`in_place`. Naming `operation: edit` alongside `role: edit` was the first draft and it is exactly the kind
+of two-names-one-word accident that makes a codebase lie later.
+
+`prep_region(crop, coverage_in_crop, prep, seed)` now destroys the covered pixels and leaves every other
+byte of the crop as the document holds it. `average` and `noise` fill from the mean of the **context**: the
+hole's own mean is the colour of the thing being got rid of. The `noise` draw advances once per pixel
+whatever the mask says, so a hole's noise depends on the crop's geometry and not on how much happened to be
+covered. `tools/prep_proof.py` (registered as `test_prep_proof`, recorded transport, spends nothing) renders
+each panel recipe's upload and asserts it whole-image: `in_place` 0 px changed, `reconstruct` 0 context px
+changed and 16 384 / 16 384 of the hole destroyed (`blur` 16 204 - the rest is flat area a blur cannot
+alter).
+
+The colour correction had the same disease in the opposite direction. `colour_match_ring` pulled the answer
+onto the Lab mean and sigma of the ring outside the mask, which for a face surrounded by dark hair and
+background means: paint the face dark. It is now `colour_match_drift`, and the only thing it measures is
+**the drift on the band the model was also shown** - the context the region compiler grew the box by,
+paired pixel against pixel against the document - and subtracts that from the whole answer, spread included
+and clamped. A correct in-place edit therefore gets no correction at all, which is the regression test
+(`test_an_answer_that_changed_only_the_subject_is_left_exactly_alone`): 3 075 failures with the old
+estimator put back, 0 with the new one. The live numbers in `probes/2026-10-11-ai-job-live.md` (9.0 L drift
+with the correction accidentally off, 0.08 L with it) measure the estimator that no longer exists; the
+paired one is owed one live run before the probe says anything about it.
+
+Failure modes worth keeping:
+
+- **A masked operation that writes through a shared plane** - the `noise` pass first wrote its jitter into
+  the working plane for every pixel, so the context came out noisy and the "context is byte-identical"
+  check caught it in the same run that added the check.
+- **A fixture with nothing under the mask proves nothing**: a blur over a flat area is that same flat
+  area, so "the hole's identity is destroyed" needs detail under the hole - the fixture hole straddles the
+  edge of the two-tone image.
+- **A colour estimator needs a subject with a different colour from its surroundings.** Every colour test
+  here used flat fields until there was a bright patch in a dark frame; the flat ones could not see a patch
+  painted dark.
+- **Untracked tools disappear.** Four throwaway probe scripts this session were gone from the tree mid-task
+  (shared box), and a claim in `docs/` that points at a tool is a claim about a file. `prep_proof.py` is
+  committed and registered as a test; that is the bar for a tool a document cites.
+
 ## Decisions that stand
 
 - **`.ora` out** of the product and the design: one semantics for one stack. Flat PNG/JPEG/WebP in, via system

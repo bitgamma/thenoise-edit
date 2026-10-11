@@ -262,16 +262,21 @@ Input: `(document composite, selection mask, recipe)` → one compiled request.
 5. FIT       if area > region_budget (default 1024×1024 equivalent) → uniform scale down;
              record `scale` *and* `requested` = that scale rounded **up** to the multiple, because
              the two are not proportional and the inverse map needs the size, not the scale
-6. CROP      flattened base = visible layers below ∪ active layer; alpha flattened over a
-             colour sampled from the mask ring (never over plain white/black)
-             ⚠ not built: `prep_region` takes `base` from its caller and copies `plan.crop` out of
-             it unchanged, and `Document` has no flatten-over-a-rectangle door yet — see PLAN,
-             "what the request side still needs"
-7. PREP      none | average | blur(gauss, r = max(kMinBlurRadiusPx, crop short side / 12)) |
-             pixelate (block = that radius) | noise (seeded, so the bytes are cacheable) | white
-             default blur: it destroys *what* the object is while preserving the colour,
-             luminance gradient and light direction of what is behind it. Pure white is the
-             worst option and is offered only for experiments.
+6. CROP      flattened base = visible layers below ∪ active layer (`Document::flatten_over`),
+             alpha flattened over a colour sampled from the mask ring (never over plain
+             white/black) — `flatten_over_ring(crop, coverage_in_crop)`
+7. PREP      a *hole*, not a treatment of the region. Only pixels the coverage reaches are
+             altered; every other byte of the crop is uploaded exactly as the document holds it,
+             because the surroundings are the instruction. Modes: none | average | blur(gauss,
+             r = max(kMinBlurRadiusPx, crop short side / 12)) | pixelate (block = that radius) |
+             noise (seeded, so the bytes are cacheable) | white. Default blur: it destroys *what*
+             the object is while leaving colour, luminance gradient and light direction readable.
+             `average` and `noise` fill from the mean of the **context** — the hole's own mean is
+             the colour of the thing being got rid of. Pure white is the worst option and is
+             offered only for experiments.
+             Only `operation: reconstruct` may ask for a prep; the parser refuses the pairing the
+             other way round, which is what stopped `Replace the eyes` from uploading a blurred
+             face (see "Two kinds of operation" below).
 8. SIZE      always send explicit size = prepped region size, measured twice now: an edit with
              `size` returns it exactly, an edit without it returns the **model default** (1024²)
              rather than the reference image's size, at 30.3 s against 7.4 s for the same 512²
@@ -289,10 +294,28 @@ reach the compositor through `CompositePolicy`, whose values come from the recip
 argument helpers leave the caller's variable alone when the key is absent. That sounds like a detail and
 was a live defect: the boolean helper used to write `false` for an absent key, so `job.apply` and
 `ai.compose` ran with the colour correction switched off while the recipe and the report both said it
-was on. On the dev box the result was a patch **9.0 L units lighter than the ring it landed in**
-(`probes/2026-10-11-ai-job-live.md`); with the correction running, the same request lands 0.08 L off.
-The unit tests had been green throughout, because their fixtures are flat fields — see the lesson in
-`PLAN.md` about a flat fixture being a degenerate input for a colour operation.
+was on. The unit tests had been green throughout, because their fixtures are flat fields — see the lesson
+in `PLAN.md` about a flat fixture being a degenerate input for a colour operation.
+
+### The colour match is a drift measurement, not a palette
+
+`colour_match_drift` answers one question: *by how much did the model change the pixels it was not asked
+to change?* The region compiler grows the box by a band of context, the answer contains that band, and the
+document holds the same pixels, so the band is paired pixel against pixel and the mean Lab difference over
+it is the drift. That difference is subtracted from every pixel of the answer — including inside the
+replacement area, which has no reference of its own and inherits the correction the band paid for. Spread
+is matched from the same paired band, clamped to `kMaxDeviationRatio`.
+
+It used to be defined the other way round (`colour_match_ring`): the patch was pulled onto the Lab mean and
+σ of the ring outside the mask. For a hole that is arguable; for anything else it is a defect with a name —
+a change that turns a face's eyes green also returns the face, and mapping that face onto the mean of the
+hair and background around it produced **a visibly darker patch**, which is what a person reported the
+moment Replace stopped blurring. `test_an_answer_that_changed_only_the_subject_is_left_exactly_alone` is
+the regression: an answer that changed the subject and nothing else must be left byte for byte.
+
+`probes/2026-10-11-ai-job-live.md` measures the previous definition (9.0 L of lightness drift against the
+ring when the correction was accidentally off, 0.08 L when it ran). Those numbers describe that estimator;
+the paired one needs its own live measurement before the probe says anything about it.
 
 ```
 1. RESAMPLE     returned image (its own dims) → the whole crop rect, Lanczos3 over premultiplied
@@ -404,7 +427,8 @@ Supporting machinery:
 ## Prompt Recipes
 
 Shipped as **read-only JSON files in the app resource directory**, one recipe per file (no in-app
-authoring in the MVP). A recipe = prompt template + region policy + prep policy + composite policy.
+authoring in the MVP). A recipe = operation + prompt template + region policy + hole policy +
+composite policy.
 
 JSON has no comments, so a recipe file carries no prose — this document is the prose, and a file that
 fails to parse names the key and where. Two conventions follow from choosing JSON:
@@ -419,6 +443,7 @@ fails to parse names the key and where. Two conventions follow from choosing JSO
   "id": "inpaint-remove",
   "endpoint": "edits",
   "role": "edit",
+  "operation": "reconstruct",
   "prep": "blur",
   "context": { "ratio": 0.35, "min_px": 64 },
   "enhance": "never",
@@ -434,6 +459,29 @@ fails to parse names the key and where. Two conventions follow from choosing JSO
 ```
 
 `role`, never a model id; the policy values live here, in the recipe, and nowhere else.
+
+### Two kinds of operation, and the axis `role` does not cover
+
+`operation` says what happens to the pixels; `role` says which model answers. They are different axes
+and share no value: one role (`edit`) serves both `reconstruct` and `in_place`, which is exactly why
+the second axis had to be said out loud.
+
+| operation | what it means | hole (`prep`) | words |
+|---|---|---|---|
+| `reconstruct` | the area's content is unwanted; fill it from the surroundings | required | none needed |
+| `in_place` | change a named thing; the rest of the picture is the reference | must be `none` | the whole operation |
+| `transform` | change the picture, not its content (upscale) | must be `none` | none |
+| `from_words` | no source image at all | must be `none` | the whole operation |
+
+The parser refuses the contradictions — `in_place` with a prep, `reconstruct` without one,
+`reconstruct` spanning the whole document, `from_words` on the `edits` endpoint, and a recipe that
+states no operation at all — each naming the file and the reason. This is not tidiness: `inpaint-replace`
+declared `prep: blur`, so "replace the eyes with green eyes" uploaded a smeared face, and the model
+returned an unrelated face because the only thing it was shown was a smudge. `tools/prep_proof.py`
+(`xvfb-run -a python3 tools/prep_proof.py`) renders the upload for every recipe in the panel and asserts,
+whole-image, that an `in_place` upload is byte-identical to the document (0 px changed) while a
+`reconstruct` upload changes 0 context pixels and destroys the hole (16 384 of 16 384 for `heal`,
+16 204 for the blur, where the rest is area a blur genuinely cannot alter).
 
 Two more keys belong to the recipe because the interface is a consumer of the table, not of a
 hard-coded palette:
@@ -481,19 +529,19 @@ recipe that declares `enhance` must produce a valid request when the role is unr
 
 ### MVP recipes (pre-shipped)
 
-| id | endpoint | role | region | notes |
-|---|---|---|---|---|
-| `new-image` | generations | generate | full doc | presets from doc aspect (1:1, 3:4, 4:3, 16:9 at the model's native scale) |
-| `new-image-anime` | generations | generate | full doc | Anima-oriented phrasing hints, Anima preferred |
-| `new-image-photo` | generations | generate | full doc | Krea-2-oriented phrasing hints |
-| `inpaint-remove` | edits | edit | mask bbox | the flagship |
-| `inpaint-replace` | edits | edit | mask bbox | "replace {{target}} with {{replacement}}" |
-| `region-fill` | edits | edit | mask bbox | generate into the region from prompt only |
-| `heal` | edits | edit | selection | shipped as an edit with `prep: average`; the in-process Telea/Chan path for a box with no edit model is designed and **not built**, so `heal` currently refuses when the edit role is unresolved |
-| `flatten-colorize` | edits | edit | full doc | e.g. "colorize this line art" — the highest-value raster trick for illustration workflows |
-| `reimagine` | edits | edit | full doc | full-frame edit, `extent: canvas`. The strength control is local: `job.apply {into: "new_layer"}` lands it on an empty layer above the one the job was queued against, where the layer's own opacity is the blend slider — fidelity is not a server knob, and 50 % is a number the user owns |
-| `upscale` | upscale | — | full doc or mask bbox | ESRGAN model choice + composite back into the layer |
-| `free-command` | user's choice | user's choice | user's choice | escape hatch below |
+| id | endpoint | role | operation | hole | region | notes |
+|---|---|---|---|---|---|---|
+| `new-image` | generations | generate | from_words | none | full doc | presets from doc aspect (1:1, 3:4, 4:3, 16:9 at the model's native scale) |
+| `new-image-anime` | generations | generate | from_words | none | full doc | Anima-oriented phrasing hints, Anima preferred |
+| `new-image-photo` | generations | generate | from_words | none | full doc | Krea-2-oriented phrasing hints |
+| `inpaint-remove` | edits | edit | reconstruct | blur | mask bbox | the flagship: the only operation whose blur is a feature |
+| `inpaint-replace` | edits | edit | in_place | none | mask bbox | "replace {{target}} with {{replacement}}" |
+| `region-fill` | edits | edit | reconstruct | white | mask bbox | generate into the region from prompt only |
+| `heal` | edits | edit | reconstruct | average | selection | the in-process Telea/Chan path for a box with no edit model is designed and **not built**, so `heal` refuses when the edit role is unresolved |
+| `flatten-colorize` | edits | edit | in_place | none | full doc | e.g. "colorize this line art" — the highest-value raster trick for illustration workflows |
+| `reimagine` | edits | edit | in_place | none | full doc | full-frame edit, `extent: canvas`. The strength control is local: `job.apply {into: "new_layer"}` lands it on an empty layer above the one the job was queued against, where the layer's own opacity is the blend slider — fidelity is not a server knob, and 50 % is a number the user owns |
+| `upscale` | upscale | — | transform | none | full doc or mask bbox | ESRGAN model choice + composite back into the layer |
+| `free-command` | user's choice | user's choice | user's choice | user's choice | user's choice | escape hatch below |
 
 (`variations` deleted — unsupported endpoint.)
 
