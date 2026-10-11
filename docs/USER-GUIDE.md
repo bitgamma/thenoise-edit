@@ -52,7 +52,7 @@ One dockspace, four panes and a status bar:
 │                                              │  [Add][Delete]      │
 ├──────────────────────────────────────────────┴─────────────────────┤
 │ 450.0%  160 x 110  unsaved  select 24 px  sel 70x50  undo 0 / redo 0  4.6 ms  wire :35429 │
-│ ai: Remove  Flux-2-Klein-9B-TheNoise  ~3.4 s  cache b97d4769  j0001 succeeded [Apply]      │
+│ ai: Fill  Flux-2-Klein-9B-TheNoise  ~3.4 s  256x224  seed 0  j0001 succeeded  on 'Fill j0001', Ctrl+Z │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -61,8 +61,9 @@ remembered in `imgui.ini` inside the runtime directory. The status bar's first
 line reads out the zoom, the document size, its path (or `unsaved`), the tool and brush size,
 `painting N dabs` during a live stroke, the undo/redo depth, the last frame time and the wire port;
 its **second line is the AI's**: which model would answer the verb on screen, what it costs on this
-box, the cache digest of the request, whether a press would have to load a model first, and the job
-that is running or waiting to land. Enough to reproduce a screenshot from the picture alone.
+box, the size a press would ask for, the seed that press would send, whether it would have to load a
+model first, and the job that is running or waiting to land - and where its answer went. Enough to
+reproduce a screenshot from the picture alone.
 
 **There is no AI tab.** The verbs live beside the tools that draw the area they act on, and on the
 keys - see [the verbs](#the-verbs).
@@ -363,7 +364,7 @@ them will act on a frame with nothing marked.
 | `272x224`, model, `~3.4 s` | what a press would send, priced before it costs anything: the endpoint, the size the region compiler settles on (region + context, snapped to the model's multiple), which model would answer, and the box's own measured time for that size - or nothing at all when the box has not answered that size before, which is honest rather than a guess. All of it is geometry and table lookups: **marking an area encodes nothing**, and there is no preview step, because the only honest preview of an AI edit is the answer |
 | `will load the model (resident: …)` | this press would swap the shared server; the popup asks, and says a swap costs tens of seconds. Nothing switches silently |
 | `j0001 running`, then `on 'Remove j0001', Ctrl+Z` | the job, and where its answer went. **There is nothing to press**: a finished answer composites itself - feathered, colour-matched, pixel-locked - onto **its own new layer** directly above the one the region was flattened from, named for the verb and the job. Hiding it, blending it down, masking it or deleting it are ordinary layer operations, `Ctrl+Z` takes the layer and its pixels away together, and `job.apply` brings it back (it is idempotent: the answer is already there, it says so and adds nothing) |
-| `cache 3c30717c` | the digest of the request that job actually sent; a repeat of the same request is served from the cache instantly. It appears with the job because a digest is a fact about bytes, and the bytes exist once something is compiled (`ai.preview`) or run |
+| `seed 0` | the number in the request. It is on screen because it changes the answer, and it changes only through `ai.intent {seed: n}` - the panel shows the session's seed, so a number typed once is the number the next press sends |
 
 **Two kinds of operation, and why only one of them smears.** *Reconstruct* (Remove, Fill) throws the
 selected content away on purpose, so the uploaded picture has a blurred or flattened hole in exactly that
