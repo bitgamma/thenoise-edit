@@ -161,31 +161,13 @@ class Injector:
 class Display:
     """The display the app and the injector share: ours only if we had to start one."""
 
-    def __enter__(self):
-        self.proc = None
-        if os.environ.get("DISPLAY"):
-            return os.environ["DISPLAY"]
-        if not shutil_which("Xvfb"):
-            raise Skip("no DISPLAY and no Xvfb to make one")
-        self.number, self.lock = wd.claim_display()
-        # Registered before the wait below, because a raise from inside `__enter__` never reaches
-        # `__exit__` - and an Xvfb left behind by a skipped run holds the display and its lock.
-        self.proc = wd.register_child(subprocess.Popen(
-            ["Xvfb", f":{self.number}", "-screen", "0", f"{WIDTH}x{HEIGHT}x24", "-nolisten", "tcp"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
+    def __enter__(self) -> str:
         try:
-            wd.wait_for_display(self.number, 15.0)
+            return wd.ensure_display(WIDTH, HEIGHT, 15.0)
         except wd.WireError as exc:
-            wd.terminate_child(self.proc)
-            wd.release_display(self.lock)
-            self.proc = None
             raise Skip(str(exc)) from exc
-        return f":{self.number}"
 
-    def __exit__(self, *_exc):
-        if self.proc is not None:
-            wd.terminate_child(self.proc)
-            wd.release_display(self.lock)
+    def __exit__(self, *_exc) -> bool:
         return False
 
 

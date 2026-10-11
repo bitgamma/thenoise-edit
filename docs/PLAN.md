@@ -60,6 +60,7 @@ These are not preferences; each one exists because breaking it was observed as a
 | `pump_ai_landings` | a succeeded job lands itself at the first door that reads the queue; it never re-lands what undo removed; a job may land only in the `document_epoch` it was queued under | `test_app`, `tools/wire_input.py` |
 | `tools/ai_job_probe.py` | every marked-area verb on the recordings, each in the order a person has it: bare press refused naming recipe and field → preview carries the typed words in the tier-1 field set → the row's command with the committed words → answer lands itself on a layer named for the verb and the job → no pixel changed outside the coverage claimed → undo byte-for-byte | `test_ai_job_probe` |
 | `tools/wire_input.py` | the flagship through injected X events: dragged marquee → `Ctrl+Backspace` → `['Layer 1','Remove j0001']` with nothing else pressed → `Ctrl+Z` → `['Layer 1']` | `test_input_gestures` |
+| `tools/panel_words_probe.py` | the panel's own words box reaches its command: injected keys into the box found by sweeping the dock (not by remembered coordinates), then the verb's real key → job whose prompt carries the typed marker → layer named for the verb and the job; a bare key with nothing typed starts nothing | `test_panel_words` |
 | `tools/wire_drive.py` | a probe that crashes leaves no `noise-edit`, no `Xvfb`, no stale `/tmp/.X11-lock/X*` (children start a new session; the whole group is signalled on exit/atexit/`SIGTERM`); a display number is claimed with `O_EXCL` and judged stale by its owner's pid, so probes starting together cannot take the same one | every probe run |
 
 Measured on the dev box, 2026-10-11 (see `docs/probes/`): a 256² four-step `inpaint-remove` on a resident
@@ -79,10 +80,14 @@ model in **3.5 s**; landed answer's luminance **ratio 1.05** against its own con
    at one end and the verb at the other, so text went in and never came out on a press. Each asking verb
    row now carries its own box, committed through `ai.intent {recipe, vars}`, and the press carries no
    `vars` - which is also what the key does, so button, key and wire are one door. Verified on the window
-   with injected keystrokes (click the box → type → `Enter` → `Ctrl+Shift+F` → `Fill j0001`, words present
-   in the request prompt; same for `Change`), and the keyboard behaviour around it is ImGui's, not ours:
-   `Tab` leaves the box active, so the verb key is correctly swallowed until `Enter`/`Escape`/a click
-   elsewhere - measured before concluding, because `WantCaptureKeyboard` alone made it look like our gate.
+   with injected keystrokes, and that run is now `tools/panel_words_probe.py`: it finds each box by
+   sweeping the dock and asking what the intent holds afterwards - letters no shortcut claims, committed
+   with `Enter` - then presses the verb's real key and expects the layer. It found the boxes at
+   `y=290`/`y=360` without being told where they are, so the panel can be relaid out without breaking it,
+   and reverting the panel fix turns it red naming the recipe and the field the box was refused against.
+   One behaviour around it is ImGui's, not ours: `Tab` leaves the box active, so the verb key is correctly
+   swallowed until `Enter`/`Escape`/a click elsewhere - measured before concluding, because
+   `WantCaptureKeyboard` being true made it look like our gate was wrong.
 2. **Generate: aspect presets and the style variants.** `Ctrl+G` runs `new-image` and lands a layer today;
    what is missing is the aspect choice (`1:1, 3:4, 4:3, 16:9` at the model's native scale, from the
    recipe table not from code) and the two style variants reachable from the panel, not only from the wire.

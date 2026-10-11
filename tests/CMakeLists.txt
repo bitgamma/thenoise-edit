@@ -146,6 +146,16 @@ if(Python3_Interpreter_FOUND)
                          TIMEOUT 300
                          DEPENDS noise-edit)
 
+    # The panel's own door: injected keys into a verb's words box, then that verb's key. Every other
+    # test drives commands; only this one can see that the widget reaches them.
+    add_test(NAME test_panel_words
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/panel_words_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_panel_words PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 300
+                         DEPENDS noise-edit)
+
     add_test(NAME test_ai_compose_probe
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ai_compose_probe.py
                      --bin $<TARGET_FILE:noise-edit>)

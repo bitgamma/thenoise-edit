@@ -309,6 +309,28 @@ def start_app(args: argparse.Namespace, runtime_dir: Path, width: int, height: i
                          start_new_session=True))
 
 
+def ensure_display(width: int, height: int, timeout: float = 15.0) -> str:
+    """A display to inject events against: the one already set, or one raised here at the size of the
+    window the probe is about to open. `$DISPLAY` points at the result, so children started afterwards
+    - the app included - share the server rather than needing one of their own."""
+    if os.environ.get("DISPLAY"):
+        return os.environ["DISPLAY"]
+    if not shutil.which("Xvfb"):
+        raise WireError("no DISPLAY and no Xvfb to make one")
+    number, lock = claim_display()
+    xvfb = register_child(subprocess.Popen(
+        ["Xvfb", f":{number}", "-screen", "0", f"{width}x{height}x24", "-nolisten", "tcp"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
+    try:
+        wait_for_display(number, timeout)
+    except WireError:
+        terminate_child(xvfb)
+        release_display(lock)
+        raise
+    os.environ["DISPLAY"] = f":{number}"
+    return os.environ["DISPLAY"]
+
+
 def display_skip() -> str | None:
     """Why nothing can render in this environment, or None. A missing display is an unavailable
     resource rather than a regression, and every probe says it in these same words."""

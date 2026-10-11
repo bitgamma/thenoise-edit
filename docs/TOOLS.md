@@ -134,10 +134,14 @@ together take the same number, and the loser spends its run against an X server 
 (`XIO: fatal IO error on X server`, a reset wire, and a probe reporting an app defect that never
 happened; measured at 3 failures in 8 concurrent runs before the claim, 0 in 16 after).
 
+A probe that has to inject events asks `wire_drive.ensure_display(width, height)` first: it claims and
+raises the server at the size the app's window will want, points `$DISPLAY` at it, and the app started
+afterwards shares that server instead of needing a second one - the injector and the app must be looking
+at the same X server or the events land on nobody.
+
 `wire_drive.start_app` registers each child and reaps its **process group** on exit and on
-SIGINT/SIGTERM, Xvfb included, and releases the lock it claimed. `wire_input.py` registers Xvfb with the
-same reaper *before* the wait that can fail, because a raise inside `__enter__` never reaches `__exit__`.
-A probe that crashes must leave no `noise-edit`, no `Xvfb`, and no stale `/tmp/.X11-lock/X*`.
+SIGINT/SIGTERM, Xvfb included, and releases the locks it claimed. A probe that crashes must leave no
+`noise-edit`, no `Xvfb`, and no stale `/tmp/.X11-lock/X*`.
 
 ## What is still owed to the box
 
