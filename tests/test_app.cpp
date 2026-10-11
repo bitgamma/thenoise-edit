@@ -2254,6 +2254,127 @@ void test_an_answer_lands_on_the_document_and_undoes_completely() {
 // canvas rather than the layer's alpha. Same command, same compositor, one argument - and the report
 // says which happened, because "composed successfully" over an empty layer would otherwise read as an
 // edit that worked.
+// The selection panel, driven exactly the way its buttons drive it: one command, `ai.intent`, for
+// every fact on show and every action. This is the M4 flow - select, say what to remove, run it, land
+// it - with the price shown before the button is pressed rather than after.
+void test_the_selection_panel_runs_its_intent_through_one_command() {
+    Harness h;
+    h.value("doc.new", json{{"width", 96}, {"height", 64}, {"fill", json::array({30, 40, 50, 255})}});
+    // A frame with something in it, so a landed answer is a visible edit rather than a flat field
+    // meeting its own mean.
+    h.value("tool.stroke", json{{"points", json::array({json::array({0, 40}), json::array({95, 40})})},
+                                {"size", 10.0}, {"hardness", 1.0}, {"opacity", 1.0}, {"flow", 1.0},
+                                {"spacing", 0.25}, {"color", json::array({0, 200, 60, 255})}});
+    const std::string before = checksum_of(h);
+    h.value("select.rect", json{{"rect", json::array({20, 12, 36, 24})}});
+
+    const json read = h.value("ai.intent", json::object());
+    CHECK_EQ(read["recipe"].get<std::string>(), std::string("inpaint-remove"));
+    CHECK_EQ(read["label"].get<std::string>(), std::string("Remove"));
+    CHECK_EQ(read["ask"].size(), std::size_t(1));
+    CHECK_EQ(read["ask"][0].get<std::string>(), std::string("target"));
+    // Untouched, the field holds the recipe's own default, which is what a headless run gets too.
+    CHECK_EQ(read["vars"]["target"].get<std::string>(), std::string("object"));
+    CHECK_EQ(read["intents"].size(), std::size_t(5));
+    CHECK(read["preview"].is_null());   // reading pays for nothing
+    CHECK(read["stale"].get<bool>());   // and nothing compiled is, by definition, not current
+    CHECK(!read["ready"].get<bool>());
+    CHECK_EQ(read["fix"].get<std::string>(), std::string("server.connect"));
+    const json& bounds = read["selection"]["bounds"];
+    CHECK_EQ(bounds[0].get<int>(), 20);
+    CHECK_EQ(bounds[2].get<int>(), 36);
+
+    // Refusals name the thing that was wrong, including what *was* offered.
+    const CommandResult unknown_intent = h.run("ai.intent", json{{"recipe", "spline-reticulate"}});
+    CHECK(!unknown_intent.ok);
+    CHECK(unknown_intent.error.find("spline-reticulate") != std::string::npos);
+    CHECK(unknown_intent.error.find("inpaint-remove") != std::string::npos);
+    const CommandResult unknown_var = h.run("ai.intent", json{{"vars", json{{"colour", "pink"}}}});
+    CHECK(!unknown_var.ok);
+    CHECK(unknown_var.error.find("colour") != std::string::npos);
+    CHECK(!h.run("ai.intent", json{{"vars", json{{"target", 3}}}}).ok);
+    CHECK(!h.run("ai.intent", json{{"run", "yes"}}).ok);
+
+    // No seed typed, so the session's is used: the number the panel shows is the number the request
+    // carries, and it is 0 until somebody says otherwise.
+    CHECK_EQ(read["seed"].get<std::int64_t>(), std::int64_t(0));
+    CHECK(!h.run("ai.intent", json{{"seed", -1}}).ok);
+
+    h.value("server.connect", json::object());
+    const json with_words = h.value("ai.intent", json{{"vars", json{{"target", "the lamp"}}}});
+    CHECK(with_words["ready"].get<bool>());
+    CHECK(!with_words["stale"].get<bool>());
+    CHECK_EQ(with_words["preview"]["request"]["path"].get<std::string>(), std::string("/images/edits"));
+    CHECK(with_words["preview"]["prompt"].get<std::string>().find("the lamp") != std::string::npos);
+    CHECK(!with_words["swap"].get<bool>());   // nothing was resident, so nothing has to change
+
+    // The seed is a request field, so retyping it changes the request and therefore its key - and
+    // nothing else about the compile.
+    const std::string seed_before = with_words["preview"]["request"]["cache_key"].get<std::string>();
+    const json reseeded = h.value("ai.intent", json{{"seed", 1234}});
+    CHECK_EQ(reseeded["seed"].get<std::int64_t>(), std::int64_t(1234));
+    CHECK_EQ(h.value("server.state", json::object())["seed"].get<std::int64_t>(), std::int64_t(1234));
+    CHECK(reseeded["preview"]["request"]["cache_key"].get<std::string>() != seed_before);
+    h.value("ai.intent", json{{"seed", 0}});
+
+    // A read after a change is still a read: the same compiled request, byte for byte, and no second
+    // region encode.
+    const json again = h.value("ai.intent", json::object());
+    CHECK_EQ(again["preview"]["request"]["cache_key"].get<std::string>(),
+             with_words["preview"]["request"]["cache_key"].get<std::string>());
+
+    // Move the region and the price on screen is no longer the price that would be charged.
+    h.value("select.rect", json{{"rect", json::array({8, 6, 48, 32})}});
+    CHECK(h.value("ai.intent", json::object())["stale"].get<bool>());
+    // The refusal of the last attempt is still on show after a read: the panel reads every frame.
+    h.value("ai.intent", json{{"recipe", "inpaint-remove"}});
+    CHECK(!h.value("ai.intent", json::object())["stale"].get<bool>());
+
+    // Switching intent keeps what the next one asks and forgets what it does not, so a `replacement`
+    // cannot ride silently into a recipe that never asked for one.
+    h.value("ai.intent", json{{"recipe", "inpaint-replace"}});
+    CHECK_EQ(h.value("ai.intent", json::object())["vars"]["target"].get<std::string>(),
+             std::string("the lamp"));
+    h.value("ai.intent", json{{"vars", json{{"replacement", "a floor lamp"}}}});
+    h.value("ai.intent", json{{"recipe", "inpaint-remove"}});
+    h.value("ai.intent", json{{"recipe", "inpaint-replace"}});
+    CHECK_EQ(h.value("ai.intent", json::object())["vars"]["replacement"].get<std::string>(),
+             std::string("a similar object"));
+
+    // A swap is priced before it happens, not discovered afterwards: load a different model, and Run
+    // refuses with both names and the word that would let it through.
+    h.value("server.load", json{{"model", "Krea-v0.3.1-INT8"}});
+    const json swapped = h.value("ai.intent", json{{"recipe", "inpaint-remove"}});
+    CHECK(swapped["swap"].get<bool>());
+    CHECK_EQ(swapped["resident"].get<std::string>(), std::string("Krea-v0.3.1-INT8"));
+    const CommandResult unconfirmed = h.run("ai.intent", json{{"run", true}});
+    CHECK(!unconfirmed.ok);
+    CHECK(unconfirmed.error.find("Krea-v0.3.1-INT8") != std::string::npos);
+    CHECK(unconfirmed.error.find("confirm") != std::string::npos);
+    // The panel can show that refusal, and nothing ran: no job, no pixel, no undo step.
+    CHECK(h.value("ai.intent", json::object())["error"].get<std::string>().find("confirm") !=
+          std::string::npos);
+    CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(0));
+    CHECK_EQ(checksum_of(h), before);
+
+    // The confirmed press, then the answer landed the way the panel's Apply lands it.
+    const json started = h.value("ai.intent", json{{"run", true}, {"confirm", true}});
+    const std::string id = started["job"]["id"].get<std::string>();
+    CHECK(!id.empty());
+    const json settled = h.value("job.wait", json{{"id", id}, {"timeout", 30}});
+    CHECK_EQ(settled["state"].get<std::string>(), std::string("succeeded"));
+    // The job the panel is showing is this job - the panel's Apply reads the same record.
+    CHECK_EQ(started["job"]["state"].get<std::string>(), std::string("running"));
+
+    const json applied =
+        h.value("job.apply", json{{"id", id}, {"apply", true}, {"colour_match", false}});
+    CHECK(applied["composite"]["composed"].get<bool>());
+    CHECK(applied["composite"]["pixels_changed"].get<std::size_t>() > 0);
+    CHECK_NE(checksum_of(h), before);
+    h.value("edit.undo", json::object());
+    CHECK_EQ(checksum_of(h), before);
+}
+
 // An option the caller leaves out is not a "no". The composite policy comes from the table, and an
 // argument reader that defaults a flag here would switch off the colour correction every edit recipe
 // asks for while still reporting a composite that worked - which is exactly how it behaved, on the
@@ -2355,6 +2476,7 @@ int main() {
     test_m0_command_surface_is_registered();
     test_a_recipe_runs_against_the_recorded_server_and_lands();
     test_an_answer_lands_on_the_document_and_undoes_completely();
+    test_the_selection_panel_runs_its_intent_through_one_command();
     test_an_option_left_out_keeps_the_policy_the_table_asked_for();
     test_an_answer_can_fill_pixels_the_layer_never_had();
     test_every_command_refuses_an_argument_it_does_not_declare();

@@ -420,7 +420,44 @@ fails to parse names the key and where. Two conventions follow from choosing JSO
 
 `role`, never a model id; the policy values live here, in the recipe, and nowhere else.
 
-Variables come from the user's instruction, the layer name and the document aspect. The
+Two more keys belong to the recipe because the interface is a consumer of the table, not of a
+hard-coded palette:
+
+* **`label`** is what the control says (`"Remove"`, `"Replace"`). The `id` is a key - greppable,
+  quoted in errors, never a word for a human; a button wearing an id is a control nobody wrote.
+* **`ask`** names the variables a person is asked to fill, in order (`["target"]`,
+  `["target", "replacement"]`). Everything not listed runs on its `variables` default, which is what
+  makes a headless `ai.run` and a click compile the *same* prompt - and what keeps `context_desc`
+  unwritten until the `enhance` role is switched on to fill it. An `ask` name with no declared default
+  is refused at parse: it would be collected from the user and then rejected by the prompt builder,
+  which is the worst place in the pipeline for that to surface.
+
+The palette of selection operations is therefore `recipes/*.json` filtered to `region: selection` with
+an `edits` or `upscale` endpoint (`RecipeSet::selection_intents`): adding an operation means adding a
+file, and a recipe that stops being a selection operation leaves the palette by itself.
+
+Two more keys belong to the recipe because the interface is a consumer of the table, not of a
+hard-coded palette:
+
+* **`label`** is what the control says (`"Remove"`, `"Replace"`). The `id` is a key, greppable and
+  quoted in errors; a button wearing an id is a control nobody wrote.
+* **`ask`** names the variables a person is asked to fill, in order (`["target"]`,
+  `["target", "replacement"]`). Everything not listed runs on its `variables` default, which is what
+  makes a headless `ai.run` and a click compile the *same* prompt - and what keeps `context_desc`
+  unwritten until the `enhance` role is switched on to fill it. An `ask` name with no declared default
+  is refused at parse: it would be collected from the user and then rejected by the prompt builder,
+  which is the worst place in the pipeline for that to surface.
+
+So the palette of selection operations is `recipes/*.json` filtered to `region: selection` with an
+`edits` or `upscale` endpoint: adding an operation means adding a file, and a recipe that stopped being
+a selection operation leaves the palette on its own.
+
+Variables come from the user's instruction (whatever the recipe's `ask` lists), the layer name and the
+document aspect. **The seed is the session's**: `ai.preview` and `ai.run` take `seed` optionally and use
+`AiSession::seed` when the call names none, and the panel shows that number in its own field. Nothing
+draws a random seed inside a request path - the number on the screen is the number the request carried,
+which is what makes "run that again" and "why does this one look different" answerable. Variants are the
+explicit case: `seed + i`, asked for by name. The
 `enhance` **role** (one `chat/completions` call on a downscaled crop — *"describe the
 background surface, lighting and palette in two lines"*) is designed in but switched off in
 every MVP recipe: it should buy better lighting/perspective matching for ~1 s of an LLM call

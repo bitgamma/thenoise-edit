@@ -31,10 +31,20 @@ makes even the running app replay:
 
 In order from here:
 
-6. **The UI for it** — the Generate panel, `Remove`/`Replace` on the selection, the model-swap confirm with
-   the ETA `server.state` already carries, and the jobs tray. Every one of these is a caller of a command
-   that exists; none of them needs new AI code. Start where the P0 flow starts: select → `Remove` →
-   `ai.preview` in the confirm → `ai.run` → `job.apply`.
+6. **The Generate panel** — the document-scoped recipes (`new-image*`, `reimagine`, `flatten-colorize`)
+   on the same seam the selection panel uses (`RecipeSet` filtered by scope instead of by `selection`),
+   with `job.apply {into: "new_layer"}` as the landing. Then the jobs tray: variants as `seed+i` jobs
+   landing one by one, A/B wipe, Accept/Discard. Draft→refine stages ride on the same queue; the EMA the
+   ETA needs is already measured and read.
+
+**Done since then, in one line each.** Remove/Replace/Fill/Heal/Upscale on the selection have a panel
+("Edit selection", tabbed with Layers and Log so the canvas keeps its area - the golden capture proves
+it), driven end to end by one command, `ai.intent`, which is also what the tests drive: intents come
+from the recipe table (`label`, `ask`), the compiled request and its cache digest are shown before Run,
+a model swap is priced and confirmed, and Apply lands the answer through the same door as `ai.compose`.
+Verified on the wire and by looking: `select.rect` → `ai.intent {vars}` → `ai.intent {run}` → `job.wait`
+→ `job.apply` on a fixture server and in the window, with the panel read before and after
+(`the region moved / recompile` after the write, `stale` true, undo restoring the document).
 7. **The recipe-tuning pass**, now that the app path is measured live
    (`probes/2026-10-11-ai-job-live.md`: 3.4 s for a 256² edit on a resident Klein-9B, 0.7 s when the
    server's own cache answered, and the landing exact). What the picture still shows is **texture**: the
@@ -186,6 +196,49 @@ extent. `ai/` stays free of `app/`, `core/` gained nothing new this slice, and t
 `AiSession` (tables, transport, client, cache, queue, registry), opened once by the host: commands read it,
 nothing reconstructs it, and `server.state` reports whether the tables loaded rather than letting a command
 refuse for a reason it does not name.
+
+## Reasoning the code cannot carry (the selection panel)
+
+- **One command owns the panel's whole surface.** `ai.intent` answers the intents on offer, the values in
+  force, whether the action could run and why not, the compiled price and the job, and it takes the
+  changes to all of them. The panel takes no `AppState`, so it has no private knowledge to be wrong
+  about, and a scripted "remove the lamp" is the same sequence of table calls the buttons make. A second
+  way to set the intent - a widget writing straight into state - is how a UI and a probe start meaning
+  different things.
+- **A read must be free, so the preview is compiled by whoever changed something.** The panel calls
+  `ai.intent {}` every frame; recompiling there would encode a region each frame. Instead the intent
+  stores the request beside a key (`document revision`, `selection bounds`, `covered`, `active layer`) -
+  the revision moves with every pixel write and the selection moves with none of them, so the pair
+  notices both - and a reader that finds it out of date is told through `stale`, which the panel shows as
+  the orange line rather than quoting a stale size and ETA. `run` refuses a stale intent, because a
+  button that charges for a request the screen did not show is the worst possible surprise.
+- **A refusal is not cleared by a read.** `intent.error` is cleared only when the call asked for
+  something; a panel reading every frame would otherwise show the reason for a failed Run for one frame
+  and then nothing.
+- **The queue is pumped when its records are read.** `ai.intent` advances the queue before reporting the
+  job row, or the panel would show a finished job as running until some other command happened to pump.
+  (The same reasoning made `job.list`/`job.get`/`job.apply` pump; the panel is just another reader.)
+- **The seed is session state, not an argument default.** `ai.preview` and `ai.run` used to require a
+  `seed`, which is right about requests and wrong about people: nobody types a seed to remove a lamp, and
+  inventing one inside the command would break reproducibility. `AiSession::seed` is the one field, the
+  panel shows it, `server.state` reports it, and variants remain the explicit `seed + i` case. A default
+  that lives in the request path is the bug this closes.
+- **`arg_int` joins `arg_bool` and `arg_rect`: absent leaves the caller's variable.** A reader that
+  defaults on absent is how the colour correction got switched off in the last slice; the family now has
+  one rule, stated in the header, and `want_int` is for arguments that really are required.
+- **`label` and `ask` are recipe data because the palette is derived.** `RecipeSet::selection_intents()`
+  is "scope `selection`, endpoint `edits` or `upscale`" - adding an operation means adding a JSON file,
+  and a recipe that stops being a selection operation disappears from the panel on its own. A
+  hard-coded list of buttons would have been the same feature with a second source of truth.
+- **Two buttons per frame is a bug, not a style.** `if (ImGui::Button("Run") && swap) ... else if
+  (ImGui::Button("Run"))` draws two controls and swallows the first click, because `Button` draws as it
+  asks. Draw once into a `const bool`, then branch.
+
+**Architecture verdict.** The panel added no AI code and no document surface: it reads `roles.json`
+through the registry, compiles through `ai.preview`, queues through `ai.run` and lands through
+`job.apply`. `ai/` gained two parsed keys and a filter over recipes it already held; `core/` gained
+nothing. The next slice (Generate) needs the same filter with the other scope and the same landing door,
+which is the test of whether this seam was cut in the right place.
 
 ## Decisions that stand
 

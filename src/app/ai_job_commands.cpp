@@ -137,6 +137,9 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
         if (state.ai.jobs != nullptr) {
             server["latency"] = state.ai.jobs->latency().json();
         }
+        // The seed a request takes when its caller names none, so "what made this picture" is
+        // answerable from the session rather than from memory.
+        server["seed"] = state.ai.seed;
         return command_ok(server);
     });
 

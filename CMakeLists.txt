@@ -148,6 +148,7 @@ target_link_libraries(noise_dbg PUBLIC noise_core)
 add_library(noise_app STATIC
     src/app/ai_commands.cpp
     src/app/ai_job_commands.cpp
+    src/app/ai_intent.cpp
     src/app/ai_landing.cpp
     src/app/ai_session.cpp
     src/app/command_args.cpp

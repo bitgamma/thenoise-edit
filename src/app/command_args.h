@@ -21,6 +21,9 @@ using nlohmann::json;
 std::string captures_dir(const AppState& state);
 CommandResult fail(const std::string& what, const std::string& detail);
 bool want_int(const json& args, const char* key, int& out);
+// `want_*` demands the key; `arg_*` treats an absent key as "leave what the caller had", so a default
+// belongs to the caller's variable and to nowhere else.
+bool arg_int(const json& args, const char* key, int& out);
 bool want_number(const json& args, const char* key, double& out);
 bool arg_vec2(const json& args, const char* key, Vec2& out);
 bool arg_rect(const json& args, const char* key, Rect& out);

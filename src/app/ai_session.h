@@ -21,6 +21,11 @@ namespace noise::app {
 // Everything the AI path holds between commands: the two tables, the server, the queue. It is a member
 // of `AppState` rather than a set of globals so a test harness can build one, point it at a fixture
 // directory, and see exactly what the app would do.
+// The seed a request takes when its caller names none. Zero is a seed like any other and it keeps a
+// recipe reproducible across restarts; the panel shows it, `ai.intent {seed}` changes it, and variants
+// ask for `seed + i` explicitly rather than inventing one per attempt.
+inline constexpr std::uint64_t kSessionSeed = 0;
+
 struct AiSession {
     // Where `roles.json` and `recipes/*.json` live. Set by the host, because nothing in the command
     // layer reaches for an ambient directory.
@@ -37,6 +42,9 @@ struct AiSession {
     std::unique_ptr<ai::BlobCache> cache;
     std::unique_ptr<ai::JobQueue> jobs;
     std::unique_ptr<ai::Registry> registry;
+    // The seed the AI commands use when the call names none. One field, one home: nothing else may
+    // decide what "unseeded" means.
+    std::uint64_t seed = kSessionSeed;
 
     // What the last `server.connect` decided. Not a latch: a failed connect leaves the commands refusing
     // with the reason, and the next attempt starts from nothing.

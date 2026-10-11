@@ -189,8 +189,10 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
     }
     region.assembled.prompt = *prompt;
 
-    int seed = 0;
-    if (!want_int(args, "seed", seed)) {
+    // Absent means the session's seed, never a fresh random one: a request must be reproducible from
+    // what the screen showed, and a number that appeared from nowhere is not.
+    int seed = static_cast<int>(state.ai.seed);
+    if (!arg_int(args, "seed", seed)) {
         return Attempt{false, Assembly{}, fail(command, "'seed' must be an integer")};
     }
 

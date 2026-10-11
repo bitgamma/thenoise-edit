@@ -297,6 +297,27 @@ PY
 /tmp/…/noise-edit/captures/demo-c68a18bc770c.png
 ```
 
+### Remove something from a selection
+
+Select an area (`M` for a rectangle, `Shift+M` for an ellipse, or paint a layer mask and pick it up
+with `select.from_mask`), then open the **Edit selection** tab - it shares a dock with Layers and Log,
+so the canvas does not shrink when the panel is up.
+
+| What you see | What it is |
+|---|---|
+| `intent` | the operations this selection can do, by name: Remove, Replace, Fill region, Heal, Upscale. They are rows of `assets/recipes/*.json`, not buttons in the code - a new recipe file appears here by itself |
+| the grey line | the region: bounds and covered pixels, or "no selection: the whole document" |
+| `target`, `replacement`, ... | the words the recipe asks the person for. Each field holds the recipe's own default until you type, and what you type is what the request carries |
+| `seed` | the session's seed, shown because it is in the request. Nothing picks a number behind your back |
+| `/images/edits 192x192` | the compiled request, before you pay for it: endpoint and the size the region compiler settled on (selection + context, snapped to the model's multiple) |
+| model, `cache 3c30717c`, ETA | which model would answer, the digest of *this* request (a repeat is served instantly), and the box's own measured time for that size - or "no timing yet for this size", which is honest rather than a guess |
+| `Run` | queues it. If the intent needs a model other than the resident one, this asks first and says the swap costs tens of seconds; nothing switches silently |
+| `j0001 succeeded`, `Apply` | the job, and the door the answer comes through: the same compositor as `ai.compose`, feathered and locked, undoable with `Ctrl+Z` like any other edit |
+| orange `the region moved` + `recompile` | the canvas or the selection changed after the request was compiled, so the price on screen is no longer the price that would be charged |
+
+A disabled panel with a grey sentence is not a bug: the sentence is the reason ("nothing fills the
+`edit` role: ...", with the `lemonade import` that would fix it when the box offers the model).
+
 ### AI from a terminal
 
 The AI path has no panel, so the wire is how it is used and watched today. Point the app at a server, or
@@ -314,6 +335,7 @@ export NOISE_AI_FIXTURES=$PWD/tests/fixtures/http                # or replay ins
 | `server.load {model, pin?}` | make one model resident. Explicit and priced: a swap is tens of seconds on a shared box, so it is never silent |
 | `ai.roles` | each role with the model it resolved to, the reason, the fix command when the box offers one, and the candidates |
 | `ai.recipes` | every recipe with its endpoint, role, region, prep, extent and composite policy, and the model its role resolves to |
+| `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?}` | the Edit-selection panel as a command: read it with no arguments (free - it does not recompile the region) and it answers the intents on offer, the values in force, whether the action could run and why not, the compiled request and the job. `run` is the Run button; with `confirm` it accepts a model swap |
 | `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` | the exact request: endpoint, ordered field list, resolved size, the prepped PNG that would be uploaded and its blob hash, the cache key. **Sends nothing** — this is what to look at before spending minutes of someone's GPU |
 | `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}` | queue it. Answers the job with the region plan and the prepped file |
 | `job.list`, `job.get {id}` | the durable record: state, timings, model, cache key, answer path, landing metadata |
@@ -321,6 +343,10 @@ export NOISE_AI_FIXTURES=$PWD/tests/fixtures/http                # or replay ins
 | `job.cancel {id}`, `job.retry {id}` | stop it (an answer that already arrived is kept, and its path is in the refusal), or send a finished job's request again under a new id |
 | `job.apply {id, apply?, into?, feather?, extent?, colour_match?}` | land the answer through the same compositor `ai.compose` uses: preview by default, `into: "new_layer"` for a full-frame answer you want to blend down locally |
 | `cache.stats` | entries, bytes, hits, misses, refused keys |
+
+`seed` is optional on `ai.preview`, `ai.run` and `ai.intent`: absent means the session's seed -
+`server.state` says what that is, `ai.intent {seed: n}` sets it, and the panel shows it. Nothing draws
+a random number inside a request path, so "run that again" gives the same picture.
 
 Where an option is optional, leaving it out means **the recipe's policy**, not "off": `ai.compose` and
 `job.apply` without `colour_match` land with the correction the recipe asked for, and the report's
@@ -394,10 +420,13 @@ pixels the document actually shows),
 Stated plainly, because "the button is missing" and "the feature is broken" are different
 problems and only one of them is a bug:
 
-- **No AI panel in the window.** Everything the AI path does is drivable and observable — connect,
-  resolve roles, compile a request, queue a job, land the answer — but none of it has a button yet: no
-  Generate panel, no `Remove`, no model-swap dialog. See "AI from a terminal" below for what works today,
-  and `docs/AI-BACKEND.md` for what is designed and not built.
+- **No Generate panel yet.** Remove / Replace / Fill region / Heal / Upscale have a panel ("Edit
+  selection"); generation into a new layer, `Reimagine` and `Colorize the flattened frame` are drivable
+  and observable on the wire but still have no button. Roles, jobs, the cache and the model swap are all
+  reachable from the same table - see "AI from a terminal" - and `docs/AI-BACKEND.md` says what is
+  designed and not built (draft→refine stages, the variants tray, A/B wipe, the journal panel, warm-up).
+- **No jobs tray.** One job at a time is shown in the panel; queueing variants (`seed+i`) and comparing
+  them side by side is designed and not built.
 - **Nothing local replaces a server.** If the `edit` role cannot resolve, the edit recipes refuse with
   the reason. The in-process fallbacks in the design (Telea/Chan `heal`) are not built.
 - **Selections are rectangular and elliptical only.** No lasso, wand, feather or grow/shrink.

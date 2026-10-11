@@ -11,6 +11,7 @@ namespace noise::app {
 void register_document_commands(AppState& state, CommandTable& table);
 void register_ai_commands(AppState& state, CommandTable& table);
 void register_ai_job_commands(AppState& state, CommandTable& table);
+void register_ai_intent_commands(AppState& state, CommandTable& table);
 void register_paint_commands(AppState& state, CommandTable& table);
 void register_layer_commands(AppState& state, CommandTable& table);
 void register_select_commands(AppState& state, CommandTable& table);

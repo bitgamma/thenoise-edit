@@ -26,6 +26,17 @@ bool want_int(const json& args, const char* key, int& out) {
     return true;
 }
 
+bool arg_int(const json& args, const char* key, int& out) {
+    if (!args.contains(key)) {
+        return true;
+    }
+    if (!args.at(key).is_number_integer()) {
+        return false;
+    }
+    out = args.at(key).get<int>();
+    return true;
+}
+
 bool want_number(const json& args, const char* key, double& out) {
     if (!args.contains(key) || !args.at(key).is_number()) {
         return false;
