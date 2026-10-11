@@ -253,7 +253,10 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
             settled = str(wire.call("server.state").get("model_loaded") or "")
         if live and wire is not None and resident_before and settled != resident_before:
             try:
-                loaded = wire.call("server.load", {"model": resident_before, "pin": True})
+                # `pinned`, not `pin`: the command refuses an argument it does not declare, and a probe
+                # that fails to put the box back leaves the next person a swapped model. Left unpinned,
+                # which is the state a shared box should be in and what no status endpoint reports back.
+                loaded = wire.call("server.load", {"model": resident_before, "pinned": False})
                 print(f"  ok   the model the box was running is back: {resident_before} "
                       f"({loaded.get('elapsed_ms', 0)} ms)")
             except Exception as exc:  # a failed restore is said out loud, never hidden
