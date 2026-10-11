@@ -140,7 +140,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         Image frame = capture(state.framebuffer.w, state.framebuffer.h);
         Image crop = frame.region(region);
         const std::string sha = crop.checksum_hex();
-        std::string name;
+        std::string name = "capture";
         if (!arg_name(args, "name", name)) {
             return fail("screenshot", "'name' must be a non-empty [A-Za-z0-9._-] string");
         }

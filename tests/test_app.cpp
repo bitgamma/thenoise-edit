@@ -2074,7 +2074,11 @@ void test_a_recipe_runs_against_the_recorded_server_and_lands() {
     CHECK_EQ(waited["result_dims"][1].get<int>(), 64);
     CHECK(std::filesystem::exists(waited["result"].get<std::string>()));
 
-    const json applied = h.value("job.apply", json{{"id", id}, {"apply", true}});
+    // `colour_match: false` because the claim here is *where* the answer lands: the recording is a flat
+    // field and the frame is a flat fill, so matching a patch to its ring would - correctly - paint the
+    // frame's own colour back and leave nothing to count. What the correction does is its own test.
+    const json applied =
+        h.value("job.apply", json{{"id", id}, {"apply", true}, {"colour_match", false}});
     CHECK(applied["applied"].get<bool>());
     CHECK(applied["composite"]["composed"].get<bool>());
     const std::size_t changed = applied["composite"]["pixels_changed"].get<std::size_t>();
@@ -2129,7 +2133,12 @@ void test_a_recipe_runs_against_the_recorded_server_and_lands() {
     const json repreview = h.value("job.apply", json{{"id", id}, {"apply", false}});
     CHECK(!repreview["applied"].get<bool>());
     CHECK_EQ(checksum_of(h), before);
-    const json reapplied = h.value("job.apply", json{{"id", id}, {"apply", true}});
+    // The policy outlives the run: nothing was passed, and the landing still says what the recipe
+    // asked for and that the correction ran on this answer.
+    CHECK(repreview["policy"]["colour_match"].get<bool>());
+    CHECK(repreview["composite"]["colour_corrected"].get<bool>());
+    const json reapplied =
+        h.value("job.apply", json{{"id", id}, {"apply", true}, {"colour_match", false}});
     CHECK_EQ(reapplied["composite"]["pixels_changed"].get<std::size_t>(), changed);
     CHECK_NE(checksum_of(h), before);
 }
@@ -2147,7 +2156,10 @@ void test_an_answer_lands_on_the_document_and_undoes_completely() {
     const std::string answer_path = h.temp("answer.png");
     CHECK(io::save_png(answer_path, answer, error));
 
-    const json preview = h.value("ai.compose", json{{"image", answer_path}});
+    // Flat answer on a flat frame again: colour matching is switched off so that the numbers below
+    // count placement, and one test of the correction itself lives next door.
+    const json preview =
+        h.value("ai.compose", json{{"image", answer_path}, {"colour_match", false}});
     CHECK(preview["composite"]["composed"].get<bool>());
     CHECK(!preview["applied"].get<bool>());
     CHECK(!preview["composite"]["answered_as_requested"].get<bool>());
@@ -2161,7 +2173,8 @@ void test_an_answer_lands_on_the_document_and_undoes_completely() {
     CHECK_EQ(undo_depth(h), 0);
 
     const Image scene = h.state.doc.composite();
-    const json applied = h.value("ai.compose", json{{"image", answer_path}, {"apply", true}});
+    const json applied = h.value("ai.compose",
+                                json{{"image", answer_path}, {"apply", true}, {"colour_match", false}});
     CHECK(applied["applied"].get<bool>());
     CHECK_EQ(applied["composite"]["pixels_changed"].get<std::size_t>(), changed);
     CHECK_NE(checksum_of(h), before);
@@ -2196,10 +2209,12 @@ void test_an_answer_lands_on_the_document_and_undoes_completely() {
 
     // The feather the recipe did not name is the one the mask's shape asked for, and it is inside
     // the range the compositor is allowed to work in.
-    const json feathered = h.value("ai.compose", json{{"image", answer_path}, {"feather", 0}});
+    const json feathered = h.value("ai.compose",
+            json{{"image", answer_path}, {"feather", 0}, {"colour_match", false}});
     CHECK_EQ(feathered["composite"]["feather_px"].get<int>(), 0);
     CHECK_EQ(feathered["policy"]["feather"].get<int>(), 0);
-    const json autoed = h.value("ai.compose", json{{"image", answer_path}, {"feather", "auto"}});
+    const json autoed = h.value("ai.compose",
+            json{{"image", answer_path}, {"feather", "auto"}, {"colour_match", false}});
     CHECK_EQ(autoed["policy"]["feather"].get<std::string>(), "auto");
     CHECK(autoed["composite"]["feather_px"].get<int>() >= 2);
     CHECK(autoed["composite"]["feather_px"].get<int>() <= 8);
@@ -2228,7 +2243,8 @@ void test_an_answer_lands_on_the_document_and_undoes_completely() {
 
     // No selection at all is the whole document, which is what a full-frame recipe means.
     h.value("select.clear", json::object());
-    const json full = h.value("ai.compose", json{{"image", answer_path}});
+    const json full =
+        h.value("ai.compose", json{{"image", answer_path}, {"colour_match", false}});
     CHECK(full["composite"]["composed"].get<bool>());
     CHECK(full["region"]["coverage"].get<std::string>().find("whole document") != std::string::npos);
     CHECK(full["composite"]["pixels_changed"].get<std::size_t>() > 0);
@@ -2238,6 +2254,64 @@ void test_an_answer_lands_on_the_document_and_undoes_completely() {
 // canvas rather than the layer's alpha. Same command, same compositor, one argument - and the report
 // says which happened, because "composed successfully" over an empty layer would otherwise read as an
 // edit that worked.
+// An option the caller leaves out is not a "no". The composite policy comes from the table, and an
+// argument reader that defaults a flag here would switch off the colour correction every edit recipe
+// asks for while still reporting a composite that worked - which is exactly how it behaved, on the
+// live server, with green unit tests.
+void test_an_option_left_out_keeps_the_policy_the_table_asked_for() {
+    Harness h;
+    h.value("doc.new", json{{"width", 64}, {"height", 48}, {"fill", json::array({20, 60, 100, 255})}});
+    // A frame with structure, because a flat frame is a degenerate ring: matching a flat answer to a
+    // flat ring reproduces the ring exactly and the composite legitimately changes nothing. Two bands
+    // of paint give the correction a mean and a spread to work against, and a frame that a corrected
+    // patch still has to land on.
+    h.value("tool.stroke", json{{"points", json::array({json::array({0, 5}), json::array({63, 5})})},
+                                {"size", 8.0}, {"hardness", 1.0}, {"opacity", 1.0}, {"flow", 1.0},
+                                {"spacing", 0.25}, {"color", json::array({0, 210, 40, 255})}});
+    h.value("tool.stroke", json{{"points", json::array({json::array({0, 42}), json::array({63, 42})})},
+                                {"size", 8.0}, {"hardness", 1.0}, {"opacity", 1.0}, {"flow", 1.0},
+                                {"spacing", 0.25}, {"color", json::array({130, 20, 20, 255})}});
+    h.value("select.rect", json{{"rect", json::array({14, 14, 36, 20})}});
+    std::string error;
+    const std::string answer_path = h.temp("cast.png");
+    CHECK(io::save_png(answer_path, Image::filled(Extent{160, 120}, 250, 10, 10, 255), error));
+
+    const auto landed = [&h](const json& args) {
+        const json reply = h.value("ai.compose", args);
+        const Image after = h.state.doc.composite();
+        std::uint64_t red = 0;
+        std::size_t pixels = 0;
+        for (int y = 18; y < 30; ++y) {  // the middle of the write, past the feather
+            for (int x = 20; x < 44; ++x) {
+                red += after.at(x, y)[0];
+                ++pixels;
+            }
+        }
+        h.value("edit.undo", json::object());
+        return std::make_pair(reply, red / pixels);
+    };
+
+    const auto [left_out, matched] =
+        landed(json{{"image", answer_path}, {"apply", true}});
+    CHECK(left_out["policy"]["colour_match"].get<bool>());
+    CHECK(left_out["composite"]["colour_corrected"].get<bool>());
+    CHECK(left_out["composite"]["pixels_changed"].get<std::size_t>() > 0);
+
+    const auto [switched_off, uncorrected] =
+        landed(json{{"image", answer_path}, {"apply", true}, {"colour_match", false}});
+    CHECK(!switched_off["policy"]["colour_match"].get<bool>());
+    CHECK(!switched_off["composite"]["colour_corrected"].get<bool>());
+    CHECK(switched_off["composite"]["pixels_changed"].get<std::size_t>() > 0);
+
+    // The answer is (250, 10, 10) and the frame around it is cold paint: matching pulls the landed
+    // patch most of the way to the ring, and leaving it alone lands what the model sent.
+    CHECK(uncorrected > 240u);
+    CHECK(matched < uncorrected - 100u);
+    // Same pixels claimed either way: the correction changes colour, not where the write goes.
+    CHECK_EQ(left_out["composite"]["coverage_pixels"].get<std::size_t>(),
+             switched_off["composite"]["coverage_pixels"].get<std::size_t>());
+}
+
 void test_an_answer_can_fill_pixels_the_layer_never_had() {
     Harness h;
     h.value("doc.new", json{{"width", 48}, {"height", 32}});  // transparent: nothing to receive into
@@ -2281,6 +2355,7 @@ int main() {
     test_m0_command_surface_is_registered();
     test_a_recipe_runs_against_the_recorded_server_and_lands();
     test_an_answer_lands_on_the_document_and_undoes_completely();
+    test_an_option_left_out_keeps_the_policy_the_table_asked_for();
     test_an_answer_can_fill_pixels_the_layer_never_had();
     test_every_command_refuses_an_argument_it_does_not_declare();
     test_a_container_that_is_not_ours_is_refused_naming_what_it_met();

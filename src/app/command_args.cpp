@@ -61,8 +61,10 @@ bool arg_rect(const json& args, const char* key, Rect& out) {
     return true;
 }
 
+// Absent leaves `out` untouched: the caller's variable holds the default, which is the only place a
+// default belongs. A helper that writes `false` here switches off whatever the recipe asked for, and
+// the report then describes the policy the helper invented.
 bool arg_bool(const json& args, const char* key, bool& out) {
-    out = false;
     if (!args.contains(key)) {
         return true;
     }
@@ -106,7 +108,6 @@ bool arg_points(const json& args, const char* key, std::vector<Vec2>& out) {
 
 // Capture names become file names, so they carry no separators.
 bool arg_name(const json& args, const char* key, std::string& out) {
-    out = "capture";
     if (!args.contains(key)) {
         return true;
     }
