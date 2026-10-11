@@ -307,13 +307,15 @@ export THENOISE_API_KEY=***                     # only if the server demands one
 ```
 
 The **Edit selection** panel shows the session and starts it: a `Connect` button, `not connected` in red
-until it works, and the resident model once it does. It asks once by itself, on the first frame the panel
-draws - which is at startup, because the panel is in the default layout - and never again until you press
-the button. One attempt is the whole point: a server that is switched off costs one connect timeout, not
-a retry every frame. A host that *refuses* answers instantly; a host that swallows packets can hold that
-one frame for the connect timeout (5 s), which is the price of asking instead of making you find it.
-With no `$THENOISE_URL` the row says `no server: set $THENOISE_URL` and there is no button, because none
-could work.
+until it works, and the resident model once it does. It connects **by itself at startup**, once, after the
+window is on screen and whatever tab is showing. One attempt is the whole point: a server that is switched
+off costs one connect timeout, not a retry every frame. A host that *refuses* answers instantly; a host
+that swallows packets can hold that one frame for the connect timeout (5 s), which is the price of asking
+instead of making you find it. After that the button is yours - `reconnect` re-resolves the roles, which
+is what you want after the box downloads a model.
+
+With no `$THENOISE_URL` the row says `no server: set $THENOISE_URL`, there is no button, and the log says
+why once (`startup handshake: no server is configured`).
 
 From a terminal, the same handshake (this is the panel's button, not a side door - it is the command
 table the UI calls):

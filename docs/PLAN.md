@@ -234,22 +234,54 @@ refuse for a reason it does not name.
   (ImGui::Button("Run"))` draws two controls and swallows the first click, because `Button` draws as it
   asks. Draw once into a `const bool`, then branch.
 
-- **The handshake belongs to the panel's command, not to the panel.** `ai.intent {connect: true}` is
+- **The handshake belongs to a command; the *ask* belongs to the host.** `ai.intent {connect: true}` is
   the whole `Connect` button, so the wire starts the same session a person starts by clicking and the UI
-  holds no socket and no belief about one. It asks itself **once** - `$THENOISE_URL` names a server and
-  nobody has tried yet - and `connect_attempted`, in command state rather than a widget-local `static
-  bool`, is what keeps that to a single attempt and makes it testable.
-- **A docked tab that is not showing still draws.** The first version of this claimed the handshake
-  happened "when the panel is looked at"; the screenshot said otherwise - the app had connected with
-  *Layers* in front. A docked window's draw function runs whether or not its tab is the visible one, so
-  work gated on `ImGui::Begin` returning true is startup work, not deferred work. Anything that must
-  genuinely wait for attention needs a real trigger, and until it has one the docs say *startup*.
+  holds no socket and no belief about one. The automatic ask is in the frame loop, once, after a frame has
+  been presented, and `server.connect` sets `connect_attempted` before anything can refuse - so "once"
+  holds even when there is no transport to attempt with.
+- **A docked tab that is not the visible one does not draw.** Two claims were written here before this
+  one, both wrong, both from a single screenshot each time: first that the panel asks when it is looked
+  at, then - after the app connected with *Layers* in front - that hidden tabs draw anyway. The truth is
+  that the panel is the front tab for the first frames and `Layers` takes over after that, so a panel-driven
+  handshake fired by luck of the layout, and a panel-driven *refresh* stops whenever the person looks at
+  their layers instead. Behaviour a person is entitled to cannot be gated on which tab happens to be
+  front: the ask moved to the host, where it now fires with any tab showing.
 
 **Architecture verdict.** The panel added no AI code and no document surface: it reads `roles.json`
 through the registry, compiles through `ai.preview`, queues through `ai.run` and lands through
 `job.apply`. `ai/` gained two parsed keys and a filter over recipes it already held; `core/` gained
 nothing. The next slice (Generate) needs the same filter with the other scope and the same landing door,
 which is the test of whether this seam was cut in the right place.
+
+**A blur that re-sums its window stops the window.** Drawing a marquee over a third of a photo froze the
+editor, and the reason was arithmetic rather than AI: `box_blur` re-added all `2r+1` samples for every
+output pixel, and the prep radius is `min(w,h)/12`, so prep cost grew as *area × min dimension* - 9.1 s
+measured for a 1200x900 region, on the thread that draws. A running sum (slide the window, add one element,
+drop one, edges counted at their clamped index) made it independent of radius: **0.20 s** for the same
+region, **0.57 s** end to end for a 2500x2000 selection on a 4000x3000 document in Release. Output was
+proved identical to the old arithmetic over 3456 shape/radius/pass/channel combinations before anything was
+believed, because a blur that gets faster by changing pixels is a worse bug than a slow one.
+
+**The queue's mutex did not cover what it handed out.** `JobQueue::latency()` returned a bare reference to
+a `std::map` the worker inserts into when an answer lands, and the panel read an estimate from it every
+frame - a tree walked while another thread rebalances it does not fail, it spins inside `find`. The fix is
+in the types (`LatencyModel`, `BlobCache` guard their own contents) rather than in a comment telling callers
+to be careful, because the comment was already there and was already being violated from the other side of
+an API. ThreadSanitizer named it exactly (`data race ... LatencyModel::predict_locked`) with the reader lock
+removed, and reports nothing with it in; that red/green pair is the new concurrency test in `test_backend`,
+which asserts exact final values rather than merely not crashing.
+
+**A panel that only reacts to its own widgets is a dead end.** `Run` stayed greyed after a rectangle was
+drawn, and only moved when the combo was switched: the preview was compiled `if (!args.empty())`, and a
+marquee on the canvas passes no arguments to anything. The rule is now that an argument always recompiles,
+and a change the command was not told about recompiles **once its key has held still for one read** - so a
+dragged marquee does not encode a region per frame, and the price becomes correct a frame after the hand
+stops. `stale` remains true during that window, and `Run` refuses a stale preview, so the panel cannot
+charge for a request it did not show.
+
+**Measure the build you mean.** The first numbers after the fix came from the Debug tree, which is 10-30×
+this workload, and they said "still 3.8 s". Both trees are gated anyway, but a perf claim has to say which
+one it came from, and `frame_ms` in a Debug run is not evidence about a Release hang.
 
 **A test nobody calls is green in both directions.** Four suites closed their anonymous namespace above
 their last tests, so a test function added at the bottom of `test_app.cpp` had external linkage and
@@ -260,9 +292,9 @@ anchor has moved is the same shape and reports nothing either: an edit that *can
 one that claims success, and a claim about the tree is worth a `grep` before it is worth a sentence in a
 commit message. The same hole, one layer up: the panel's `Connect` was missing from the built app while
 its command was tested and green, because nothing in a C++ test draws a window. `ai_job_probe` now checks
-the app itself - `connect_attempted` and `connected` before anything in the probe asks - and deleting the
-panel's ask turns that claim red, which is the only defence against an edit to `ui.cpp` that compiles and
-changes nothing.
+the app itself - `connect_attempted` and `connected` before anything in the probe asks - which is the only
+defence against an edit to the host or to `ui.cpp` that compiles, tests green, and changes nothing a person
+can use.
 
 ## Decisions that stand
 

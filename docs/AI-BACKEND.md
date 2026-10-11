@@ -222,17 +222,19 @@ Auth: `Authorization: Bearer <api_key>` (the mechanism Lemonade's own tests use)
 `?api_key=` as a legacy fallback for servers that only support the query form.
 `LEMONADE_ADMIN_API_KEY` is never used (config/admin endpoints are out of scope).
 
-Connection handshake (`server.connect`, the panel's `Connect` button, and the app's single automatic ask
-on the first frame the panel draws): `GET /v1/health` (alive? version? what's loaded?) →
+Connection handshake (`server.connect`; the panel's `Connect` button and the host's one automatic ask
+both call it): `GET /v1/health` (alive? version? what's loaded?) →
 `GET /v1/models` (filter to `recipe == "thenoise"`) → resolve roles → enable commands.
 
-One automatic attempt, recorded as `connect_attempted`, and no retry until the button is pressed:
-`$THENOISE_URL` names a machine that may be switched off, and a widget that retried it each frame would
-make the window unusable. Note that a docked tab which is *not* the visible one still runs its draw code,
-so "the first frame the panel draws" is startup, not the moment the person clicks the tab. The panel's
-draw function is therefore not a place to put work you mean to defer - and it is why the attempt lives in
-the command (`ai.intent {connect: true}`) with the flag in command state, where a test can see it, rather
-than in a widget-local `static bool`. With no URL configured the
+The automatic ask belongs to **the host, not the panel**, and runs once after a frame has been presented:
+which dock tab happens to be front is not an answer to "is there a server", and a docked window that is
+not the visible tab does not draw at all, so a panel-driven handshake only fires by luck of the layout.
+`server.connect` records `connect_attempted` before anything can refuse it, which is what makes the host's
+"once" mean once even when the transport is missing entirely.
+
+One attempt is the whole cost when the machine is switched off - the connect timeout is paid on that one
+frame, not per frame - and `Connect` is the retry. The flag is session state (`AiSession`), not widget
+state, so a test can see the attempt and the UI holds no socket. With no URL configured the
 command refuses and names `$THENOISE_URL` — libcurl's "unsupported protocol" for an empty URL describes
 the string and hides the cause. A replay session needs no URL either: the transport answers locally and
 the profile carries `http://recordings.invalid/v1`, because `.invalid` can never resolve and no real
