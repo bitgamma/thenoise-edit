@@ -41,39 +41,33 @@ makes even the running app replay:
 
 In order from here:
 
-1. **Auto-land, so rule A means what it says** — `Landing{auto_land, landed}` durable in the queue
-   record, one idempotent app beat called by every door that pumps, and `tools/wire_input.py` asserting
-   the flagship from the marquee to the new layer through injected X events with nothing pressed in
-   between. Design in "What rule A still owes".
-2. **Fill and Change verified as typed sequences** - the boxes exist; the probe that runs each end to
+1. **Fill and Change verified as typed sequences** - the boxes exist; the probe that runs each end to
    end on the recordings and reports the layer it made does not, and the words a recipe asks for are
    the only place a run can still silently mean nothing.
-3. **Generate with aspect presets** - `Ctrl+G` runs `new-image` today and lands a new layer; what is
+2. **Generate with aspect presets** - `Ctrl+G` runs `new-image` today and lands a new layer; what is
    missing is the aspect choice (`1:1, 3:4, 4:3, 16:9` at the model's native scale) and the two style
    variants reachable from the panel rather than only from the wire.
-4. **Extend** - the canvas mechanism: resize anchored, the original frame cut out of the answer, and the
+3. **Extend** - the canvas mechanism: resize anchored, the original frame cut out of the answer, and the
    `extend` operation, so outpainting lands on a new layer with the existing pixels byte-untouched.
-5. **Upscale / resize**, and selection tools the P0 still lists (lasso, wand, feather, expand/shrink).
-6. **The jobs tray** - variants as `seed+i` jobs landing one by one, A/B wipe, Accept/Discard;
+4. **Upscale / resize**, and selection tools the P0 still lists (lasso, wand, feather, expand/shrink).
+5. **The jobs tray** - variants as `seed+i` jobs landing one by one, A/B wipe, Accept/Discard;
    draft→refine stages ride on the same queue and the EMA the ETA needs is already measured and read.
 
 **Done since then, in one line each.** Remove/Replace/Fill/Heal/Upscale on the selection got a panel
 ("Edit selection", tabbed with Layers and Log so the canvas keeps its area), driven end to end by one
 command, `ai.intent` - since replaced by the verb rows in the Tool panel, see "the verbs, and what the
 window is now", which is also what the tests drive: intents come
-from the recipe table (`label`, `ask`), the compiled request and its cache digest are shown before Run,
-a model swap is priced and confirmed, and Apply lands the answer through the same door as `ai.compose`.
-Verified on the wire and by looking: `select.rect` → `ai.intent {vars}` → `ai.intent {run}` → `job.wait`
-→ `job.apply` on a fixture server and in the window, with the panel read before and after
-(`the region moved / recompile` after the write, `stale` true, undo restoring the document).
-7. **The recipe-tuning pass**, now that the app path is measured live
-   (`probes/2026-10-11-ai-job-live.md`: 3.4 s for a 256² edit on a resident Klein-9B, 0.7 s when the
-   server's own cache answered, and the landing exact). What the picture still shows is **texture**: the
-   replacement carries a finer grain than its frame (L std 4.4 against 2.0) and a faint rectangular edge
-   survives the 8 px feather. So the questions are `prep` per recipe (`blur` at small crops is the suspect),
-   `context.ratio`, and whether `inpaint-remove` wants more steps below ~384 px. ~10 images; ask first, and
-   the probe is the harness — it already re-lands the same request and re-measures.
-8. **The pieces of the design nothing has asked for yet**: the `enhance` role (a role with no preference
+from the recipe table (`label`, `ask`), a model swap is priced and confirmed, and the answer arrives on
+its own layer. What that first shape did *not* survive: the panel itself, the cache digest shown before
+Run (a preview of the request is not a thing a frame should compute — see "what a preview is"), and the
+`Apply` button (rule A has no Apply step). Verified on the wire and by looking at every step, most
+recently through injected X events in `tools/wire_input.py`.
+**Done since then, one line each.** Auto-land: `document_epoch`, `landed` and the landing's own
+compose report are durable in the queue record, one idempotent beat lands a finished answer at every
+door that reads the queue, and `job.apply` is the way back for an answer undo removed. Design in "Rule A
+landed".
+
+7. **The pieces of the design nothing has asked for yet**: the `enhance` role (a role with no preference
    list, refused by every recipe), warm-up after a swap, tier-2 fields with a per-server gate, `ai.log` as a
    rolling file, the keyring/0600 config for the key, and the in-process `heal` fallback. Each is listed in
    `AI-BACKEND.md` next to the class or recipe it belongs to; none is a seam the built path routes around.
@@ -456,7 +450,7 @@ promise is stated*, which is where the design work was.
 |---|---|---|
 | `app::kVerbs` (`ai_verbs.{h,cpp}`) | rows `{VerbId, recipe, key}` - the surface. Label, words and scope are read from the recipe, never restated | `ai.verbs` rows; `command.list` shows `ai.remove` bound to `Ctrl+Backspace` |
 | `verb_table_error(recipes, kVerbs)` | each verb's contract over the recipe's facts, checked at session open | `test_app`: an operation swapped, an ask that grew, a recipe missing, two verbs on one recipe - each refused, all four rows then not-ready |
-| `ai.<verb> {vars?, seed?, confirm?}` | one row of the table, as a command; it calls `ai.intent` with its recipe named | `test_app` runs the flagship: mark → `ai.remove` → `job.wait` → `job.apply` → a layer named `Remove j0001` |
+| `ai.<verb> {vars?, seed?, confirm?}` | one row of the table, as a command; it calls `ai.intent` with its recipe named | `test_app` runs the flagship: mark → `ai.remove` → `job.wait` → the layer `Remove j0001` appears by itself |
 | `missing_region(recipe, state)` | the region a recipe needs with nothing marked; the region door refuses on it and the readiness forecast asks it | `ai.verbs` rows grey with the reason; `ai.remove` refuses over an unmarked frame |
 | `ai.verbs` row `swap`/`resident` | whether that verb would have to load a model first | the window's confirmation names both models before the press |
 
@@ -479,7 +473,7 @@ rather than smooths over. That is rule E behaving, not a bug to paper over with 
 **What the window is.** The "Edit selection" panel is deleted: the verbs are a section of the Tool panel
 (one row each, keys beside them, reason on hover), the brush sliders appear only for a tool that paints
 (`core::tool_mode` decides, the panel does not), and the AI line - verb, model, ~seconds, cache digest,
-swap warning, job and Apply - sits on its own line in the status bar, because a bar that shares one line
+swap warning, job and where its answer landed - sits on its own line in the status bar, because a bar that shares one line
 with zoom/size/path/undo gives the AI facts a third of the width and a clipped swap warning is worse than
 none. The status bar therefore has two lines, the canvas rect grew a little, and
 `tests/golden/view_pan_zoom.png` was re-captured with `wire_drive.py --update-golden` (verified by eye:
@@ -503,59 +497,6 @@ job whose layer is still there answers with the landing's own report and adds no
 argument is deleted — there is no preview mode, because the layer is the preview — and there is no
 destination argument either, which was already rule A.
 
-## Reasoning the code cannot carry (the verbs, and what the window is now)
-
-The interface stopped being a panel and became four keys. That moved no AI behaviour - it moved *where a
-promise is stated*, which is where the design work was.
-
-**Fact table.**
-
-| piece | what it is | how it is seen |
-|---|---|---|
-| `app::kVerbs` (`ai_verbs.{h,cpp}`) | rows `{VerbId, recipe, key}` - the surface. Label, words and scope are read from the recipe, never restated | `ai.verbs` rows; `command.list` shows `ai.remove` bound to `Ctrl+Backspace` |
-| `verb_table_error(recipes, kVerbs)` | each verb's contract over the recipe's facts, checked at session open | `test_app`: an operation swapped, an ask that grew, a recipe missing, two verbs on one recipe - each refused, all four rows then not-ready |
-| `ai.<verb> {vars?, seed?, confirm?}` | one row of the table, as a command; it calls `ai.intent` with its recipe named | `test_app` runs the flagship: mark → `ai.remove` → `job.wait` → `job.apply` → a layer named `Remove j0001` |
-| `missing_region(recipe, state)` | the region a recipe needs with nothing marked; the region door refuses on it and the readiness forecast asks it | `ai.verbs` rows grey with the reason; `ai.remove` refuses over an unmarked frame |
-| `ai.verbs` row `swap`/`resident` | whether that verb would have to load a model first | the window's confirmation names both models before the press |
-
-**A verb is not an operation and not a recipe.** `Recipe::operation` says what happens to the pixels;
-`VerbId` says what a person means when they press something; the recipe is how the AI path compiles it.
-Collapsing any two of the three is what produced the original bug: the panel offered "Replace", the
-recipe did `in_place`, and the mask was treated as a hole. Keeping them separate costs one small table
-and one load-time check, and buys the refusal that a row which drifted from its recipe cannot ship.
-
-**The key lives in the command row, not the widget.** `kVerbs` carries canonical shortcut text into
-`table.add`, and the window asks `commands.shortcuts_for(...)`/`ai.verbs` for what to print. A binding
-that collided with another refuses the registration at startup, so a verb key cannot quietly lose to
-`edit.undo`.
-
-**`vars` now accepts two kinds of name.** A recipe's `ask` fields have no defaults by rule, so the
-accept set is `variables ∪ ask` - and switching verbs forgets what the next one neither asks nor
-declares, destructively: coming back to Change after Remove shows an empty box, which the test asserts
-rather than smooths over. That is rule E behaving, not a bug to paper over with retained history.
-
-**What the window is.** The "Edit selection" panel is deleted: the verbs are a section of the Tool panel
-(one row each, keys beside them, reason on hover), the brush sliders appear only for a tool that paints
-(`core::tool_mode` decides, the panel does not), and the AI line - verb, model, ~seconds, cache digest,
-swap warning, job and Apply - sits on its own line in the status bar, because a bar that shares one line
-with zoom/size/path/undo gives the AI facts a third of the width and a clipped swap warning is worse than
-none. The status bar therefore has two lines, the canvas rect grew a little, and
-`tests/golden/view_pan_zoom.png` was re-captured with `wire_drive.py --update-golden` (verified by eye:
-same checkerboard at the same zoom, 680×481 instead of 680×445).
-
-### What rule A still owes: the answer should land itself
-
-Rule A says *no Apply step*. `job.apply` is gone as an **option** (there is no "into the active layer"),
-but a finished answer still waits in the status bar for `Apply`, because nothing in the app lands it:
-`ai/queue` deliberately cannot touch the document, and the doors that `pump()` only advance the queue.
-The design, when this lands:
-
-- `ai::Landing` gains `auto_land` (set by a verb press, not by a driver's `ai.run`, which still applies
-  when it chooses) and `landed` - both durable in `jobs.json`, because "this answer was already put on the
-  document" must survive the run that made it, or reopening the app stacks a second copy.
-- One app-level beat, `pump_ai_landings(state, table)`, called by every door that pumps
-  (`ai.intent`, `job.wait`, `job.list`, `job.get`); idempotent through the `landed` flag, so no door owns
-  it and none can double-apply.
 `tools/wire_input.py` drives the whole thing through injected X events, which is the only way to test the
 host's own key handling: a marquee dragged with the mouse, `Ctrl+Backspace`, and then
 `['Layer 1', 'Remove j0001']` with nothing else pressed, and `Ctrl+Z` back to `['Layer 1']`. That is
@@ -609,6 +550,39 @@ that triple, all from geometry and tables - and the request's digest appears wit
 Nothing here is a rule about AI: it is that **a per-frame reader pays for whatever the command it reads
 does**, so either the command is cheap by construction or the frame has to stop reading it. "Cheap when
 nothing changed" is not cheap by construction; a debounce is a bet on how fast a person moves the mouse.
+
+### The tuning pass, specified before more images go out
+
+Two recipe questions are open. They are measurement, not code, so they get a probe with a cap and a
+written method — and **nothing they measure is ever asserted**, because a diffusion answer is not a golden
+file. What a tuning probe asserts stays the invariant set `ai_job_probe` already asserts per image; the
+tuning output is numbers into `docs/probes/`, and a wording or a radius changes in `assets/recipes/*.json`
+*because of* those numbers.
+
+What is no longer in question: the dark patch. Measured on the dev box on a grainy textured scene, the
+landed answer came back at **ratio 1.05** against its own context ring with `colour_corrected=True`
+(`probes/2026-10-11-colour-match-live.md`), where the shipped behaviour measured in the 0.2s. What the
+same picture still shows is **texture**: the replacement carries a finer grain than its frame
+(L std 4.4 against 2.0) and a faint rectangular edge survives the 8 px feather. So:
+
+- **A — Remove's wording, 3 images.** A plain `Remove the marked content` answer once cloned nearby
+  texture instead of continuing it. Three candidate `prompt`s, same scene, same seed, 256×256: the current
+  sentence; one adding `continue the existing texture and lighting; do not duplicate objects`; and a
+  minimal `Remove the marked object.` Per answer — **seam contrast** (mean gradient magnitude on the
+  coverage boundary ring: a hard rectangle is what a person sees), **repetition** (off-centre
+  autocorrelation peak inside, against the same statistic on the context ring: a clone spikes, a
+  continuation does not), and the **drift ratio**. Lowest seam-and-repetition wins, and a wording wins
+  *only* if the high-frequency ratio below stays up, so "smear it flat" cannot win.
+- **B — context radius against hole size, 4 images.** `prep.radius_px` {12, 24} × marked area {90×90,
+  150×150}. A radius is allowed to recover context and must not soften the answer: **high-frequency
+  ratio** = interior gradient energy / context gradient energy, near 1 required. `region_json`'s own
+  flat-region tolerance is 0.06, so under ~0.7 is a visible soft patch and the radius is too big for that
+  hole. Recorded as a table; if the big hole wants a different radius from the small one, the recipe grows
+  a rule rather than a second constant — which is the finding worth the images.
+
+8 of the approved 10, 2 held to re-run whichever cell looked like noise. One scene, one model, fixed seed,
+resident model put back at the end (unpinned, and note `server.load`'s argument is `pinned`). Timings are
+recorded and never asserted: the box is shared, and a swap costs minutes.
 
 ## Decisions that stand
 
