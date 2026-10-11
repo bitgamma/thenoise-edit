@@ -396,9 +396,8 @@ export NOISE_AI_FIXTURES=$PWD/tests/fixtures/http                # or replay ins
 | `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}` | queue it. Answers the job with the region plan and the prepped file |
 | `job.list`, `job.get {id}` | the durable record: state, timings, model, cache key, answer path, landing metadata |
 | `job.wait {id, timeout?}` | block until the job is terminal or the wait runs out |
-| `job.cancel {id}`, `job.retry {id}` | stop it (an answer that already arrived is kept, and its path is in the refusal), or send a finished job's request again under a new id |
+| `job.cancel {id}` | stop it; an answer that already arrived is kept, and its path is in the refusal. There is no `job.retry` — pressing the verb again *is* the retry, and it re-sends |
 | `job.apply {id, feather?, colour_match?}` | the idempotent landing door. Answers land by themselves when they finish, so this is for bringing one back after an undo, or for overriding the recipe's feather or colour match on the way: if the layer it made is still on the document it answers `already_landed` with the landing's own report and adds nothing. No `apply` argument any more - there is no preview mode, the layer is the preview - and no destination, ever |
-| `cache.stats` | entries, bytes, hits, misses, refused keys |
 
 `seed` is optional on `ai.preview`, `ai.run` and `ai.intent`: absent means the session's seed -
 `server.state` says what that is, `ai.intent {seed: n}` sets it, and the status line reports it. Nothing draws

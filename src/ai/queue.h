@@ -15,7 +15,6 @@
 #include <thread>
 #include <vector>
 
-#include "ai/cache.h"
 #include "ai/http.h"
 #include "ai/provider.h"
 #include "ai/server.h"
@@ -87,18 +86,18 @@ struct JobRecord {
     std::string failure;
     std::string error;
     std::string hint;
-    std::string cache_key;
     std::string blob;
-    // What was asked, in the form `ai.preview` answers with, and the form a retry reads back. Kept
+    // What was asked, exactly as `ai.preview` shows it, so a job's own record answers "what did we
+    // send?". Kept
     // because "what did I send" is the first question about any answer, and because a request must be
     // re-sendable after a restart without the caller holding it.
     nlohmann::json request;
     // The answer's PNG on disk, and its dimensions.
     std::string result_png;
     Extent result_dims{0, 0};
-    // Where the uploaded region went, so a retry after a restart sends the same bytes.
+    // Where the uploaded region went: the bytes the model actually saw, kept for the probe and for
+    // `prep_proof.py`, which is where a wrong upload shows up.
     std::string request_png;
-    bool from_cache = false;
     // Written from the injected clock, so a test sees the numbers it fed in.
     double submitted_at = 0.0;
     double started_at = 0.0;
@@ -118,8 +117,8 @@ class JobQueue {
 public:
     struct Deps {
         Client* client = nullptr;
-        BlobCache* cache = nullptr;
-        // Where `jobs.json`, the results and the request blobs live.
+        // Scratch for this run's blobs - the coverage, the upload and each answer. Nothing here is read
+        // back: a job is a fact about a socket, not about a document, and the queue dies with the run.
         std::string directory;
     };
 
@@ -142,8 +141,6 @@ public:
     // Asks for cancellation and pumps until this job is terminal or the wait runs out. Cancelling a job
     // that already landed keeps its result: an answer that exists is never discarded.
     bool cancel(const std::string& id, std::string& error);
-    // Re-queues a failed or cancelled job with a fresh id, same request bytes.
-    std::optional<std::string> retry(const std::string& id, std::string& error);
     bool wait_for(const std::string& id, double timeout_s);
 
     // The current state as the last pump left it. `pump()` is what notices the worker finished, so a
@@ -161,7 +158,7 @@ public:
                     const nlohmann::json& report);
     void set_land_refusal(const std::string& id, const std::string& error);
 
-    // The answer's bytes for a succeeded job, read from disk (or the cache, which is the same file).
+    // The answer's bytes for a succeeded job, read from this run's scratch directory.
     bool result_png(const std::string& id, std::vector<std::uint8_t>& png, std::string& error);
 
     const LatencyModel& latency() const { return latency_; }
@@ -189,8 +186,6 @@ private:
     };
 
     void worker();
-    void persist_locked();
-    void load_from_disk();
     std::string new_id();
 
     Deps deps_;

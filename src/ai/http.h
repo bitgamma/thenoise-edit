@@ -75,7 +75,6 @@ public:
         std::vector<std::uint8_t> png;
         Image image;
         double elapsed_s = 0.0;
-        bool from_cache = false;
     };
 
     // Sends a built request and decodes the image it returns. `cancelled` is polled by the transport.

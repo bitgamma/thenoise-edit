@@ -18,7 +18,6 @@ namespace noise::ai {
 
 namespace {
 
-constexpr const char* kJobFile = "jobs.json";
 
 std::string at(const std::string& directory, const std::string& name) {
     return directory + "/" + name;
@@ -59,7 +58,7 @@ Extent extent_of(const nlohmann::json& value) {
 }
 
 // The step count the request carried, for the latency key. It is in the stored preview, which is also
-// what a retry re-sends, so the two cannot disagree about what was asked.
+// what the model was asked, so the two cannot disagree about what was asked.
 int steps_of(const JobRecord& record) {
     if (record.request.is_object() && record.request.contains("steps") &&
         record.request.at("steps").is_number_integer()) {
@@ -129,12 +128,10 @@ nlohmann::json JobRecord::json() const {
                        {"failure", failure},
                        {"error", error},
                        {"hint", hint},
-                       {"cache_key", cache_key},
                        {"blob", blob},
                        {"result", result_png},
                        {"result_dims", extent_json(result_dims)},
                        {"request_png", request_png},
-                       {"from_cache", from_cache},
                        {"attempts", attempts},
                        {"submitted_at", submitted_at},
                        {"started_at", started_at},
@@ -151,7 +148,6 @@ JobQueue::JobQueue(Deps deps, Clock clock)
     : deps_(deps), clock_(std::move(clock)), directory_(deps.directory) {
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(directory_), ec);
-    load_from_disk();
     worker_ = std::thread([this] { worker(); });
 }
 
@@ -213,7 +209,6 @@ std::string JobQueue::enqueue(const BuiltRequest& request, const std::string& re
         record.server_name = request.params.server_name;
         record.model_id = request.params.model_id;
         record.state = JobState::queued;
-        record.cache_key = request.cache_key();
         record.request = request.preview_json();
         record.submitted_at = clock_();
         record.attempts = 0;
@@ -228,7 +223,6 @@ std::string JobQueue::enqueue(const BuiltRequest& request, const std::string& re
             }
         }
         order_.push_back(id);
-        persist_locked();
     }
     ready_.notify_all();
     return id;
@@ -249,20 +243,12 @@ void JobQueue::worker() {
             record.state = JobState::running;
             record.started_at = clock_();
             record.attempts += 1;
-            persist_locked();
         }
 
         Completion completion;
         completion.record.id = job.id;
 
-        std::string cache_error;
-        std::vector<std::uint8_t> cached;
-        if (deps_.cache != nullptr &&
-            deps_.cache->lookup(job.request.cache_key(), cached, cache_error) && !cached.empty()) {
-            completion.answered = true;
-            completion.png = std::move(cached);
-            completion.record.from_cache = true;
-        } else if (deps_.client == nullptr) {
+        if (deps_.client == nullptr) {
             completion.failure = failure_name(FailureClass::server_down);
             completion.error = "this queue has no server to ask";
             completion.hint = "connect a server first";
@@ -327,11 +313,10 @@ void JobQueue::pump() {
         }
 
         record.state = JobState::succeeded;
-        record.from_cache = completion.record.from_cache;
         record.result_dims = completion.record.result_dims;
         if (record.result_dims.w <= 0) {
-            // A cached blob carries no dims on the record, and `answered_as_requested` at landing time
-            // compares dims: reading them back keeps that comparison real.
+            // The transport does not always report dims, and `answered_as_requested` at landing time
+            // compares them: reading them off the bytes keeps that comparison real.
             std::string decode_error;
             record.result_dims = io::decode_png(completion.png, decode_error).size();
         }
@@ -343,26 +328,16 @@ void JobQueue::pump() {
         if (!io::write_file_atomic(record.result_png, completion.png, write_error)) {
             log::error("job " + record.id + ": " + write_error);
         }
-        if (!record.from_cache) {
-            if (deps_.cache != nullptr) {
-                std::string cache_error;
-                if (!deps_.cache->store(record.cache_key, completion.png, cache_error)) {
-                    log::error("job " + record.id + ": cache: " + cache_error);
-                }
-            }
-            // Keyed on what was *asked*: the box's time for a 512x512 four-step edit is the fact the
-            // next such job needs, whatever dims the engine answered with.
-            latency_.observe(record.model_id, record.landing.requested, steps_of(record),
-                             completion.elapsed_s);
-        }
+        // Keyed on what was *asked*: the box's time for a 512x512 four-step edit is the fact the
+        // next such job needs, whatever dims the engine answered with.
+        latency_.observe(record.model_id, record.landing.requested, steps_of(record),
+                         completion.elapsed_s);
         log::info("job " + record.id + " " + record.model_id + " " +
                   std::to_string(record.result_dims.w) + "x" +
                   std::to_string(record.result_dims.h) + " steps=" +
-                  std::to_string(steps_of(record)) + " " +
-                  (record.from_cache ? "answered from cache"
-                                     : "in " + std::to_string(completion.elapsed_s) + "s"));
+                  std::to_string(steps_of(record)) + " in " +
+                  std::to_string(completion.elapsed_s) + "s");
     }
-    persist_locked();
     ready_.notify_all();
 }
 
@@ -389,7 +364,6 @@ bool JobQueue::cancel(const std::string& id, std::string& error) {
         found->second.state = JobState::cancelled;
         found->second.failure = failure_name(FailureClass::cancelled);
         found->second.error = "cancelled before it started";
-        persist_locked();
         return true;
     }
     const auto flag = flags_.find(id);
@@ -400,52 +374,6 @@ bool JobQueue::cancel(const std::string& id, std::string& error) {
     return true;
 }
 
-std::optional<std::string> JobQueue::retry(const std::string& id, std::string& error) {
-    pump();
-    BuiltRequest request;
-    Landing landing;
-    std::string recipe_id;
-    std::string role;
-    std::vector<std::uint8_t> coverage;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto found = records_.find(id);
-        if (found == records_.end()) {
-            error = "job: no job '" + id + "'";
-            return std::nullopt;
-        }
-        const JobRecord& record = found->second;
-        if (record.state == JobState::succeeded) {
-            error = "job " + id + " already answered - apply it with job.apply; re-sending the same "
-                            "request can only be a cache hit";
-            return std::nullopt;
-        }
-        if (!job_state_is_terminal(record.state)) {
-            error = "job " + id + " is " + job_state_name(record.state) + ", not finished";
-            return std::nullopt;
-        }
-        recipe_id = record.recipe_id;
-        role = record.role;
-        landing = record.landing;
-        std::vector<std::uint8_t> png;
-        if (!record.request_png.empty() && !io::read_file(record.request_png, png, error)) {
-            return std::nullopt;
-        }
-        const std::optional<BuiltRequest> rebuilt =
-            request_from_preview(record.request, png, error);
-        if (!rebuilt.has_value()) {
-            return std::nullopt;
-        }
-        request = *rebuilt;
-    }
-    std::string read_error;
-    if (!landing.coverage_png_path.empty()) {
-        io::read_file(landing.coverage_png_path, coverage, read_error);
-    }
-    // `retry` re-sends the same bytes under the same coverage, which is what makes a retry comparable to
-    // the job it replaces; the id differs so both records survive.
-    return enqueue(request, recipe_id, role, landing, std::move(coverage));
-}
 
 bool JobQueue::wait_for(const std::string& id, double timeout_s) {
     const double deadline = clock_() + timeout_s;
@@ -520,7 +448,6 @@ void JobQueue::set_landed(const std::string& id, const std::string& layer_name,
     found->second.landing.land_error.clear();
     found->second.landing.landed_layer = layer_name;
     found->second.landing.report = report;
-    persist_locked();
 }
 
 void JobQueue::set_land_refusal(const std::string& id, const std::string& error) {
@@ -531,7 +458,6 @@ void JobQueue::set_land_refusal(const std::string& id, const std::string& error)
     }
     found->second.landing.land_refused = true;
     found->second.landing.land_error = error;
-    persist_locked();
 }
 
 bool JobQueue::result_png(const std::string& id, std::vector<std::uint8_t>& png,
@@ -565,159 +491,6 @@ nlohmann::json JobQueue::json() const {
                           {"latency", latency_.json()}};
 }
 
-void JobQueue::persist_locked() {
-    nlohmann::json jobs = nlohmann::json::array();
-    for (const std::string& id : order_) {
-        const auto found = records_.find(id);
-        if (found != records_.end()) {
-            jobs.push_back(found->second.json());
-        }
-    }
-    const std::string text = nlohmann::json{{"format", 1}, {"jobs", jobs}}.dump(1);
-    const std::vector<std::uint8_t> bytes(text.begin(), text.end());
-    std::string error;
-    if (!io::write_file_atomic(at(directory_, kJobFile), bytes, error)) {
-        log::error("queue: " + error);
-    }
-}
 
-void JobQueue::load_from_disk() {
-    std::vector<std::uint8_t> bytes;
-    std::string error;
-    if (!io::read_file(at(directory_, kJobFile), bytes, error)) {
-        return;  // a first run has no queue, which is not an error
-    }
-    nlohmann::json body;
-    try {
-        body = nlohmann::json::parse(bytes);
-    } catch (const nlohmann::json::parse_error& exception) {
-        log::error("queue: " + at(directory_, kJobFile) + ": " + exception.what());
-        return;
-    }
-    if (!body.is_object() || !body.contains("jobs") || !body.at("jobs").is_array()) {
-        log::error("queue: " + at(directory_, kJobFile) + " has no 'jobs' array");
-        return;
-    }
-    for (const nlohmann::json& entry : body.at("jobs")) {
-        if (!entry.is_object() || !entry.contains("id") || !entry.at("id").is_string()) {
-            log::warn("queue: an entry without an id in " + at(directory_, kJobFile) + " is skipped");
-            continue;
-        }
-        const auto text = [&entry](const char* key) {
-            if (entry.contains(key) && entry.at(key).is_string()) {
-                return entry.at(key).get<std::string>();
-            }
-            return std::string();
-        };
-        const auto number = [&entry](const char* key) {
-            return entry.contains(key) && entry.at(key).is_number() ? entry.at(key).get<double>()
-                                                                   : 0.0;
-        };
-        JobRecord record;
-        record.id = entry.at("id").get<std::string>();
-        record.recipe_id = text("recipe");
-        record.role = text("role");
-        record.server_name = text("server");
-        record.model_id = text("model");
-        record.failure = text("failure");
-        record.error = text("error");
-        record.hint = text("hint");
-        record.cache_key = text("cache_key");
-        record.blob = text("blob");
-        record.result_png = text("result");
-        record.request_png = text("request_png");
-        record.from_cache = entry.contains("from_cache") && entry.at("from_cache").is_boolean()
-                                ? entry.at("from_cache").get<bool>()
-                                : false;
-        record.submitted_at = number("submitted_at");
-        record.started_at = number("started_at");
-        record.finished_at = number("finished_at");
-        record.attempts = static_cast<int>(number("attempts"));
-        if (entry.contains("result_dims")) {
-            record.result_dims = extent_of(entry.at("result_dims"));
-        }
-        if (entry.contains("request") && entry.at("request").is_object()) {
-            record.request = entry.at("request");
-        }
-        if (entry.contains("landing") && entry.at("landing").is_object()) {
-            const nlohmann::json& landing = entry.at("landing");
-            record.landing.crop = rect_of(landing.contains("crop") ? landing.at("crop")
-                                                                  : nlohmann::json());
-            record.landing.requested =
-                extent_of(landing.contains("requested") ? landing.at("requested")
-                                                        : nlohmann::json());
-            record.landing.canvas = extent_of(landing.contains("canvas") ? landing.at("canvas")
-                                                                        : nlohmann::json());
-            if (landing.contains("feather_px") && landing.at("feather_px").is_number_integer()) {
-                record.landing.feather_px =
-                    static_cast<int>(landing.at("feather_px").get<long long>());
-            }
-            if (landing.contains("colour_match") && landing.at("colour_match").is_boolean()) {
-                record.landing.colour_match = landing.at("colour_match").get<bool>();
-            }
-            if (landing.contains("lock_band_px") && landing.at("lock_band_px").is_number_integer()) {
-                record.landing.lock_band_px =
-                    static_cast<int>(landing.at("lock_band_px").get<long long>());
-            }
-            if (landing.contains("target_layer") && landing.at("target_layer").is_number_integer()) {
-                record.landing.target_layer =
-                    static_cast<int>(landing.at("target_layer").get<long long>());
-            }
-            record.landing.landed = landing.contains("landed") &&
-                                    landing.at("landed").is_boolean() && landing.at("landed").get<bool>();
-            record.landing.land_refused = landing.contains("land_refused") &&
-                                          landing.at("land_refused").is_boolean() &&
-                                          landing.at("land_refused").get<bool>();
-            record.landing.document_epoch =
-                landing.contains("document_epoch") && landing.at("document_epoch").is_number()
-                    ? static_cast<std::uint64_t>(landing.at("document_epoch").get<double>())
-                    : 0;
-            if (landing.contains("report")) {
-                record.landing.report = landing.at("report");
-            }
-            if (landing.contains("landed_layer") && landing.at("landed_layer").is_string()) {
-                record.landing.landed_layer = landing.at("landed_layer").get<std::string>();
-            }
-            if (landing.contains("land_error") && landing.at("land_error").is_string()) {
-                record.landing.land_error = landing.at("land_error").get<std::string>();
-            }
-            if (landing.contains("coverage_png") && landing.at("coverage_png").is_string()) {
-                record.landing.coverage_png_path = landing.at("coverage_png").get<std::string>();
-            } else {
-                record.landing.coverage_png_path = at(directory_, record.id + "-coverage.png");
-            }
-            if (landing.contains("document_checksum_before") &&
-                landing.at("document_checksum_before").is_string()) {
-                record.landing.document_checksum_before =
-                    landing.at("document_checksum_before").get<std::string>();
-            }
-        }
-        const std::string state = text("state");
-        // A job the last session left in flight cannot be in flight now. Saying so is the point of a
-        // durable record: the answer either landed before the stop or it did not.
-        if (state == "succeeded") {
-            record.state = JobState::succeeded;
-        } else if (state == "cancelled") {
-            record.state = JobState::cancelled;
-        } else {
-            record.state = JobState::failed;
-            if (state == "queued" || state == "running") {
-                record.failure = failure_name(FailureClass::interrupted);
-                record.error = "the app stopped while this job was " + state;
-                record.hint = "retry it; if the answer had arrived it would be on disk";
-            }
-        }
-        records_[record.id] = record;
-        order_.push_back(record.id);
-        // Ids are `j%04zu`, so the digits after the letter are the sequence to continue from. Anything
-        // else sorts before the first id this run would hand out, which is safe: a collision with a
-        // reloaded record is impossible because those are keyed by their own text id.
-        const std::size_t digits = record.id.find_first_not_of("0123456789");
-        const std::size_t sequence =
-            digits == std::string::npos ? static_cast<std::size_t>(std::atoll(record.id.c_str() + 1))
-                                        : 0;
-        next_id_ = std::max(next_id_, sequence + 1);
-    }
-}
 
 }  // namespace noise::ai

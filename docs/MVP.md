@@ -87,8 +87,10 @@ Constraints that shape everything (see `AI-BACKEND.md`):
   and read (`server.state.latency`, `~X s` on the status bar when the box has answered that size before);
   the draft/refine *stages* are not
 - variants = N queued jobs with `seed+i` (not the `n` param), landing one-by-one in a tray;
-  A/B wipe; Accept/Discard; every result journaled and cached
-- request cache keyed on `(server, model, prompt, params, prep, inputBlobIds)`
+  A/B wipe; Accept/Discard; every result landed as a layer
+- ~~request cache~~ **out of P0**: it hits only on a byte-identical re-ask (rare in editing, the
+  normal case in probing), and it had no bound and no cleanup. A re-ask costs a second request,
+  which is the true price. Revisit only with an eviction policy and a size cap written down first.
 - journal/provenance panel + "Regenerate with same params"
 
 **Robustness**
@@ -130,7 +132,7 @@ Drives what the UI enables; the app must degrade honestly rather than error at c
 | **M0.5** | Probe harness `tools/tn_probe.py` (see AI-BACKEND.md): roles dump, generations/edits timing grid, drift pixel-diff, prep ablation, upscale, `n`/multi-image/timeout probes → `docs/probes/*.md`. **Deferred — needs the dev server; run it the moment the box is free** | committed report with *our* numbers; `size_policy`, role default order, ETA seeds and recipe wording updated from it | 2–3 d |
 | **M1** | Paint core: single layer, brush/eraser/undo, zoom/pan, `.noise` v0, status bar | 5000-dab stroke at 2048² without dropped frames, 20× undo | 1–2 wk |
 | **M2** | Layers + masks + selections, blend modes | mask a layer, paint through it, save and reopen with the mask and the stack state intact; a hidden or faded layer composites as shown | 1–2 wk |
-| **M3** | Server layer: profiles + bearer auth, health handshake, **role registry (`roles.json`)**, role resolution + session model + swap/pin UI, jobs/cache/queue, exact-request preview, `new-image` | connect, resolve roles, generate into a new layer, restart → cached result instant; a `live`-tier test asserts roles resolve and the field policy holds against the real server | 1 wk |
+| **M3** | Server layer: profiles + bearer auth, health handshake, **role registry (`roles.json`)**, role resolution + session model + swap/pin UI, jobs + queue, exact-request preview, `new-image` | connect, resolve roles, generate into a new layer, (nothing is cached: a re-ask sends again; a `live`-tier test asserts roles resolve and the field policy holds against the real server | 1 wk |
 | **M4** | Mask-less inpainting: region compiler, prep, recipes, local composite, draft/refine, variants tray, A/B wipe, journal | paint over an object → `Remove` → object gone, **everything outside the feather byte-identical** — asserted by `pixels.compare`, hermetically against recorded fixtures and, when `THENOISE_URL` is set, against the real server | 1–2 wk |
 | **M5** | Polish: local `heal`, `upscale`, remaining blend modes, keymap file, prefs, Linux packaging (AppImage), docs | a stranger connects to a LAN server and removes an object in <5 min without opening a terminal | 1 wk |
 

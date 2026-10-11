@@ -2147,16 +2147,16 @@ void test_a_recipe_runs_against_the_recorded_server_and_lands() {
     h.value("edit.undo", json::object());
     CHECK_EQ(checksum_of(h), before);
 
-    // The second identical request is answered from the cache rather than by the server, which is the
-    // only reason a re-run of a recipe is not another wait.
-    const std::size_t hits_before =
-        h.value("cache.stats", json::object())["hits"].get<std::size_t>();
+    // A second run of the identical request is a second job, with its own answer and its own layer: the
+    // app keeps no answer store to answer you from, so what you get is what you asked for (the request
+    // is sent again - `test_backend` asserts that where the transport is visible).
+    const std::string first_id = id;
     const json again =
         h.value("ai.run", json{{"recipe", "inpaint-remove"}, {"vars", vars}, {"seed", 42}});
     const json second =
         h.value("job.wait", json{{"id", again["job"]["id"].get<std::string>()}, {"timeout", 30}});
-    CHECK(second["from_cache"].get<bool>());
-    CHECK_EQ(h.value("cache.stats", json::object())["hits"].get<std::size_t>(), hits_before + 1);
+    CHECK(second["state"].get<std::string>() == "succeeded");
+    CHECK(second["id"].get<std::string>() != first_id);
 
     // A job's answer outlives the moment it was made in. The answer landed by itself, undo took the
     // layer away, and asking for the same answer again puts the same pixels back from the file on disk -
@@ -2400,24 +2400,27 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     }
     CHECK_EQ(h.state.upload_encodes, encoded);
 
-    // The seed is a request field, so retyping it changes the request and therefore its key - and
-    // nothing else about the compile.
+    // The seed is a request field, so retyping it changes what goes out and nothing about the compile.
     std::fprintf(stderr, "  [mark F]\n");
-    const std::string seed_before = exact["request"]["cache_key"].get<std::string>();
     const json reseeded = h.value("ai.intent", json{{"seed", 1234}});
     CHECK_EQ(reseeded["seed"].get<std::int64_t>(), std::int64_t(1234));
     CHECK_EQ(h.value("server.state", json::object())["seed"].get<std::int64_t>(), std::int64_t(1234));
-    CHECK(h.value("ai.preview", json{{"recipe", "inpaint-remove"}})["request"]["cache_key"]
-              .get<std::string>() != seed_before);
+    const json seeded_preview = h.value("ai.preview", json{{"recipe", "inpaint-remove"}});
+    CHECK_EQ(seeded_preview["request"]["seed"].get<std::int64_t>(), std::int64_t(1234));
+    CHECK_EQ(seeded_preview["request"]["size"].get<std::string>(),
+             exact["request"]["size"].get<std::string>());
     h.value("ai.intent", json{{"seed", 0}});
 
-    // The same compile twice gives the same digest: the request is a function of what is in the
-    // document and the words, and of nothing the app drew at random.
-    CHECK_EQ(h.value("ai.preview", json{{"recipe", "inpaint-remove"},
-                                        {"vars", json{{"context_desc", "a painted wall"}}}})
-                 ["request"]["cache_key"]
-                 .get<std::string>(),
-             seed_before);
+    // The compile is a function of the document and the words, and of nothing the app drew at random:
+    // the same marked region twice uploads the same bytes, by hash.
+    const json first_compile = h.value("ai.preview", json{{"recipe", "inpaint-remove"},
+                                                          {"vars", json{{"context_desc", "a painted wall"}}}});
+    const json twice_compile = h.value("ai.preview", json{{"recipe", "inpaint-remove"},
+                                                          {"vars", json{{"context_desc", "a painted wall"}}}});
+    CHECK_EQ(first_compile["request"]["blob"].get<std::string>(),
+             twice_compile["request"]["blob"].get<std::string>());
+    CHECK_EQ(first_compile["request"]["size"].get<std::string>(),
+             twice_compile["request"]["size"].get<std::string>());
 
     // The quote is not an estimate of the request, it is the request's own endpoint and size - so there
     // is nothing to go stale, and nothing to re-check after the region moves.

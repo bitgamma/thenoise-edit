@@ -228,25 +228,6 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
         return command_ok(json{{"job", record.has_value() ? record->json() : json::object()}});
     });
 
-    table.add("job.retry", "Send a finished job's request again under a new id", {}, {"id"},
-              [&state](const json& args) -> CommandResult {
-        CommandResult guard = need_queue("job.retry", state);
-        if (!guard.ok) {
-            return guard;
-        }
-        if (!args.contains("id") || !args.at("id").is_string()) {
-            return fail("job.retry", "expected string 'id'");
-        }
-        const std::string from = args.at("id").get<std::string>();
-        std::string error;
-        const std::optional<std::string> id = state.ai.jobs->retry(from, error);
-        if (!id.has_value()) {
-            return fail("job.retry", error);
-        }
-        const std::optional<ai::JobRecord> record = state.ai.jobs->find(*id);
-        return command_ok(json{{"job", record.has_value() ? record->json() : json::object()},
-                               {"retried", from}});
-    });
 
     // The landing door on the wire. Answers land by themselves as soon as they are finished, so this is
     // the idempotent version of the same thing: "put that answer on the document" for a job that has
@@ -321,13 +302,6 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
             }
         }
         return result;
-    });
-
-    table.add("cache.stats", "Report the request cache", {}, {}, [&state](const json&) -> CommandResult {
-        if (state.ai.cache == nullptr) {
-            return fail("cache.stats", "no cache is open");
-        }
-        return command_ok(state.ai.cache->json());
     });
 }
 

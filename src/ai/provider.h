@@ -25,7 +25,7 @@ std::vector<std::string> allowed_fields(Endpoint endpoint);
 // that named another path than the request would be a price for something else.
 std::string request_path(Endpoint endpoint);
 
-// What a request is, in the terms the cache keys on. Every value here went into the bytes the server
+// What a request is, in the terms the server sees. Every value here went into the bytes the server
 // sees, and nothing the server does not see (a key, a hostname beyond the profile name) is here.
 struct RequestParams {
     std::string server_name;
@@ -59,7 +59,7 @@ struct BuiltRequest {
     RequestParams params;
 
     // The body, in the order the endpoint's table lists the fields. This is the only representation:
-    // `json_body()` and the multipart parts are both encoded from it, so a preview, a retry and the wire
+    // `json_body()` and the multipart parts are both encoded from it, so a preview and the wire
     // cannot disagree about what was asked.
     std::vector<RequestField> fields;
     // The region, for an endpoint that takes it as a file part.
@@ -69,22 +69,12 @@ struct BuiltRequest {
     // The body to post as JSON. Null when the request is multipart, which has no JSON body at all.
     nlohmann::json json_body() const;
 
-    // The stable text the cache key is a hash of. Ordered, exhaustive over `params`, and it names the
-    // endpoint - the same prompt and size against `edits` and `generations` are different requests.
-    std::string canonical_text() const;
-    std::string cache_key() const;
     // What `ai.preview` answers: the exact field list in the order it goes out (`fields` is an array of
     // [name, value] pairs), the resolved size, and the blob the image part holds, by hash. No key
     // material, because the builder never sees any.
     nlohmann::json preview_json() const;
 };
 
-// A request read back from a job record, with its uploaded bytes. The field policy applies here as
-// well: a record written by an older build, or edited by anyone, cannot smuggle a field into a request
-// that the builder would never have added. `png` is read from the blob the record names.
-std::optional<BuiltRequest> request_from_preview(const nlohmann::json& preview,
-                                                 const std::vector<std::uint8_t>& png,
-                                                 std::string& error);
 
 struct RequestInput {
     const Recipe* recipe = nullptr;
@@ -101,7 +91,7 @@ struct RequestInput {
     int height = 0;
     std::string prompt;
     std::uint64_t seed = 0;
-    // The prepped region, PNG-encoded. These are the bytes the cache key refers to.
+    // The prepped region, PNG-encoded: the upload, and its content hash in `blob_id`.
     std::vector<std::uint8_t> png;
 };
 

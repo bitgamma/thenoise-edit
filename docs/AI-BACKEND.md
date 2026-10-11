@@ -269,7 +269,7 @@ Input: `(document composite, selection mask, recipe)` → one compiled request.
              altered; every other byte of the crop is uploaded exactly as the document holds it,
              because the surroundings are the instruction. Modes: none | average | blur(gauss,
              r = max(kMinBlurRadiusPx, crop short side / 12)) | pixelate (block = that radius) |
-             noise (seeded, so the bytes are cacheable) | white. Default blur: it destroys *what*
+             noise (seeded, so the bytes are reproducible) | white. Default blur: it destroys *what*
              the object is while leaving colour, luminance gradient and light direction readable.
              `average` and `noise` fill from the mean of the **context** — the hole's own mean is
              the colour of the thing being got rid of. Pure white is the worst option and is
@@ -281,7 +281,7 @@ Input: `(document composite, selection mask, recipe)` → one compiled request.
              `size` returns it exactly, an edit without it returns the **model default** (1024²)
              rather than the reference image's size, at 30.3 s against 7.4 s for the same 512²
              edit. Omitting it is neither correct nor cheap.
-9. WRITE     PNG encode (these exact bytes are the cache key)
+9. WRITE     PNG encode (these exact bytes are the upload; `blob` is their hash)
 ```
 
 ## The Result Compositor
@@ -411,21 +411,25 @@ The expensive thing is not inference, it is **model switching**. Design around t
 
 Supporting machinery:
 
-* **Request cache** keyed on the sha256 of the built request's canonical text — `server`, `endpoint`,
-  `model`, `size`, `steps`, `cfg_scale`, `seed`, the blob id of the uploaded region and the prompt, in
-  that order, always written out by the same function. Instant replay of anything ever generated,
-  surviving restarts, because the key is a property of the request rather than of a session. The server
-  keeps a cache of its own, so a fast response proves neither our cache nor a model run; a job record
-  says which one answered (`from_cache`), and the latency EMA counts a reply inside one second as the
-  server's cache rather than as a sample.
+* **No answer cache** (see "The queue lives in memory" below): a re-ask is a second request. The one
+  fact that survives from the old design is that a *server-side* fast reply is not a model run — a reply
+  inside one second is counted as the box's own answer and never feeds the latency EMA, because an ETA
+  drifting toward 0.1 s would promise waits that never happen.
 * **Latency EMA** per `(model, w×h, steps)` from client-measured timings → ETA before you
   commit, and it drives `timeout_request`. The engine's published benchmarks are the
   starting point, not the runtime source: every box differs.
-* **Durable queue**: one worker per server, and `<runtime>/ai/jobs/{jobs.json,<id>-result.png,
-  <id>-request.png,<id>-coverage.png}` — a 20-minute full-frame job survives an app crash, and an answer
-  outlives the run that made it: `job.apply` works on any job in the record, including one from before
-  the restart. A job found `running` at startup is marked `failed` with the `interrupted` class: the
-  request died with the process and pretending otherwise would leave a job that never finishes.
+* **The queue lives in memory**, one worker per server. `<runtime>/ai/jobs/<id>-{coverage,request,
+  result}.png` are scratch for the run that wrote them and **nothing in the runtime directory is read
+  back**; startup deletes the previous run's `ai/` and `captures/`. A job is a fact about a socket, not
+  about a document — the document is the only thing that persists an answer, by being saved. Crash
+  mid-request and the ask is gone; press the verb again.
+* **No answer cache, and no `job.retry`.** A cache keyed on `(server, model, prompt, size, steps, cfg,
+  seed, upload-hash)` hits only on a byte-identical re-ask, which is an artefact of probing rather than
+  of editing: nudge the selection and the upload hash moves. It had no bound and no cleanup, so it grew
+  a megabyte per edit forever — 13 MB against 2 jobs in one captured runtime directory. Pressing the
+  verb again *is* the retry: it recompiles the region against what the document is now and sends a
+  second request, which costs a second image. That is the honest price of an edit, and `test_backend`
+  asserts a re-ask is one send more rather than a silent shortcut.
 * **Cancel**: the transport polls a flag the job owns (`curl_handle_abort` in flight, an erase from the
   queue while still queued), and cancelling never discards an answer that already arrived — a landed job
   answers `already succeeded; its result stays at <path>` instead of pretending to take it back.
@@ -558,7 +562,7 @@ fidelity is not a server knob.
 **Answers land themselves.** A succeeded job's answer is composited onto the document as soon as a door
 reads the queue (`ai.intent`, `job.list`, `job.get`, `job.wait` all call `pump_ai_landings`), onto its own
 new layer above the layer the region was flattened from, named for the recipe's label and the job. Three
-facts make that safe and they are all durable in `jobs.json`: `document_epoch` (a job may land only in the
+facts make that safe and they are all in the job's record: `document_epoch` (a job may land only in the
 document that asked for it - a job that came back after the person opened another file stays out of the
 new one), `landed` + `landed_layer` (so reopening the app does not stack a second copy, and so `job.apply`
 can tell "already there" from "undo took it away"), and `report` (the compose report of that landing, so

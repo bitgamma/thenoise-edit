@@ -235,17 +235,17 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
                 "undo gives the document back byte for byte")
 
         if not live:
+            # There is no answer cache: the same request asked again is a second job that goes out again,
+            # with its own answer file. Asserted here rather than live because the invariant is about the
+            # app not shortcutting you, and the recording answers both asks identically.
             again = wire.call("ai.run", {"recipe": RECIPE, "vars": VARS, "seed": args.seed})
             second = wire.call("job.wait", {"id": again["job"]["id"], "timeout": 30})
-            p.check(bool(second["from_cache"]), "the same request is answered from the cache",
-                    f"job {again['job']['id']}")
-            stats = wire.call("cache.stats")
-            p.check(stats["hits"] >= 1 and stats["entries"] >= 1, "the cache counts what it served",
-                    json.dumps({k: stats[k] for k in ("entries", "hits", "misses")}))
-            # The request that went out is the one the cache keys on, and the recording says which model
-            # answered: a cache hit that was really a second request would be a wait nobody asked for.
-            p.check(second["cache_key"] == waited["cache_key"],
-                    "the repeat request keyed on the same bytes")
+            p.check(second["state"] == "succeeded", "the repeat ask ran as its own job",
+                    f"job {again['job']['id']} {second.get('failure')}")
+            p.check(second["id"] != waited["id"], "a re-ask is a new job, not a reused one",
+                    f"{waited['id']} then {second['id']}")
+            p.check(bool(second["result"]) and second["result"] != waited["result"],
+                    "and it wrote its own answer", str(second.get("result"))[-24:])
         print(f"  shots: {before_path.parent}")
     finally:
         settled = ""

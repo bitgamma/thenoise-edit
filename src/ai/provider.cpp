@@ -141,25 +141,6 @@ std::vector<std::string> allowed_fields(Endpoint endpoint) { return shape_of(end
 
 std::string request_path(Endpoint endpoint) { return shape_of(endpoint).path; }
 
-std::string BuiltRequest::canonical_text() const {
-    // Sorted by hand rather than by map order: this text is a cache key's whole input, and a key that
-    // changes because a field was inserted in a different order would silently double every blob.
-    std::string text = "server=" + params.server_name + "\n";
-    text += "endpoint=" + std::string(endpoint_name(endpoint)) + "\n";
-    text += "model=" + params.model_id + "\n";
-    text += "size=" + size_field(params.width, params.height) + "\n";
-    text += "steps=" + std::to_string(params.steps) + "\n";
-    text += "cfg_scale=" + trimmed_double(params.cfg_scale) + "\n";
-    text += "seed=" + std::to_string(params.seed) + "\n";
-    text += "blob=" + params.blob_id + "\n";
-    text += "prompt=" + params.prompt;
-    return text;
-}
-
-std::string BuiltRequest::cache_key() const {
-    return sha256_hex(canonical_text());
-}
-
 nlohmann::json BuiltRequest::json_body() const {
     if (multipart()) {
         return nullptr;
@@ -194,85 +175,9 @@ nlohmann::json BuiltRequest::preview_json() const {
                           {"fields", fields},
                           {"image_bytes", png.size()},
                           {"blob", params.blob_id},
-                          {"cache_key", cache_key()},
                           {"allowed_fields", allowed_fields(endpoint)}};
 }
 
-std::optional<BuiltRequest> request_from_preview(const nlohmann::json& preview,
-                                                 const std::vector<std::uint8_t>& png,
-                                                 std::string& error) {
-    if (!preview.is_object()) {
-        error = "request record: expected an object";
-        return std::nullopt;
-    }
-    const auto text = [&preview](const char* key) {
-        if (preview.contains(key) && preview.at(key).is_string()) {
-            return preview.at(key).get<std::string>();
-        }
-        return std::string();
-    };
-    const std::optional<Endpoint> endpoint = endpoint_from_name(text("endpoint"));
-    if (!endpoint.has_value()) {
-        error = "request record: endpoint '" + text("endpoint") + "' is not one of " +
-                endpoint_names();
-        return std::nullopt;
-    }
-    BuiltRequest request;
-    request.endpoint = *endpoint;
-    request.path = text("path");
-    if (request.path.empty()) {
-        error = "request record: no 'path'";
-        return std::nullopt;
-    }
-    request.params.server_name = text("server");
-    request.params.model_id = text("model");
-    request.params.prompt = text("prompt");
-    request.params.blob_id = text("blob");
-    request.png = png;
-    if (preview.contains("steps") && preview.at("steps").is_number_integer()) {
-        request.params.steps = static_cast<int>(preview.at("steps").get<long long>());
-    }
-    if (preview.contains("cfg_scale") && preview.at("cfg_scale").is_number()) {
-        request.params.cfg_scale = preview.at("cfg_scale").get<double>();
-    }
-    if (preview.contains("seed") && preview.at("seed").is_number_integer()) {
-        request.params.seed = preview.at("seed").get<std::uint64_t>();
-    }
-    const std::string size = text("size");
-    const std::size_t cross = size.find('x');
-    if (cross == std::string::npos) {
-        error = "request record: 'size' is '" + size + "', expected WxH";
-        return std::nullopt;
-    }
-    request.params.width = std::atoi(size.substr(0, cross).c_str());
-    request.params.height = std::atoi(size.substr(cross + 1).c_str());
-
-    if (preview.contains("fields") && preview.at("fields").is_array()) {
-        for (const nlohmann::json& pair : preview.at("fields")) {
-            if (!pair.is_array() || pair.size() != 2 || !pair[0].is_string()) {
-                error = "request record: 'fields' holds something that is not a [name, value] pair";
-                return std::nullopt;
-            }
-            const std::string name = pair[0].get<std::string>();
-            if (!field_allowed(request.endpoint, name)) {
-                error = "request record: field '" + name + "' is not allowed for " +
-                        endpoint_name(request.endpoint);
-                return std::nullopt;
-            }
-            request.fields.push_back(RequestField{name, pair[1]});
-        }
-    }
-    // The blob id is recomputed rather than trusted: the record claims what it uploaded, and the bytes
-    // are the fact.
-    const std::string actual = sha256_hex(std::span<const std::uint8_t>(png));
-    if (!request.params.blob_id.empty() && request.params.blob_id != actual) {
-        error = "request record: the blob on disk is " + actual + " but the record says " +
-                request.params.blob_id;
-        return std::nullopt;
-    }
-    request.params.blob_id = actual;
-    return request;
-}
 
 std::optional<BuiltRequest> build_request(const RequestInput& input, const SizePolicy& size_policy,
                                          std::string& error) {

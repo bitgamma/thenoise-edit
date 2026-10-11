@@ -293,53 +293,33 @@ void test_a_request_the_server_could_not_answer_is_refused_here() {
     CHECK_EQ(field_text(*built, "cfg_scale"), std::string("2.5"));
 }
 
-// The cache key is the only thing standing between a re-run and a five-minute wait, so it has to be a
-// function of exactly the request: same bytes in, same key out; anything the server would answer
-// differently, a different key.
-void test_the_cache_key_tracks_the_request_and_nothing_else() {
+// The upload is the only part of a request that carries pixels, so its content hash has to track those
+// bytes and nothing else: it is how a job record, and `prep_proof.py`, prove the model saw the region
+// the compiler built rather than something else that was on the canvas.
+void test_the_upload_blob_names_the_pixels_and_nothing_else() {
     const SizePolicy policy{16, 1024 * 1024};
     const Built first = build(json{{"endpoint", "edits"}}, policy, png());
     REQUIRE(first.error.empty());
-    CHECK(first.request.cache_key() == build(json{{"endpoint", "edits"}}, policy, png()).request.cache_key());
-    // A blob id is content, so a different region is a different key even at the same size.
-    CHECK(first.request.cache_key() != build(json{{"endpoint", "edits"}}, policy, png(64, 64, 200))
-                                            .request.cache_key());
-
-    const Recipe edit = recipe_of(json{{"endpoint", "edits"}});
-    const ModelEntry entry = model();
-    RequestInput input;
-    input.recipe = &edit;
-    input.server_name = "local";
-    input.model_id = entry.id;
-    input.model = &entry;
-    input.width = 64;
-    input.height = 64;
-    input.prompt = "do the thing";
-    input.seed = 8;  // one bit of the request, and the only thing that differs from `first`
-    input.png = png();
-    std::string error;
-    const std::optional<BuiltRequest> changed = build_request(input, policy, error);
-    REQUIRE(changed.has_value());
-    CHECK(changed->cache_key() != first.request.cache_key());
-
-    // The same prompt and size against another endpoint is another request: the key names the endpoint.
-    const Built generation = build(json{{"endpoint", "generations"}}, policy, {});
-    REQUIRE(generation.error.empty());
-    CHECK(generation.request.cache_key() != first.request.cache_key());
-    // A key is a blob name: 64 hex characters, nothing else, so it can be a file name anywhere the cache
-    // lives.
-    CHECK_EQ(first.request.cache_key().size(), std::size_t(64));
-    CHECK(first.request.cache_key().find_first_not_of("0123456789abcdef") == std::string::npos);
-    CHECK_EQ(first.request.cache_key(), noise::sha256_hex(first.request.canonical_text()));
-
-    // A preview round-trips: a retry after a restart rebuilds the same request from the recorded preview
-    // and the stored PNG, which is what makes a durable job re-sendable at all.
     const json preview = first.request.preview_json();
-    std::string round_error;
-    const std::optional<BuiltRequest> again =
-        noise::ai::request_from_preview(preview, png(), round_error);
-    REQUIRE(again.has_value());
-    CHECK_EQ(again->cache_key(), first.request.cache_key());
+    const std::string blob = preview["blob"].get<std::string>();
+    CHECK_EQ(blob.size(), std::size_t(64));
+    CHECK(blob.find_first_not_of("0123456789abcdef") == std::string::npos);
+    CHECK_EQ(build(json{{"endpoint", "edits"}}, policy, png()).request.preview_json()["blob"]
+                 .get<std::string>(),
+             blob);
+
+    // Different pixels at the same size are a different upload: a region that changed cannot be
+    // reported as the one that was asked for.
+    CHECK(build(json{{"endpoint", "edits"}}, policy, png(64, 64, 200)).request.preview_json()["blob"]
+              .get<std::string>() != blob);
+
+    // What the preview promises is what the wire carries: the endpoint, the resolved size, the seed and
+    // every field name in the order it goes out. No key material, because the builder never sees any.
+    CHECK_EQ(preview["path"].get<std::string>(), std::string("/images/edits"));
+    CHECK_EQ(preview["size"].get<std::string>(), std::string("64x64"));
+    CHECK(preview["fields"].size() >= std::size_t(4));
+    CHECK(preview["fields"][0][0].get<std::string>() == "model");
+    CHECK(!preview.contains("cache_key"));
 }
 
 }  // namespace
@@ -348,6 +328,6 @@ int main() {
     test_the_whitelist_is_per_endpoint();
     test_what_goes_out_is_exactly_the_table();
     test_a_request_the_server_could_not_answer_is_refused_here();
-    test_the_cache_key_tracks_the_request_and_nothing_else();
+    test_the_upload_blob_names_the_pixels_and_nothing_else();
     return noise::test::summary(__FILE__);
 }

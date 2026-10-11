@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "test.h"
 
-#include "ai/cache.h"
 #include "ai/http.h"
 #include "ai/queue.h"
 #include "ai/recorded.h"
@@ -22,7 +21,6 @@
 #include <vector>
 
 using noise::ai::AiError;
-using noise::ai::BlobCache;
 using noise::ai::build_request;
 using noise::ai::BuiltRequest;
 using noise::ai::Client;
@@ -366,53 +364,6 @@ void test_cancellation_and_unmatched_requests_are_honest() {
     CHECK(misses[0].find("/images/edits") != std::string::npos);
 }
 
-void test_the_blob_cache_holds_answers_by_content() {
-    const std::filesystem::path dir = scratch("cache");
-    BlobCache cache(dir.string());
-    const std::string key = noise::sha256_hex(std::string("an answer"));
-    std::string error;
-
-    std::vector<std::uint8_t> read_back;
-    CHECK(!cache.lookup(key, read_back, error));
-    CHECK_EQ(cache.stats().misses, std::size_t(1));
-
-    const std::vector<std::uint8_t> png = region_png();
-    REQUIRE(cache.store(key, png, error));
-    REQUIRE(cache.lookup(key, read_back, error));
-    CHECK(read_back == png);
-    CHECK_EQ(cache.stats().hits, std::size_t(1));
-    CHECK_EQ(cache.stats().entries, std::size_t(1));
-    CHECK(cache.stats().bytes == png.size());
-
-    // A key arrives from a hash, but the API takes a string: anything that could walk out of the cache
-    // directory is refused rather than joined.
-    // Strings, not `const char*`: the 64-'g' case has no literal, and a `.c_str()` from a temporary in
-    // an initializer list is a pointer into a destroyed buffer by the time the loop body reads it.
-    const std::vector<std::string> bad = {
-        "", "../../etc/passwd", "short",
-        "UPPERCASE000000000000000000000000000000000000000000000000000000", std::string(64, 'g')};
-    for (const std::string& bad_key : bad) {
-        std::string ignored;
-        CHECK(cache.blob_path(bad_key).empty());
-        CHECK(!cache.lookup(bad_key, read_back, ignored));
-        CHECK(!cache.store(bad_key, png, ignored));
-    }
-    // Refusals are counted and nothing is written: a cache that answered a traversal key by writing next
-    // to it would be a bug the counters are the only way to see.
-    CHECK(cache.stats().refused_keys >= std::size_t(5));
-    CHECK_EQ(cache.stats().entries, std::size_t(1));
-    std::size_t files = 0;
-    for (const std::filesystem::directory_entry& entry :
-         std::filesystem::recursive_directory_iterator(dir)) {
-        if (entry.is_regular_file()) {
-            ++files;
-        }
-    }
-    CHECK_EQ(files, std::size_t(1));
-    CHECK(cache.json().contains("entries"));
-    std::filesystem::remove_all(dir);
-}
-
 // A queue with one worker is a queue, and a job that takes a minute has to be stoppable. The slow
 // recording is what makes these states exist without a wall clock being asserted: the transfer holds,
 // the second job waits behind it, and the cancellation is what the queue does about it.
@@ -421,12 +372,11 @@ void test_a_queued_and_a_running_job_are_both_stoppable() {
     std::atomic<bool> cancelled{false};
     const std::unique_ptr<RecordedTransport> transport = fixtures();
     Client client(*transport, profile(), [] { return 0.0; });
-    BlobCache cache((dir / "cache").string());
     // This is the one test where elapsed time is part of what is under test - a job that is cancelled
     // mid-transfer, another that waits behind it - so the injected clock is a real monotonic one. The
     // assertions are still about states and bytes, never about how long anything took.
     JobQueue queue(
-        JobQueue::Deps{&client, &cache, (dir / "jobs").string()},
+        JobQueue::Deps{&client, (dir / "jobs").string()},
         [] {
             return static_cast<double>(
                        std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -491,17 +441,18 @@ void test_a_queued_and_a_running_job_are_both_stoppable() {
     CHECK(error.find("already succeeded") != std::string::npos);
     CHECK(!queue.find(done_id)->result_png.empty());
 
-    // A cancelled job is the one thing a retry is for.
-    const std::optional<std::string> retried = queue.retry(waiting_id, error);
-    REQUIRE(retried.has_value());
-    REQUIRE(queue.wait_for(*retried, 20.0));
-    CHECK(queue.find(*retried)->state == JobState::succeeded);
+    // There is no `job.retry`: pressing the verb again *is* the retry, and it re-sends - same request
+    // bytes, a new id, a real request, nothing remembering the cancelled job in between.
+    const std::string resent =
+        queue.enqueue(fast, "inpaint-remove", "edit", landing, std::vector<std::uint8_t>{});
+    CHECK(resent != waiting_id);
+    REQUIRE(queue.wait_for(resent, 20.0));
+    CHECK(queue.find(resent)->state == JobState::succeeded);
 
-    // What the box actually saw: one slow transfer and two fast ones. The entry cancelled while queued
-    // cost nothing, which is the whole reason a queue and an immediate request are different things.
-    // What the box saw: one slow transfer, and one fast answer. The entry cancelled while queued cost
-    // nothing, and the retry of it needed no new request because the answer to those bytes already
-    // existed - which is the queue and the cache doing their separate jobs.
+    // What the box saw: one slow transfer (cancelled mid-flight), and **two** fast ones - the answer that
+    // landed and the re-ask after the cancellation. Nothing answered the second from storage, which is
+    // the whole reason the count is a fact worth asserting. The entry cancelled while still queued cost
+    // nothing, which is why a queue and an immediate request are different things.
     int slow_sends = 0;
     int fast_sends = 0;
     for (const auto& [name, count] : transport->hits()) {
@@ -509,19 +460,18 @@ void test_a_queued_and_a_running_job_are_both_stoppable() {
         fast_sends += name.find("an answer for the edit role") != std::string::npos ? count : 0;
     }
     CHECK_EQ(slow_sends, 1);
-    CHECK_EQ(fast_sends, 1);
-    CHECK(queue.find(*retried)->from_cache);
+    CHECK_EQ(fast_sends, 2);
     std::filesystem::remove_all(dir);
 }
 
-// The queue's whole promise in one run: a job goes in, an answer comes out and lands as a PNG on disk,
-// the second identical request never reaches the server, and the record says all of it.
-void test_a_job_runs_once_and_the_second_time_is_a_cache_hit() {
+// The queue's promise in one run: a job goes in, an answer comes out as a PNG, and the record says what
+// was asked and what came back. A second identical request reaches the server too: there is no answer
+// cache, so "this was asked already" is not something the app may quietly decide on your behalf.
+void test_a_job_runs_once_and_the_second_time_is_another_request() {
     const std::filesystem::path dir = scratch("queue");
     std::atomic<bool> cancelled{false};
     const std::unique_ptr<RecordedTransport> transport = fixtures();
     Client client(*transport, profile(), [] { return 0.0; });
-    BlobCache cache((dir / "cache").string());
 
     // A clock that advances a step per read: the worker's reads and this thread's are concurrent, so a
     // shared `now` would be a data race, and a frozen one would make every elapsed exactly zero and let
@@ -532,7 +482,7 @@ void test_a_job_runs_once_and_the_second_time_is_a_cache_hit() {
     // exactly zero - a job that never started would look instantaneous.
     const auto reads = std::make_shared<std::atomic<int>>(0);
     const auto clock = [reads] { return 100.0 + 5.0 * static_cast<double>(reads->fetch_add(1)); };
-    JobQueue queue(JobQueue::Deps{&client, &cache, (dir / "jobs").string()}, clock);
+    JobQueue queue(JobQueue::Deps{&client, (dir / "jobs").string()}, clock);
     const RecipeSet recipes = recipes_or_fail();
     const BuiltRequest request = edits_request(recipes);
 
@@ -552,7 +502,6 @@ void test_a_job_runs_once_and_the_second_time_is_a_cache_hit() {
     CHECK_EQ(record->recipe_id, std::string("inpaint-remove"));
     CHECK_EQ(record->model_id, kModel);
     CHECK_EQ(record->attempts, 1);
-    CHECK(!record->from_cache);
     // Timings come from the injected clock, so a test sees the numbers it fed and no wall clock at all.
     CHECK(record->finished_at > record->started_at);
     CHECK(record->started_at >= record->submitted_at);
@@ -560,7 +509,7 @@ void test_a_job_runs_once_and_the_second_time_is_a_cache_hit() {
     std::vector<std::uint8_t> png;
     std::string error;
     REQUIRE(queue.result_png(id, png, error));
-    // The answer on disk is an image, and the blob key is the hash of exactly those bytes: the cache and
+    // The answer on disk is an image, and the recorded blob is the hash of exactly those bytes: the
     // the record have to agree or a re-run re-asks for something it already has.
     const Image answer = decode_png(png, error);
     REQUIRE(!error.empty() == false);
@@ -575,7 +524,6 @@ void test_a_job_runs_once_and_the_second_time_is_a_cache_hit() {
     CHECK(std::filesystem::exists(record->result_png));
     CHECK(std::filesystem::exists(record->request_png));
 
-    const std::size_t hits_before = cache.stats().hits;
     const std::size_t sent_before = transport->sent().size();
     const std::string again =
         queue.enqueue(request, "inpaint-remove", "edit", landing, std::vector<std::uint8_t>{});
@@ -583,76 +531,17 @@ void test_a_job_runs_once_and_the_second_time_is_a_cache_hit() {
     const std::optional<noise::ai::JobRecord> second = queue.find(again);
     REQUIRE(second.has_value());
     CHECK(second->state == JobState::succeeded);
-    CHECK(second->from_cache);
     CHECK_EQ(second->blob, record->blob);
-    CHECK_EQ(cache.stats().hits, hits_before + std::size_t(1));
-    CHECK_EQ(transport->sent().size(), sent_before);
-
-    // A retry of a succeeded job is a new job, not a mutation: the first answer stays what it was.
-    std::string retry_error;
-    const std::optional<std::string> retried = queue.retry(id, retry_error);
-    CHECK(!retried.has_value());
-    CHECK(!retry_error.empty());
+    // The invariant that replaced the cache: an identical request is a second request, and it costs one.
+    CHECK_EQ(transport->sent().size(), sent_before + std::size_t(1));
+    CHECK(second->id != id);
 
     const json dump = queue.json();
     CHECK(dump.contains("jobs"));
     CHECK_EQ(static_cast<std::size_t>(dump["jobs"].size()), std::size_t(2));
 
-    // Durability: the records and their answers survive the queue, so a job that landed yesterday can
-    // still be applied today.
-    JobQueue reopened(JobQueue::Deps{&client, &cache, (dir / "jobs").string()}, clock);
-    const std::vector<noise::ai::JobRecord> restored = reopened.all();
-    CHECK_EQ(restored.size(), std::size_t(2));
-    const std::optional<noise::ai::JobRecord> first = reopened.find(id);
-    REQUIRE(first.has_value());
-    CHECK(first->state == JobState::succeeded);
-    std::vector<std::uint8_t> restored_png;
-    REQUIRE(reopened.result_png(id, restored_png, error));
-    CHECK(restored_png == png);
-    std::filesystem::remove_all(dir);
-}
-
-// A job that was in flight when the app stopped cannot be resumed - the request died with the process -
-// so the record has to say so instead of hanging in `running` forever.
-void test_a_job_left_running_is_reported_interrupted() {
-    const std::filesystem::path dir = scratch("interrupted");
-    const std::filesystem::path jobs = dir / "jobs";
-    std::filesystem::create_directories(jobs);
-    const json record = json{{"id", "j1"},
-                             {"recipe", "inpaint-remove"},
-                             {"role", "edit"},
-                             {"server", "recorded"},
-                             {"model", kModel},
-                             {"state", "running"},
-                             {"cache_key", noise::sha256_hex(std::string("x"))},
-                             {"attempts", 1},
-                             {"submitted_at", 10.0},
-                             {"started_at", 11.0},
-                             {"landing",
-                              {{"crop", {8, 8, 64, 64}},
-                               {"requested", {64, 64}},
-                               {"canvas", {256, 256}},
-                               {"target_layer", 0}}}};
-    std::string error;
-    REQUIRE(write_file_atomic((jobs / "jobs.json").string(),
-                              bytes_of(json{{"jobs", json::array({record})}}.dump()), error));
-
-    std::atomic<bool> cancelled{false};
-    const std::unique_ptr<RecordedTransport> transport = fixtures();
-    Client client(*transport, profile(), [] { return 0.0; });
-    BlobCache cache((dir / "cache").string());
-    double now = 40.0;
-    JobQueue queue(JobQueue::Deps{&client, &cache, jobs.string()}, [&now] { return now; });
-
-    const std::optional<noise::ai::JobRecord> job = queue.find("j1");
-    REQUIRE(job.has_value());
-    CHECK(job->state == JobState::failed);
-    CHECK_EQ(job->failure, std::string("interrupted"));
-    CHECK(!job->hint.empty());
-    // The rewrite is on disk, so the truth is told the next time too.
-    JobQueue again(JobQueue::Deps{&client, &cache, jobs.string()}, [&now] { return now; });
-    CHECK(again.find("j1")->state == JobState::failed);
-    CHECK_EQ(queue.latency().entries().size(), std::size_t(0));
+    // Both jobs are listed, in the order they were asked for, and nothing was read back from the
+    // directory to change that list.
     std::filesystem::remove_all(dir);
 }
 
@@ -689,12 +578,13 @@ void test_the_latency_model_learns_only_from_real_runs() {
 
 }  // namespace
 
+
 // The queue's worker writes the latency model and the blob cache while the thread that draws reads both
 // every frame the AI panel is up. The queue's own mutex does not cover them, and a `std::map` walked
 // while another thread rebalances it does not fail - it hangs inside `find`, which is how the window
 // stopped when a job finished behind the panel. The invariant lives in the two types now, so this asks
 // for it from outside: interleaved, both answers stay exact.
-void test_the_model_and_the_cache_survive_the_thread_that_reads_them() {
+void test_the_latency_model_survives_the_thread_that_reads_it() {
     LatencyModel latency;
     std::atomic<bool> done{false};
     constexpr int kShapes = 48;
@@ -740,34 +630,6 @@ void test_the_model_and_the_cache_survive_the_thread_that_reads_them() {
         CHECK_EQ(entry.samples, 1);
     }
 
-    // Same shape of access on the cache: the worker stores answers while `cache.stats` is read.
-    const std::string directory =
-        (std::filesystem::temp_directory_path() / "noise-backend-cache-race")
-            .string();
-    std::filesystem::remove_all(directory);
-    BlobCache cache(directory);
-    const Image tile = Image::filled(Extent{4, 4}, 9, 9, 9, 255);
-    const std::vector<std::uint8_t> png = noise::io::encode_png(tile);
-    std::atomic<bool> counting{false};
-    std::atomic<std::size_t> max_entries{0};
-    std::thread stats_reader([&] {
-        while (!counting.load()) {
-            max_entries.store(std::max(max_entries.load(), cache.stats().entries));
-        }
-    });
-    constexpr int kBlobs = 32;
-    for (int i = 0; i < kBlobs; ++i) {
-        std::string error;
-        CHECK(cache.store(noise::sha256_hex(std::span<const std::uint8_t>(
-                              std::vector<std::uint8_t>{static_cast<std::uint8_t>(i)})),
-                          png, error));
-    }
-    counting.store(true);
-    stats_reader.join();
-    const BlobCache::Stats stats = cache.stats();
-    CHECK_EQ(stats.entries, static_cast<std::size_t>(kBlobs));
-    CHECK(stats.bytes >= png.size() * kBlobs);
-    std::filesystem::remove_all(directory);
 }
 
 int main() {
@@ -775,11 +637,9 @@ int main() {
     test_an_answer_comes_back_from_the_recorded_edit();
     test_each_failure_the_server_gives_is_a_different_answer();
     test_cancellation_and_unmatched_requests_are_honest();
-    test_the_blob_cache_holds_answers_by_content();
-    test_a_job_runs_once_and_the_second_time_is_a_cache_hit();
+    test_a_job_runs_once_and_the_second_time_is_another_request();
     test_a_queued_and_a_running_job_are_both_stoppable();
-    test_a_job_left_running_is_reported_interrupted();
     test_the_latency_model_learns_only_from_real_runs();
-    test_the_model_and_the_cache_survive_the_thread_that_reads_them();
+    test_the_latency_model_survives_the_thread_that_reads_it();
     return noise::test::summary(__FILE__);
 }

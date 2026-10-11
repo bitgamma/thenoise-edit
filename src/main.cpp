@@ -260,6 +260,14 @@ void cleanup(void) {
 int main(int argc, char** argv) {
     g.args = parse_args(argc, argv);
     g.state.runtime_dir = platform::runtime_dir();
+    // The runtime directory is scratch: nothing in it is read back, and the only thing that has to
+    // outlive a run is the document the person saved. Job blobs and captures therefore go at startup -
+    // a directory that grows by a few megabytes every run, forever, is a bug with a slow fuse.
+    for (const char* scratch_subdir : {"ai", "captures"}) {
+        std::error_code scratch_ec;
+        std::filesystem::remove_all(std::filesystem::path(g.state.runtime_dir) / scratch_subdir,
+                                    scratch_ec);
+    }
     // The AI tables and the transport, opened once here so no command reaches for a directory or a
     // server of its own. A table that will not load is recorded and reported by the AI commands; the
     // editor itself starts either way.

@@ -563,12 +563,8 @@ void draw_ai_status_line(CommandTable& commands, const json& view) {
                                                  ? landing["landed_layer"].get<std::string>()
                                                  : std::string();
             if (landed_layer.empty()) {
-                // A digest is a fact about bytes and the bytes are on the wire (`job.get`); where the
-                // answer went is the fact a person needs next to the job.
-                ImGui::TextDisabled("cache %s, landing...",
-                                    job.contains("cache_key")
-                                        ? job["cache_key"].get<std::string>().substr(0, 6).c_str()
-                                        : "");
+                // One frame at most: the beat lands a finished answer at the first read after it.
+                ImGui::TextDisabled("landing...");
             } else {
                 ImGui::TextDisabled("on '%s', Ctrl+Z", landed_layer.c_str());
             }

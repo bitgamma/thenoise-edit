@@ -64,7 +64,6 @@ ai::RegionPolicy AiSession::region_policy(const ai::Recipe& recipe) const {
 
 void open_ai_session(noise::AppState& state) {
     AiSession& ai = state.ai;
-    ai.cache = std::make_unique<ai::BlobCache>(state.runtime_dir + "/ai/cache");
 
     if (ai.resource_dir.empty()) {
         // The tables ship with the tree. `$NOISE_EDIT_ASSETS` says where explicitly, which is what a
@@ -143,7 +142,7 @@ void open_ai_session(noise::AppState& state) {
         ai.client = std::make_unique<ai::Client>(*ai.transport, std::move(profile),
                                                  [] { return platform::now_seconds(); });
         ai.jobs = std::make_unique<ai::JobQueue>(
-            ai::JobQueue::Deps{ai.client.get(), ai.cache.get(), state.runtime_dir + "/ai/jobs"},
+            ai::JobQueue::Deps{ai.client.get(), state.runtime_dir + "/ai/jobs"},
             [] { return platform::now_seconds(); });
     }
 }

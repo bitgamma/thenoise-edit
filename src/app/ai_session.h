@@ -4,7 +4,6 @@
 #include <memory>
 #include <string>
 
-#include "ai/cache.h"
 #include "ai/http.h"
 #include "ai/queue.h"
 #include "ai/recipes.h"
@@ -46,7 +45,6 @@ struct AiSession {
     // $THENOISE_URL>", which is a sentence about a machine that was never contacted.
     bool replaying = false;
     std::unique_ptr<ai::Client> client;
-    std::unique_ptr<ai::BlobCache> cache;
     std::unique_ptr<ai::JobQueue> jobs;
     std::unique_ptr<ai::Registry> registry;
     // The seed the AI commands use when the call names none. One field, one home: nothing else may

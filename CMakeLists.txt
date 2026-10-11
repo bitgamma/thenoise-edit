@@ -116,7 +116,6 @@ target_compile_options(noise_io PUBLIC ${LIBPNG_CFLAGS_OTHER})
 # The AI layer: the region compiler and the result compositor are pixels and maths, so they are
 # headless and testable like core; the transport that speaks HTTP lives beside them and links curl.
 add_library(noise_ai STATIC
-    src/ai/cache.cpp
     src/ai/colour_match.cpp
     src/ai/compose.cpp
     src/ai/http.cpp
