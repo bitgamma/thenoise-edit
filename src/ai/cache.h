@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -23,7 +24,7 @@ public:
 
     // The path a key would live at, or empty when the key is not a blob id. A key arrives from a hash,
     // but the API takes a string, so the shape is checked rather than trusted: anything that could walk
-    // out of the cache directory is refused.
+    // out of the cache directory is refused - and the refusing is counted, so this takes the lock.
     std::string blob_path(const std::string& key) const;
 
     // True when the blob is there and read. `misses` and `hits` count the calls, so `cache.stats` says
@@ -43,9 +44,15 @@ public:
     nlohmann::json json() const;
 
 private:
+    // For callers that already hold `mutex_`, since taking it twice would deadlock.
+    std::string blob_path_locked(const std::string& key) const;
+
     std::string directory_;
     // Counters of calls, not of contents: mutable because asking what is on disk is a const question
-    // and refusing a bad key is something a const path does.
+    // and refusing a bad key is something a const path does. The worker writes them (`lookup`, `store`)
+    // while the thread that draws reads `cache.stats`, so they sit behind a lock the type owns: tearing
+    // counters would not corrupt an answer, but they would report a run that never happened.
+    mutable std::mutex mutex_;
     mutable std::size_t hits_ = 0;
     mutable std::size_t misses_ = 0;
     mutable std::size_t refused_keys_ = 0;

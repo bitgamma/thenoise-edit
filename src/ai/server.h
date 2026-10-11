@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -82,8 +83,15 @@ public:
 
 private:
     static std::string key(const std::string& model, Extent size, int steps);
+    // For the methods that already hold `mutex_`; taking it twice would deadlock.
+    std::optional<double> predict_locked(const std::string& model, Extent size, int steps) const;
 
+    // Guarded by the model's own lock, in every method. The queue's worker writes it the moment an
+    // answer arrives and the panel reads an estimate on every frame it draws, and a `std::map`
+    // traversed while another thread rebalances it does not fail - it hangs inside `find`. A call
+    // site cannot be trusted with this, which is why the queue's mutex does not cover it.
     std::map<std::string, Entry> entries_;
+    mutable std::mutex mutex_;
 };
 
 }  // namespace noise::ai

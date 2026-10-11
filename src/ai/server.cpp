@@ -74,6 +74,7 @@ std::optional<ServerProfile> profile_from_environment(std::string& error) {
 }
 
 void LatencyModel::observe(const std::string& model, Extent size, int steps, double seconds) {
+    const std::lock_guard<std::mutex> lock(mutex_);
     Entry& entry = entries_[key(model, size, steps)];
     entry.model = model;
     entry.size = size;
@@ -93,7 +94,14 @@ void LatencyModel::observe(const std::string& model, Extent size, int steps, dou
     ++entry.samples;
 }
 
-std::optional<double> LatencyModel::predict(const std::string& model, Extent size, int steps) const {
+std::optional<double> LatencyModel::predict(const std::string& model, Extent size,
+                                           int steps) const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return predict_locked(model, size, steps);
+}
+
+std::optional<double> LatencyModel::predict_locked(const std::string& model, Extent size,
+                                                  int steps) const {
     const auto found = entries_.find(key(model, size, steps));
     if (found == entries_.end() || found->second.samples == 0) {
         return std::nullopt;
@@ -103,7 +111,8 @@ std::optional<double> LatencyModel::predict(const std::string& model, Extent siz
 
 int LatencyModel::request_timeout_s(const std::string& model, Extent size, int steps,
                                    int floor_seconds) const {
-    const std::optional<double> predicted = predict(model, size, steps);
+    const std::lock_guard<std::mutex> lock(mutex_);
+    const std::optional<double> predicted = predict_locked(model, size, steps);
     if (!predicted.has_value()) {
         return floor_seconds;
     }
@@ -113,6 +122,7 @@ int LatencyModel::request_timeout_s(const std::string& model, Extent size, int s
 }
 
 std::vector<LatencyModel::Entry> LatencyModel::entries() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
     std::vector<Entry> out;
     out.reserve(entries_.size());
     for (const auto& [key_text, entry] : entries_) {

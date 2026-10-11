@@ -386,12 +386,16 @@ void test_the_blob_cache_holds_answers_by_content() {
 
     // A key arrives from a hash, but the API takes a string: anything that could walk out of the cache
     // directory is refused rather than joined.
-    for (const char* bad : {"", "../../etc/passwd", "short", "UPPERCASE000000000000000000000000000000000000000000000000000000",
-                            std::string(64, 'g').c_str()}) {
+    // Strings, not `const char*`: the 64-'g' case has no literal, and a `.c_str()` from a temporary in
+    // an initializer list is a pointer into a destroyed buffer by the time the loop body reads it.
+    const std::vector<std::string> bad = {
+        "", "../../etc/passwd", "short",
+        "UPPERCASE000000000000000000000000000000000000000000000000000000", std::string(64, 'g')};
+    for (const std::string& bad_key : bad) {
         std::string ignored;
-        CHECK(cache.blob_path(bad).empty());
-        CHECK(!cache.lookup(bad, read_back, ignored));
-        CHECK(!cache.store(bad, png, ignored));
+        CHECK(cache.blob_path(bad_key).empty());
+        CHECK(!cache.lookup(bad_key, read_back, ignored));
+        CHECK(!cache.store(bad_key, png, ignored));
     }
     // Refusals are counted and nothing is written: a cache that answered a traversal key by writing next
     // to it would be a bug the counters are the only way to see.
@@ -687,6 +691,87 @@ void test_the_latency_model_learns_only_from_real_runs() {
 
 }  // namespace
 
+// The queue's worker writes the latency model and the blob cache while the thread that draws reads both
+// every frame the AI panel is up. The queue's own mutex does not cover them, and a `std::map` walked
+// while another thread rebalances it does not fail - it hangs inside `find`, which is how the window
+// stopped when a job finished behind the panel. The invariant lives in the two types now, so this asks
+// for it from outside: interleaved, both answers stay exact.
+void test_the_model_and_the_cache_survive_the_thread_that_reads_them() {
+    LatencyModel latency;
+    std::atomic<bool> done{false};
+    constexpr int kShapes = 48;
+    constexpr double kSeconds = 4.0;
+
+    // The reader must see a value that a writer could have produced for the shape it asked about, and
+    // never one borrowed from another shape - the failure mode of a torn lookup is a wrong number, not
+    // a crash.
+    std::atomic<int> wrong{0};
+    std::thread reader([&] {
+        while (!done.load()) {
+            for (int shape = 0; shape < kShapes; ++shape) {
+                const std::optional<double> predicted =
+                    latency.predict("model", Extent{64 + 16 * shape, 64}, 4);
+                if (predicted.has_value() && *predicted != kSeconds) {
+                    ++wrong;
+                }
+            }
+        }
+    });
+
+    // Two writers on distinct shapes, so a lost update shows as a missing entry and a torn one as a
+    // wrong value. Every observation is the same number, which makes the exact final state checkable.
+    std::vector<std::thread> writers;
+    for (int half = 0; half < 2; ++half) {
+        writers.emplace_back([&, half] {
+            for (int shape = half * (kShapes / 2); shape < (half + 1) * (kShapes / 2); ++shape) {
+                latency.observe("model", Extent{64 + 16 * shape, 64}, 4, kSeconds);
+            }
+        });
+    }
+    for (std::thread& writer : writers) {
+        writer.join();
+    }
+    done.store(true);
+    reader.join();
+
+    CHECK_EQ(wrong.load(), 0);
+    const std::vector<LatencyModel::Entry> entries = latency.entries();
+    CHECK_EQ(entries.size(), static_cast<std::size_t>(kShapes));
+    for (const LatencyModel::Entry& entry : entries) {
+        CHECK_EQ(entry.seconds, kSeconds);
+        CHECK_EQ(entry.samples, 1);
+    }
+
+    // Same shape of access on the cache: the worker stores answers while `cache.stats` is read.
+    const std::string directory =
+        (std::filesystem::temp_directory_path() / "noise-backend-cache-race")
+            .string();
+    std::filesystem::remove_all(directory);
+    BlobCache cache(directory);
+    const Image tile = Image::filled(Extent{4, 4}, 9, 9, 9, 255);
+    const std::vector<std::uint8_t> png = noise::io::encode_png(tile);
+    std::atomic<bool> counting{false};
+    std::atomic<std::size_t> max_entries{0};
+    std::thread stats_reader([&] {
+        while (!counting.load()) {
+            max_entries.store(std::max(max_entries.load(), cache.stats().entries));
+        }
+    });
+    constexpr int kBlobs = 32;
+    for (int i = 0; i < kBlobs; ++i) {
+        std::string error;
+        CHECK(cache.store(noise::sha256_hex(std::span<const std::uint8_t>(
+                              std::vector<std::uint8_t>{static_cast<std::uint8_t>(i)})),
+                          png, error));
+    }
+    counting.store(true);
+    stats_reader.join();
+    const BlobCache::Stats stats = cache.stats();
+    CHECK_EQ(stats.entries, static_cast<std::size_t>(kBlobs));
+    CHECK(stats.bytes >= png.size() * kBlobs);
+    std::filesystem::remove_all(directory);
+}
+
 int main() {
     test_discovery_reads_the_recorded_server();
     test_an_answer_comes_back_from_the_recorded_edit();
@@ -697,5 +782,6 @@ int main() {
     test_a_queued_and_a_running_job_are_both_stoppable();
     test_a_job_left_running_is_reported_interrupted();
     test_the_latency_model_learns_only_from_real_runs();
+    test_the_model_and_the_cache_survive_the_thread_that_reads_them();
     return noise::test::summary(__FILE__);
 }

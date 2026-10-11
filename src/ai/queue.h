@@ -111,9 +111,9 @@ public:
     JobQueue(Deps deps, Clock clock);
     ~JobQueue();
 
-    // Queues a request and returns its id. The worker starts on it as soon as it is free. The ETA used
-    // for the request timeout is predicted here, on the thread that queues, so the worker never reads
-    // the latency model while another thread is writing it.
+    // Queues a request and returns its id. The worker starts on it as soon as it is free. The timeout
+    // the request will get is predicted here, at the moment of queueing, so that a job's ceiling cannot
+    // change under it while it waits - the latency model itself guards its own contents.
     // `coverage_png` is the canvas-sized PNG the answer lands under; the queue stores it and records
     // where it put it.
     std::string enqueue(const BuiltRequest& request, const std::string& recipe_id,

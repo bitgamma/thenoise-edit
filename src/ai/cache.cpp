@@ -29,6 +29,11 @@ bool is_blob_id(const std::string& key) {
 BlobCache::BlobCache(std::string directory) : directory_(std::move(directory)) {}
 
 std::string BlobCache::blob_path(const std::string& key) const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return blob_path_locked(key);
+}
+
+std::string BlobCache::blob_path_locked(const std::string& key) const {
     if (!is_blob_id(key)) {
         ++refused_keys_;
         return {};
@@ -37,7 +42,8 @@ std::string BlobCache::blob_path(const std::string& key) const {
 }
 
 bool BlobCache::lookup(const std::string& key, std::vector<std::uint8_t>& png, std::string& error) {
-    const std::string path = blob_path(key);
+    const std::lock_guard<std::mutex> lock(mutex_);
+    const std::string path = blob_path_locked(key);
     if (path.empty()) {
         error = "cache: '" + key + "' is not a 64-character lowercase hex blob id";
         return false;
@@ -56,7 +62,8 @@ bool BlobCache::lookup(const std::string& key, std::vector<std::uint8_t>& png, s
 
 bool BlobCache::store(const std::string& key, const std::vector<std::uint8_t>& png,
                       std::string& error) {
-    const std::string path = blob_path(key);
+    const std::lock_guard<std::mutex> lock(mutex_);
+    const std::string path = blob_path_locked(key);
     if (path.empty()) {
         error = "cache: '" + key + "' is not a 64-character lowercase hex blob id";
         return false;
@@ -75,6 +82,7 @@ bool BlobCache::store(const std::string& key, const std::vector<std::uint8_t>& p
 }
 
 BlobCache::Stats BlobCache::stats() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
     Stats stats;
     stats.hits = hits_;
     stats.misses = misses_;
