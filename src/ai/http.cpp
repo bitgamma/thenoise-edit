@@ -113,8 +113,6 @@ const char* failure_name(FailureClass kind) {
             return "refusal";
         case FailureClass::bad_image:
             return "bad_image";
-        case FailureClass::interrupted:
-            return "interrupted";
     }
     return "refusal";
 }
@@ -133,7 +131,6 @@ bool failure_is_terminal(FailureClass kind) {
         case FailureClass::size_rejected:
         case FailureClass::refusal:
         case FailureClass::bad_image:
-        case FailureClass::interrupted:
             return true;
     }
     return true;

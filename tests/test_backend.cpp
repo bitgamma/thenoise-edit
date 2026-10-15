@@ -540,9 +540,51 @@ void test_a_job_runs_once_and_the_second_time_is_another_request() {
     CHECK(dump.contains("jobs"));
     CHECK_EQ(static_cast<std::size_t>(dump["jobs"].size()), std::size_t(2));
 
-    // Both jobs are listed, in the order they were asked for, and nothing was read back from the
-    // directory to change that list.
+    // Both jobs are listed, in the order they were asked for.
     std::filesystem::remove_all(dir);
+}
+
+// The queue is in memory and the scratch directory is scratch: a record dies with the run that wrote
+// it. A loader in the constructor would list a dead run's jobs against this one and offer an answer
+// belonging to a document revision that no longer exists - the failure `document_epoch` guards against
+// inside a single run. The blobs outlive the record, so this distinguishes "not read" from "deleted".
+void test_a_new_queue_never_reads_the_run_before_it() {
+    const std::filesystem::path dir = scratch("reopen") / "jobs";
+    const std::unique_ptr<RecordedTransport> transport = fixtures();
+    Client client(*transport, profile(), [] { return 0.0; });
+    const auto reads = std::make_shared<std::atomic<int>>(0);
+    const auto clock = [reads] { return 100.0 + 5.0 * static_cast<double>(reads->fetch_add(1)); };
+    const RecipeSet recipes = recipes_or_fail();
+    const BuiltRequest request = edits_request(recipes);
+
+    Landing landing;
+    landing.crop = noise::Rect{8, 8, 64, 64};
+    landing.requested = Extent{64, 64};
+    landing.canvas = Extent{256, 256};
+    landing.target_layer = 0;
+    landing.document_checksum_before = "before";
+
+    std::string first_id;
+    std::string answer_png;
+    {
+        JobQueue first(JobQueue::Deps{&client, dir.string()}, clock);
+        first_id = first.enqueue(request, "inpaint-remove", "edit", landing, coverage_png());
+        REQUIRE(first.wait_for(first_id, 20.0));
+        const std::optional<noise::ai::JobRecord> record = first.find(first_id);
+        REQUIRE(record.has_value());
+        REQUIRE(record->state == JobState::succeeded);
+        answer_png = record->result_png;
+        REQUIRE(std::filesystem::exists(answer_png));
+    }
+
+    JobQueue reopened(JobQueue::Deps{&client, dir.string()}, clock);
+    CHECK(reopened.all().empty());
+    CHECK(!reopened.find(first_id).has_value());
+    CHECK(reopened.json()["jobs"].empty());
+    CHECK(reopened.pending_landings(0).empty());
+    CHECK(std::filesystem::exists(answer_png));
+
+    std::filesystem::remove_all(dir.parent_path());
 }
 
 // The ETA is a promise about waiting, so it is learned only from real runs of this shape on this box and
@@ -638,6 +680,7 @@ int main() {
     test_each_failure_the_server_gives_is_a_different_answer();
     test_cancellation_and_unmatched_requests_are_honest();
     test_a_job_runs_once_and_the_second_time_is_another_request();
+    test_a_new_queue_never_reads_the_run_before_it();
     test_a_queued_and_a_running_job_are_both_stoppable();
     test_the_latency_model_learns_only_from_real_runs();
     test_the_latency_model_survives_the_thread_that_reads_it();

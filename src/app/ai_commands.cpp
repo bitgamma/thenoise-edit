@@ -435,8 +435,8 @@ void register_ai_commands(AppState& state, CommandTable& table) {
     });
 
     // The compiled request, without sending it: the field list, the resolved size, the prepped PNG that
-    // would be uploaded, and the cache key it would key on. `AGENTS.md` §3 asks for every feature to be
-    // observable; this is the request half, observable before it costs anyone's GPU time.
+    // would be uploaded and its blob digest. `AGENTS.md` §3 asks for every feature to be observable;
+    // this is the request half, observable before it costs anyone's GPU time.
     table.add("ai.preview", "Compile a recipe against the document and report the exact request", {},
               {"recipe", "vars", "seed", "steps", "cfg_scale"},
               [&state](const json& args) -> CommandResult {

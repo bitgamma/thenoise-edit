@@ -108,11 +108,13 @@ struct JobRecord {
     nlohmann::json json() const;
 };
 
-// A queue of AI requests: one worker, because one server holds one image model resident at a time, and
-// a durable record, because a twenty-minute refine must not be lost when the app closes.
+// A queue of AI requests: one worker, because one server holds one image model resident at a time.
+// Records live in memory and die with the run - a job belongs to a document revision a restart cannot
+// guarantee, so pressing the verb again, which recompiles against the document that exists then, is
+// the retry.
 //
-// The queue owns the thread and the files; the app owns the document. Nothing here reaches for the
-// document, which is what keeps the whole thing testable against a recorded transport.
+// The queue owns the thread and the scratch files; the app owns the document. Nothing here reaches for
+// the document, which is what keeps the whole thing testable against a recorded transport.
 class JobQueue {
 public:
     struct Deps {

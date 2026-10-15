@@ -191,7 +191,7 @@ src/
                        above it is the same whether the answer comes from libcurl or a recording
     http.{h,cpp}       `Client`: health / models / load / run, and the failure classes - cancelled,
                        server_down, timeout, auth, no_model_loaded, model_not_found, not_edit_capable,
-                       size_rejected, refusal, bad_image, interrupted - each with the thing to do
+                       size_rejected, refusal, bad_image - each with the thing to do
     http_curl.cpp      the libcurl easy transport: TLS verification, timeouts, bearer header,
                        cancellation from the transfer callback
     recorded.{h,cpp}   the same transport from committed JSON recordings, answering on the caller's

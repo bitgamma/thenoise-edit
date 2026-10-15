@@ -32,9 +32,6 @@ enum class FailureClass {
     size_rejected,
     refusal,
     bad_image,
-    // A job that was running when the app stopped. The queue is durable so the record survives; the
-    // request does not, and pretending otherwise would leave a job that never finishes.
-    interrupted,
 };
 
 const char* failure_name(FailureClass kind);

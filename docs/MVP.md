@@ -95,7 +95,10 @@ Constraints that shape everything (see `AI-BACKEND.md`):
 
 **Robustness**
 - undo/redo including AI ops (free via blob indirection), autosave every 2 min to a recovery
-  bundle, crash-recovery prompt at launch, durable job queue
+  bundle, crash-recovery prompt at launch
+- ~~durable job queue~~ **out by decision**: a request in flight belongs to a document revision a
+  restart cannot guarantee, so its answer would land somewhere that no longer means the same thing.
+  Losing one at a crash costs a re-ask; landing it wrongly costs an edit nobody asked for
 - `ai.log` of every request/response (redacted, image bytes → blob hash)
 
 ## Explicitly NOT in MVP

@@ -149,7 +149,8 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
         return command_ok(json{{"model", model}, {"pinned", pinned}});
     });
 
-    table.add("job.list", "List every job this session and every durable one before it", {}, {},
+    table.add("job.list", "List every job of this run (the queue is in memory, nothing survives it)",
+              {}, {},
               [&state](const json&) -> CommandResult {
         CommandResult guard = need_queue("job.list", state);
         if (!guard.ok) {

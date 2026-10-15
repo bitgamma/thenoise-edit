@@ -626,7 +626,6 @@ Every class is `FailureClass` in `ai/http`, is carried on the job record (`failu
 | `timeout` | transfer timeout | Retry at a smaller `size`/`steps`; the timeout was the ETA×4 the latency EMA predicted, so this is a real signal about the box |
 | `bad_image` | 2xx with no `data[0].b64_json`, undecodable base64, or a PNG that does not decode | the answer is not in the reply: nothing was composited, the job is `failed`, and the raw body is on the record |
 | `cancelled` | the job's cancel flag seen by the transport, or a queue entry dropped before it started | the job is `cancelled` and its request is retryable; a cancelled queue entry never reached the server at all |
-| `interrupted` | a job found `running` when the queue was reopened | the request died with the app: `failed`, with the answer's path if one had already arrived |
 
 Not built, from the earlier design: stripping a rejected field and retrying with the deduction
 persisted; rephrasing a prompt from a "refusal-safe" template variant; marking a blob bad and
