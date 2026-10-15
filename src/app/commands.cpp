@@ -31,6 +31,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
     register_select_commands(state, table);
     register_mask_commands(state, table);
     register_view_commands(state, table);
+    register_file_commands(state, table);
 
     table.add("app.state", "Report application, document and view state", {}, {},
               [&state, &wire](const json&) -> CommandResult {

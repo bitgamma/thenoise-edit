@@ -135,13 +135,21 @@ bool flat_format_has_quality(const std::string& extension) {
     return format != nullptr && format->quality_used;
 }
 
+std::vector<std::string> flat_export_extension_list() {
+    std::vector<std::string> out;
+    for (const FlatFormat& format : kFlatFormats) {
+        out.push_back(format.extension);
+    }
+    return out;
+}
+
 std::string flat_export_extensions() {
     std::string out;
-    for (const FlatFormat& format : kFlatFormats) {
+    for (const std::string& extension : flat_export_extension_list()) {
         if (!out.empty()) {
             out += ", ";
         }
-        out += format.extension;
+        out += extension;
     }
     return out;
 }

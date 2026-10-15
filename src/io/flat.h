@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace noise::io {
 
@@ -49,7 +50,11 @@ bool flat_format_has_alpha(const std::string& extension);
 // quality is a field with no effect, and the command refuses rather than ignoring it.
 bool flat_format_has_quality(const std::string& extension);
 
-// The extensions `save_flat_image` writes, for an error message: "png, jpg, jpeg, webp".
+// Every format this app writes, in the order they are offered: the one home for "what can be
+// exported", so a save dialog's filters and an error message cannot drift apart.
+std::vector<std::string> flat_export_extension_list();
+
+// The same list for an error message: "png, jpg, jpeg, webp".
 std::string flat_export_extensions();
 
 }  // namespace noise::io

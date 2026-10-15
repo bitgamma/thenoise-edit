@@ -38,18 +38,21 @@ licence gravity for what we need; the ~400 lines of healing/filtering we want ar
 but nothing may foreclose them:
 
 * one `CMakeLists.txt`, no hand-written makefiles, no shell-only build steps;
-* platform-specific code quarantined in `src/platform/` behind one header. One implementation exists
-  (`posix.cpp`, with `posix_net.cpp` for the wire's sockets) and it is the shape the other two follow:
-  the header is the seam, a port adds a file rather than an `#ifdef` in shared code, and anything above
-  `src/platform/` is portable C++;
+* platform-specific code quarantined in `src/platform/` behind one header per concern. Two concerns have
+  implementations: `posix.cpp` (+`posix_net.cpp`) for time, paths and the wire's sockets, and
+  `file_dialog_{argv,linux}.cpp` for asking the desktop for a path - the argv is built portably so it is
+  testable everywhere, and only the spawn is Linux (`zenity`, replaced by `$NOISE_PICKER_PROGRAM`).
+  `file_dialog_none.cpp` is what any other target links: an error naming the unwritten seam, never a
+  cancel that did not happen. The header is the seam, a port adds a file rather than an `#ifdef` in
+  shared code, and anything above `src/platform/` is portable C++;
 * UTF-8 internally, `std::filesystem::path` (from/to UTF-8) at the boundary;
 * no POSIX-only primitives outside the shim: std threads/mutexes/atomics, no `fork`, no
   `poll`, no signal-based shutdown, no `dlopen`;
 * case-insensitive-path-safe (never two assets differing only in case);
 * sokol / ImGui / CMake cover Win32, Cocoa, X11+Wayland already — the port is a build task,
   not a refactor;
-* CI is Linux now; Win/mac stay a documented `docs/porting.md` checklist rather than a
-  rotting disabled workflow.
+* CI is Linux now; Win/mac stay a written-down seam rather than a rotting disabled workflow: the port is
+  a build file plus one `file_dialog_*` implementation per target, and nothing else has to change.
 
 ## Module layout
 
@@ -1433,7 +1436,7 @@ feature generating one element per canvas square or per log line shows up here f
 
 | | Decision |
 |---|---|
-| Platforms | cross-platform **by design**; Linux build/CI now, Win/mac deferred to `docs/porting.md` |
+| Platforms | cross-platform **by design**; Linux build/CI now. The unwritten ports are `NSOpenPanel` (macOS) and `GetOpenFileNameW` (Windows), one file each, to be written on a machine that can test them |
 | Input | mouse/keyboard only, **no pen/tablet** in MVP → sokol_app |
 | Backend | **Lemonade only**, `recipe: thenoise` only; API keys required; server often remote on LAN; no consent badge (server is user-controlled) |
 | Content model | **raster only** |

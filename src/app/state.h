@@ -10,9 +10,13 @@
 #include "io/zip.h"
 #include "core/geom.h"
 #include "core/image.h"
+#include "platform/file_dialog.h"
 
 #include <cstdint>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace noise {
@@ -134,6 +138,22 @@ struct AppState {
     app::AntOverlay ants;
     std::uint64_t ui_vertices = 0;
     std::uint64_t ui_vertex_limit = 0;
+
+    // A native file picker blocks until the person answers, so it runs on a worker and the answer lands
+    // here for the panel, the wire and the frame loop to read. One at a time: a second dialog would be a
+    // modal nobody can see, and an answer has to belong to the request still on screen.
+    std::mutex pick_mutex;
+    bool pick_running = false;
+    std::string pick_title;
+    std::optional<platform::PickResult> pick_answer;
+    // Joined when the state goes away, so nothing can free it under a worker still writing the answer.
+    std::thread pick_worker;
+
+    ~AppState() {
+        if (pick_worker.joinable()) {
+            pick_worker.join();
+        }
+    }
 
     // True while the pointer is inside a gesture of any tool. The host ends the gesture on the
     // button release through this, so a new tool has one place to be counted in and cannot leave

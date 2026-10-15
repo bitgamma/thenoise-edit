@@ -72,7 +72,14 @@ endforeach()
 
 add_library(noise_platform STATIC
     src/platform/posix.cpp
-    src/platform/posix_net.cpp)
+    src/platform/posix_net.cpp
+    src/platform/file_dialog_argv.cpp)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(noise_platform PRIVATE src/platform/file_dialog_linux.cpp)
+else()
+    # The unwritten macOS/Windows seams: an honest error rather than a phantom cancel.
+    target_sources(noise_platform PRIVATE src/platform/file_dialog_none.cpp)
+endif()
 target_include_directories(noise_platform PUBLIC src)
 
 add_library(noise_core STATIC
@@ -154,6 +161,7 @@ add_library(noise_app STATIC
     src/app/command_args.cpp
     src/app/commands.cpp
     src/app/document_commands.cpp
+    src/app/file_commands.cpp
     src/app/layer_commands.cpp
     src/app/paint_commands.cpp
     src/app/ants.cpp

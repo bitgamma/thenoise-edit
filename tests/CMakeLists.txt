@@ -6,6 +6,7 @@ add_executable(test_image test_image.cpp)
 add_executable(test_command test_command.cpp)
 add_executable(test_wire test_wire.cpp)
 add_executable(test_app test_app.cpp)
+add_executable(test_file_dialog test_file_dialog.cpp)
 add_executable(test_shortcut test_shortcut.cpp)
 add_executable(test_brush test_brush.cpp)
 add_executable(test_history test_history.cpp)
@@ -93,6 +94,15 @@ target_compile_definitions(test_app
             NOISE_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/http")
 target_compile_options(test_app PRIVATE -Wall -Wextra -Werror -Wshadow)
 add_test(NAME test_app COMMAND test_app)
+
+# Asking the desktop for a path: the argv the dialog is given, and the answer that comes back through
+# the pipe, driven by a stand-in program so no hermetic run depends on a desktop being installed.
+target_link_libraries(test_file_dialog PRIVATE noise_app noise_core noise_dbg)
+target_include_directories(test_file_dialog PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(test_file_dialog
+    PRIVATE NOISE_TEST_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
+target_compile_options(test_file_dialog PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+add_test(NAME test_file_dialog COMMAND test_file_dialog)
 
 # Shortcut text, table bindings and the platform key translation: sokol headers are needed
 # to build a sapp_event, but nothing is initialized, so it stays a windowless test.
