@@ -163,3 +163,34 @@ seed, resident model put back unpinned.
 * Definition of done: builds warning-free · a test that would fail if the feature broke · a wire command
   for any new observable state · docs still true · no new duplicated constants or default arguments · and
   this file saying so.
+
+## 2026-10-15 - Generate answers at a chosen frame, in a chosen style, and it is checked against the box
+
+`ai.generate` took its size from the whole document, so an aspect was whatever the canvas happened to be,
+and a style was a recipe nobody could reach: the row bound one verb to one recipe, so a variant was a
+second key over the same operation. Both are table data now. `core::AspectRatio` parses and prints
+`"16:9"`, `ai::frame_for_aspect` picks the largest centred rectangle of that ratio, and `Recipe` carries
+`aspects` (only a document-scope `from_words` recipe may) and `variants` (which must be interchangeable -
+same operation, endpoint, questions and frames - because standing in at the same key means answering the
+same questions). The panel gets `Aspect` and `Style` dropdowns under `Generate`, `ai.verbs` reports
+`active`, and the status line prices the frame before anything is sent.
+
+Verified against the dev box: `tools/ai_job_probe.py --live --only generate --generate`, five asks at
+420x300, every frame the recipe offers, recorded in
+`docs/probes/2026-10-15-generate-frame-and-style.md`. Three findings went back into the code rather than
+into a note:
+
+- `new-image` inherited `feather: auto`, and `compose` softens both ways, so the answer bled roughly the
+  feather past the frame into canvas that was never uploaded. The generate recipes say `feather: none` and
+  a table test refuses a document-scope `from_words` recipe that feathers.
+- `Landing` stored only the crop, so the landing report and the saved mask drew a box nobody asked for
+  whenever the frame was not already on the policy's grid. It carries the mask bounds now.
+- The probe's wire socket had a shorter read timeout than its own `job.wait`, so a cold model load killed
+  a live run before it could put the box's model back.
+
+Verdict on the architecture: the seam held, and the telling part is what did not change - field policy,
+`RoleTable`, `RegionPlan`, `JobQueue`, `AnswerLanding` and the composite all took the frame untouched,
+because a frame is a mask and masks were already the currency. `Landing` grew one field, which is the
+report telling the truth about coverage rather than a new concept. What this area wants next is a frame
+*inside* a marked-area verb (a 3:4 inpaint within a 4:3 selection): the geometry supports it, no recipe
+asks for it, so it stays unmade rather than speculative.
