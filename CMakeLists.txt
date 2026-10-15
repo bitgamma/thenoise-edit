@@ -30,7 +30,7 @@ FetchContent_Declare(sokol
 # Dear ImGui, docking branch.
 FetchContent_Declare(imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui
-    GIT_TAG        778992face67ecefaa5c2932db4b2101545ea4df
+    GIT_TAG        v1.93.0-docking
     GIT_SHALLOW    TRUE)
 FetchContent_Declare(json
     GIT_REPOSITORY https://github.com/nlohmann/json
