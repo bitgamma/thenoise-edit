@@ -67,6 +67,13 @@ struct RegionPlan {
     Vec2 to_request(Vec2 document_point) const;
 };
 
+// The largest rectangle of `ratio` that fits the canvas, centred, with one axis running the whole
+// canvas. The size policy's 16-pixel grid is deliberately not chased here: the largest on-grid 16:9
+// rectangle inside a 1000x1000 canvas is 768x432, so aligning would drop a fifth of the frame to save a
+// snap `plan_region` performs on the requested size anyway. The answer is mapped back onto this
+// rectangle, so the ratio asked for is the ratio that lands.
+Rect frame_for_aspect(Extent canvas, AspectRatio ratio);
+
 // The geometry of one compile: bbox -> grow -> clamp -> snap -> fit. A mask with no coverage has no
 // region, which is a refusal rather than a plan over the whole canvas - the difference between
 // "nothing selected" and "everything selected" is the difference the document already draws, and a

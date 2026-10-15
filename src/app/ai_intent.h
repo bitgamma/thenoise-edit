@@ -32,6 +32,9 @@ struct AiIntent {
     // Only what the caller supplied. The recipe's own defaults fill the rest, which is how a headless
     // `ai.run` and the panel end up compiling the same prompt.
     std::map<std::string, std::string> given;
+    // The aspect chosen for a recipe that offers them; no value is the canvas. Not a `vars` entry: a
+    // variable goes into the words, this into the size, and the field policy has no "aspect" field.
+    std::optional<AspectRatio> aspect;
     std::string job;
     // The last refusal this intent produced, so the panel can show why Run is greyed out and a wire
     // client reads the same sentence. Cleared by the next attempt.

@@ -27,6 +27,18 @@ namespace noise::app {
 // write goes.
 Mask whole_canvas(Extent size);
 
+// What a document-scope operation claims: the whole canvas, or the frame an aspect picks. The recipe's
+// `context` policy is what stops the crop growing past that frame - a generation has no surrounding
+// pixels to take context from - and the coverage that lands is the frame's.
+//
+// `source` takes the words a report shows, because the document cannot say afterwards which aspect its
+// pixels were asked for. Whether the recipe offers the aspect is `aspect_refusal`'s question.
+Mask document_coverage(Extent canvas, const std::optional<AspectRatio>& aspect, std::string& source);
+
+// Empty when the recipe offers `aspect`, or when none was chosen. The sentence names the recipe and what
+// it does offer: a preset that silently did nothing is worse than a refusal.
+std::string aspect_refusal(const ai::Recipe& recipe, const std::optional<AspectRatio>& aspect);
+
 // A canvas-sized PNG carrying `coverage` in its alpha channel: the form a mask takes when it has to
 // outlive the session that made it, since a job's answer must composite under the coverage it was asked
 // for and not under whatever is selected when it lands.
@@ -93,9 +105,9 @@ bool arg_recipe_vars(const nlohmann::json& args, const char* key,
                      std::map<std::string, std::string>& out, std::string& error);
 
 // What a recipe would ask for, as far as that is known **without touching pixels**: the endpoint, the
-// size the region compiler settles on, the model that would answer and the steps it would take. The
-// status bar shows this every frame, so it is geometry and table lookups only - the upload itself is
-// prepped and encoded by `ai.preview` and by a run, and by nothing else.
+// size the region compiler settles on for `aspect`, the model that would answer and the steps it would
+// take. The status bar shows this every frame, so it is geometry and table lookups only - the upload
+// itself is prepped and encoded by `ai.preview` and by a run, and by nothing else.
 struct RequestQuote {
     std::string endpoint;
     Extent size{0, 0};
@@ -104,7 +116,8 @@ struct RequestQuote {
 };
 
 // Empty when the region cannot be planned (no document, nothing marked for a selection recipe).
-std::optional<RequestQuote> quote_request(AppState& state, const ai::Recipe& recipe);
+std::optional<RequestQuote> quote_request(AppState& state, const ai::Recipe& recipe,
+                                         const std::optional<AspectRatio>& aspect);
 
 nlohmann::json region_plan_json(const ai::RegionPlan& plan, const std::string& coverage_source);
 nlohmann::json compose_report_json(const ai::ComposeReport& report);

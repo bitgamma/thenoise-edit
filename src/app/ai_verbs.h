@@ -60,4 +60,9 @@ std::string verb_table_error(const ai::RecipeSet& recipes, const std::vector<Ver
 const VerbInfo* find_verb(VerbId id);
 const ai::Recipe* verb_recipe(noise::AppState& state, const VerbInfo& verb);
 
+// The recipe a press of this verb would run: the row's own, unless the intent holds another member of the
+// row recipe's family (the style the panel chose). The row reports it as `active` and the command runs it,
+// so a screenshot, `ai.verbs` and the key cannot disagree about what is selected.
+const ai::Recipe* pressed_recipe(noise::AppState& state, const VerbInfo& verb);
+
 }  // namespace noise::app

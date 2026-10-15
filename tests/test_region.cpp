@@ -11,9 +11,11 @@
 
 using namespace noise;
 
+using noise::AspectRatio;
 using noise::ai::Prep;
 using noise::ai::RegionPlan;
 using noise::ai::RegionPolicy;
+using noise::ai::frame_for_aspect;
 using noise::ai::prep_blur_radius;
 using noise::ai::prep_from_name;
 using noise::ai::prep_name;
@@ -26,6 +28,12 @@ constexpr noise::ai::RegionPolicy kPolicy{0.25, 8, 16, 4096 * 4096};
 // A budget these tests fit against: under a 4000x3000 region and over the sizes the map-back checks use.
 // The shipped budget belongs to `roles.json` and is checked in `test_roles`, not here.
 constexpr int kFitAreaPx = 1024 * 1024;
+
+// The policy of a frame compile: no context growth, because a frame is meant to *be* the region, which
+// is what makes `crop == frame` checkable rather than implied. `kTightFramePolicy` is the same grid over
+// a budget a big canvas cannot fit.
+constexpr noise::ai::RegionPolicy kFramePolicy{0.0, 0, 16, 4096 * 4096};
+constexpr noise::ai::RegionPolicy kTightFramePolicy{0.0, 0, 16, 1024 * 1024};
 
 
 namespace {
@@ -72,6 +80,76 @@ Mask mask_of(Extent canvas, Rect covered) {
 
 int round_up(int value, int multiple) {
     return ((value + multiple - 1) / multiple) * multiple;
+}
+
+// An aspect preset is only real if the ratio survives the trip. The frame is what a person pressed, the
+// crop is where the answer lands, and `requested` is merely the model's working size - so a frame that
+// failed to fill the canvas, a crop that grew past the frame, or a snap that moved the shape by more than
+// a grid step would all put pixels on the canvas in a shape nobody asked for.
+void test_a_frame_keeps_its_ratio_from_preset_to_pixels() {
+    struct Case {
+        Extent canvas;
+        AspectRatio ratio;
+    };
+    const std::vector<Case> cases{
+        {Extent{1024, 1024}, AspectRatio{1, 1}},
+        {Extent{1024, 1024}, AspectRatio{16, 9}},
+        {Extent{1024, 1024}, AspectRatio{4, 3}},
+        {Extent{1024, 1024}, AspectRatio{3, 4}},
+        {Extent{1600, 900}, AspectRatio{16, 9}},
+        {Extent{1000, 1000}, AspectRatio{16, 9}},
+        {Extent{800, 1200}, AspectRatio{4, 3}},
+        {Extent{300, 300}, AspectRatio{16, 9}},
+    };
+    const auto check = [](const Case& item) {
+        const Rect frame = frame_for_aspect(item.canvas, item.ratio);
+        CHECK(frame.inside(item.canvas));
+        // As large as the ratio allows: one axis runs the whole canvas.
+        CHECK(frame.w == item.canvas.w || frame.h == item.canvas.h);
+        const double want = static_cast<double>(item.ratio.w) / static_cast<double>(item.ratio.h);
+        // The other axis is rounded, so half a pixel of it is all the ratio error the frame may have.
+        CHECK_NEAR(static_cast<double>(frame.w) / static_cast<double>(frame.h), want,
+                   want * 0.6 / static_cast<double>(frame.h));
+        // Centred: what is left over splits evenly, one pixel of asymmetry at most.
+        CHECK((item.canvas.w - frame.w) - 2 * frame.x <= 1);
+        CHECK((item.canvas.h - frame.h) - 2 * frame.y <= 1);
+
+        const RegionPlan plan =
+            plan_region(item.canvas, mask_of(item.canvas, frame), kFramePolicy).value();
+        // The frame is what was claimed, and the crop only ever the frame plus whatever the policy grid
+        // needed around it: the coverage that lands is the frame's, so the pixels outside it stay the
+        // document's own.
+        CHECK(plan.mask_bounds == frame);
+        CHECK(frame.x >= plan.crop.x && frame.y >= plan.crop.y &&
+              frame.right() <= plan.crop.right() && frame.bottom() <= plan.crop.bottom());
+        CHECK(plan.requested.w % kFramePolicy.size_multiple == 0);
+        CHECK(plan.requested.h % kFramePolicy.size_multiple == 0);
+        // The answer's centre is the crop's centre, so a wide answer cannot land off to one side of the
+        // region it was compiled for.
+        const Vec2 centre = plan.to_document(
+            Vec2{static_cast<double>(plan.requested.w) / 2.0,
+                 static_cast<double>(plan.requested.h) / 2.0});
+        CHECK_NEAR(centre.x, static_cast<double>(plan.crop.x) + plan.crop.w / 2.0, 1.0);
+        CHECK_NEAR(centre.y, static_cast<double>(plan.crop.y) + plan.crop.h / 2.0, 1.0);
+    };
+    for (const Case& item : cases) {
+        check(item);
+    }
+
+    // A square frame on a square canvas is the canvas: the case that already worked may not move.
+    CHECK(frame_for_aspect(Extent{1024, 1024}, AspectRatio{1, 1}) == (Rect{0, 0, 1024, 1024}));
+
+    // Over the budget the request shrinks and the frame does not: the answer arrives smaller and is
+    // mapped back over the whole frame rather than over a corner of it.
+    const Extent big{4096, 2304};  // 16:9 already, and nine times the budget below
+    const Rect frame = frame_for_aspect(big, AspectRatio{16, 9});
+    const RegionPlan tight = plan_region(big, mask_of(big, frame), kTightFramePolicy).value();
+    CHECK(tight.crop == frame);
+    CHECK(tight.scale < 1.0);
+    CHECK(tight.requested.w < frame.w);
+    CHECK(tight.to_request(Vec2{static_cast<double>(frame.x + frame.w),
+                                static_cast<double>(frame.y + frame.h)})
+              .x > 0.0);
 }
 
 // A mask that claims nothing compiles to no region. This is the difference the document already draws
@@ -395,6 +473,7 @@ void test_the_prep_vocabulary_is_the_one_home() {
 }  // namespace
 
 int main() {
+    test_a_frame_keeps_its_ratio_from_preset_to_pixels();
     test_a_mask_with_no_coverage_compiles_to_nothing();
     test_the_crop_grows_for_context_and_stays_on_the_canvas();
     test_the_requested_size_honours_the_policy_and_the_budget();

@@ -154,6 +154,21 @@ Vec2 RegionPlan::to_request(Vec2 document_point) const {
                     request_per_document_pixel(requested.h, crop.h)};
 }
 
+Rect frame_for_aspect(Extent canvas, AspectRatio ratio) {
+    if (canvas.w <= 0 || canvas.h <= 0 || ratio.w <= 0 || ratio.h <= 0) {
+        return Rect{};
+    }
+    // Which axis runs the full canvas, decided without dividing.
+    if (static_cast<double>(canvas.w) * ratio.h > static_cast<double>(canvas.h) * ratio.w) {
+        const int w = std::max(
+            1, static_cast<int>(std::lround(static_cast<double>(canvas.h) * ratio.w / ratio.h)));
+        return Rect{(canvas.w - w) / 2, 0, w, canvas.h};
+    }
+    const int h = std::max(
+        1, static_cast<int>(std::lround(static_cast<double>(canvas.w) * ratio.h / ratio.w)));
+    return Rect{0, (canvas.h - h) / 2, canvas.w, h};
+}
+
 std::optional<RegionPlan> plan_region(Extent canvas, const Mask& mask, const RegionPolicy& policy) {
     if (canvas.w <= 0 || canvas.h <= 0 || mask.empty() || mask.bounds().empty()) {
         return std::nullopt;

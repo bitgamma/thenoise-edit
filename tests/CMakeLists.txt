@@ -156,6 +156,17 @@ if(Python3_Interpreter_FOUND)
                          TIMEOUT 300
                          DEPENDS noise-edit)
 
+    # The two dropdowns the generate row grew: a click pair must change the aspect the intent holds and
+    # the size quoted for it, then the style, then the key must run the recipe the style selected. The
+    # commands are tested hermetically; only this can see that the widgets commit.
+    add_test(NAME test_panel_aspect_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/panel_aspect_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_panel_aspect_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 420
+                         DEPENDS noise-edit)
+
     add_test(NAME test_ai_compose_probe
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ai_compose_probe.py
                      --bin $<TARGET_FILE:noise-edit>)

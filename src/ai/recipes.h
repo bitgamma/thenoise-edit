@@ -10,6 +10,7 @@
 
 #include "ai/compose.h"
 #include "ai/region.h"
+#include "core/geom.h"
 
 namespace noise::ai {
 
@@ -85,6 +86,12 @@ struct Recipe {
     // outside `variables` is refused at parse, so the panel never collects a value the prompt
     // builder will reject.
     std::vector<std::string> ask;
+    // The frames a caller may choose, in the order the interface offers them. Empty is no choice, which
+    // is every recipe that is not a generation.
+    std::vector<AspectRatio> aspects;
+    // Other recipes that stand in for this one at its key and row, differing only in role and prompt
+    // tail. `variant_errors` is what makes standing in mean something.
+    std::vector<std::string> variants;
     CompositePolicy composite{CompositePolicy{}};
     // True when the region ignores the selection, which is what makes `new-image` work with nothing
     // selected and `reimagine` cover a whole frame.
@@ -97,6 +104,11 @@ struct Recipe {
 struct RecipeSet {
     const Recipe* find(const std::string& id) const;
     std::vector<std::string> ids() const;
+    // Everything one key could run: this recipe first, then its variants.
+    std::vector<const Recipe*> family(const std::string& id) const;
+    // The recipe whose `variants` name `id`, or `id` itself when none does. Exactly one head per variant,
+    // so this is a lookup; it is why an intent holding a variant still offers the whole family.
+    const Recipe* family_head(const std::string& id) const;
     // Everything that works on the current selection, in table order - the intents a selection
     // offers. The scope and the endpoint are what decide, not a list of ids: adding a recipe adds a
     // row here without anything else being told.

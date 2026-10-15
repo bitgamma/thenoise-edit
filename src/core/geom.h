@@ -2,6 +2,9 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
+#include <string>
+#include <vector>
 
 namespace noise {
 
@@ -38,10 +41,25 @@ inline std::size_t area(Rect rect) {
     return rect.empty() ? 0u : static_cast<std::size_t>(rect.w) * static_cast<std::size_t>(rect.h);
 }
 
+// A frame ratio (`16:9`), not a size: what a ratio becomes on a canvas is the region compiler's
+// decision, and keeping the two apart is what stops a preset from restating the size policy.
+struct AspectRatio {
+    int w = 1;
+    int h = 1;
+};
+
+// The only way text becomes a ratio. "16x9", "4:3 " and "0:1" are refused rather than repaired, so a
+// preset cannot silently become a ratio nobody chose.
+std::optional<AspectRatio> aspect_from_name(const std::string& name);
+std::string aspect_name(AspectRatio ratio);
+// "1:1, 3:4, 4:3" - from a list, so a refusal can only ever offer the names that were offered.
+std::string aspect_names(const std::vector<AspectRatio>& ratios);
+
 inline bool operator==(Extent a, Extent b) { return a.w == b.w && a.h == b.h; }
 inline bool operator==(const Rect& a, const Rect& b) {
     return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
 }
+inline bool operator==(AspectRatio a, AspectRatio b) { return a.w == b.w && a.h == b.h; }
 
 // The side of a covered pixel where coverage stops. A boundary is a shared edge between a covered
 // pixel and an uncovered one, so it is only fully described once the side is known: the pixel alone

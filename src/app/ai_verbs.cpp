@@ -87,6 +87,19 @@ const ai::Recipe* verb_recipe(noise::AppState& state, const VerbInfo& verb) {
     return state.ai.recipes.find(verb.recipe);
 }
 
+const ai::Recipe* pressed_recipe(noise::AppState& state, const VerbInfo& verb) {
+    const ai::Recipe* head = state.ai.recipes.find(verb.recipe);
+    if (head == nullptr) {
+        return nullptr;
+    }
+    for (const ai::Recipe* member : state.ai.recipes.family(head->id)) {
+        if (member->id == state.ai_intent.recipe) {
+            return member;
+        }
+    }
+    return head;
+}
+
 bool verb_matches(const VerbInfo& verb, const ai::Recipe& recipe) {
     switch (verb.id) {
         case VerbId::remove:
@@ -121,6 +134,18 @@ std::string verb_table_error(const ai::RecipeSet& recipes, const std::vector<Ver
                    verb.recipe + "' is '" + ai::operation_name(found->operation) + "' asking for " +
                    std::to_string(found->ask.size()) + " field(s)";
         }
+        // A stand-in answers to this key, so it has to mean this verb: `load_recipes` made the family
+        // interchangeable with itself, which is not the same as interchangeable with the key.
+        for (const ai::Recipe* member : recipes.family(found->id)) {
+            if (member->id == found->id) {
+                continue;
+            }
+            if (!verb_matches(verb, *member)) {
+                return "the verb '" + id + "' offers variant '" + member->id + "', which is '" +
+                       ai::operation_name(member->operation) + "' asking for " +
+                       std::to_string(member->ask.size()) + " field(s) - " + expectation(verb.id);
+            }
+        }
     }
     return {};
 }
@@ -147,6 +172,36 @@ void register_ai_verb_commands(AppState& state, CommandTable& table) {
                                 {"scope", recipe == nullptr
                                               ? "unknown"
                                               : (recipe->whole_document() ? "document" : "selection")},
+                                // The frames this key can be pressed at, and the recipes it can be
+                                // pressed with: the panel draws both from here and owns neither.
+                                {"aspects", recipe != nullptr
+                                                ? json([&] {
+                                                      json names = json::array();
+                                                      for (const AspectRatio& offered : recipe->aspects) {
+                                                          names.push_back(aspect_name(offered));
+                                                      }
+                                                      return names;
+                                                  }())
+                                                : json::array()},
+                                {"variants", recipe != nullptr
+                                                 ? json([&] {
+                                                       json members = json::array();
+                                                       for (const ai::Recipe* member
+                                                            : state.ai.recipes.family(recipe->id)) {
+                                                           if (member->id != recipe->id) {
+                                                               members.push_back(json{{"id", member->id},
+                                                                                      {"label",
+                                                                                       member->label}});
+                                                           }
+                                                       }
+                                                       return members;
+                                                   }())
+                                                 : json::array()},
+                                // Which of them a press would run right now, from the one function the
+                                // press itself uses.
+                                {"active", pressed_recipe(state, verb) != nullptr
+                                               ? json(pressed_recipe(state, verb)->id)
+                                               : json(nullptr)},
                                 {"ready", table_error.empty() && readiness.ready},
                                 {"reason", table_error.empty() ? readiness.reason : table_error},
                                 {"fix", readiness.fix},
@@ -171,7 +226,7 @@ void register_ai_verb_commands(AppState& state, CommandTable& table) {
             }
             const VerbInfo* row = find_verb(verb_id);
             const ai::Recipe* recipe =
-                row != nullptr ? state.ai.recipes.find(row->recipe) : nullptr;
+                row != nullptr ? pressed_recipe(state, *row) : nullptr;
             if (recipe == nullptr) {
                 return fail(id, "the verb '" + std::string(verb_name(verb_id)) +
                                     "' has no recipe to drive this run");

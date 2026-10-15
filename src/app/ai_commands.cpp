@@ -82,13 +82,13 @@ ai::RegionPolicy policy_for(const AppState& state, const ai::Recipe* recipe) {
 
 // The region the recipe asks for: the whole document, or the selection compiled to a crop with context.
 // Two different claims, and the difference is the recipe's, not the caller's.
-Attempt compile_region(const char* command, AppState& state, const ai::Recipe& recipe) {
+Attempt compile_region(const char* command, AppState& state, const ai::Recipe& recipe,
+                       const std::optional<AspectRatio>& aspect) {
     Attempt attempt;
     std::string coverage_source;
     Mask coverage;
     if (recipe.whole_document()) {
-        coverage = whole_canvas(state.doc.size());
-        coverage_source = "whole document (recipe region)";
+        coverage = document_coverage(state.doc.size(), aspect, coverage_source);
     } else {
         if (const std::string why = missing_region(recipe, state); !why.empty()) {
             attempt.failure = fail(command, why);
@@ -178,7 +178,19 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
                                          join_ids(state.ai.recipes))};
     }
 
-    Attempt region = compile_region(command, state, *recipe);
+    // Refused rather than ignored: compiling the whole canvas while the panel says 16:9 spends a model's
+    // time on the wrong picture and reports a region nobody asked for.
+    std::optional<AspectRatio> aspect;
+    if (!arg_aspect(args, "aspect", aspect)) {
+        return Attempt{false, Assembly{},
+                       fail(command, "'aspect' must be an \"W:H\" ratio the recipe offers, or null")};
+    }
+    const std::string aspect_error = aspect_refusal(*recipe, aspect);
+    if (!aspect_error.empty()) {
+        return Attempt{false, Assembly{}, fail(command, aspect_error)};
+    }
+
+    Attempt region = compile_region(command, state, *recipe, aspect);
     if (!region.ok) {
         return region;
     }
@@ -283,13 +295,17 @@ nlohmann::json assembly_json(const AppState& state, const Assembly& assembled,
 
 }  // namespace
 
-std::optional<RequestQuote> quote_request(AppState& state, const ai::Recipe& recipe) {
+std::optional<RequestQuote> quote_request(AppState& state, const ai::Recipe& recipe,
+                                         const std::optional<AspectRatio>& aspect) {
     if (state.doc.empty()) {
         return std::nullopt;
     }
     Mask coverage;
     if (recipe.whole_document()) {
-        coverage = whole_canvas(state.doc.size());
+        // Geometry only: the price on the status line follows the chosen frame without a prep, a
+        // resample or an encode. The quote reports no coverage source; a press does.
+        std::string unused_source;
+        coverage = document_coverage(state.doc.size(), aspect, unused_source);
     } else {
         const std::optional<Mask> selection = state.doc.selection();
         if (!selection.has_value()) {
@@ -434,11 +450,12 @@ void register_ai_commands(AppState& state, CommandTable& table) {
                                {"directory", state.ai.resource_dir + "/recipes"}});
     });
 
-    // The compiled request, without sending it: the field list, the resolved size, the prepped PNG that
-    // would be uploaded and its blob digest. `AGENTS.md` §3 asks for every feature to be observable;
-    // this is the request half, observable before it costs anyone's GPU time.
-    table.add("ai.preview", "Compile a recipe against the document and report the exact request", {},
-              {"recipe", "vars", "seed", "steps", "cfg_scale"},
+    // The compiled request, without sending it: the field list, the resolved size (for the aspect chosen,
+    // if the recipe offers aspects), the prepped PNG that would be uploaded and its blob digest - the
+    // request half of the wire, observable before it costs anyone's GPU time.
+    table.add("ai.preview",
+              "Compile a recipe against the document and report the exact request", {},
+              {"recipe", "vars", "aspect", "seed", "steps", "cfg_scale"},
               [&state](const json& args) -> CommandResult {
         const Attempt attempt = build_assembly("ai.preview", state, args, /*needs_server=*/false);
         if (!attempt.ok) {
@@ -453,7 +470,7 @@ void register_ai_commands(AppState& state, CommandTable& table) {
     });
 
     table.add("ai.run", "Queue a recipe against the document", {},
-              {"recipe", "vars", "seed", "steps", "cfg_scale"},
+              {"recipe", "vars", "aspect", "seed", "steps", "cfg_scale"},
               [&state](const json& args) -> CommandResult {
         const Attempt attempt = build_assembly("ai.run", state, args, /*needs_server=*/true);
         if (!attempt.ok) {

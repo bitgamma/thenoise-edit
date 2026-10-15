@@ -63,6 +63,32 @@ Mask whole_canvas(Extent size) {
     return all;
 }
 
+Mask document_coverage(Extent canvas, const std::optional<AspectRatio>& aspect,
+                      std::string& source) {
+    if (!aspect.has_value()) {
+        source = "whole document (recipe region)";
+        return whole_canvas(canvas);
+    }
+    source = "document at " + aspect_name(*aspect) + " (recipe region)";
+    Mask coverage(canvas);
+    coverage.op(ai::frame_for_aspect(canvas, *aspect), MaskOp::replace);
+    return coverage;
+}
+
+std::string aspect_refusal(const ai::Recipe& recipe, const std::optional<AspectRatio>& aspect) {
+    if (!aspect.has_value()) {
+        return {};
+    }
+    if (std::find(recipe.aspects.begin(), recipe.aspects.end(), *aspect) == recipe.aspects.end()) {
+        return "recipe '" + recipe.id + "' " +
+               (recipe.aspects.empty()
+                    ? "offers no aspect: its region is what it is, and a choice would be ignored"
+                    : "offers " + aspect_names(recipe.aspects)) +
+               " - '" + aspect_name(*aspect) + "' is not one of them";
+    }
+    return {};
+}
+
 std::vector<std::uint8_t> coverage_png(const Mask& coverage) {
     if (!coverage.sized()) {
         return {};

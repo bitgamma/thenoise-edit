@@ -284,6 +284,12 @@ Input: `(document composite, selection mask, recipe)` → one compiled request.
 9. WRITE     PNG encode (these exact bytes are the upload; `blob` is their hash)
 ```
 
+A document-scope recipe with an aspect chosen enters the same pipeline through step 1: the coverage it
+hands over is `ai::frame_for_aspect(canvas, ratio)`, the largest centred rectangle of that ratio. Nothing
+downstream differs, which is the point - a frame is coverage, not a second kind of request, and the grid
+snap in step 4 belongs to this compiler rather than to the frame (aligning the frame itself to 16 px costs
+23 % of a 1000×1000 canvas's 16:9 area to save a snap that happens anyway).
+
 ## The Result Compositor
 
 Always runs; this is what makes instruction editing usable at all. Built as `ai/compose` +
@@ -493,7 +499,7 @@ whole-image, that an `in_place` upload is byte-identical to the document (0 px c
 `reconstruct` upload changes 0 context pixels and destroys the hole (16 384 of 16 384 for `heal`,
 16 204 for the blur, where the rest is area a blur genuinely cannot alter).
 
-Two more keys belong to the recipe because the interface is a consumer of the table, not of a
+Four keys belong to the recipe because the interface is a consumer of the table, not of a
 hard-coded palette:
 
 * **`label`** is what the control says (`"Remove"`, `"Replace"`). The `id` is a key - greppable,
@@ -504,29 +510,28 @@ hard-coded palette:
   unwritten until the `enhance` role is switched on to fill it. An `ask` name with no declared default
   is refused at parse: it would be collected from the user and then rejected by the prompt builder,
   which is the worst place in the pipeline for that to surface.
+* **`aspects`** lists the frames (`["1:1", "16:9"]`) a person may pick for a recipe whose operation is
+  `from_words` and whose region is `document` - the only kind with no source geometry to follow.
+  Elsewhere the parser refuses the key: a preset overriding pixels that already exist is a lie about
+  the region. A ratio is geometry and never a request field - it picks the rectangle
+  (`ai::frame_for_aspect`, `ai/region.h`) that the compiler above then sizes by `size_policy`, and the
+  answer is inverse-mapped back onto that rectangle, so the ratio chosen is the ratio that lands.
+  Empty means the whole canvas, which is every recipe that is not a generation.
+* **`variants`** lists recipe ids that stand in for this one at the same key and the same panel row: a
+  different `role` and prompt tail, nothing else. Style is therefore recipe data rather than a branch
+  in a verb - `new-image` offers `new-image-photo` and `new-image-anime`, and the panel shows the three
+  as one "style" dropdown. `load_recipes` refuses a family that is not interchangeable (an
+  unresolvable id, a variant with variants of its own, one claimed by two heads, or any difference in
+  `operation`, `endpoint`, `ask` or `aspects`), because a stand-in that grew a question would be run by
+  a key that never asks it. `RecipeSet::family` and `family_head` are what the surface reads, so a row
+  still offers the whole family after a style has been chosen.
 
 The palette of selection operations is therefore `recipes/*.json` filtered to `region: selection` with
 an `edits` or `upscale` endpoint (`RecipeSet::selection_intents`): adding an operation means adding a
 file, and a recipe that stops being a selection operation leaves the palette by itself.
 
-Two more keys belong to the recipe because the interface is a consumer of the table, not of a
-hard-coded palette:
-
-* **`label`** is what the control says (`"Remove"`, `"Replace"`). The `id` is a key, greppable and
-  quoted in errors; a button wearing an id is a control nobody wrote.
-* **`ask`** names the variables a person is asked to fill, in order (`["target"]`,
-  `["target", "replacement"]`). Everything not listed runs on its `variables` default, which is what
-  makes a headless `ai.run` and a click compile the *same* prompt - and what keeps `context_desc`
-  unwritten until the `enhance` role is switched on to fill it. An `ask` name with no declared default
-  is refused at parse: it would be collected from the user and then rejected by the prompt builder,
-  which is the worst place in the pipeline for that to surface.
-
-So the palette of selection operations is `recipes/*.json` filtered to `region: selection` with an
-`edits` or `upscale` endpoint: adding an operation means adding a file, and a recipe that stopped being
-a selection operation leaves the palette on its own.
-
-Variables come from the user's instruction (whatever the recipe's `ask` lists), the layer name and the
-document aspect. **The seed is the session's**: `ai.preview` and `ai.run` take `seed` optionally and use
+Variables come from the user's instruction (whatever the recipe's `ask` lists) and the layer name. A
+chosen `aspect` is not one of them: it never enters the words, only the size the request asks for. **The seed is the session's**: `ai.preview` and `ai.run` take `seed` optionally and use
 `AiSession::seed` when the call names none, and the status line shows that number. Nothing
 draws a random seed inside a request path - the number on the screen is the number the request carried,
 which is what makes "run that again" and "why does this one look different" answerable. Variants are the
@@ -545,9 +550,9 @@ fidelity is not a server knob.
 
 | id | endpoint | role | operation | hole | region | notes |
 |---|---|---|---|---|---|---|
-| `new-image` | generations | generate | from_words | none | full doc | presets from doc aspect (1:1, 3:4, 4:3, 16:9 at the model's native scale) |
-| `new-image-anime` | generations | generate | from_words | none | full doc | Anima-oriented phrasing hints, Anima preferred |
-| `new-image-photo` | generations | generate | from_words | none | full doc | Krea-2-oriented phrasing hints |
+| `new-image` | generations | generate | from_words | none | full doc | the head of its family: `aspects` 1:1, 3:4, 4:3, 16:9, `variants` the two rows below |
+| `new-image-anime` | generations | generate | from_words | none | full doc | stands in for `new-image` at its key and row: illustration tail, `generate.illustration` |
+| `new-image-photo` | generations | generate | from_words | none | full doc | stands in for `new-image` at its key and row: photographic tail, `generate.photo` |
 | `inpaint-remove` | edits | edit | reconstruct | blur | mask bbox | the flagship: the only operation whose blur is a feature |
 | `inpaint-replace` | edits | edit | in_place | none | mask bbox | one field of words from the person (`instruction`): "Change this picture: …" |
 | `region-fill` | edits | edit | reconstruct | average | mask bbox | generate into the region from one field of words (`prompt`); the fill takes the surrounding colour, never the hole's own |

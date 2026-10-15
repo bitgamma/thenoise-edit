@@ -30,8 +30,8 @@ bool key_known(const std::string& key) {
     static const std::vector<std::string> kKnown = {"id",        "label",     "operation", "endpoint",
                                                    "role",      "region",    "prep",      "enhance",
                                                    "prompt",    "ask",       "variables", "composite",
-                                                   "context",   "steps",     "cfg_scale", "mask",
-                                                   "model"};
+                                                   "context",   "aspects",   "variants",  "steps",
+                                                   "cfg_scale", "mask",      "model"};
     return std::find(kKnown.begin(), kKnown.end(), key) != kKnown.end();
 }
 
@@ -234,6 +234,31 @@ std::vector<std::string> RecipeSet::ids() const {
         out.push_back(recipe.id);
     }
     return out;
+}
+
+std::vector<const Recipe*> RecipeSet::family(const std::string& id) const {
+    std::vector<const Recipe*> out;
+    const Recipe* head = find(id);
+    if (head == nullptr) {
+        return out;
+    }
+    out.push_back(head);
+    for (const std::string& variant : head->variants) {
+        if (const Recipe* found = find(variant); found != nullptr) {
+            out.push_back(found);
+        }
+    }
+    return out;
+}
+
+const Recipe* RecipeSet::family_head(const std::string& id) const {
+    for (const Recipe& recipe : recipes) {
+        if (std::find(recipe.variants.begin(), recipe.variants.end(), id) !=
+            recipe.variants.end()) {
+            return &recipe;
+        }
+    }
+    return find(id);
 }
 
 std::vector<const Recipe*> RecipeSet::selection_intents() const {
@@ -511,6 +536,69 @@ std::optional<Recipe> parse_recipe(const nlohmann::json& body, const std::string
             static_cast<int>(composite.at("lock_band_px").get<long long>());
     }
 
+    if (body.contains("aspects")) {
+        if (!body.at("aspects").is_array()) {
+            error = origin + ": 'aspects' must be an array of \"W:H\" frames";
+            return std::nullopt;
+        }
+        for (std::size_t i = 0; i < body.at("aspects").size(); ++i) {
+            const nlohmann::json& entry = body.at("aspects")[i];
+            if (!entry.is_string()) {
+                error = origin + ": 'aspects[" + std::to_string(i) +
+                        "]' must be an \"W:H\" string, not a " + std::string(entry.type_name());
+                return std::nullopt;
+            }
+            const std::string name = entry.get<std::string>();
+            const std::optional<AspectRatio> ratio = aspect_from_name(name);
+            if (!ratio.has_value()) {
+                error = origin + ": 'aspects[" + std::to_string(i) + "]' is '" + name +
+                        "', which is not an \"W:H\" frame";
+                return std::nullopt;
+            }
+            if (std::find(recipe.aspects.begin(), recipe.aspects.end(), *ratio) !=
+                recipe.aspects.end()) {
+                error = origin + ": 'aspects' offers '" + name + "' twice";
+                return std::nullopt;
+            }
+            recipe.aspects.push_back(*ratio);
+        }
+        if (!recipe.aspects.empty() && (recipe.operation != Operation::from_words ||
+                                       recipe.region != RegionScope::document)) {
+            error = origin + ": 'aspects' offers " + aspect_names(recipe.aspects) +
+                    ", and a frame is a choice only for a 'from_words' recipe whose region is the "
+                    "document - here the region is pixels that already exist";
+            return std::nullopt;
+        }
+    }
+
+    // Which of them really stand in is `variant_errors`' question; one file can only say they are ids.
+    if (body.contains("variants")) {
+        if (!body.at("variants").is_array()) {
+            error = origin + ": 'variants' must be an array of recipe ids";
+            return std::nullopt;
+        }
+        for (std::size_t i = 0; i < body.at("variants").size(); ++i) {
+            const nlohmann::json& entry = body.at("variants")[i];
+            if (!entry.is_string()) {
+                error = origin + ": 'variants[" + std::to_string(i) +
+                        "]' must be a recipe id, not a " + std::string(entry.type_name());
+                return std::nullopt;
+            }
+            const std::string variant = entry.get<std::string>();
+            if (variant == recipe.id) {
+                error = origin + ": 'variants' names '" + variant +
+                        "', which is this recipe: a family is a head and the others";
+                return std::nullopt;
+            }
+            if (std::find(recipe.variants.begin(), recipe.variants.end(), variant) !=
+                recipe.variants.end()) {
+                error = origin + ": 'variants' names '" + variant + "' twice";
+                return std::nullopt;
+            }
+            recipe.variants.push_back(variant);
+        }
+    }
+
     if (body.contains("context")) {
         if (!body.at("context").is_object()) {
             error = origin + ": 'context' must be an object ('ratio', 'min_px')";
@@ -560,6 +648,48 @@ std::optional<RecipeSet> parse_recipes(const nlohmann::json& body, const std::st
     }
     set.recipes.push_back(*recipe);
     return set;
+}
+
+// A variant answers to the head's key, so it has to be interchangeable there: same operation, endpoint,
+// words asked and frames offered. Anything else needs a key of its own, and a table that let it in would
+// run a recipe whose questions the row never asked. Checked here because a reference across files can
+// only be resolved once the whole table exists.
+std::string variant_errors(const RecipeSet& set) {
+    for (const Recipe& recipe : set.recipes) {
+        for (const std::string& variant : recipe.variants) {
+            const Recipe* found = set.find(variant);
+            if (found == nullptr) {
+                return recipe.source + ": 'variants' names '" + variant +
+                       "', which the table does not define (it has " + join(set.ids(), ", ") + ")";
+            }
+            if (!found->variants.empty()) {
+                return recipe.source + ": 'variants' names '" + variant +
+                       "', which declares variants of its own; a family has one head, or the panel is "
+                       "offering a choice of choices";
+            }
+            if (found->operation != recipe.operation || found->endpoint != recipe.endpoint ||
+                found->ask != recipe.ask || found->aspects != recipe.aspects) {
+                return recipe.source + ": variant '" + variant + "' is not the same door as '" +
+                       recipe.id + "' (operations " + operation_name(found->operation) + " vs " +
+                       operation_name(recipe.operation) + ", endpoints " +
+                       endpoint_name(found->endpoint) + " vs " + endpoint_name(recipe.endpoint) +
+                       ", " + std::to_string(found->ask.size()) + " field(s) asked vs " +
+                       std::to_string(recipe.ask.size()) + ", frames " +
+                       (found->aspects == recipe.aspects
+                            ? aspect_names(recipe.aspects)
+                            : aspect_names(found->aspects) + " vs " + aspect_names(recipe.aspects)) +
+                       ")";
+            }
+            for (const Recipe& other : set.recipes) {
+                if (&other != &recipe && std::find(other.variants.begin(), other.variants.end(),
+                                                   variant) != other.variants.end()) {
+                    return "'" + variant + "' is a variant of both '" + recipe.id + "' and '" +
+                           other.id + "'; one recipe answers at one door";
+                }
+            }
+        }
+    }
+    return {};
 }
 
 std::optional<RecipeSet> load_recipes(const std::string& directory, std::string& error) {
@@ -612,6 +742,11 @@ std::optional<RecipeSet> load_recipes(const std::string& directory, std::string&
     }
     if (set.recipes.empty()) {
         error = "'" + directory + "' holds no *.json recipes";
+        return std::nullopt;
+    }
+    const std::string family_error = variant_errors(set);
+    if (!family_error.empty()) {
+        error = family_error;
         return std::nullopt;
     }
     return set;

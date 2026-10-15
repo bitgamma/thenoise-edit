@@ -132,6 +132,25 @@ bool arg_name(const json& args, const char* key, std::string& out) {
     });
 }
 
+bool arg_aspect(const json& args, const char* key, std::optional<AspectRatio>& out) {
+    if (!args.contains(key)) {
+        return true;
+    }
+    if (args.at(key).is_null()) {
+        out = std::nullopt;
+        return true;
+    }
+    if (!args.at(key).is_string()) {
+        return false;
+    }
+    const std::optional<AspectRatio> parsed = aspect_from_name(args.at(key).get<std::string>());
+    if (!parsed.has_value()) {
+        return false;
+    }
+    out = parsed;
+    return true;
+}
+
 json view_json(const AppState& state) {
     return json{{"scale", state.view.scale},
                 {"origin", json::array({state.view.origin.x, state.view.origin.y})},

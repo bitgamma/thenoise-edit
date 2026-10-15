@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,10 @@ bool arg_bool(const json& args, const char* key, bool& out);
 bool arg_rgba(const json& args, const char* key, std::uint8_t out[4]);
 bool arg_points(const json& args, const char* key, std::vector<Vec2>& out);
 bool arg_name(const json& args, const char* key, std::string& out);
+// An aspect choice: an "W:H" string, or `null` to put it back. Absent leaves what the caller held, so a
+// key press that carries nothing keeps what the panel chose. Whether the recipe offers that ratio is the
+// door's question, not this reader's.
+bool arg_aspect(const json& args, const char* key, std::optional<AspectRatio>& out);
 json view_json(const AppState& state);
 json image_json(const Image& image, const std::string& label);
 CommandResult require_document(const AppState& state);

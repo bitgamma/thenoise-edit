@@ -47,6 +47,12 @@ One dockspace, four panes and a status bar:
 │                                              │   instruction       │
 │                                              │   [____________]    │
 │                                              │  Generate [Ctrl+G]  │
+│                                              │   prompt            │
+│                                              │   [____________]    │
+│                                              │   aspect            │
+│                                              │   [16:9         ▼] │
+│                                              │   style             │
+│                                              │   [Generate     ▼] │
 │                                              │  (brush fields only │
 │                                              │   for painting tools)│
 │                                              ├─────────────────────┤
@@ -353,7 +359,7 @@ panel because the panel is where the area gets drawn:
 | **Remove** | `Ctrl+Backspace` | a selection (yours or the active layer's mask) | nothing | reconstructs the marked area; the area is the whole instruction |
 | **Fill** | `Ctrl+Shift+F` | a selection | what should appear | reconstructs the marked area from those words |
 | **Change** | `Ctrl+Shift+C` | a selection | what should change | changes the marked area in place, from those words |
-| **Generate** | `Ctrl+G` | nothing (document scope) | the picture | makes a new image on a new layer |
+| **Generate** | `Ctrl+G` | nothing (document scope) | the picture | makes a new image on a new layer, at the aspect and in the style chosen under it |
 
 They are commands first and buttons second: `command.list` shows `ai.remove` bound to `Ctrl+Backspace`,
 `ai.verbs` answers the same rows, and the panel asks the table for the labels and keys rather than
@@ -368,6 +374,8 @@ them will act on a frame with nothing marked.
 | `272x224`, model, `~3.4 s` | what a press would send, priced before it costs anything: the endpoint, the size the region compiler settles on (region + context, snapped to the model's multiple), which model would answer, and the box's own measured time for that size - or nothing at all when the box has not answered that size before, which is honest rather than a guess. All of it is geometry and table lookups: **marking an area encodes nothing**, and there is no preview step, because the only honest preview of an AI edit is the answer |
 | `will load the model (resident: …)` | this press would swap the shared server; the popup asks, and says a swap costs tens of seconds. Nothing switches silently |
 | `j0001 running`, then `on 'Remove j0001', Ctrl+Z` | the job, and where its answer went. **There is nothing to press**: a finished answer composites itself - feathered, colour-matched, pixel-locked - onto **its own new layer** directly above the one the region was flattened from, named for the verb and the job. Hiding it, blending it down, masking it or deleting it are ordinary layer operations, `Ctrl+Z` takes the layer and its pixels away together, and `job.apply` brings it back (it is idempotent: the answer is already there, it says so and adds nothing) |
+| `aspect` | the frames this operation can be asked for, listed by the recipe and nowhere else: `canvas` first (the whole picture, which is every operation that is not a generation), then `1:1`, `3:4`, `4:3`, `16:9`. The choice sizes the request and the answer lands centred in that frame - **the pixels outside it are not touched by that run**. A recipe whose geometry already exists (a selection, a full-frame edit) has no dropdown, because there is nothing to choose: overriding pixels that exist would be a lie about the region |
+| `style` | the recipes that stand in for this one at the same key and the same row, again listed by the recipe: `Generate`, `Photographic`, `New image (illustration)`. Choosing one changes which recipe the verb's words and key run, and the row says which is in force; **choosing runs nothing**. The three are interchangeable by load-time rule, so the words typed for one mean the same thing to all three |
 | `seed 0` | the number in the request. It is on screen because it changes the answer, and it changes only through `ai.intent {seed: n}` - the panel shows the session's seed, so a number typed once is the number the next press sends |
 
 **Two kinds of operation, and why only one of them smears.** *Reconstruct* (Remove, Fill) throws the
@@ -394,11 +402,11 @@ export NOISE_AI_FIXTURES=$PWD/tests/fixtures/http                # or replay ins
 | `server.load {model, pin?}` | make one model resident. Explicit and priced: a swap is tens of seconds on a shared box, so it is never silent |
 | `ai.roles` | each role with the model it resolved to, the reason, the fix command when the box offers one, and the candidates |
 | `ai.recipes` | every recipe with its endpoint, role, operation, region, prep and composite policy, and the model its role resolves to |
-| `ai.verbs` | the verb rows as the panel sees them: id, command, key, recipe, label, operation, the fields each asks for, its scope, whether it could run and why not, the model it would use and whether that would mean a swap |
+| `ai.verbs` | the verb rows as the panel sees them: id, command, key, recipe, label, operation, the fields each asks for, its scope, whether it could run and why not, the model it would use and whether that would mean a swap, plus the `aspects` that recipe offers, the `variants` that stand in for it (each with the model its role resolves to and whether choosing it would load a different one) and which recipe a press would actually run (`active`) |
 | `ai.remove`, `ai.fill`, `ai.change`, `ai.generate` `{vars?, seed?, confirm?}` | one verb pressed. Each names its recipe to `ai.intent` with `run` set, so the key and a scripted intent are the same call sequence; the table is checked against the recipes at startup and a verb that no longer matches its recipe is refused |
-| `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?, connect?}` | the action as a command: read it with no arguments, as often as you like: it answers the intent, the readiness, the session, the job and a **quote** (endpoint, size, model, measured ~s) computed without touching pixels - `upload_encodes` counts every region prep + encode the run has done, and reads never move it and it answers the intents on offer, the values in force, whether the action could run and why not, the compiled request, the job, and the session (`connected`, `configured`, `connect_attempted`). `run` is the Run button; `confirm` accepts a model swap; `connect` is the Connect button - the handshake, with the refusal in `error` if the server is down or unconfigured |
-| `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` | the exact request: endpoint, ordered field list, resolved size, the prepped PNG that would be uploaded and its blob hash. **Sends nothing** — this is what to look at before spending minutes of someone's GPU |
-| `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}` | queue it. Answers the job with the region plan and the prepped file |
+| `ai.intent {recipe?, vars?, aspect?, seed?, job?, run?, confirm?, connect?}` | the action as a command: read it with no arguments, as often as you like: it answers the intent, the readiness, the session, the job and a **quote** (endpoint, size, model, measured ~s) computed without touching pixels - `upload_encodes` counts every region prep + encode the run has done, and reads never move it and it answers the intents on offer, the values in force, whether the action could run and why not, the compiled request, the job, and the session (`connected`, `configured`, `connect_attempted`). `run` is the Run button; `confirm` accepts a model swap; `connect` is the Connect button - the handshake, with the refusal in `error` if the server is down or unconfigured. `aspect` is an `"W:H"` string from that recipe's `aspects`, or `null` for the canvas; the read answers `aspects`, the `aspect` in force and the `family` of recipes the one key could run. Choosing a recipe drops an aspect the new one does not offer rather than applying a frame it never had |
+| `ai.preview {recipe, vars?, aspect?, seed?, steps?, cfg_scale?}` | the exact request: endpoint, ordered field list, resolved size (for the aspect chosen, when the recipe offers aspects), the prepped PNG that would be uploaded and its blob hash. **Sends nothing** — this is what to look at before spending minutes of someone's GPU |
+| `ai.run {recipe, vars?, aspect?, seed?, steps?, cfg_scale?}` | queue it. Answers the job with the region plan and the prepped file |
 | `job.list`, `job.get {id}` | every job of **this run**: state, timings, model, blob digest, answer path, landing metadata. The queue is in memory and nothing is read back, so a fresh session lists nothing and a re-ask is a second request |
 | `job.wait {id, timeout?}` | block until the job is terminal or the wait runs out |
 | `job.cancel {id}` | stop it; an answer that already arrived is kept, and its path is in the refusal. There is no `job.retry` — pressing the verb again *is* the retry, and it re-sends |

@@ -206,6 +206,27 @@ void test_rect_helpers() {
 
 }
 
+// `W:H` is a name, and the name is what a recipe lists and a refusal quotes back. Refused rather than
+// repaired: a ratio that silently became another one would put a frame on the canvas nobody chose.
+void test_a_ratio_name_is_strict_and_formats_back() {
+    CHECK(aspect_from_name("16:9") == (AspectRatio{16, 9}));
+    CHECK(aspect_from_name("1:1") == (AspectRatio{1, 1}));
+    for (const char* not_a_ratio : {"", "16", "16x9", "16:", ":9", "0:9", "16:0", " 16:9", "16:9 ",
+                                    "16:9:1", "12345:9", "+1:+1", "e:9"}) {
+        CHECK(!aspect_from_name(not_a_ratio).has_value());
+    }
+    CHECK_EQ(aspect_name(AspectRatio{4, 3}), std::string("4:3"));
+    CHECK_EQ(aspect_names({AspectRatio{1, 1}, AspectRatio{16, 9}}), std::string("1:1, 16:9"));
+    CHECK_EQ(aspect_names({}), std::string(""));
+
+    // What parses must print back, or the name on the screen and the name in the request drift apart.
+    for (const char* name : {"1:1", "3:4", "4:3", "16:9", "21:9", "9999:1"}) {
+        const std::optional<AspectRatio> parsed = aspect_from_name(name);
+        REQUIRE(parsed.has_value());
+        CHECK_EQ(aspect_name(*parsed), std::string(name));
+    }
+}
+
 int main() {
     test_view_round_trip();
     test_zoom_keeps_anchor_fixed();
@@ -215,5 +236,6 @@ int main() {
     test_clamp_origin_keeps_image_reachable();
     test_rect_helpers();
     test_a_grown_buffer_covers_and_stops_being_recopied();
+    test_a_ratio_name_is_strict_and_formats_back();
     return test::summary("geom");
 }

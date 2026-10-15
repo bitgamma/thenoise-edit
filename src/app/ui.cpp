@@ -36,9 +36,9 @@ constexpr float kRightPanelFraction = 0.30f;
 // line gives the AI line about a third of its width after the zoom, size, path and undo counts, and a
 // clipped warning about a model swap is worse than no warning.
 constexpr float kStatusBarHeightPx = 86.0f;
-// The Tool panel holds the verbs as well as the tool rows, and the brush rows appear only for a tool
-// that paints, so this is the height at which the verbs fit without the panel scrolling.
-constexpr float kToolPanelFraction = 0.52f;
+// The Tool panel holds the verbs as well as the tool rows, and the generate row carries an aspect and a
+// style dropdown under its words: measured against a 700 px tall window, where 0.52 clipped the verbs.
+constexpr float kToolPanelFraction = 0.64f;
 // A layer row is eye + name + opacity on one line and a blend-mode dropdown on the next. The
 // slider gets a fixed slice so a long name clips instead of pushing the control off the panel, and
 // the name keeps a slice of its own so a narrow panel still shows which layer is which. The mode
@@ -462,6 +462,70 @@ void draw_verb_section(CommandTable& commands, const json& intent) {
                                 json{{"recipe", recipe}, {"vars", json{{field, box.data()}}}});
             }
             editing = ImGui::IsItemActive() ? id : std::string();
+        }
+
+        // Both are rows of the recipe table reaching the panel through `ai.verbs` - this file holds no
+        // list of either - and both commit through `ai.intent`, the door the key reads. A row that offers
+        // nothing draws nothing.
+        const json aspects = verb["aspects"];
+        if (aspects.is_array() && !aspects.empty()) {
+            const std::string chosen =
+                intent["aspect"].is_null() ? std::string() : intent["aspect"].get<std::string>();
+            ImGui::TextDisabled("aspect");
+            ImGui::SetNextItemWidth(-1.0f);
+            // "canvas" is not an aspect: it is the absence of one, and it is listed first because putting
+            // the pixel budget back is a thing a person has to be able to do.
+            if (ImGui::BeginCombo("##aspect", chosen.empty() ? "canvas" : chosen.c_str())) {
+                if (ImGui::Selectable("canvas", chosen.empty())) {
+                    commands.invoke("ai.intent", json{{"recipe", recipe}, {"aspect", nullptr}});
+                }
+                for (const json& offered : aspects) {
+                    const std::string name = offered.get<std::string>();
+                    const bool on = name == chosen;
+                    if (ImGui::Selectable(name.c_str(), on)) {
+                        commands.invoke(
+                            "ai.intent", json{{"recipe", recipe}, {"aspect", name}});
+                    }
+                    if (on) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+
+        const json variants = verb["variants"];
+        if (variants.is_array() && !variants.empty()) {
+            const std::string active =
+                verb["active"].is_null() ? recipe : verb["active"].get<std::string>();
+            std::string shown = label;
+            for (const json& member : variants) {
+                if (member["id"].get<std::string>() == active) {
+                    shown = member["label"].get<std::string>();
+                }
+            }
+            ImGui::TextDisabled("style");
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::BeginCombo("##style", shown.c_str())) {
+                // Selecting a style selects its recipe on the intent; it does not run it. The head of the
+                // family is the row's own recipe, so "back to Generate" is a row of the list rather than a
+                // hidden default.
+                if (ImGui::Selectable(label.c_str(), active == recipe)) {
+                    commands.invoke("ai.intent", json{{"recipe", recipe}});
+                }
+                for (const json& member : variants) {
+                    const std::string id_of_member = member["id"].get<std::string>();
+                    const std::string label_of_member = member["label"].get<std::string>();
+                    const bool on = id_of_member == active;
+                    if (ImGui::Selectable(label_of_member.c_str(), on)) {
+                        commands.invoke("ai.intent", json{{"recipe", id_of_member}});
+                    }
+                    if (on) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
         }
 
         // No `vars` on the press: the commit above already put the words where the command reads them,

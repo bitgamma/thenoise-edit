@@ -2598,6 +2598,170 @@ void test_choosing_not_to_run_costs_no_upload_encode() {
     CHECK_EQ(h.state.upload_encodes, before + 2);
 }
 
+// The aspect is a choice about geometry, so it shows up in the price the status line quotes - and quoting
+// it must stay free, because a reader runs every frame. The rectangle's own geometry is `test_region`.
+void test_an_aspect_choice_prices_the_frame_it_will_ask_for() {
+    Harness h;
+    h.value("doc.new", json{{"width", 1024}, {"height", 1024}, {"fill", json::array({30, 40, 50, 255})}});
+    h.value("server.connect", json::object());
+
+    const json plain = h.value("ai.intent", json{{"recipe", "new-image"}});
+    CHECK_EQ(plain["aspects"].size(), std::size_t(4));
+    CHECK(plain["aspect"].is_null());
+    CHECK_EQ(plain["quote"]["size"][0].get<int>(), 1024);
+    CHECK_EQ(plain["quote"]["size"][1].get<int>(), 1024);
+
+    // `upload_encodes` counts every region prep and PNG encode a run does; a read must not move it.
+    const std::uint64_t encodes = h.state.upload_encodes;
+    const std::vector<AspectRatio> wanted{AspectRatio{16, 9}, AspectRatio{4, 3},
+                                          AspectRatio{3, 4}, AspectRatio{1, 1}};
+    for (const AspectRatio& ratio : wanted) {
+        const json chosen = h.value("ai.intent", json{{"recipe", "new-image"},
+                                                     {"aspect", aspect_name(ratio)}});
+        CHECK_EQ(chosen["aspect"].get<std::string>(), aspect_name(ratio));
+        const int w = chosen["quote"]["size"][0].get<int>();
+        const int h_again = chosen["quote"]["size"][1].get<int>();
+        // One axis is the canvas, the other the ratio, and the ratio is what was pressed rather than
+        // something the snap invented.
+        CHECK(w == 1024 || h_again == 1024);
+        CHECK_NEAR(static_cast<double>(w) / static_cast<double>(h_again),
+                   static_cast<double>(ratio.w) / static_cast<double>(ratio.h), 0.02);
+    }
+    CHECK_EQ(h.state.upload_encodes, encodes);
+
+    // Putting the choice back means the canvas again.
+    const json back = h.value("ai.intent", json{{"aspect", nullptr}});
+    CHECK(back["aspect"].is_null());
+    CHECK_EQ(back["quote"]["size"][1].get<int>(), 1024);
+
+    // A frame the recipe does not offer is refused with the frames it does.
+    const CommandResult unoffered =
+        h.run("ai.intent", json{{"recipe", "new-image"}, {"aspect", "21:9"}});
+    CHECK(!unoffered.ok);
+    CHECK(unoffered.error.find("1:1, 3:4, 4:3, 16:9") != std::string::npos);
+    CHECK(h.value("ai.intent", json::object())["aspect"].is_null());
+
+    // And a recipe that offers no choice at all says so rather than accepting the key and ignoring it.
+    const CommandResult elsewhere =
+        h.run("ai.intent", json{{"recipe", "inpaint-remove"}, {"aspect", "16:9"}});
+    CHECK(!elsewhere.ok);
+    CHECK(elsewhere.error.find("offers no aspect") != std::string::npos);
+}
+
+// The frame has to reach three places: the size in the request, the region a report describes, and the
+// pixels - everything outside it byte for byte what the document had. The pixel-lock claim, on a region
+// that covers less than the whole canvas.
+void test_a_frame_reaches_the_request_and_leaves_the_canvas_outside_it_alone() {
+    Harness h;
+    h.value("doc.new", json{{"width", 256}, {"height", 256}, {"fill", json::array({30, 40, 50, 255})}});
+    h.value("server.connect", json::object());
+    h.value("ai.intent", json{{"recipe", "new-image-anime"},
+                              {"vars", {{"prompt", "a red cube on a shelf"}}},
+                              {"aspect", "16:9"}});
+
+    // `new-image-anime` because the committed recordings answer a generation for the illustration role
+    // (`15-generate-any-size.json`) and the default run opens no socket.
+    const json preview = h.value("ai.preview", json{{"recipe", "new-image-anime"},
+                                                   {"vars", {{"prompt", "a red cube on a shelf"}}},
+                                                   {"aspect", "16:9"}});
+    const json& crop = preview["region"]["crop"];
+    // 256 wide, so 16:9 is 256x144 centred: the frame is the region, not a letterbox inside it.
+    CHECK_EQ(crop[0].get<int>(), 0);
+    CHECK_EQ(crop[1].get<int>(), 56);
+    CHECK_EQ(crop[2].get<int>(), 256);
+    CHECK_EQ(crop[3].get<int>(), 144);
+    CHECK(preview["region"]["coverage"].get<std::string>().find("16:9") != std::string::npos);
+    // The outgoing `size` is the frame's, and there is no "aspect" field for the policy to send.
+    bool size_as_frame = false;
+    for (const json& field : preview["request"]["fields"]) {
+        if (field[0].get<std::string>() == "size") {
+            size_as_frame = field[1].get<std::string>() == "256x144";
+        }
+        CHECK(field[0].get<std::string>() != "aspect");
+    }
+    CHECK(size_as_frame);
+
+    const std::string before = checksum_of(h);
+    const json run = h.value("ai.run", json{{"recipe", "new-image-anime"},
+                                           {"vars", {{"prompt", "a red cube on a shelf"}}},
+                                           {"aspect", "16:9"}});
+    const std::string id = run["job"]["id"].get<std::string>();
+    const json done = h.value("job.wait", json{{"id", id}, {"timeout", 30}});
+    CHECK_EQ(done["state"].get<std::string>(), std::string("succeeded"));
+    CHECK(done["landing"]["landed"].get<bool>());
+    // A layer of its own, named for the job, above the one the region was flattened from.
+    const json layers = h.value("layer.list", json::object());
+    CHECK_EQ(layers["layers"].size(), std::size_t(2));
+    CHECK(layers["layers"][1]["name"].get<std::string>().find(id) != std::string::npos);
+
+    const Rect frame{crop[0].get<int>(), crop[1].get<int>(), crop[2].get<int>(), crop[3].get<int>()};
+    const Image scene = Image::filled(Extent{256, 256}, 30, 40, 50, 255);
+    const Image landed = h.state.doc.composite();
+    std::size_t outside = 0;
+    std::size_t inside = 0;
+    for (int y = 0; y < landed.size().h; ++y) {
+        for (int x = 0; x < landed.size().w; ++x) {
+            if (std::memcmp(landed.at(x, y), scene.at(x, y), kChannels) == 0) {
+                continue;
+            }
+            if (frame.contains(x, y)) {
+                ++inside;
+            } else {
+                ++outside;
+            }
+        }
+    }
+    CHECK_EQ(outside, std::size_t(0));
+    CHECK(inside > 0);
+
+    h.value("edit.undo", json::object());
+    CHECK_EQ(checksum_of(h), before);
+}
+
+// The style list is the recipe table's and the choice is the intent's, so the key has to follow it: a
+// panel that offered "illustration" while `Ctrl+G` ran the head recipe would be two doors again.
+void test_a_style_choice_moves_which_recipe_the_key_runs() {
+    Harness h;
+    h.value("doc.new", json{{"width", 128}, {"height", 128}, {"fill", json::array({10, 20, 30, 255})}});
+    h.value("server.connect", json::object());
+
+    // Bound the reply, then range: ranging over a subobject of a temporary walks freed memory.
+    const auto generate_row = [&h] {
+        const json rows = h.value("ai.verbs", json::object());
+        for (const json& verb : rows["verbs"]) {
+            if (verb["id"].get<std::string>() == "generate") {
+                return verb;
+            }
+        }
+        return json::object();
+    };
+
+    const json row = generate_row();
+    CHECK_EQ(row["variants"].size(), std::size_t(2));
+    CHECK_EQ(row["variants"][0]["id"].get<std::string>(), std::string("new-image-photo"));
+    CHECK_EQ(row["active"].get<std::string>(), std::string("new-image"));
+
+    // Choosing a style selects it and runs nothing: no job, no encode.
+    const std::uint64_t encodes = h.state.upload_encodes;
+    const json chosen = h.value("ai.intent", json{{"recipe", "new-image-anime"},
+                                                  {"vars", {{"prompt", "a lighthouse at dusk"}}}});
+    CHECK_EQ(chosen["recipe"].get<std::string>(), std::string("new-image-anime"));
+    CHECK(chosen["job"].is_null());
+    CHECK_EQ(h.state.upload_encodes, encodes);
+    CHECK_EQ(generate_row()["active"].get<std::string>(), std::string("new-image-anime"));
+
+    // The press carries nothing and still runs the style that is showing.
+    const json ran = h.value("ai.generate", json::object());
+    REQUIRE(!ran["job"].is_null());
+    CHECK_EQ(ran["job"]["recipe"].get<std::string>(), std::string("new-image-anime"));
+    CHECK_EQ(ran["verb"].get<std::string>(), std::string("generate"));
+
+    // Back to the head and the press follows it back: the family belongs to the row, not to whichever
+    // member was last chosen.
+    h.value("ai.intent", json{{"recipe", "new-image"}});
+    CHECK_EQ(generate_row()["active"].get<std::string>(), std::string("new-image"));
+}
+
 void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
     Harness h;
     h.value("doc.new", json{{"width", 96}, {"height", 64}, {"fill", json::array({30, 40, 50, 255})}});
@@ -2949,6 +3113,9 @@ int main() {
     test_the_remove_key_runs_the_whole_sequence_with_no_words();
     test_the_typed_verbs_carry_their_words_to_their_own_layer();
     test_choosing_not_to_run_costs_no_upload_encode();
+    test_an_aspect_choice_prices_the_frame_it_will_ask_for();
+    test_a_frame_reaches_the_request_and_leaves_the_canvas_outside_it_alone();
+    test_a_style_choice_moves_which_recipe_the_key_runs();
     test_a_verb_that_stops_matching_its_recipe_is_refused_at_startup();
     test_every_recipe_that_asks_for_words_refuses_without_them();
     test_an_answer_lands_on_its_own_layer_over_an_empty_one();

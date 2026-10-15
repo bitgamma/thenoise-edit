@@ -106,6 +106,26 @@ std::optional<double> estimate_seconds(AppState& state, const std::string& model
     return state.ai.jobs->latency().predict(model, quote->size, *quote->steps);
 }
 
+// What the intent's key or row could run. Each row carries the model its role resolves to and whether
+// choosing it would mean loading a different one: on a shared box the swap is the expensive part, not the
+// style.
+nlohmann::json family_json(AppState& state, const ai::Recipe& recipe) {
+    // The head's family, so choosing a style does not narrow the offer to the thing already chosen.
+    const ai::Recipe* head = state.ai.recipes.family_head(recipe.id);
+    if (head == nullptr) {
+        return json::array();
+    }
+    json members = json::array();
+    for (const ai::Recipe* member : state.ai.recipes.family(head->id)) {
+        const Readiness member_readiness = assess(state, member);
+        members.push_back(json{{"id", member->id},
+                              {"label", member->label},
+                              {"model", member_readiness.model},
+                              {"swap", needs_swap(state, member_readiness)}});
+    }
+    return members;
+}
+
 // The Run button. A swap is the expensive thing in this design, so it is confirmed rather than
 // discovered: the refusal says which model, which model is resident and what it costs, and the same
 // call with `confirm` goes ahead.
@@ -125,8 +145,13 @@ CommandResult start_intent(AppState& state, CommandTable& table, const ai::Recip
                         state.ai.health.model_loaded + "; loading it costs tens of seconds on a "
                         "shared box. Re-run with confirm, or load it yourself with server.load");
     }
-    const CommandResult started = table.invoke(
-        "ai.run", json{{"recipe", recipe->id}, {"vars", effective_vars(*recipe, state.ai_intent.given)}});
+    // Passed to `ai.run` rather than read back out of the intent, so the run door takes what a press
+    // meant.
+    json run{{"recipe", recipe->id}, {"vars", effective_vars(*recipe, state.ai_intent.given)}};
+    if (state.ai_intent.aspect.has_value()) {
+        run["aspect"] = aspect_name(*state.ai_intent.aspect);
+    }
+    const CommandResult started = table.invoke("ai.run", run);
     if (!started.ok) {
         return fail("ai.intent", "could not queue '" + id + "': " + started.error);
     }
@@ -231,7 +256,7 @@ nlohmann::json intent_json(AppState& state) {
     }
 
     const std::optional<RequestQuote> quote =
-        recipe != nullptr ? quote_request(state, *recipe) : std::nullopt;
+        recipe != nullptr ? quote_request(state, *recipe, intent.aspect) : std::nullopt;
     json quote_json = nullptr;
     if (quote.has_value()) {
         quote_json = json{{"endpoint", quote->endpoint},
@@ -246,6 +271,17 @@ nlohmann::json intent_json(AppState& state) {
                 {"vars", recipe != nullptr ? effective_vars(*recipe, intent.given)
                                            : json::object()},
                 {"intents", intents},
+                {"aspects", recipe != nullptr ? json([&] {
+                               json names = json::array();
+                               for (const AspectRatio& offered : recipe->aspects) {
+                                   names.push_back(aspect_name(offered));
+                               }
+                               return names;
+                           }())
+                                           : json::array()},
+                {"aspect", intent.aspect.has_value() ? json(aspect_name(*intent.aspect))
+                                                     : json(nullptr)},
+                {"family", recipe != nullptr ? family_json(state, *recipe) : json::array()},
                 {"seed", static_cast<std::int64_t>(state.ai.seed)},
                 {"selection", selection},
                 {"connected", state.ai.connected},
@@ -310,6 +346,10 @@ CommandResult apply_intent(AppState& state, CommandTable& table, const json& arg
             std::erase_if(intent.given, [chosen](const auto& entry) {
                 return !accepts(*chosen, entry.first);
             });
+            // Carried over only where the next recipe offers the same frame, for the reason the words are.
+            if (!aspect_refusal(*chosen, intent.aspect).empty()) {
+                intent.aspect = std::nullopt;
+            }
         }
     }
 
@@ -333,6 +373,24 @@ CommandResult apply_intent(AppState& state, CommandTable& table, const json& arg
             intent.given[it.key()] = it.value().get<std::string>();
         }
     }
+
+    // Not a `vars` entry, so it is validated against the recipe rather than passed through.
+    std::optional<AspectRatio> aspect = intent.aspect;
+    if (!arg_aspect(args, "aspect", aspect)) {
+        return fail("ai.intent",
+                    "'aspect' must be an \"W:H\" ratio the recipe offers, or null to put the choice back");
+    }
+    if (args.contains("aspect")) {
+        const ai::Recipe* chosen = intent_recipe(state);
+        if (chosen == nullptr) {
+            return fail("ai.intent", "nothing is being asked for, so there is no aspect to choose");
+        }
+        const std::string refusal = aspect_refusal(*chosen, aspect);
+        if (!refusal.empty()) {
+            return fail("ai.intent", refusal);
+        }
+    }
+    intent.aspect = aspect;
 
     // The seed the panel shows is the session's, so typing one changes what every later run
     // without an explicit seed would send. That is deliberate: the number on the screen is the
@@ -407,7 +465,7 @@ void register_ai_intent_commands(AppState& state, CommandTable& table) {
     // was typed - a field its recipe never asked for, a recipe that no longer exists - draws nothing,
     // and the person is left typing into a widget connected to nothing.
     table.add("ai.intent", "Read or set what the selection panel is asking for", {},
-              {"recipe", "vars", "seed", "job", "run", "confirm", "connect"},
+              {"recipe", "vars", "aspect", "seed", "job", "run", "confirm", "connect"},
               [&state, &table](const json& args) -> CommandResult {
         const CommandResult applied = apply_intent(state, table, args);
         if (!applied.ok && !args.empty()) {

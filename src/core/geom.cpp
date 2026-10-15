@@ -131,4 +131,59 @@ Rect grown_rect(Rect current, Rect want, Extent bounds, double factor) {
     return clamp_rect(grown, bounds);
 }
 
+namespace {
+
+// Four digits is the whole bound: a side this long cannot overflow a multiplication by a policy step,
+// and a ratio with a five-digit side is not a frame.
+constexpr std::size_t kMaxAspectDigits = 4;
+
+bool aspect_side(const std::string& text, int& out) {
+    if (text.empty() || text.size() > kMaxAspectDigits) {
+        return false;
+    }
+    int value = 0;
+    for (const char c : text) {
+        if (c < '0' || c > '9') {
+            return false;
+        }
+        value = value * 10 + (c - '0');
+    }
+    if (value <= 0) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
+}  // namespace
+
+std::optional<AspectRatio> aspect_from_name(const std::string& name) {
+    const std::size_t colon = name.find(':');
+    if (colon == std::string::npos) {
+        return std::nullopt;
+    }
+    int w = 0;
+    int h = 0;
+    if (!aspect_side(name.substr(0, colon), w) ||
+        !aspect_side(name.substr(colon + 1), h)) {
+        return std::nullopt;
+    }
+    return AspectRatio{w, h};
+}
+
+std::string aspect_name(AspectRatio ratio) {
+    return std::to_string(ratio.w) + ":" + std::to_string(ratio.h);
+}
+
+std::string aspect_names(const std::vector<AspectRatio>& ratios) {
+    std::string out;
+    for (const AspectRatio& ratio : ratios) {
+        if (!out.empty()) {
+            out += ", ";
+        }
+        out += aspect_name(ratio);
+    }
+    return out;
+}
+
 }

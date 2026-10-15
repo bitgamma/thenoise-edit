@@ -10,8 +10,10 @@
 
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
+using noise::AspectRatio;
 using noise::ai::build_prompt;
 using noise::ai::Endpoint;
 using noise::ai::load_recipes;
@@ -375,6 +377,142 @@ void test_a_recipe_says_what_it_is_called_and_what_it_asks() {
     CHECK(unknown.find("prompt") != std::string::npos);
 }
 
+// A body the parser accepts as a generation.
+json generation(const char* id = "new-picture") {
+    json body = minimal(id);
+    body["operation"] = "from_words";
+    body["endpoint"] = "generations";
+    body["region"] = "document";
+    body["prep"] = "none";
+    body["prompt"] = json::array({"{{prompt}}", "Compose the whole frame."});
+    body["ask"] = json::array({"prompt"});
+    return body;
+}
+
+// A family's rules talk across files, so they can only be checked the way the app loads them.
+std::optional<RecipeSet> load_table(const std::vector<std::pair<std::string, json>>& bodies,
+                                    std::string& error) {
+    static int table = 0;
+    const std::filesystem::path scratch =
+        std::filesystem::temp_directory_path() / ("noise-family-" + std::to_string(table++));
+    std::filesystem::remove_all(scratch);
+    std::filesystem::create_directories(scratch);
+    for (const auto& [name, body] : bodies) {
+        std::string write_error;
+        REQUIRE(noise::io::write_file_atomic((scratch / (name + ".json")).string(),
+                                             bytes_of(body.dump()), write_error));
+    }
+    std::optional<RecipeSet> set = load_recipes(scratch.string(), error);
+    std::filesystem::remove_all(scratch);
+    return set;
+}
+
+// A frame is the shape of pixels that come from words; offered on a recipe whose pixels come from pixels
+// it would override geometry the document already has.
+void test_only_a_generation_offers_an_aspect() {
+    json on_an_edit = minimal();
+    on_an_edit["aspects"] = json::array({"16:9"});
+    const std::string refusal = parse_refusal(on_an_edit);
+    CHECK(refusal.find("from_words") != std::string::npos);
+
+    json frames = generation();
+    frames["aspects"] = json::array({"1:1", "3:4", "16:9"});
+    const Recipe offered = parse_or_fail(frames);
+    CHECK_EQ(offered.aspects.size(), std::size_t(3));
+    CHECK(offered.aspects.size() > 2 && offered.aspects[2] == (AspectRatio{16, 9}));
+    CHECK_EQ(aspect_names(offered.aspects), std::string("1:1, 3:4, 16:9"));
+
+    // Refused by name rather than repaired into a shape.
+    CHECK(parse_refusal([&] {
+        json body = generation();
+        body["aspects"] = json::array({"16x9"});
+        return body;
+    }()).find("16x9") != std::string::npos);
+    CHECK(parse_refusal([&] {
+        json body = generation();
+        body["aspects"] = json::array({"16:0"});
+        return body;
+    }()).find("16:0") != std::string::npos);
+    CHECK(parse_refusal([&] {
+        json body = generation();
+        body["aspects"] = json::array({"16:9", "16:9"});
+        return body;
+    }()).find("twice") != std::string::npos);
+    CHECK(parse_refusal([&] {
+        json body = generation();
+        body["aspects"] = "16:9";
+        return body;
+    }()).find("array") != std::string::npos);
+}
+
+// A table that must not load, and the reason it has to say.
+void table_refuses(const std::vector<std::pair<std::string, json>>& bodies, const std::string& why) {
+    std::string error;
+    CHECK(!load_table(bodies, error).has_value());
+    if (error.find(why) == std::string::npos) {
+        std::fprintf(stderr, "  wanted a refusal saying '%s', it said: %s\n", why.c_str(),
+                     error.c_str());
+    }
+    CHECK(error.find(why) != std::string::npos);
+}
+
+// A head claiming stand-ins, which is the one thing every family test needs.
+json head_claiming(const char* id, std::vector<std::string> names) {
+    json body = generation(id);
+    body["variants"] = names;
+    return body;
+}
+
+// A variant stands in for another recipe at one key, so it has to be interchangeable there - checked while
+// the table loads, because a key that ran a recipe asking different questions is a second door.
+void test_a_recipe_stands_in_for_another_only_at_the_same_door() {
+    const Recipe head = parse_or_fail(head_claiming("head", {"other"}));
+    CHECK_EQ(head.variants.size(), std::size_t(1));
+    CHECK(parse_refusal(head_claiming("head", {"head"})).find("this recipe") != std::string::npos);
+    CHECK(parse_refusal(head_claiming("head", {"other", "other"})).find("twice") != std::string::npos);
+
+    // Named but absent: the panel would offer a row that runs nothing.
+    table_refuses({{"head", head_claiming("head", {"missing"})}}, "does not define");
+
+    // Another ask, or another set of frames, and the two are different doors: the key would press the
+    // variant without asking the question it grew, or take a preset away that the row still shows.
+    json other_asks = generation("other");
+    other_asks["prompt"] = json::array({"{{subject}}", "Compose the whole frame."});
+    other_asks["ask"] = json::array({"subject"});
+    table_refuses({{"head", head_claiming("head", {"other"})}, {"other", other_asks}}, "not the same door");
+
+    json head_frames = head_claiming("head", {"other"});
+    head_frames["aspects"] = json::array({"1:1", "16:9"});
+    json other_frames = generation("other");
+    other_frames["aspects"] = json::array({"1:1"});
+    table_refuses({{"head", head_frames}, {"other", other_frames}}, "not the same door");
+
+    // A variant with variants of its own is a choice of choices; one recipe claimed by two heads answers
+    // at two doors.
+    json nested = generation("other");
+    nested["variants"] = json::array({"third"});
+    table_refuses({{"head", head_claiming("head", {"other"})}, {"other", nested},
+                   {"third", generation("third")}},
+                  "one head");
+
+    table_refuses({{"head", head_claiming("head", {"other"})},
+                   {"second", head_claiming("second", {"other"})},
+                   {"other", generation("other")}},
+                  "variant of both");
+
+    // A family that is well formed loads head first, and the head is findable from the variant - which is
+    // what keeps the offer whole after a style has been chosen.
+    std::string error;
+    const std::optional<RecipeSet> family =
+        load_table({{"head", head_claiming("head", {"other"})}, {"other", generation("other")}}, error);
+    REQUIRE(family.has_value());
+    CHECK(error.empty());
+    CHECK_EQ(family->family("head").size(), std::size_t(2));
+    REQUIRE(family->family_head("other") != nullptr);
+    CHECK_EQ(family->family_head("other")->id, std::string("head"));
+    CHECK_EQ(family->family_head("head")->id, std::string("head"));
+}
+
 // The intents a selection offers are the recipes whose region is the selection and whose endpoint
 // takes pixels: `new-image` and `reimagine` are not things you do to a rectangle. Derived from the
 // set, so a new recipe file appears in the palette without anything else being edited - and a recipe
@@ -440,6 +578,8 @@ int main() {
     test_the_shipped_recipes_agree_with_the_shipped_roles();
     test_the_words_an_operation_asks_for_are_the_words_it_is_given();
     test_a_recipe_says_what_it_is_called_and_what_it_asks();
+    test_only_a_generation_offers_an_aspect();
+    test_a_recipe_stands_in_for_another_only_at_the_same_door();
     test_a_selection_offers_the_selection_recipes();
     return noise::test::summary(__FILE__);
 }
