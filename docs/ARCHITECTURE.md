@@ -451,8 +451,9 @@ keep it cheap and honest:
   selection it was compiled from, and fencing it there deletes the feather and leaves the report
   describing an edit the document did not perform. With `own_coverage` staying inside the intended region
   is the caller's claim, and `bounds` is what the undo step was recorded against. A composite brings its
-  coverage and needs no fence of its own: the destination is a fresh empty layer, so there is nothing
-  there for a second limit to protect.
+  coverage and needs no fence of its own: the destination is empty — a fresh layer, or the blank canvas
+  rule 1 of [PRODUCT.md](PRODUCT.md) lets an answer fill — so there is nothing there for a second limit to
+  protect.
   Mixing *premultiplied* rather than straight RGBA is what makes partial
   coverage mean "part of this stroke happened": straight-alpha mixing changes a pixel's colour when
   only its coverage was meant to change. `test_mask` compares the result against a separate
@@ -1028,7 +1029,7 @@ the paired one needs its own live measurement before the probe says anything abo
 
 The **destination and the reference are different images**, and the compositor says so in its signature:
 `compose_result(target, reference, result, plan, coverage, policy)`. `target` is what the answer is
-blended onto — a fresh empty layer, since rule A of [PRODUCT.md](PRODUCT.md) — and `reference` is the document the
+blended onto — an empty one, since rule 1 of [PRODUCT.md](PRODUCT.md) — and `reference` is the document the
 request was compiled from, flattened over the crop. Step 2 measures drift against `reference` because
 that is the colour the answer has to agree with; steps 3–4 blend against `target` because that is what
 the answer covers. Passing the destination as its own reference is not a no-op any more: an empty layer
@@ -1224,7 +1225,7 @@ recipe that declares `enhance` must produce a valid request when the role is unr
 
 #### MVP recipes (pre-shipped)
 
-Every row obeys rule A: the answer arrives on its own layer above the one the region was flattened from,
+Every row obeys rule 1: the answer arrives on its own layer above the one the region was flattened from,
 which is where a strength control lives when one is wanted — the layer's opacity is the blend slider, and
 fidelity is not a server knob.
 

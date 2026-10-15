@@ -177,6 +177,17 @@ if(Python3_Interpreter_FOUND)
                          TIMEOUT 420
                          DEPENDS noise-edit)
 
+    # Whether the desktop will hand this window a file at all, and whether a driver can do what a drop
+    # does. The drag itself needs a second program and a real pointer, so these are the two halves that
+    # are observable headless.
+    add_test(NAME test_drop_target_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/drop_target_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_drop_target_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 180
+                         DEPENDS noise-edit)
+
     add_test(NAME test_ai_compose_probe
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ai_compose_probe.py
                      --bin $<TARGET_FILE:noise-edit>)

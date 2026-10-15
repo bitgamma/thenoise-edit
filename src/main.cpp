@@ -176,6 +176,9 @@ void init(void) {
 
 // Which file, and whether it has unsaved work: the question a person asks the title bar just before
 // they close the window.
+inline constexpr int kMaxDroppedFiles = 8;
+inline constexpr int kDroppedPathBytes = 4096;
+
 std::string window_title() {
     std::string name = "untitled";
     if (!g.state.doc.path().empty()) {
@@ -256,6 +259,21 @@ void event(const sapp_event* ev) {
     // and the pointer is always over UI chrome, so acting on it would drop every key
     // before a shortcut could see it.
     simgui_handle_event(ev);
+    // A file dropped on the window is the desktop handing over a path, and the only honest answer is
+    // to put the picture under the pointer. XDND is sokol's job; the placement and the layer are the
+    // same command a wire client or a future picker calls.
+    if (ev->type == SAPP_EVENTTYPE_FILES_DROPPED) {
+        const Vec2 at = g.state.view.view_to_world(
+            {static_cast<double>(ev->mouse_x) - g.state.canvas_origin.x,
+             static_cast<double>(ev->mouse_y) - g.state.canvas_origin.y});
+        for (int i = 0; i < sapp_get_num_dropped_files(); ++i) {
+            invoke_command("layer.import",
+                           json{{"path", sapp_get_dropped_file_path(i)},
+                                {"at", json::array({at.x, at.y})}},
+                           "dropped file");
+        }
+        return;
+    }
     if (ev->type == SAPP_EVENTTYPE_QUIT_REQUESTED) {
         invoke_command("app.quit", json::object(), "quit request");
         return;
@@ -317,6 +335,11 @@ int main(int argc, char** argv) {
     app.width = g.args.width;
     app.height = g.args.height;
     app.window_title = kWindowTitle;
+    // sokol asks for the drop support up front and caps what it will hand over; the cap is here
+    // because a stack of forty imports would be an undo history nobody asked for.
+    app.enable_dragndrop = true;
+    app.max_dropped_files = kMaxDroppedFiles;
+    app.max_dropped_file_path_length = kDroppedPathBytes;
     app.high_dpi = false;
     app.sample_count = 1;
     app.swap_interval = 1;

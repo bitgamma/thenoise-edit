@@ -89,7 +89,7 @@ struct ComposeReport {
 // outside the crop at all.
 //
 // `target` and `reference` are the same size and they are **not the same image**: an answer is received
-// by a fresh empty layer, so the pixels it has to agree with colour-wise are the document it was
+// by an empty destination (a fresh layer, or a canvas nothing has been drawn on), so the pixels it
 // compiled from, not the destination. `reference` is that. `target` keeps its own pixels anywhere outside
 // the coverage.
 //

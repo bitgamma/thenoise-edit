@@ -5,14 +5,24 @@
 
 #include "core/layer.h"
 #include "core/log.h"
+#include "io/flat.h"
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 namespace noise::app {
 namespace {
+
+// A dropped file has to be named somewhere, and the name a person gave it is the only one they
+// recognise: `streetlight.png` becomes the layer `streetlight`.
+std::string import_name(const std::string& path) {
+    const std::string stem = std::filesystem::path(path).stem().string();
+    return stem.empty() ? std::string("imported") : stem;
+}
 
 std::string range_error(const char* who, int index, std::size_t count) {
     return std::string(who) + ": 'index' " + std::to_string(index) +
@@ -145,6 +155,60 @@ void register_layer_commands(AppState& state, CommandTable& table) {
         return command_ok(json{{"active", state.doc.active()},
                                {"layers", layers_json(state)},
                                {"revision", state.doc.revision()}});
+    });
+
+    // The command a desktop drop runs, and the one `file.pick` will one day feed: the picture lands
+    // as it is on a layer of its own, its centre where the pointer was, so the gesture is "put this
+    // here" rather than "put this at 0,0 and go find it". `at` is in document pixels and is explicit
+    // because a drop off the edge of the canvas is a thing that happens and must be answered.
+    table.add("layer.import", "Land an image file on a new layer, centred on 'at'", {},
+              {"path", "at"},
+              [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        std::string path;
+        if (!arg_text(args, "path", path) || path.empty()) {
+            return fail("layer.import", "expected a non-empty string 'path'");
+        }
+        // Absent is not the origin here: a picture silently landing in a corner because a caller
+        // forgot the point would look like a painting bug.
+        Vec2 at{};
+        if (!args.contains("at") || !arg_vec2(args, "at", at)) {
+            return fail("layer.import", "expected 'at' as [x, y] in document pixels");
+        }
+        std::string error;
+        const Image imported = io::load_flat_image(path, error);
+        if (imported.empty()) {
+            return fail("layer.import", path + ": " + error);
+        }
+        const Rect placed{static_cast<int>(std::lround(at.x)) - imported.size().w / 2,
+                          static_cast<int>(std::lround(at.y)) - imported.size().h / 2,
+                          imported.size().w, imported.size().h};
+        const Rect inside = intersect(placed, Rect{0, 0, state.doc.width(), state.doc.height()});
+        if (inside.empty()) {
+            return fail("layer.import",
+                        path + " landed whole outside the " + std::to_string(state.doc.width()) +
+                            "x" + std::to_string(state.doc.height()) + " canvas at " +
+                            std::to_string(placed.x) + "," + std::to_string(placed.y));
+        }
+        const std::string name = import_name(path);
+        const int index = state.doc.add_layer_written(name, inside, [&](Image& layer) {
+            layer.blit(imported, placed.x, placed.y);
+            return true;
+        });
+        if (index < 0) {
+            return fail("layer.import", path + ": the document refused the new layer");
+        }
+        log::info("imported " + name + " (" + std::to_string(imported.size().w) + "x" +
+                  std::to_string(imported.size().h) + ") at " + std::to_string(placed.x) + "," +
+                  std::to_string(placed.y));
+        return command_ok(json{{"active", index},
+                               {"name", name},
+                               {"size", json::array({imported.size().w, imported.size().h})},
+                               {"placed", json::array({placed.x, placed.y})},
+                               {"visible", json::array({inside.x, inside.y, inside.w, inside.h})}});
     });
 
     table.add("layer.select", "Choose the layer strokes paint on", {}, {"index"},

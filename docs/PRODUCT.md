@@ -6,7 +6,8 @@ One page. If a change does not serve this, it is not in scope. `docs/PLAN.md` ho
 ## In one sentence
 
 An image editor that is easy to use because you tell it what you want, where you want it, in words - and
-every answer arrives on its own layer with the rest of the picture byte-for-byte untouched.
+every answer arrives where nothing you made is overwritten, and the rest of the picture stays byte-for-byte
+untouched.
 
 ## Who it is for
 
@@ -68,7 +69,10 @@ Working on an existing file is the same story with fewer steps: open, do, save.
 
 ## Rules that do not bend
 
-1. **An answer is a new layer.** Never a silent overwrite of pixels that already exist.
+1. **An answer never overwrites pixels that exist.** It arrives on a layer of its own, above the content it
+   was compiled from. The one exception is a canvas that holds nothing: `New` made an empty layer, nobody
+   has drawn on it, and the answer *is* the document — so it fills that layer rather than stacking a
+   picture above an invisible one. Undo gives the blank canvas back.
 2. **Pixel-lock.** Outside the coverage - and the feather the recipe asked for - the document is byte
    identical to what it was. Whole-image diff, not a sampled point.
 3. **Nothing persists but the document.** Jobs, prompts, selections and undo history die with the run;

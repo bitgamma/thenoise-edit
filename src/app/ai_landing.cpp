@@ -19,6 +19,22 @@ using nlohmann::json;
 
 namespace {
 
+// Nothing has ever been put on this layer: no colour anywhere, no coverage of its own. `New` hands a
+// canvas one of these, and an answer arriving over it is the picture the person asked for rather than
+// a second layer above an invisible one.
+bool layer_is_void(const Layer& layer) {
+    if (layer.mask.has_value()) {
+        return false;
+    }
+    const std::uint8_t* bytes = layer.pixels.data();
+    for (std::size_t i = 3; i < layer.pixels.bytes(); i += kChannels) {
+        if (bytes[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 ai::RegionPlan plan_of_landing(const ai::JobRecord& record) {
     // The compositor maps by two rectangles and reads nothing else from a plan, so a reloaded job
     // carries exactly what it needs: the crop it covered and the size the answer was asked for.
@@ -227,18 +243,36 @@ CommandResult land_answer(const char* command, AppState& state, const AnswerLand
                             std::to_string(landing.above_layer) +
                             ", which is no longer in the document, so there is nothing to land it above");
         }
-        // The creation and the write are one undo step, so the answer comes back as the one edit it was
-        // asked to be: layer and pixels together. A refusal adds nothing - there is no empty layer left
-        // named after a job that produced no answer.
-        landed_layer = state.doc.add_layer_written(
-            landing.layer_name, landing.plan.crop, [&](Image& layer) {
+        // A blank canvas is the one document that holds nothing to land above: `New` made the empty
+        // layer, nobody drew on it, and the answer is what the canvas was asked for. Composing into it
+        // gives byte-identical pixels to a fresh layer above it (there was nothing underneath to agree
+        // with, and coverage holds every byte outside the answer), and `Ctrl+Z` returns the blank canvas
+        // instead of peeling a layer off an empty one.
+        const bool into_blank_canvas = landing.above_layer == 0 &&
+                                       state.doc.layers().size() == 1 &&
+                                       layer_is_void(state.doc.layer(0));
+        if (into_blank_canvas) {
+            state.doc.paint(landing.plan.crop, PaintFence::own_coverage, [&](Image& layer) {
                 report = compose_result(layer, reference, landing.answer, landing.plan,
                                         landing.coverage, landing.policy);
-                return report.composed;
             });
+            landed_layer = report.composed ? 0 : -1;
+        } else {
+            // Elsewhere the creation and the write are one undo step, so the answer comes back as the
+            // one edit it was asked to be: layer and pixels together. A refusal adds nothing - there is
+            // no empty layer left named after a job that produced no answer.
+            landed_layer = state.doc.add_layer_written(
+                landing.layer_name, landing.plan.crop, [&](Image& layer) {
+                    report = compose_result(layer, reference, landing.answer, landing.plan,
+                                            landing.coverage, landing.policy);
+                    return report.composed;
+                });
+            if (landed_layer < 0 && report.composed) {
+                report.refusal = "no layer could be added to receive the answer";
+            }
+        }
         if (landed_layer < 0) {
-            return fail(command, report.composed ? "no layer could be added to receive the answer"
-                                                 : report.refusal);
+            return fail(command, report.refusal);
         }
     } else {
         // The preview is what the new layer would hold - an empty destination receiving the answer under

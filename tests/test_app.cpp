@@ -2718,6 +2718,92 @@ void test_a_frame_reaches_the_request_and_leaves_the_canvas_outside_it_alone() {
     CHECK_EQ(checksum_of(h), before);
 }
 
+// A dropped picture is the desktop handing over a path, so the command that answers one is tested the
+// same way a click would drive it: the layer takes the file's name, the middle of the picture goes
+// where the pointer was, and a drop that fell whole off the canvas is refused rather than parked at 0,0.
+void test_a_dropped_picture_lands_where_the_pointer_was() {
+    Harness h;
+    h.value("doc.new", json{{"width", 32}, {"height", 24}});
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "noise-app-import-test";
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path file = dir / "streetlight.png";
+    const Image source = Image::filled(Extent{8, 10}, 200, 30, 40, 255);
+    std::string error;
+    CHECK(io::save_png(file.string(), source, error));
+
+    const json landed =
+        h.value("layer.import", json{{"path", file.string()}, {"at", json::array({20, 10})}});
+    CHECK_EQ(landed["name"].get<std::string>(), std::string("streetlight"));
+    CHECK_EQ(landed["placed"][0].get<int>(), 16);
+    CHECK_EQ(landed["placed"][1].get<int>(), 5);
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(2));
+
+    const Image& layer = h.state.doc.layer(1).pixels;
+    CHECK(std::memcmp(layer.at(16, 5), source.at(0, 0), kChannels) == 0);
+    CHECK(std::memcmp(layer.at(23, 14), source.at(7, 9), kChannels) == 0);
+    // The rest of the layer is still the transparent nothing a new layer starts as: an imported
+    // rectangle is a rectangle, not an opaque sheet over everything under it.
+    CHECK_EQ(layer.at(0, 0)[3], std::uint8_t(0));
+    CHECK_EQ(layer.at(31, 23)[3], std::uint8_t(0));
+
+    // One undo takes the layer and its picture together, as it does for an answer.
+    h.value("edit.undo", json::object());
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(1));
+
+    const CommandResult off =
+        h.run("layer.import", json{{"path", file.string()}, {"at", json::array({900, 900})}});
+    CHECK(!off.ok);
+    CHECK(off.error.find("streetlight.png") != std::string::npos);
+    CHECK(off.error.find("outside") != std::string::npos);
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(1));
+
+    const CommandResult not_a_picture = h.run(
+        "layer.import", json{{"path", (dir / "nope.png").string()}, {"at", json::array({4, 4})}});
+    CHECK(!not_a_picture.ok);
+    CHECK(not_a_picture.error.find("nope.png") != std::string::npos);
+
+    // Without the point there is nowhere honest to put it, and the origin is not the answer.
+    const CommandResult nowhere = h.run("layer.import", json{{"path", file.string()}});
+    CHECK(!nowhere.ok);
+    CHECK(nowhere.error.find("'at'") != std::string::npos);
+}
+
+// `New` then a prompt: the canvas is empty because nothing has ever been put on it, and the answer is
+// the picture the person asked for, so it fills that canvas instead of arriving on a second layer
+// above an invisible one. The bytes are what the layer above would have held - there was nothing
+// underneath to composite against - and one `Ctrl+Z` gives the blank canvas back.
+void test_an_answer_on_a_blank_canvas_becomes_the_canvas() {
+    Harness h;
+    h.value("doc.new", json{{"width", 256}, {"height", 256}});
+    h.value("server.connect", json::object());
+    const std::string before = checksum_of(h);
+    h.value("ai.intent", json{{"recipe", "new-image-anime"},
+                              {"vars", {{"prompt", "a red cube on a shelf"}}}});
+
+    const json run = h.value("ai.run", json{{"recipe", "new-image-anime"},
+                                           {"vars", {{"prompt", "a red cube on a shelf"}}}});
+    const json done = h.value("job.wait", json{{"id", run["job"]["id"].get<std::string>()},
+                                               {"timeout", 30}});
+    CHECK_EQ(done["state"].get<std::string>(), std::string("succeeded"));
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(1));
+
+    const Image& base = h.state.doc.layer(0).pixels;
+    std::size_t painted = 0;
+    for (int y = 0; y < base.size().h; ++y) {
+        for (int x = 0; x < base.size().w; ++x) {
+            if (base.at(x, y)[3] != 0) {
+                ++painted;
+            }
+        }
+    }
+    CHECK(painted > 0);
+
+    h.value("edit.undo", json::object());
+    CHECK_EQ(checksum_of(h), before);
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(1));
+}
+
 // The style list is the recipe table's and the choice is the intent's, so the key has to follow it: a
 // panel that offered "illustration" while `Ctrl+G` ran the head recipe would be two doors again.
 void test_a_style_choice_moves_which_recipe_the_key_runs() {
@@ -3061,11 +3147,13 @@ void test_every_recipe_that_asks_for_words_refuses_without_them() {
 // option any more, so the claims that option existed to make are gone and two better ones take their
 // place: the write is bounded by the coverage and by nothing else, and one undo removes the answer
 // together with the layer it came on.
-void test_an_answer_lands_on_its_own_layer_over_an_empty_one() {
+void test_an_answer_lands_on_its_own_layer_over_another_one() {
     Harness h;
-    h.value("doc.new", json{{"width", 48}, {"height", 32}});  // transparent: nothing to receive into
+    h.value("doc.new", json{{"width", 48},
+                            {"height", 32},
+                            {"fill", json::array({30, 40, 50, 255})}});
     h.value("select.rect", json{{"rect", json::array({10, 8, 16, 10})}});
-    const std::string empty_document = checksum_of(h);
+    const std::string base_document = checksum_of(h);
     const std::size_t layers_before = h.state.doc.layers().size();
 
     std::string error;
@@ -3081,17 +3169,18 @@ void test_an_answer_lands_on_its_own_layer_over_an_empty_one() {
     CHECK(landed["composite"]["pixels_changed"].get<std::size_t>() > 0);
     // A new layer, and the one underneath is exactly what it was: an answer never overwrites a layer.
     REQUIRE(h.state.doc.layers().size() == layers_before + 1);
-    CHECK_EQ(h.state.doc.layer(0).pixels.at(14, 12)[3], 0);
+    const std::uint8_t base_fill[4] = {30, 40, 50, 255};
+    CHECK(std::memcmp(h.state.doc.layer(0).pixels.at(14, 12), base_fill, kChannels) == 0);
     // Pixels the document never had, inside the region...
     CHECK_EQ(h.state.doc.layer(1).pixels.at(14, 12)[3], 255);
     // ...and nothing outside it: the feathered coverage is the only thing that bounds the write.
     CHECK_EQ(h.state.doc.layer(1).pixels.at(0, 0)[3], 0);
-    CHECK_NE(checksum_of(h), empty_document);
+    CHECK_NE(checksum_of(h), base_document);
     CHECK_EQ(undo_depth(h), 1);  // layer and pixels are one edit
 
     h.value("edit.undo", json::object());
     CHECK_EQ(h.state.doc.layers().size(), layers_before);
-    CHECK_EQ(checksum_of(h), empty_document);
+    CHECK_EQ(checksum_of(h), base_document);
 
     // An argument the door no longer takes is refused, naming what it does take.
     const CommandResult odd =
@@ -3191,10 +3280,12 @@ int main() {
     test_choosing_not_to_run_costs_no_upload_encode();
     test_an_aspect_choice_prices_the_frame_it_will_ask_for();
     test_a_frame_reaches_the_request_and_leaves_the_canvas_outside_it_alone();
+    test_a_dropped_picture_lands_where_the_pointer_was();
+    test_an_answer_on_a_blank_canvas_becomes_the_canvas();
     test_a_style_choice_moves_which_recipe_the_key_runs();
     test_a_verb_that_stops_matching_its_recipe_is_refused_at_startup();
     test_every_recipe_that_asks_for_words_refuses_without_them();
-    test_an_answer_lands_on_its_own_layer_over_an_empty_one();
+    test_an_answer_lands_on_its_own_layer_over_another_one();
     test_every_command_refuses_an_argument_it_does_not_declare();
     test_a_container_that_is_not_ours_is_refused_naming_what_it_met();
     test_exporting_to_a_flat_format_reports_what_the_format_could_hold();

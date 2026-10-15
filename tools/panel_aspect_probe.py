@@ -144,8 +144,18 @@ def run(wire: wd.Wire, inj_display: str, p: Probe) -> None:
             done = wire.call("job.wait", {"id": ran["job"]["id"], "timeout": 60})
             p.check(done["state"] == "succeeded", "and it finished",
                     str(done.get("job", {}).get("error", "")))
-            p.check(len(wire.call("layer.list")["layers"]) == 2,
-                    "and it landed on a layer of its own")
+            # The canvas was blank, so the answer is the canvas: `New` made one empty layer, nobody
+            # drew on it, and a layer above an invisible one is a stack nobody asked for.
+            landed = wire.call("layer.list")["layers"]
+            p.check(len(landed) == 1, "and the answer arrived as the canvas",
+                    f"{len(landed)} layers")
+            again = wire.call("ai.generate", {})
+            done_again = wire.call("job.wait", {"id": again["job"]["id"], "timeout": 60})
+            p.check(done_again["state"] == "succeeded", "a second press finished too")
+            # Once the canvas holds something, every answer is its own layer again.
+            stacked = wire.call("layer.list")["layers"]
+            p.check(len(stacked) == 2, "and the next answer landed on a layer of its own",
+                    f"{len(stacked)} layers")
     finally:
         inj.close()
 

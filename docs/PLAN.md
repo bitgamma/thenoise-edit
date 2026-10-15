@@ -290,6 +290,22 @@ actions therefore live in a row at the top of the tool panel, and the keys stay 
 (`Ctrl+N`, `Ctrl+O`, `Ctrl+S`). Revisit when sokol_imgui/ImGui is next pinned: a menu bar is what a person
 expects, and the row is a workaround, not the design.
 
+**After that, same day.** `layer.import {path, at}` lands an image file on a layer of its own with the
+middle of the picture at the point it was named for, sokol's XDND handling feeds it on a file drop, and a
+drop that fell whole off the canvas is refused with the file's name in the error. The ImGui pin moved to
+`v1.93.0-docking` — the main menu bar still asserts, so the version was not the fault and the tool-panel
+file row stays. And rule 1 of PRODUCT acquired its exception: an answer arriving on a canvas that holds
+nothing fills the empty layer `New` made instead of stacking a picture above an invisible one, which is
+what the front door's prompt was always promising.
+
+**Later the same day.** `layer.import {path, at}` lands an image file on a layer of its own with the middle
+of the picture at the point it was named for; sokol's XDND handling feeds it when a file is dropped on the
+window, and a drop that fell whole off the canvas is refused with the file's name in the error. The ImGui
+pin moved to `v1.93.0-docking` and the main menu bar still asserts, so the version was not the fault and
+the tool-panel file row stays. Rule 1 of PRODUCT gained its exception: an answer arriving on a canvas that
+holds nothing fills the empty layer `New` made instead of stacking a picture above an invisible one, which
+is what the front door's prompt was always promising.
+
 Owed to this slice: the `Browse…`/`Save As` path is proven against a stand-in picker, never against zenity
 itself, so it wants one hand-run per desktop; `New` with a prompt runs `ai.generate` and lands the answer
 as a second layer over an empty base, which is the pixel-lock promise holding but not yet the "image
