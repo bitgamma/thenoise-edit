@@ -516,7 +516,10 @@ hard-coded palette:
   the region. A ratio is geometry and never a request field - it picks the rectangle
   (`ai::frame_for_aspect`, `ai/region.h`) that the compiler above then sizes by `size_policy`, and the
   answer is inverse-mapped back onto that rectangle, so the ratio chosen is the ratio that lands.
-  Empty means the whole canvas, which is every recipe that is not a generation.
+  Empty means the whole canvas, which is every recipe that is not a generation. The frame is also the
+  coverage, and the generate recipes set `feather: none`: `compose` softens a boundary in both
+  directions, so an `auto` feather walks the answer past an edge nothing uploaded - which is also why
+  `Landing` keeps the mask bounds next to the crop the request was sized from.
 * **`variants`** lists recipe ids that stand in for this one at the same key and the same panel row: a
   different `role` and prompt tail, nothing else. Style is therefore recipe data rather than a branch
   in a verb - `new-image` offers `new-image-photo` and `new-image-anime`, and the panel shows the three

@@ -16,7 +16,7 @@
     "Compose the whole frame; there is no existing image to preserve."
   ],
   "composite": {
-    "feather": "auto",
+    "feather": "none",
     "colour_match": false,
     "lock_band_px": 0
   },

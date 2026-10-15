@@ -1,0 +1,16 @@
+{
+ "name": "POST /images/generations - the head role's answer for any size, at 64x64",
+ "method": "POST",
+ "path": "/images/generations",
+ "match": {
+  "model": "Flux-2-Klein-9B-TheNoise"
+ },
+ "status": 200,
+ "json": {
+  "data": [
+   {
+    "b64_json": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAZklEQVR42u3QQREAAAQAMCH0zyOOBuRw9liBRVfOZyFAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIECBAgAABAgTct5syspW9wn9oAAAAAElFTkSuQmCC"
+   }
+  ]
+ }
+}

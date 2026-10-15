@@ -130,7 +130,7 @@ if(Python3_Interpreter_FOUND)
     # compiled request, the queue, the landing, and the pixels the report claims.
     add_test(NAME test_ai_job_probe
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ai_job_probe.py
-                     --bin $<TARGET_FILE:noise-edit>)
+                     --bin $<TARGET_FILE:noise-edit> --generate)
     set_tests_properties(test_ai_job_probe PROPERTIES
                          SKIP_REGULAR_EXPRESSION "SKIP:"
                          TIMEOUT 600)
@@ -222,6 +222,16 @@ if(NOISE_LIVE_TESTS AND Python3_Interpreter_FOUND)
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ai_job_probe.py
                      --bin $<TARGET_FILE:noise-edit> --live --max-images 2)
     set_tests_properties(ai_job_probe_live PROPERTIES
+                         LABELS live
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 1800)
+
+    # The aspect presets and the style family against the dev box: the frames the recipe offers, each
+    # asked for and each checked for the promise a frame makes - the answer inside it, nothing outside it.
+    add_test(NAME ai_job_probe_live_generate
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ai_job_probe.py
+                     --bin $<TARGET_FILE:noise-edit> --live --only generate --generate --max-images 5)
+    set_tests_properties(ai_job_probe_live_generate PROPERTIES
                          LABELS live
                          SKIP_REGULAR_EXPRESSION "SKIP:"
                          TIMEOUT 1800)

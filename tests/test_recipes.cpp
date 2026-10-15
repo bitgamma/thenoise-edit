@@ -21,6 +21,7 @@ using noise::ai::load_roles;
 using noise::ai::parse_recipe;
 using noise::ai::Recipe;
 using noise::ai::RecipeSet;
+using noise::ai::Operation;
 using noise::ai::RoleTable;
 using noise::ai::RegionScope;
 using nlohmann::json;
@@ -513,6 +514,26 @@ void test_a_recipe_stands_in_for_another_only_at_the_same_door() {
     CHECK_EQ(family->family_head("head")->id, std::string("head"));
 }
 
+// A generation is not a repair of the pixels around it: the frame it was asked for *is* the border, so
+// the answer lands crisp inside it and nothing outside is touched. `auto` feather grows the coverage
+// outwards by about its own radius, which is how a 16:9 answer first bled eight rows past its frame into
+// canvas that was never in the upload.
+void test_a_generation_lands_crisp_inside_its_frame() {
+    std::string error;
+    const std::optional<RecipeSet> set =
+        load_recipes(std::string(NOISE_TEST_ASSETS_DIR) + "/recipes", error);
+    REQUIRE(set.has_value());
+    for (const Recipe& recipe : set->recipes) {
+        if (recipe.operation != Operation::from_words || !recipe.whole_document()) {
+            continue;
+        }
+        CHECK(recipe.composite.feather_px.has_value());
+        if (recipe.composite.feather_px.has_value()) {
+            CHECK_EQ(*recipe.composite.feather_px, 0);
+        }
+    }
+}
+
 // The intents a selection offers are the recipes whose region is the selection and whose endpoint
 // takes pixels: `new-image` and `reimagine` are not things you do to a rectangle. Derived from the
 // set, so a new recipe file appears in the palette without anything else being edited - and a recipe
@@ -580,6 +601,7 @@ int main() {
     test_a_recipe_says_what_it_is_called_and_what_it_asks();
     test_only_a_generation_offers_an_aspect();
     test_a_recipe_stands_in_for_another_only_at_the_same_door();
+    test_a_generation_lands_crisp_inside_its_frame();
     test_a_selection_offers_the_selection_recipes();
     return noise::test::summary(__FILE__);
 }

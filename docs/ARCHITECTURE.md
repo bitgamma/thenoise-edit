@@ -8,12 +8,12 @@
 | GPU | **sokol_gfx**, backend `SG_BACKEND_GL3` first | Metal/D3D11/WGPU one flag away; GL3.3 is the boring, works-everywhere choice |
 | Platform | **sokol_app** (decided: no pen/tablet in MVP) | zero extra deps, same API shape; if tablet pressure ever becomes a requirement, SDL3 goes behind the same shim |
 | UI toolkit | **Dear ImGui** + docking branch, via `sokol_glue.h` + `sokol_imgui.h` | fastest path to a full editor chrome |
-| Image codecs | **libpng** (lossless, alpha), **libwebp** (opaque payloads), **turbojpeg** (export) | all present on this machine |
+| Image codecs | **libpng** (lossless, alpha), **libwebp** (opaque payloads), **libjpeg** (JPEG export) | system libraries found by `pkg-config`, all present on this machine; `libjpeg-turbo` is a drop-in if export speed ever matters |
 | HTTP | **libcurl** (easy interface, worker threads) | ubiquitous, no TLS surprises |
 | JSON | **nlohmann/json** | config, model profiles, manifests |
 | Compression | planned: **libzstd** for blobs, deflate for zip entries | nothing is compressed yet: the blob store and `.noise` entries are stored today |
 | Container | **miniz** (single-file, MIT) for the project zip | |
-| Vector overlay | **sokol_gl** (immediate) or a tiny instanced-quad path | marching ants, brush cursor, ghost regions, selection handles |
+| Vector overlay | **the ImGui draw list** today; **sokol_gl** (immediate) or a tiny instanced-quad path if an overlay ever has to be shaded | marching ants and the selection outline are line segments on `ImDrawList`, with the *geometry* - which pixel of the mask boundary is on which side - from `app/ants.{h,cpp}`. A draw-list element per dash is fine at a mask's perimeter and would not be at one per canvas square, which is the mistake `ui_vertices` exists to catch |
 | Inference backend | **Lemonade Server**, `thenoise` recipe only | we are a client; the model box is AMD/ROCm, usually on the LAN, bearer-keyed |
 
 Build: CMake + `FetchContent` (sokol, imgui, miniz, nlohmann). System libs via `pkg-config`, all
@@ -25,8 +25,10 @@ licence gravity for what we need; the ~400 lines of healing/filtering we want ar
 but nothing may foreclose them:
 
 * one `CMakeLists.txt`, no hand-written makefiles, no shell-only build steps;
-* platform-specific code quarantined in `src/platform/` behind one header with three
-  implementations (`_WIN32` / `__APPLE__` / else); everything above it is portable C++;
+* platform-specific code quarantined in `src/platform/` behind one header. One implementation exists
+  (`posix.cpp`, with `posix_net.cpp` for the wire's sockets) and it is the shape the other two follow:
+  the header is the seam, a port adds a file rather than an `#ifdef` in shared code, and anything above
+  `src/platform/` is portable C++;
 * UTF-8 internally, `std::filesystem::path` (from/to UTF-8) at the boundary;
 * no POSIX-only primitives outside the shim: std threads/mutexes/atomics, no `fork`, no
   `poll`, no signal-based shutdown, no `dlopen`;
@@ -37,6 +39,11 @@ but nothing may foreclose them:
   rotting disabled workflow.
 
 ## Module layout
+
+Two markers, so the map can carry intent without lying about the tree. **(planned)** = scope from
+[MVP.md](MVP.md) with no file and no caller yet; the line says what it is for and what stands in for it
+today. **(out)** = built and removed by decision; the line carries the reason, and the decision is
+recorded in MVP's decision log. Anything unmarked exists and is imported.
 
 ```
 src/
@@ -109,18 +116,32 @@ src/
                        themselves, never by the coverage. At 1:1 it returns the input byte for byte -
                        the kernel is interpolating and the weights are exact, which is what lets the
                        result compositor resample unconditionally without breaking pixel-lock.
-    heal.{h,cpp}       Telea / Chan fusion inpainting (local, offline)
+    heal.{h,cpp}       (planned, M5) Telea / Chan fusion inpainting, local and offline: the half of the
+                       `heal` recipe that runs with no server. Today that recipe goes to the server, and
+                       without one the command says so rather than inventing pixels.
     command.{h,cpp}    invokable command table: commands, titles and key bindings
     shortcut.{h,cpp}   canonical shortcut text: grammar, vocabulary, normalization
-    blob.{h,cpp}       content-addressed store API (impl in io/)
+    blob.{h,cpp}       (planned) content-addressed store API (impl in io/). Nothing stores by digest yet:
+                       undo keeps rectangle deltas in memory and answer PNGs are per-run scratch files.
+                       See "Undo, journal, and the blob store" for what has to be true when it arrives.
   gfx/
-    renderer.{h,cpp}   sg init, passes, resource lifetime
-    compositor.{h,cpp} layer stack → composite texture (ping-pong, per-layer blend)
-    texturecache.{h,cpp} blobId → sg_image, eviction, full-texture upload policy
-    strokes.{h,cpp}    GPU live-stroke preview (instanced stamps)
-    overlay.{h,cpp}    ants, guides, ghost regions, wipe slider
+    renderer.{h,cpp}   sg init, passes, resource lifetime, `read_framebuffer` (what `screenshot` reads)
+                       and `Texture::sync`, which uploads the document's composite when its revision has
+                       moved and not otherwise
+    checker.{h,cpp}    the transparency checker as one 2x2 texel tile, repeat-sampled across the canvas
+                       rect: four vertices at any zoom (Compositing says what the alternative costs)
+    compositor.{h,cpp} (planned) layer stack → composite texture (ping-pong, per-layer blend). The stack
+                       is composited on the CPU by `Document::composite` and uploaded as one texture;
+                       the GPU pair is a migration behind that same call, and `core/blend`'s reference is
+                       what it will have to match, mode for mode
+    texturecache.{h,cpp} (planned, with the compositor) blobId → sg_image, eviction, upload policy
+    strokes.{h,cpp}    (planned) GPU live-stroke preview. What paints today is the CPU provisional edit:
+                       `Document::begin_provisional` and friends, under the Painting path below
+    overlay.{h,cpp}    (planned as a module) guides, ghost regions, wipe slider. Ants exist and are not
+                       here: `app/ants.{h,cpp}` draws them, `ants.freeze` pins their phase for a capture
   app/
-    main.cpp           sokol entry, frame loop, mailbox drain
+    main.cpp           (src/main.cpp, above the app dir with the other entry glue) sokol entry, frame
+                       loop, wire poll, the shortcut gate that lets a text field keep a key
     commands.cpp       assembles the whole command table from the groups below
     command_args.{h,cpp} shared argument readers and the JSON each command answers with
     brush_steps.h    the rows behind the step keys: which field, which direction, which key —
@@ -138,26 +159,35 @@ src/
                        mid-gesture cannot change the shape already being drawn
     shortcuts.{h,cpp}  platform key event -> canonical shortcut text (the only sokol-aware
                        part of the app layer)
-    ui.cpp             the window: canvas, the tool panel (tools, selection, mask, the verb rows,
-                       brush fields for the tools that paint), layers, log, and a two-line status bar
-                       whose second line is the AI line - model, ~seconds, cache, swap warning, job
+    ui.cpp             the window: canvas, the tool panel (tools, selection, mask, the verb rows - each
+                       one whose recipe asks for words carrying a box for that field, committed through
+                       `ai.intent` as it is typed - and brush fields for the tools that paint), layers,
+                       log, and a two-line status bar whose second line is the AI line: the verb's label,
+                       the model, the size and seed a press would send, ~seconds where the box has
+                       measured that shape, a swap warning, and where a finished answer landed. The panel
+                       owns no verb list, no keymap and no copy of the words; it draws `ai.verbs` and
+                       `ai.intent` and writes back through them
     select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
     ai_commands.cpp     `ai.compose` (land a result file), `ai.roles`, `ai.recipes`, `ai.preview`
                        (the compiled request, unsent) and `ai.run` (queue it): each reports what the
                        policy and the coverage resolved to
-    ai_job_commands.cpp `server.connect/state/load`, `job.list/get/wait/cancel/retry/apply`,
-                       the queue and the session, observable and driveable
+    ai_job_commands.cpp `server.connect/state/load`, `job.list/get/wait/cancel/apply`,
+                       the queue and the session, observable and driveable. No `job.retry`: pressing the
+                       verb again *is* the retry, against what the document is now
     ai_session.{h,cpp} the tables, the transport (recordings if `$NOISE_AI_FIXTURES`, else libcurl),
-                       the client, cache, queue and registry: one object, opened once by the host
+                       the client, queue and registry: one object, opened once by the host
     ai_landing.{h,cpp} the one door an answer goes through the document by (`land_job`), shared by the
                        beat that lands finished jobs (`pump_ai_landings`, called by every reader of the
                        queue) and by `job.apply`, so neither can disagree about feather or coverage and
                        neither can land an answer anywhere but on its own new layer, in the document
                        whose `document_epoch` the job was queued under
     ai_intent.{h,cpp}  `ai.intent`: the AI action's state (which recipe the last verb chose, the values
-                       typed for the fields it asks about, the session seed, the job) and its one action,
+                       typed for the fields it asks about, the aspect chosen for a recipe that offers
+                       them, the session seed, the job) and its one action,
                        plus the readiness every door forecasts from (`assess`, `missing_region`,
-                       `needs_swap`) The window reads it once a
+                       `needs_swap`). A refusal is recorded on the intent by the command wrapper, so the
+                       next read - the panel's, every frame - still carries the sentence: a words box that
+                       will not take what was typed has to say so. The window reads it once a
                        frame (status line and verb rows share that one read), which is why it encodes
                        nothing: what a press would send comes from `quote_request` - the region compiler's
                        geometry and the model's own defaults - and `upload_encodes` counts every prep +
@@ -167,7 +197,9 @@ src/
                        `ai.fill`, `ai.change`, `ai.generate` and the readable `ai.verbs`. A row names no
                        label, no words and no scope of its own: those are the recipe's, and
                        `verb_table_error` refuses the table at session open when a row has drifted from
-                       what its recipe does
+                       what its recipe does - including a variant that would stand in at the key and mean
+                       a different verb. What a press runs is `pressed_recipe`: the row's recipe, or the
+                       family member the intent holds
     mask_commands.cpp mask.from_selection, mask.add/remove/fill/invert, mask.target and mask.get -
                        the two directions between a selection and the active layer's mask (both copies
                        of one `Mask`), the mask's own life cycle, and where strokes are aimed at
@@ -181,12 +213,16 @@ src/
                        command that would fix it. The file also carries the size and context policy the
                        region compiler and the request builder are not allowed to invent
     recipes.{h,cpp}    `recipes/*.json`: endpoint, role, operation, region scope, hole prep, enhance,
-                       prompt lines, variables and composite policy. A recipe names a role,
+                       prompt lines, variables, composite policy, the `aspects` a generation offers and
+                       the `variants` that stand in for it at its key. A recipe names a role,
                        never a model, refuses keys that belong to the model (`steps`) or to nothing
-                       (`mask`), and refuses any pairing of `operation` with a hole it may not cut
+                       (`mask`), refuses any pairing of `operation` with a hole it may not cut, and
+                       `variant_errors` refuses a family whose members are not interchangeable once the
+                       whole table exists to resolve them
     provider.{h,cpp}   THE request builder and the only place a field can be added: one ordered field
-                       list per request, encoded as JSON or multipart by the transport, plus the
-                       canonical text the cache key hashes
+                       list per request, encoded as JSON or multipart by the transport, and the readable
+                       summary (`fields`, `size`, `image_bytes`, `allowed_fields`) that `ai.preview`
+                       answers with before anything is sent
     transport.h        the HTTP seam: method, URL, headers, body, timeouts, a cancel flag. Everything
                        above it is the same whether the answer comes from libcurl or a recording
     http.{h,cpp}       `Client`: health / models / load / run, and the failure classes - cancelled,
@@ -202,9 +238,12 @@ src/
                        into an ETA and a request timeout
     region.{h,cpp}     THE region compiler (see AI-BACKEND.md): `plan_region` for the geometry
                        (bbox → grow → clamp → snap → fit, with the inverse map carried as the two
-                       rectangles rather than a scale), `prep_region` for the bytes that would go on
-                       the wire (a hole inside the coverage, every other pixel uploaded as the document
-                       holds it), and `flatten_over_ring` for the colour a transparent edge is dropped on
+                       rectangles rather than a scale), `frame_for_aspect` for the rectangle a chosen
+                       ratio picks on a canvas (the largest that fits, centred, one axis full - the grid
+                       snap stays in `plan_region`, which owns it), `prep_region` for the bytes that
+                       would go on the wire (a hole inside the coverage, every other pixel uploaded as
+                       the document holds it), and `flatten_over_ring` for the colour a transparent edge
+                       is dropped on
     compose.{h,cpp}    the result compositor (see AI-BACKEND.md): resample onto the crop, colour drift
                        measured against the document and corrected on the answer, feather, lock band,
                        blend through `restrict_to` - given the destination it writes and the reference it
@@ -214,26 +253,42 @@ src/
                        the document, taken back off the whole answer (spread included, clamped) — never a
                        transfer of the surrounding colours onto the new content
     queue.{h,cpp}      jobs: one worker (the box holds one image model resident), cancellation that
-                       never discards an answer that arrived, retry from the stored request, and
-                       in-memory, one worker; answer PNGs are per-run scratch, nothing is read back
-    cache.{h,cpp}      request digest → answer bytes, keyed by the built request's canonical text;
-                       keys that are not 64 hex characters are refused rather than joined
+                       never discards an answer that arrived, and in-memory: answer PNGs are per-run
+                       scratch, nothing is read back at startup, so a re-ask is a second request
+    (no cache module)   (out) an answer cache existed and was deleted: keyed on a byte-identical re-ask,
+                       which is an artefact of probing rather than of editing, with no bound and no
+                       cleanup. MVP's decision log carries the terms any replacement has to state first
 
   dbg/
     wire.{h,cpp}       debug wire: JSON-lines server, request dispatch, event broadcast
-    capture.{h,cpp}    viewport/window/composite → PNG on disk + sha256
-    headless.{h,cpp}   run the same command surface without a window (SG_BACKEND_NULL)
+    capture.{h,cpp}    (planned as a module) viewport/window/composite → PNG on disk + sha256. Today the
+                       read is `gfx::read_framebuffer` and the file and digest are the `screenshot`
+                       command's; a separate module is only worth having when a second capture path exists
+    headless.{h,cpp}   (planned) run the same command surface without a window (SG_BACKEND_NULL)
   io/
     png.{h,cpp} jpeg.{h,cpp} webp.{h,cpp}
                        the flat formats: decode to RGBA8, encode from it
     flat.{h,cpp}       those formats as one table - extension, sniffed magic, whether it holds
                        alpha, whether `quality` means anything - plus the default export quality
     project.{h,cpp}    .noise read/write (the only layered format we read or write)
-    psd_export.{h,cpp} (M5, optional)
-    config.{h,cpp}     settings, keyring access
-tests/         core + ai unit tests (no GPU), golden-image tests
-shaders/       composite.glsl, blend modes, ants, resample
+    config.{h,cpp}     (planned) settings, keymap file, keyring access: prefs are `$NOISE_CONFIG_DIR`
+                       and the environment today, and nothing is written to disk between runs
+assets/        the shipped tables, read by `ai/registry` and `ai/recipes` and by no code path that
+               invents a value: `roles.json` (role → candidate models, the size and context policy) and
+               `recipes/*.json` (endpoint, role, operation, region scope, prep, `ask`, prompt lines,
+               composite policy). `$NOISE_EDIT_ASSETS` points at this tree from outside the build
+               directory, which is where the probes run from
+tests/         core + ai unit tests (no GPU), golden-image tests, and `fixtures/http` - the recorded
+               server the default `ctest` run answers from
+tools/         the probes that drive the running app over the wire, and the shared harness
+               `wire_drive.py` (display claim, child reaping, golden capture). [TOOLS.md](TOOLS.md)
+               tracks the editing-concept work they assert
+vendor/        pinned dependencies fetched by CMake; nothing is downloaded at test time
 ```
+
+Shader sources are inline in the module that compiles them (renderer, checker, ants) - there is no
+`shaders/` directory, and a shader that lived in its own file would be a second place to keep a
+uniform layout true.
 
 Dependency direction: `app → {core, gfx, ai, io}`; `gfx → core`; `ai → core, io`; `io → core`.
 Nothing imports ImGui except `app/ui`. That keeps the door open for a different UI later and
@@ -241,46 +296,66 @@ makes `core`+`ai` testable headless.
 
 ## Threading model
 
-One render thread (sokol is not thread-safe), everything slow off it.
+One render thread (sokol is not thread-safe), one AI worker, and the truth about which one pays
+for an encode.
 
 ```
-RENDER THREAD (60 fps)              WORKER POOL (N=4, I/O-bound mostly 1)
-  input → Tool state machine          png/webp/jpeg encode+decode
-  ui tick (ImGui)                     sha256, zstd
-  drain Mailbox (≤2 msgs/frame)       curl requests (minutes-long!)
-  upload new textures                 blur/feather/floodfill/colour-match/heal
-  compositor + overlay draw           (never touches sg_*)
-        ▲
-        └── Mailbox: mpsc of JobResult { kind, blobId, bytes, progress, err }
+RENDER THREAD (60 fps)                 AI QUEUE WORKER (exactly one, std::thread in ai/queue)
+  input → tool state machine             the whole request: build, send, wait, decode
+  ui tick (ImGui)                        (curl transfer, cancel flag polled in the callback)
+  wire poll - commands execute here
+  Document::composite → one upload
+  draw canvas, ants, ImGui
 ```
 
-Rules: workers produce **`BlobRef` + raw bytes**, never GPU handles. The render thread
-creates `sg_image`s and uploads. Draining is budgeted per frame so a burst of completed
-generations cannot stutter the canvas. UI reads jobs through an immutable snapshot pointer
-swapped atomically, so panels never lock.
+What runs there today: PNG/JPEG/WebP encode and decode, sha256, region prep and resample, feather
+and colour-match all execute on the render thread, inside the command that asked for them. That is a
+cost a frame can feel, which is exactly why it is a number on the wire rather than an assumption:
+`AppState::upload_encodes` counts every upload encode and `ai.intent` reports it, so "reading the
+panel encodes nothing" is a test (`test_app`) and not a promise. Long work is off it only where it has
+to be - the request itself - because that is the one thing measured in seconds.
 
-Workers never touch `sg_*`. The AI queue is **concurrency 1 per server** (the engine holds
-one model at a time, so parallel jobs only thrash), and a model swap is a user-visible,
-priced event. Because inference can take seconds-to-minutes over the LAN, the document must
-stay fully editable while jobs run, autosave must be independent of them, and the queue must
-reload after a crash. Hard requirement, not a nicety.
+**(planned)** The worker pool, the `Mailbox` of `JobResult`s and the budgeted per-frame drain are the
+design for the point where decode/save of a big document stops fitting in one frame: workers produce
+bytes and digests, never `sg_*` handles, and only the render thread creates and uploads textures. The
+`BlobRef` in that diagram belongs to the blob store, which is planned too.
+
+What is already load-bearing, and tested:
+
+* The AI queue is **concurrency 1** (the engine holds one image model resident, so parallel jobs only
+  thrash it), guarded by one mutex for the records and one `atomic<bool>` per job for cancellation.
+  A command that reads the queue takes the mutex; a panel reads through those commands.
+* A model swap is a user-visible, priced event: a press that would swap is refused until it is
+  confirmed, and says which model, which is resident, and what loading it costs.
+* The document stays fully editable while a job runs, and a finished answer lands itself at the first
+  door that reads the queue - so nothing waits on the canvas, and no frame waits on a job.
+* Autosave and crash recovery of the *document* remain MVP scope and are not built. A **durable job
+  queue is out by decision**, not by deadline: a request in flight belongs to a document revision that
+  a restart cannot guarantee, so the answer would land somewhere that no longer means the same thing.
+  Losing an in-flight job at a crash costs one request; landing it in the wrong document costs an edit
+  nobody asked for (`document_epoch` is the same argument inside one run).
 
 ## Compositing
 
-* Each layer is an RGBA8 texture (straight alpha in storage, premultiplied in shaders).
-* Composite = ping-pong pass sequence: `dst = blend(dst, layer_i)` with `opacity_i`,
-  `mask_i`, per-layer blend-mode branch. Cheap, correct, and handles arbitrary stacks.
-  Sub-32 layers: full re-composite of a dirty rect only; the union of dirty rects from
-  `sg_update` requests, clamped to the visible viewport ∪ margin.
-* Composite result → `comp_tex`; viewport pass draws it with zoom/pan, checkerboard
-  underneath, then overlay, then ImGui. The transparency checker is one `2x2` texel tile
+* Today the stack is composited on the CPU: `Document::composite()` walks the layers through
+  `core/blend`'s reference into one RGBA8 image, and `gfx::Texture::sync` uploads it when the
+  document's revision has moved. Straight alpha in storage, premultiplied where it is blended - the
+  resampler premultiplies for the same reason and says so in `core/resample`.
+* **(planned)** The GPU compositor: ping-pong passes, `dst = blend(dst, layer_i)` with `opacity_i`,
+  `mask_i` and a per-mode branch, plus a dirty-rect re-composite clamped to the visible viewport ∪
+  margin. It is a migration behind `Document::composite`'s call site, and `tests/test_blend` holds the
+  numbers it has to reproduce - the CPU reference is the definition, the shader is the implementation,
+  and one of the two being wrong is a red test either way.
+* The canvas pass draws that one texture with zoom/pan, checkerboard underneath, then the ants, then
+  ImGui. The transparency checker is one `2x2` texel tile
   drawn repeat-sampled over the canvas rect (`gfx/checker.h`), so it costs four vertices at
   any zoom. Drawing it as one overlay element per screen square instead costs
   `canvas_area / square²` and is unbounded in zoom, because the canvas rect grows with the
   scale: that overflowed the UI vertex buffer and blanked the canvas at fit zoom on a
   2400×1600 document.
-* Layer visibility/opacity/blend changes are uniform-only ⇒ free. Pixel edits are the only
-  dirty source.
+* On the CPU path a visibility, opacity or blend change marks the composite dirty and costs a
+  re-composite; on the planned GPU path it is uniform-only and free. Pixel edits are the only dirty
+  source either way, and `Document::revision` is what says whether the upload has anything to do.
 
 ## Painting path (real sokol constraint)
 
@@ -433,11 +508,17 @@ Keep `ImageBuffer` behind an accessor API so the tile migration is local to `cor
 
 ## Undo, journal, and the blob store
 
-Content-addressed storage makes destructive editing *and* cheap undo coexist:
+Two mechanisms, at two stages. **Built:** rectangle deltas in memory, which is what undo is today.
+**Planned:** content-addressed storage, which is what makes destructive editing and cheap undo coexist
+once a rectangle delta stops being the cheap thing. The planned half is MVP scope (`journal/provenance
+panel`, "Regenerate with same params", kept variants) and nothing in the tree stores by digest yet.
 
-* `blobs/<sha256>` — immutable, refcounted, zstd-compressed PNG or raw.
-* `Layer.source` is just a `BlobRef`. **An AI op = write a new blob + swap the pointer**,
-  so undo/redo of a 3-minute generation is a pointer swap, and no generation is ever lost.
+* **(planned)** `blobs/<sha256>` — immutable, refcounted, compressed PNG or raw.
+* **(planned)** `Layer.source` is just a `BlobRef`. **An AI op = write a new blob + swap the pointer**,
+  so undo/redo of a 3-minute generation is a pointer swap, and no generation is ever lost. Today an
+  answer lands as a layer holding its own pixels and the PNG behind it is per-run scratch: the *layer*
+  is the thing undo removes, which is why an answer's pixels survive a `Ctrl+Z` only as long as the
+  history step naming them does.
 * Pixel edits push rectangle deltas into the undo stack: one entry is a layer, the rectangle an
   operation declared it would touch, and the bytes it held - so a step belongs to the layer it
   was made on and stays undoable after the selection moves. An undo hands the pixels it
@@ -452,9 +533,13 @@ Content-addressed storage makes destructive editing *and* cheap undo coexist:
   one does not enter the timeline.
 * Undo and redo are commands like any other (`edit.undo`, `edit.redo`, bound to `Ctrl+Z` and
   `Ctrl+Y`), so a driver can put the pixels back and compare checksums without a keyboard.
-* `history.jsonl` — append-only *journal*: every op with timestamp, params, prompt, model,
-  seed, blob hashes, timings. Two jobs: (a) Provenance panel ("which prompt made this
-  layer?" → one-click **Regenerate with same params**), (b) recovery/replay after a crash.
+* **(planned)** `history.jsonl` — append-only *journal*: every op with timestamp, params, prompt,
+  model, seed, digests, timings. Two jobs: (a) the Provenance panel ("which prompt made this
+  layer?" → one-click **Regenerate with same params**), (b) recovery/replay after a crash. Nothing is
+  appended today; what a job remembered lived in the queue's memory and in `job.get`/`job.list`, and
+  the request a person wants provenance about is still readable on the wire while the job is there.
+  A journal is a file that outlives a run, so it inherits the question the queue was deleted for:
+  say what identifies an entry, and what evicts it, before writing the store.
 
 This is the strongest argument for our own container: provenance is not an afterthought,
 it's a first-class file-format feature.
@@ -604,7 +689,7 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | Group | Commands | Why |
 |---|---|---|
 | state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `server.state`, `job.list`, `job.get {id}`, `ai.roles`, `ai.recipes`, `log.tail` | read what the app believes, cheaply |
-| drive | `select.rect {rect, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `screenshot`, `pixels.compare`, `wire.info` |
+| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
  `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
 | ai | `ai.verbs` (the verb rows: id, command, key, recipe, label, operation, `ask`, scope, `ready`, `reason`, `model`, `resident`, `swap`), `ai.remove` / `ai.fill` / `ai.change` / `ai.generate` `{vars?, seed?, confirm?}` (one verb row pressed - they call `ai.intent` with their recipe named, so a key and a scripted intent cannot diverge), `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}`, `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pinned}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.apply {id, feather?, colour_match?}` (the idempotent landing door - answers land by themselves, so this one brings one back or overrides the policy, and says `already_landed` otherwise), | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact field list, size and blob digest before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel and land without a UI; `ai.intent` is the whole surface of the action, so a scripted run and a key press cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command and means the session seed when absent - nothing draws a random one inside a request path |
@@ -656,9 +741,9 @@ switched-off colour correction looks like in Lab) and
 
 | Tier | Runs | Needs network | Content |
 |---|---|---|---|
-| **unit / property** | always, `ctest` | no | region compiler round-trips, mask ops, blend reference, blob store, format round-trips |
-| **golden image** | always, `ctest` | no | named fixtures → exact bytes: codecs, mask ops, composite, heal |
-| **recorded backend** | always, `ctest` | no | `tests/fixtures/http` as the server: `test_roles` (resolution order, the shipped `roles.json`), `test_recipes` (policy parsing, the shipped set agreeing with the roles), `test_provider` (the field set on the serialized request, the cache key), `test_backend` (discovery, decoding, every failure class, cancellation, replay, durability), and `tools/ai_job_probe.py` driving the same through the running app |
+| **unit / property** | always, `ctest` | no | region compiler round-trips, mask ops, blend reference, history and undo invariants, format round-trips. (The blob store's tests arrive with the blob store.) |
+| **golden image** | always, `ctest` | no | named fixtures → exact bytes: codecs, mask ops, composite, the viewport capture. (`heal` joins it when `core/heal` does.) |
+| **recorded backend** | always, `ctest` | no | `tests/fixtures/http` as the server: `test_roles` (resolution order, the shipped `roles.json`), `test_recipes` (policy parsing, the shipped set agreeing with the roles), `test_provider` (the field set on the serialized request, fields refused by name), `test_backend` (discovery, decoding, every failure class, cancellation, replay, and that a re-ask is one send more), and `tools/ai_job_probe.py` driving the same through the running app |
 | **live backend** | on demand, tagged `live` | **yes** | the real contract against the dev server |
 
 Live tests are expected, not exotic. The dev Lemonade server is available when the human
@@ -685,8 +770,8 @@ The bar for every test in every tier is in `AGENTS.md` §2: a plausible bug must
 | **D3** | Canvas ceiling | 8192×8192, warn >4096², tile only when a real document needs it. |
 | **D4** | Alpha of the flattened base sent to AI | flatten over a colour sampled from the mask ring, never over white/black. |
 | **D5** | One image per document (no artboards) | yes |
-| **D6** | Undo across AI ops | always, free via blob indirection |
-| **D7** | Single-file vs directory project | single `.noise` zip; `--unpack/--repack` dev flags for git-friendliness |
+| **D6** | Undo across AI ops | always. Today it is free because the answer arrived as a **layer** and one undo step removes that layer and its pixels together; the blob-pointer swap this row originally described is the planned form, for edits to an existing layer's whole payload |
+| **D7** | Single-file vs directory project | single `.noise` zip. `--unpack/--repack` dev flags for git-friendliness are **planned**, not built: nothing reads a loose project tree today |
 | **D8** | Licence | **Apache-2.0**. One SPDX line per source file. GPL codec libs stay out. |
 | **D9** | Content scope | raster layers only — no text/vector/adjustment layers in the MVP. |
 | **D10** | Recipes | pre-shipped, read-only JSON in the app resource dir — the format the manifest and the wire already speak, so no second parser. No in-app authoring. |

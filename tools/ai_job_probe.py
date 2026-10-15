@@ -39,6 +39,9 @@ import wire_drive as wd  # noqa: E402
 
 W, H = 420, 300
 MARK = [150, 96, 120, 120]
+# `job.wait` blocks its connection until the job settles, so the socket has to outlast the wait: on the
+# box a first ask includes loading the role's model, which is tens of seconds.
+JOB_WAIT_S = 1800
 # One line per verb, and one sentence per field the verb's recipe asks for - `prompt` (Fill) and
 # `instruction` (Change). Remove is here too and asks for nothing, which is asserted rather than
 # assumed: a recipe that grew an ask field since this table was written shows up as a refusal, not as a
@@ -155,13 +158,13 @@ def press_refuses_without_the_words(p: Probe, wire: wd.Wire, row: dict) -> bool:
 
 
 def landing_claims(p: Probe, wire: wd.Wire, live: bool, tmp: pathlib.Path, row: dict, waited: dict,
-                   scene_before: np.ndarray, took: float) -> None:
+                   scene_before: np.ndarray, took: float) -> bool:
     verb, label = row["id"], str(row["label"])
     job_id = waited["id"]
     p.check(waited["state"] == "succeeded", f"{verb}: job {job_id} succeeded",
             f"{took:.1f}s failure={waited.get('failure')} error={waited.get('error', '')}")
     if waited["state"] != "succeeded":
-        return
+        return False
     dims = waited["result_dims"]
     p.check(dims[0] > 0 and dims[1] > 0, f"{verb}: an answer came back", str(dims))
     p.check(dims[0] % 16 == 0 and dims[1] % 16 == 0, f"{verb}: the answer obeys the size policy",
@@ -225,6 +228,7 @@ def landing_claims(p: Probe, wire: wd.Wire, live: bool, tmp: pathlib.Path, row: 
     undone = export(wire, tmp / f"{verb}-undone.png")
     p.check((after != undone).any() and (scene_before == undone).all(),
             f"{verb}: undo gives the document back byte for byte")
+    return True
 
 
 def run_verbs(p: Probe, wire: wd.Wire, live: bool, args: argparse.Namespace, tmp: pathlib.Path,
@@ -255,8 +259,153 @@ def run_verbs(p: Probe, wire: wd.Wire, live: bool, args: argparse.Namespace, tmp
         ran = wire.call(row["command"], {"seed": args.seed})
         spent += 1
         job_id = ran["job"]["id"]
-        waited = wire.call("job.wait", {"id": job_id, "timeout": 1800 if live else 30})
+        waited = wire.call("job.wait", {"id": job_id, "timeout": JOB_WAIT_S if live else 30})
         landing_claims(p, wire, live, tmp, row, waited, scene_before, time.time() - started)
+    return spent
+
+
+def aspect_ratio(name: str) -> float:
+    wide, high = name.split(":")
+    return int(wide) / int(high)
+
+
+def round_up(value: int, multiple: int) -> int:
+    return ((value + multiple - 1) // multiple) * multiple
+
+
+def frame_outside_the_band(p: Probe, wire: wd.Wire, tmp: pathlib.Path, tag: str, waited: dict,
+                           scene_before: np.ndarray, frame: tuple[int, int, int, int]) -> None:
+    """The aspect promise, whole-image: past the feather, the frame's edge is the document's edge.
+
+    `compose` softens the coverage boundary by `feather_px`, and that ramp reaches about half of it
+    outside the mask, so the banded box is what may move and everything beyond it may not. Asserted here
+    instead of trusting `coverage_bounds`, which reports the crop the answer was compiled against and is
+    larger than the frame whenever the frame is not already on the policy's grid.
+    """
+    report = waited.get("landing", {}).get("report", {})
+    feather = int(report.get("composite", report).get("feather_px") or 0)
+    fx, fy, fw, fh = frame
+    after = export(wire, tmp / f"{tag}-frame.png")
+    moved = np.abs(after.astype(int) - scene_before.astype(int)).any(-1)
+    pad = feather // 2 + 1
+    allowed = np.zeros_like(moved)
+    allowed[max(fy - pad, 0):min(fy + fh + pad, moved.shape[0]),
+            max(fx - pad, 0):min(fx + fw + pad, moved.shape[1])] = True
+    p.check(int((moved & ~allowed).sum()) == 0,
+            f"{tag}: nothing changed past the frame and its feather",
+            f"{int((moved & ~allowed).sum())} pixels beyond {frame} plus feather {feather}")
+    inside = np.zeros_like(moved)
+    inside[fy + pad:fy + fh - pad, fx + pad:fx + fw - pad] = True
+    p.check(int((moved & inside).sum()) > 0, f"{tag}: the answer reached the inside of the frame",
+            f"{int((moved & inside).sum())} of {int(inside.sum())} pixels")
+
+
+def generate_cell(p: Probe, wire: wd.Wire, live: bool, args: argparse.Namespace,
+                  tmp: pathlib.Path, scene_before: np.ndarray, budget: int, model: str) -> int:
+    """The document-scope verb: every frame the recipe offers, then the style that stands in for it.
+
+    The geometry is checked before anything is asked for, and the answer then makes the same claims the
+    marked-area verbs make - which here is the aspect promise itself, because the coverage *is* the frame.
+    The colour-drift band is skipped: it measures an answer against the scene around a hole, and a
+    generation has no scene to belong to.
+    """
+    spent = 0
+    row = verb_rows(wire)["generate"]
+    doc_h, doc_w = int(scene_before.shape[0]), int(scene_before.shape[1])
+    p.check(bool(row["ready"]), "generate: the verb row says it could run", str(row.get("reason")))
+    p.check(row["scope"] == "document", "generate: works on the document, not a marked area",
+            str(row["scope"]))
+    aspects = list(row.get("aspects") or [])
+    p.check(len(aspects) > 0, "generate: the recipe offers frames to choose from", str(aspects))
+    press_refuses_without_the_words(p, wire, row)
+    words = words_for(row["ask"])
+
+    for choice in [None] + aspects:
+        tag = f"generate {'canvas' if choice is None else choice}"
+        intent = wire.call("ai.intent", {"recipe": row["recipe"], "vars": words, "aspect": choice})
+        p.check(intent["aspect"] == choice, f"{tag}: the choice is what the intent holds",
+                str(intent["aspect"]))
+        if live and spent >= budget:
+            print(f"  skip {tag}: the --max-images {budget} budget is spent, and the box is shared")
+            continue
+        preview = wire.call("ai.preview", {"recipe": row["recipe"], "vars": words,
+                                           "seed": args.seed, "aspect": choice})
+        want = doc_w / doc_h if choice is None else aspect_ratio(choice)
+
+        # The frame is what was chosen, so *it* holds the ratio - to half a pixel of its short side - and
+        # fills the canvas on one axis. The crop is that frame grown onto the policy's grid and the
+        # requested size is the crop snapped up, both of which may sit further off: a claim written
+        # against those would fail on a correct frame.
+        frame = preview["region"]["mask_bounds"]
+        fx, fy, fw, fh = (int(v) for v in frame)
+        slop = 16.0 / min(fw, fh)
+        p.check(abs(fw / fh - want) <= want * slop, f"{tag}: the frame holds the ratio",
+                f"{fw}x{fh} for {choice or f'{doc_w}x{doc_h}'}")
+        p.check(fw == doc_w or fh == doc_h, f"{tag}: one axis of the frame runs the whole canvas",
+                f"{fw}x{fh} of {doc_w}x{doc_h}")
+        p.check(fx + fw <= doc_w and fy + fh <= doc_h, f"{tag}: the frame is inside the document",
+                f"{fw}x{fh} at {fx},{fy}")
+        crop = preview["region"]["crop"]
+        cx, cy, cw, ch = (int(v) for v in crop)
+        p.check(cx <= fx and cy <= fy and cx + cw >= fx + fw and cy + ch >= fy + fh,
+                f"{tag}: the crop covers the frame it was grown from", f"{cw}x{ch} at {cx},{cy}")
+        asked_w, asked_h = (int(v) for v in preview["request"]["size"].split("x"))
+        p.check(asked_w == round_up(cw, 16) and asked_h == round_up(ch, 16),
+                f"{tag}: the requested size is the crop on the 16px grid",
+                f"asked {asked_w}x{asked_h} for a {cw}x{ch} crop")
+        p.check(preview["request"]["model"] == model, f"{tag}: the request names the resolved model")
+        p.check("aspect" not in request_fields(preview), f"{tag}: no aspect field reaches the server",
+                "a frame is geometry, not a request field")
+        p.check("size" in request_fields(preview), f"{tag}: the size is still sent explicitly",
+                "an edit without it answers the model default")
+        p.check(intent["quote"]["size"] == [asked_w, asked_h],
+                f"{tag}: the status line quotes the size a press asks for",
+                f"{intent['quote']['size']} vs {asked_w}x{asked_h}")
+
+        started = time.time()
+        ran = wire.call(row["command"], {"seed": args.seed, "confirm": True})
+        spent += 1
+        waited = wire.call("job.wait", {"id": ran["job"]["id"],
+                                        "timeout": JOB_WAIT_S if live else 30})
+        # The report says the same box the preview priced: this is the artefact a person checks the
+        # saved layer and mask against, and a 16:9 run once reported the grid-grown crop as its own.
+        landed_region = waited.get("landing", {}).get("report", {}).get("region", {})
+        p.check(list(landed_region.get("mask_bounds") or []) == frame,
+                f"{tag}: the report names the frame the answer was asked to fill",
+                f"{landed_region.get('mask_bounds')} vs {frame}")
+        # Before `landing_claims`, which undoes: the frame claim is about the document as the landing
+        # left it.
+        frame_outside_the_band(p, wire, tmp, tag, waited, scene_before, (fx, fy, fw, fh))
+        landing_claims(p, wire, False, tmp, row, waited, scene_before, time.time() - started)
+
+    variants = list(row.get("variants") or [])
+    if not variants:
+        return spent
+    labels = {r["id"]: r["label"] for r in wd.field(wire.call("ai.recipes"), "recipes")}
+    pick = variants[-1]
+    intent = wire.call("ai.intent", {"recipe": pick["id"], "vars": words})
+    p.check(intent["recipe"] == pick["id"], "generate style: the intent holds the variant",
+            str(intent["recipe"]))
+    p.check(verb_rows(wire)["generate"]["active"] == pick["id"],
+            "and the row reports it as the recipe a press would run")
+    p.check(intent["aspects"] == aspects, "and choosing a style keeps the frames on offer",
+            str(intent["aspects"]))
+    # The model behind each style is reported once, on the intent's `family`: a style that silently
+    # swapped the model on a shared box is the expensive part of the choice.
+    family = {member["id"]: member for member in intent["family"]}
+    p.check(bool(family.get(pick["id"], {}).get("model")), "and says which model answers it",
+            str(family.get(pick["id"])))
+    if live and spent >= budget:
+        print("  skip generate style: the --max-images budget is spent")
+        return spent
+    started = time.time()
+    ran = wire.call("ai.generate", {"seed": args.seed, "confirm": True})
+    spent += 1
+    waited = wire.call("job.wait", {"id": ran["job"]["id"], "timeout": JOB_WAIT_S if live else 30})
+    landing_claims(p, wire, False, tmp,
+                   {"id": "generate", "label": labels.get(pick["id"], pick["id"]),
+                    "recipe": pick["id"]},
+                   waited, scene_before, time.time() - started)
     return spent
 
 
@@ -273,7 +422,8 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
     proc = wd.start_app(args, runtime, 1000, 700, doc_png, stderr, extra)
     wire = None
     try:
-        wire = wd.Wire(wd.wire_port(runtime, proc, 60.0 if live else 40.0))
+        wire = wd.Wire(wd.wire_port(runtime, proc, 60.0 if live else 40.0),
+                       timeout=JOB_WAIT_S + 120.0 if live else 60.0)
         wd.wait_for_fit(wire)
 
         state = wire.call("server.state")
@@ -301,7 +451,15 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
         resident_before = str(connected.get("model_loaded") or "")
 
         before = export(wire, tmp / "before.png")
-        spent = run_verbs(p, wire, live, args, tmp, edit["model"], before, args.max_images)
+        spent = 0
+        if args.only != "generate":
+            spent = run_verbs(p, wire, live, args, tmp, edit["model"], before, args.max_images)
+        if args.generate or args.only == "generate":
+            photo = next(r for r in connected["roles"]["roles"] if r["role"] == "generate.photo")
+            p.check(bool(photo["resolved"]), "the generate.photo role resolved",
+                    f"model={photo['model']} ({photo['reason']})")
+            spent += generate_cell(p, wire, live, args, tmp, before, args.max_images - spent,
+                                   photo["model"])
 
         if not live:
             # There is no answer cache: the same request asked again is a second job that goes out
@@ -367,6 +525,12 @@ def main() -> int:
                         / "tests" / "fixtures" / "http")
     parser.add_argument("--live", action="store_true",
                         help="ask the dev box instead of the recordings")
+    parser.add_argument("--generate", action="store_true",
+                        help="also run the document-scope verb: each aspect the recipe offers, then a "
+                             "style that stands in for it. Free against the recordings, one image each "
+                             "against the box")
+    parser.add_argument("--only", choices=("verbs", "generate"),
+                        help="run one cell rather than both, so a live run can be aimed at what changed")
     parser.add_argument("--max-images", type=int, default=3,
                         help="how many requests --live may make: one per verb, three verbs")
     parser.add_argument("--seed", type=int, default=1234)

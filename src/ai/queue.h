@@ -27,6 +27,10 @@ namespace noise::ai {
 struct Landing {
     // Document pixels the answer covers: the region compiler's crop.
     Rect crop{};
+    // The bounds of the mask it was compiled against, which the crop is grown to the size policy from.
+    // Reported because a person checks the artefacts against this box, and on an aspect frame the two
+    // differ: `[0, 32, 420, 236]` painted inside `[0, 32, 420, 240]` asked for.
+    Rect mask_bounds{};
     // What the request asked for, which is what the answer is resampled from. `answered_as_requested`
     // at landing time compares this to what came back.
     Extent requested{};

@@ -481,6 +481,7 @@ void register_ai_commands(AppState& state, CommandTable& table) {
 
         ai::Landing landing;
         landing.crop = assembled.plan.crop;
+        landing.mask_bounds = assembled.plan.mask_bounds;
         landing.requested = assembled.plan.requested;
         landing.canvas = state.doc.size();
         landing.feather_px = recipe.composite.feather_px;

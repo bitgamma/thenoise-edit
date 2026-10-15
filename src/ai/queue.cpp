@@ -100,6 +100,7 @@ bool job_state_is_terminal(JobState state) {
 
 nlohmann::json JobRecord::json() const {
     nlohmann::json landing_json{{"crop", rect_json(landing.crop)},
+                                {"mask_bounds", rect_json(landing.mask_bounds)},
                                 {"requested", extent_json(landing.requested)},
                                 {"canvas", extent_json(landing.canvas)},
                                 {"coverage_png", landing.coverage_png_path},
