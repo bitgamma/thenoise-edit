@@ -7,6 +7,7 @@
 #include "core/base64.h"
 #include "core/log.h"
 #include "io/file.h"
+#include "io/config.h"
 #include "io/flat.h"
 #include "io/png.h"
 #include "io/project.h"
@@ -103,6 +104,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         }
         state.doc.reset(std::move(loaded), std::move(opened_selection), path);
         note_new_document(state);
+        io::remember_recent_file(path);
         request_fit(state);
         log::info("loaded " + path + " (" + std::to_string(state.doc.layers().size()) +
                   " layers)");
@@ -138,6 +140,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         }
         state.doc.set_path(path);
         state.doc.mark_saved();
+        io::remember_recent_file(path);
         log::info("saved " + path);
         return command_ok(document_json(state));
     });

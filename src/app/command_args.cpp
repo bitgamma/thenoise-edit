@@ -132,6 +132,17 @@ bool arg_name(const json& args, const char* key, std::string& out) {
     });
 }
 
+bool arg_text(const json& args, const char* key, std::string& out) {
+    if (!args.contains(key)) {
+        return true;
+    }
+    if (!args.at(key).is_string()) {
+        return false;
+    }
+    out = args.at(key).get<std::string>();
+    return true;
+}
+
 bool arg_aspect(const json& args, const char* key, std::optional<AspectRatio>& out) {
     if (!args.contains(key)) {
         return true;

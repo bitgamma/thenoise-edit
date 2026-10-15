@@ -107,6 +107,7 @@ target_link_libraries(noise_core PUBLIC noise_platform nlohmann_json::nlohmann_j
 add_library(noise_io STATIC
     src/io/file.cpp
     src/io/flat.cpp
+    src/io/config.cpp
     src/io/jpeg.cpp
     src/io/png.cpp
     src/io/project.cpp

@@ -2,6 +2,7 @@
 #include "app/commands.h"
 
 #include "app/command_args.h"
+#include "app/file_commands.h"
 #include "app/command_groups.h"
 #include "app/state.h"
 
@@ -49,6 +50,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                                        state.viewport.w, state.viewport.h})},
                                {"framebuffer", json::array({state.framebuffer.w, state.framebuffer.h})},
                                {"document", doc},
+                               {"front_door", front_door_json(state)},
                                {"brush", brush_json(state)},
                                {"stroke", stroke_json(state)},
                                {"view", view_json(state)},

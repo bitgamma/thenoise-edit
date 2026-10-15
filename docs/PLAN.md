@@ -271,3 +271,26 @@ because a frame is a mask and masks were already the currency. `Landing` grew on
 report telling the truth about coverage rather than a new concept. What this area wants next is a frame
 *inside* a marked-area verb (a 3:4 inpaint within a 4:3 selection): the geometry supports it, no recipe
 asks for it, so it stays unmade rather than speculative.
+
+## 2026-10-15 - Slice 1 begins: files, and the dialog a launch opens
+
+`platform::pick_path` asks the desktop for one path and answers with a path, a cancel or a named failure;
+Linux implements it as a `zenity` subprocess, `$NOISE_PICKER_PROGRAM` stands in for it under test, and
+every other target links a file that says the seam is unwritten rather than reporting a cancel nobody
+pressed. `file.pick` runs it on a worker so the frame loop and the wire keep answering with a dialog open,
+`file.pick.state` carries the answer, and `io/config` was born holding the recent files that `doc.open`
+and `doc.save` now write. `front_door` / `file.new` / `new_document` make the New dialog a state the wire
+can open, shut and fill; a launch with no file and no `--no-start-dialog` shows it, Escape closes it
+instead of quitting, and the title bar says which file is open and whether it has unsaved work.
+
+**Blocked, and named where it bites:** `ImGui::BeginMainMenuBar()` asserts (`Missing End()` in
+`ErrorRecoveryTryToRecoverState`) in this frame — ImGui 1.93 WIP with sokol_imgui and a fullscreen
+dockspace; an *empty* bar reproduces it, so it is not a widget-nesting mistake in my menu. The File
+actions therefore live in a row at the top of the tool panel, and the keys stay in the command table
+(`Ctrl+N`, `Ctrl+O`, `Ctrl+S`). Revisit when sokol_imgui/ImGui is next pinned: a menu bar is what a person
+expects, and the row is a workaround, not the design.
+
+Owed to this slice: the `Browse…`/`Save As` path is proven against a stand-in picker, never against zenity
+itself, so it wants one hand-run per desktop; `New` with a prompt runs `ai.generate` and lands the answer
+as a second layer over an empty base, which is the pixel-lock promise holding but not yet the "image
+arrives as the document" of PRODUCT's beat 3 — that wants the empty-base decision, not a special case.

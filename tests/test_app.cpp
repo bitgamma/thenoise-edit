@@ -3101,6 +3101,82 @@ void test_an_answer_lands_on_its_own_layer_over_an_empty_one() {
 }
 }  // namespace
 
+// The front door is state, not an ImGui flag: whether the app is waiting for a person is a fact the
+// wire reports and a probe can put there.
+void test_the_front_door_is_a_state_the_wire_can_open_and_shut() {
+    Harness harness;
+    CHECK_EQ(harness.value("app.state", json::object())["front_door"]["front_door"].get<std::string>(),
+             std::string("closed"));
+    CHECK_EQ(harness.value("front_door", json{{"show", "welcome"}})["front_door"].get<std::string>(),
+             std::string("welcome"));
+    // File > New asks the same question as the launch dialog, minus the file half, and the command a
+    // menu item fires is the one a driver fires.
+    CHECK_EQ(harness.value("file.new", json::object())["front_door"].get<std::string>(),
+             std::string("new"));
+    const CommandResult nonsense = harness.run("front_door", json{{"show", "sideways"}});
+    CHECK(!nonsense.ok);
+    CHECK(nonsense.error.find("sideways") != std::string::npos);
+    CHECK_EQ(harness.value("front_door", json{{"show", "close"}})["front_door"].get<std::string>(),
+             std::string("closed"));
+}
+
+void test_the_new_document_form_offers_the_sizes_and_refuses_the_impossible() {
+    Harness harness;
+    const json form = harness.value("new_document", json::object());
+    CHECK_EQ(form["width"].get<int>(), noise::app::kNewDocumentDefault.width);
+    CHECK_EQ(form["height"].get<int>(), noise::app::kNewDocumentDefault.height);
+    CHECK(form["presets"].size() >= 3);
+    CHECK_EQ(harness.value("new_document", json{{"width", 640}, {"height", 480},
+                                                {"prompt", "a red cube"}})["width"].get<int>(),
+             640);
+    CHECK(!harness.run("new_document", json{{"width", 0}}).ok);
+    const CommandResult huge = harness.run("new_document", json{{"height", 99999}});
+    CHECK(!huge.ok);
+    CHECK(huge.error.find(std::to_string(noise::app::kNewDocumentMaxEdge)) != std::string::npos);
+    // A refused write leaves the form where it was: a dialog that kept the rejected number would
+    // Create a document nobody approved.
+    const json after = harness.value("new_document", json::object());
+    CHECK_EQ(after["width"].get<int>(), 640);
+    CHECK_EQ(after["height"].get<int>(), 480);
+    CHECK_EQ(after["prompt"].get<std::string>(), std::string("a red cube"));
+}
+
+void test_the_recent_files_are_the_documents_this_app_touched() {
+    Harness harness;
+    // The config file is the app's own; a test that wrote to a person's real one would be a side
+    // effect the suite has no business making.
+    const auto config = std::filesystem::temp_directory_path() /
+                        ("noise-config-" + std::to_string(platform::pid()));
+    std::filesystem::remove_all(config);
+    std::filesystem::create_directories(config);
+    ::setenv("NOISE_CONFIG_DIR", config.c_str(), 1);
+
+    harness.value("doc.new", json{{"width", 8}, {"height", 6}});
+    const std::string first = harness.temp("first.noise");
+    const std::string second = harness.temp("second.noise");
+    harness.value("doc.save", json{{"path", first}});
+    harness.value("doc.save", json{{"path", second}});
+    json files = harness.value("file.recent", json::object())["files"];
+    REQUIRE(files.size() >= 2);
+    CHECK_EQ(files[0].get<std::string>(), std::filesystem::canonical(second).string());
+
+    // One document, one row: saving it again moves it to the front rather than listing it twice.
+    harness.value("doc.save", json{{"path", first}});
+    files = harness.value("file.recent", json::object())["files"];
+    int occurrences = 0;
+    for (const json& entry : files) {
+        if (entry.get<std::string>() == std::filesystem::canonical(first).string()) {
+            ++occurrences;
+        }
+    }
+    CHECK_EQ(occurrences, 1);
+    // And the row is a way back in, which is the only reason the list exists.
+    harness.value("doc.open", json{{"path", files[0].get<std::string>()}});
+    CHECK_EQ(harness.value("doc.get", json::object())["path"].get<std::string>(),
+             std::filesystem::canonical(first).string());
+    ::unsetenv("NOISE_CONFIG_DIR");
+}
+
 int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
@@ -3167,5 +3243,8 @@ int main() {
     test_screenshot_returns_exactly_what_the_capture_gave();
     test_a_shorter_image_stays_centred_under_panning();
     test_view_navigation_keeps_the_image_reachable();
+    test_the_front_door_is_a_state_the_wire_can_open_and_shut();
+    test_the_new_document_form_offers_the_sizes_and_refuses_the_impossible();
+    test_the_recent_files_are_the_documents_this_app_touched();
     return noise::test::summary(__FILE__);
 }

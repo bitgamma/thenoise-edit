@@ -3,6 +3,7 @@
 
 #include "app/command_args.h"
 #include "app/command_groups.h"
+#include "io/config.h"
 #include "io/flat.h"
 #include "io/project.h"
 
@@ -14,6 +15,36 @@
 namespace noise::app {
 
 namespace {
+
+const char* front_door_name(FrontDoor door) {
+    switch (door) {
+        case FrontDoor::closed:
+            return "closed";
+        case FrontDoor::welcome:
+            return "welcome";
+        case FrontDoor::new_document:
+            return "new";
+    }
+    return "closed";
+}
+
+json presets_json() {
+    json out = json::array();
+    for (const NewDocumentPreset& preset : kNewDocumentPresets) {
+        out.push_back({{"width", preset.width},
+                       {"height", preset.height},
+                       {"label", preset.label}});
+    }
+    return out;
+}
+
+json new_document_json(const NewDocumentForm& form) {
+    return {{"width", form.width},
+            {"height", form.height},
+            {"prompt", form.prompt},
+            {"max_edge", kNewDocumentMaxEdge},
+            {"presets", presets_json()}};
+}
 
 json filters_json(const std::vector<platform::FileFilter>& filters) {
     json out = json::array();
@@ -88,10 +119,16 @@ std::vector<platform::FileFilter> file_filters(FileSet set) {
     return filters;
 }
 
+json front_door_json(const AppState& state) {
+    return {{"front_door", front_door_name(state.front_door)},
+            {"new_document", new_document_json(state.new_document)}};
+}
+
 void register_file_commands(AppState& state, CommandTable& table) {
     // The picker blocks for as long as the person takes, and a frame loop that waits for it stops
     // answering the wire. So the answer arrives on a worker and `file.pick.state` is what anyone reads.
-    table.add("file.pick", "Ask the desktop for a path; read the answer from file.pick.state", {},
+    table.add("file.pick", "Ask the desktop for a path; read the answer from file.pick.state",
+              {"Ctrl+O"},
               {"for", "title", "path", "multiple"}, [&state](const json& args) -> CommandResult {
                   std::string set_name = "open";
                   if (!arg_name(args, "for", set_name)) {
@@ -106,10 +143,10 @@ void register_file_commands(AppState& state, CommandTable& table) {
                   request.kind = pick_kind(*set);
                   request.filters = file_filters(*set);
                   request.title = "Choose " + file_set_label(*set);
-                  if (!arg_name(args, "title", request.title)) {
+                  if (!arg_text(args, "title", request.title)) {
                       return fail("file.pick", "expected string 'title'");
                   }
-                  if (!arg_name(args, "path", request.initial_path)) {
+                  if (!arg_text(args, "path", request.initial_path)) {
                       return fail("file.pick", "expected string 'path'");
                   }
                   if (!arg_bool(args, "multiple", request.multiple)) {
@@ -144,6 +181,61 @@ void register_file_commands(AppState& state, CommandTable& table) {
                                      {"title", request.title},
                                      {"filters", filters_json(request.filters)}});
               });
+
+    table.add("file.recent", "The documents this app opened or saved last, newest first", {}, {},
+              [](const json&) -> CommandResult {
+        return command_ok({{"files", io::load_recent_files()}});
+    });
+
+    table.add("new_document", "Read or set the New dialog's fields", {},
+              {"width", "height", "prompt"}, [&state](const json& args) -> CommandResult {
+        int width = state.new_document.width;
+        int height = state.new_document.height;
+        std::string prompt = state.new_document.prompt;
+        if (!arg_int(args, "width", width) || !arg_int(args, "height", height)) {
+            return fail("new_document", "expected integers 'width' and 'height'");
+        }
+        if (!arg_text(args, "prompt", prompt)) {
+            return fail("new_document", "expected string 'prompt'");
+        }
+        if (width <= 0 || height <= 0) {
+            return fail("new_document", "width and height must be positive (got " +
+                                            std::to_string(width) + "x" + std::to_string(height) + ")");
+        }
+        if (width > kNewDocumentMaxEdge || height > kNewDocumentMaxEdge) {
+            return fail("new_document", "an edge over " + std::to_string(kNewDocumentMaxEdge) +
+                                            " px is refused before the document is allocated");
+        }
+        state.new_document = NewDocumentForm{width, height, prompt};
+        return command_ok(new_document_json(state.new_document));
+    });
+
+    // The door is one command with one argument rather than three commands with the same effect: what
+    // is on screen is a state, and the launch path and a menu click should not be able to disagree
+    // about which of the three they meant.
+    table.add("front_door", "Show or hide the New/Open dialog ('welcome', 'new', 'close')", {},
+              {"show"}, [&state](const json& args) -> CommandResult {
+        std::string show;
+        if (arg_name(args, "show", show)) {
+            if (show == "welcome") {
+                state.front_door = FrontDoor::welcome;
+            } else if (show == "new") {
+                state.front_door = FrontDoor::new_document;
+            } else if (show == "close") {
+                state.front_door = FrontDoor::closed;
+            } else {
+                return fail("front_door",
+                            "'show' is 'welcome', 'new' or 'close', not '" + show + "'");
+            }
+        }
+        return command_ok(front_door_json(state));
+    });
+
+    table.add("file.new", "Open the New dialog (it creates nothing until Create)", {"Ctrl+N"}, {},
+              [&state](const json&) -> CommandResult {
+        state.front_door = FrontDoor::new_document;
+        return command_ok(front_door_json(state));
+    });
 
     table.add("file.pick.state", "What the last file pick answered", {}, {},
               [&state](const json&) -> CommandResult {

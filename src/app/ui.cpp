@@ -27,6 +27,10 @@ namespace noise::app {
 
 using nlohmann::json;
 
+// Defined below, at this scope: the front door and the file row are drawn from the panels as well
+// as from `draw_ui`, so they are not anonymous.
+void draw_file_row(AppState& state, CommandTable& commands);
+
 namespace {
 
 constexpr ImU32 kBackdrop = IM_COL32(38, 38, 42, 255);
@@ -268,6 +272,9 @@ void draw_ai_status_line(CommandTable& commands, const json& view);
 // drift apart because there is nothing else to keep in step.
 void draw_tool_panel(AppState& state, CommandTable& commands, const json& intent) {
     ImGui::Begin(kWindowTool);
+
+    draw_file_row(state, commands);
+    ImGui::Separator();
 
     for (const ToolInfo& tool : kTools) {
         const std::string label = std::string(tool.id) + "###" + tool.id;
@@ -815,8 +822,205 @@ void build_default_dock(ImGuiID dockspace, const ImVec2& size) {
 
 }
 
+// The menu and the front door both ask for a path and act on the answer later: a native dialog is
+// asynchronous by design, so the click that opened it and the document it produced cannot share a
+// frame. This remembers which door the open picker is behind.
+std::string pending_pick;
+char front_door_prompt[kVerbFieldChars] = "";
+bool front_door_drawn = false;
+
+void start_pick(CommandTable& commands, const char* for_set, const char* title,
+                const std::string& action) {
+    pending_pick = action;
+    commands.invoke("file.pick", json{{"for", for_set}, {"title", title}});
+}
+
+// The pick is applied here rather than where it was started, because the menu is gone by the time a
+// person has typed a filename.
+void apply_finished_pick(CommandTable& commands) {
+    if (pending_pick.empty()) {
+        return;
+    }
+    const json pick = commands.invoke("file.pick.state", json::object()).value;
+    if (pick.value("running", false)) {
+        return;
+    }
+    const std::string action = pending_pick;
+    pending_pick.clear();
+    const json paths = pick.value("paths", json::array());
+    if (paths.empty()) {
+        const std::string error = pick.value("error", std::string());
+        if (!error.empty()) {
+            log::error("file pick: " + error);
+        }
+        return;
+    }
+    const json path{{"path", paths.front().get<std::string>()}};
+    if (action == "open") {
+        commands.invoke("doc.open", path);
+    } else if (action == "save") {
+        commands.invoke("doc.save", path);
+    } else if (action == "export") {
+        commands.invoke("doc.export", path);
+    }
+}
+
+// Files first, in the panel rather than in a menu bar: `BeginMainMenuBar()` asserts in this frame
+// (`Missing End()` from `ErrorRecoveryTryToRecoverState`) with sokol_imgui and a fullscreen dockspace
+// in ImGui 1.93 WIP, so a menu bar is a sokol/version question rather than a layout one. Until it is
+// answered the actions are here, where they work, and the keys in the command table are the same keys
+// a menu would have shown.
+void draw_file_row(AppState& state, CommandTable& commands) {
+    if (ImGui::Button("New")) {
+        commands.invoke("file.new", json::object());
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Open")) {
+        start_pick(commands, "open", "Open an image or a document", "open");
+    }
+    const bool has_document = !state.doc.empty();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!has_document || state.doc.path().empty());
+    if (ImGui::Button("Save")) {
+        commands.invoke("doc.save", json::object());
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!has_document);
+    if (ImGui::Button("Save As")) {
+        start_pick(commands, "project", "Save document", "save");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Export")) {
+        start_pick(commands, "flat", "Export an image", "export");
+    }
+    ImGui::EndDisabled();
+    if (has_document && state.doc.dirty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("unsaved");
+    }
+}
+
+// The body both doors draw: a size and, if the person already knows what they want, the words. Reading
+// the fields through the command rather than writing the struct keeps a click, a key and a driver
+// asking for the same Create.
+void draw_new_document_body(AppState& state, CommandTable& commands) {
+    ImGui::TextDisabled("size");
+    for (const NewDocumentPreset& preset : kNewDocumentPresets) {
+        char label[96];
+        std::snprintf(label, sizeof(label), "%d x %d   %s", preset.width, preset.height, preset.label);
+        if (ImGui::Selectable(label, state.new_document.width == preset.width &&
+                                      state.new_document.height == preset.height)) {
+            commands.invoke("new_document",
+                            json{{"width", preset.width}, {"height", preset.height}});
+        }
+    }
+    int width = state.new_document.width;
+    int height = state.new_document.height;
+    bool resized = false;
+    ImGui::PushItemWidth(84.0f);
+    resized = ImGui::InputInt("w", &width, 0, 0) || resized;
+    ImGui::SameLine();
+    resized = ImGui::InputInt("h", &height, 0, 0) || resized;
+    ImGui::PopItemWidth();
+    if (resized) {
+        commands.invoke("new_document", json{{"width", width}, {"height", height}});
+    }
+    ImGui::TextDisabled("what should it be?  (empty makes a blank canvas)");
+    if (ImGui::InputTextMultiline("##new_prompt", front_door_prompt, sizeof(front_door_prompt),
+                                  ImVec2(-1.0f, ImGui::GetTextLineHeight() * 3.0f))) {
+        commands.invoke("new_document", json{{"prompt", front_door_prompt}});
+    }
+}
+
+void create_from_front_door(AppState& state, CommandTable& commands) {
+    commands.invoke("doc.new", json{{"width", state.new_document.width},
+                                    {"height", state.new_document.height}});
+    if (!state.new_document.prompt.empty()) {
+        // The panel's own door: intent, then the verb. The New dialog does not get a private route to
+        // the server, so the recipe, the role and the price are decided in exactly one place.
+        commands.invoke("ai.intent", json{{"recipe", "new-image"},
+                                          {"vars", {{"prompt", state.new_document.prompt}}}});
+        const CommandResult started = commands.invoke("ai.generate", json::object());
+        if (!started.ok) {
+            log::error("new image: " + started.error);
+        }
+    }
+    commands.invoke("front_door", json{{"show", "close"}});
+}
+
+void draw_front_door(AppState& state, CommandTable& commands) {
+    const bool wanted = state.front_door != FrontDoor::closed;
+    if (wanted && !front_door_drawn) {
+        std::snprintf(front_door_prompt, sizeof(front_door_prompt), "%s",
+                      state.new_document.prompt.c_str());
+        ImGui::OpenPopup("Welcome");
+        front_door_drawn = true;
+    }
+    if (!wanted && front_door_drawn) {
+        // Not drawn is not open: the popup only exists while its Begin is called, so closing the door
+        // is stopping the call rather than fighting the popup stack.
+        front_door_drawn = false;
+    }
+    if (!front_door_drawn) {
+        return;
+    }
+    const bool welcome = state.front_door == FrontDoor::welcome;
+    const ImGuiViewport* door_viewport = ImGui::GetMainViewport();
+    const ImVec2 door_size(welcome ? 760.0f : 360.0f, 380.0f);
+    ImGui::SetNextWindowSize(door_size, ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImVec2(door_viewport->Pos.x + (door_viewport->Size.x - door_size.x) * 0.5f,
+                                   door_viewport->Pos.y + (door_viewport->Size.y - door_size.y) * 0.4f),
+                            ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal("Welcome", nullptr, 0)) {
+        return;
+    }
+    if (ImGui::BeginChild("new", ImVec2(welcome ? 340.0f : 0.0f, 0.0f), false)) {
+        draw_new_document_body(state, commands);
+        if (ImGui::Button("Create")) {
+            create_from_front_door(state, commands);
+        }
+        ImGui::SameLine();
+        // Inside the column rather than under both of them: the children take the dialog's height, and
+        // a button below them was a pixel or two of blue at the bottom edge.
+        if (ImGui::Button("Cancel")) {
+            commands.invoke("front_door", json{{"show", "close"}});
+        }
+    }
+    ImGui::EndChild();
+    if (welcome) {
+        ImGui::SameLine();
+        if (ImGui::BeginChild("open", ImVec2(0.0f, 0.0f), false)) {
+            ImGui::TextDisabled("or open what is already there");
+            const json files = commands.invoke("file.recent", json::object()).value.value(
+                "files", json::array());
+            if (files.empty()) {
+                ImGui::TextDisabled("nothing opened yet");
+            }
+            for (const json& entry : files) {
+                const std::string path = entry.get<std::string>();
+                if (ImGui::Selectable(path.c_str())) {
+                    commands.invoke("doc.open", json{{"path", path}});
+                    commands.invoke("front_door", json{{"show", "close"}});
+                }
+            }
+            if (ImGui::Button("Browse...")) {
+                start_pick(commands, "open", "Open an image or a document", "open");
+            }
+        }
+        ImGui::EndChild();
+    }
+    ImGui::EndPopup();
+}
+
 void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
              const gfx::Checker& checker) {
+    // The door is opened here, before the menu bar is drawn, because a menu item's callback is the
+    // frame that sets it — and `OpenPopup` from inside a menu attaches the popup to a menu window that
+    // closes at the end of that same frame, which is an ImGui assertion rather than a dialog. One
+    // frame later the menu is gone and the popup has somewhere to live.
+    draw_front_door(state, commands);
+    apply_finished_pick(commands);
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImGuiID dockspace = ImGui::DockSpaceOverViewport(0, viewport);
     static bool layout_built = false;

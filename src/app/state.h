@@ -4,6 +4,7 @@
 #include "app/ai_intent.h"
 #include "app/ai_session.h"
 #include "app/ants.h"
+#include "app/new_document.h"
 
 #include "core/brush.h"
 #include "core/document.h"
@@ -138,6 +139,12 @@ struct AppState {
     app::AntOverlay ants;
     std::uint64_t ui_vertices = 0;
     std::uint64_t ui_vertex_limit = 0;
+
+    // The dialog between a launch and a document: New, and at launch also Open with the recent files.
+    // State rather than an ImGui popup flag, so `app.state` says whether the app is waiting for a
+    // person and a driver can put the door there or take it away.
+    app::FrontDoor front_door = app::FrontDoor::closed;
+    app::NewDocumentForm new_document;
 
     // A native file picker blocks until the person answers, so it runs on a worker and the answer lands
     // here for the panel, the wire and the frame loop to read. One at a time: a second dialog would be a

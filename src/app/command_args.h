@@ -32,6 +32,10 @@ bool arg_bool(const json& args, const char* key, bool& out);
 bool arg_rgba(const json& args, const char* key, std::uint8_t out[4]);
 bool arg_points(const json& args, const char* key, std::vector<Vec2>& out);
 bool arg_name(const json& args, const char* key, std::string& out);
+// Free text: a prompt, a dialog title, a path. Unlike `arg_name` it takes spaces and accepts an
+// empty value, because "clear the prompt" and "no title" are things a person does.
+bool arg_text(const json& args, const char* key, std::string& out);
+
 // An aspect choice: an "W:H" string, or `null` to put it back. Absent leaves what the caller held, so a
 // key press that carries nothing keeps what the panel chose. Whether the recipe offers that ratio is the
 // door's question, not this reader's.

@@ -46,6 +46,7 @@ struct Args {
     int height = kDefaultHeight;
     std::uint16_t wire_port = 0;
     bool wire_enabled = true;
+    bool start_dialog = true;
     std::string open_path;
 };
 
@@ -55,7 +56,8 @@ struct Args {
         "  --width=N          window width  (default %d)\n"
         "  --height=N         window height (default %d)\n"
         "  --debug-wire=N     debug wire port, 0 picks a free one (default 0)\n"
-        "  --no-debug-wire    do not open the debug wire\n",
+        "  --no-debug-wire    do not open the debug wire\n"
+        "  --no-start-dialog  launch into an empty canvas instead of asking for a file\n",
         kDefaultWidth, kDefaultHeight);
     std::exit(exit_code);
 }
@@ -68,6 +70,8 @@ Args parse_args(int argc, char** argv) {
             usage(0);
         } else if (arg == "--no-debug-wire") {
             args.wire_enabled = false;
+        } else if (arg == "--no-start-dialog") {
+            args.start_dialog = false;
         } else if (const auto port = value_after(arg, "--debug-wire=")) {
             args.wire_port = static_cast<std::uint16_t>(std::atoi(port->c_str()));
         } else if (const auto width = value_after(arg, "--width=")) {
@@ -162,10 +166,35 @@ void init(void) {
             log::error("startup load failed: " + opened.error);
         }
     }
+    // A person who opened the editor with an idea, and no file, is asked what they want rather than
+    // handed an empty canvas and left to find the door. A file on the command line answers the same
+    // question, and `--no-start-dialog` is how a driver says it already did.
+    if (g.args.open_path.empty() && g.args.start_dialog) {
+        g.state.front_door = app::FrontDoor::welcome;
+    }
+}
+
+// Which file, and whether it has unsaved work: the question a person asks the title bar just before
+// they close the window.
+std::string window_title() {
+    std::string name = "untitled";
+    if (!g.state.doc.path().empty()) {
+        const std::filesystem::path file(g.state.doc.path());
+        name = file.filename().string();
+    }
+    if (!g.state.doc.empty() && g.state.doc.dirty()) {
+        name += " *";
+    }
+    return name + " - " + kWindowTitle;
 }
 
 void frame(void) {
     g.state.framebuffer = Extent{sapp_width(), sapp_height()};
+    static std::string title;
+    if (const std::string wanted = window_title(); wanted != title) {
+        title = wanted;
+        sapp_set_window_title(title.c_str());
+    }
     ++g.state.frame;
     g.state.frame_ms = sapp_frame_duration() * 1000.0;
 
@@ -229,6 +258,13 @@ void event(const sapp_event* ev) {
     simgui_handle_event(ev);
     if (ev->type == SAPP_EVENTTYPE_QUIT_REQUESTED) {
         invoke_command("app.quit", json::object(), "quit request");
+        return;
+    }
+    // Escape answers the dialog in front of the person rather than the application: at the front door
+    // it means "never mind", and `app.quit` on the same key would throw away the run.
+    if (ev->type == SAPP_EVENTTYPE_KEY_DOWN && ev->key_code == SAPP_KEYCODE_ESCAPE &&
+        g.state.front_door != app::FrontDoor::closed) {
+        invoke_command("front_door", json{{"show", "close"}}, "close the front door");
         return;
     }
     // A widget that owns the keyboard (text entry, later) keeps the key: a shortcut fired

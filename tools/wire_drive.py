@@ -119,7 +119,8 @@ def write_fixture_png(path: Path, width: int, height: int) -> None:
     )
 
 
-def app_command(args: argparse.Namespace, width: int, height: int, open_path: Path | None) -> list[str]:
+def app_command(args: argparse.Namespace, width: int, height: int, open_path: Path | None,
+                start_dialog: bool = False) -> list[str]:
     app = [
         str(args.bin),
         f"--width={width}",
@@ -128,6 +129,11 @@ def app_command(args: argparse.Namespace, width: int, height: int, open_path: Pa
     ]
     if open_path is not None:
         app.append(str(open_path))
+    # The front door asks a person what they want; a probe has already answered by naming a document or
+    # by driving commands, and a modal over the window would only be something for the screenshot to
+    # catch. A probe that means to test the door passes start_dialog=True.
+    if not start_dialog:
+        app.append("--no-start-dialog")
     return app
 
 
@@ -276,7 +282,8 @@ def _reap_and_reraise(signum, _frame) -> None:
 
 def start_app(args: argparse.Namespace, runtime_dir: Path, width: int, height: int,
               open_path: Path | None, app_stderr,
-              extra: dict[str, str | None] | None = None) -> subprocess.Popen:
+              extra: dict[str, str | None] | None = None,
+              start_dialog: bool = False) -> subprocess.Popen:
     env = dict(os.environ)
     env["NOISE_RUNTIME_DIR"] = str(runtime_dir)
     env.pop("NOISE_CONFIG_DIR", None)
@@ -305,7 +312,8 @@ def start_app(args: argparse.Namespace, runtime_dir: Path, width: int, height: i
             raise
         env["DISPLAY"] = f":{number}"
     return register_child(
-        subprocess.Popen(app_command(args, width, height, open_path), env=env, stderr=app_stderr,
+        subprocess.Popen(app_command(args, width, height, open_path, start_dialog), env=env,
+                         stderr=app_stderr,
                          start_new_session=True))
 
 
