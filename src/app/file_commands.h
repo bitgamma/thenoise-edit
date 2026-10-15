@@ -21,12 +21,15 @@ enum class FileSet {
     open,     // anything this app reads: flat images and `.noise`
     project,  // the document itself
     flat,     // one flattened image — one filter per format, so the extension follows the choice
+    image,    // one picture to put *into* the document, which is `open`'s formats minus `.noise`
 };
 
 std::optional<FileSet> file_set_from_name(const std::string& name);
 std::string file_set_name(FileSet set);
 // What the dialog is called and what it asks for: "Save document" / save, "Open" / open.
 std::string file_set_label(FileSet set);
+// The set names, built from the table: an error that lists formats is a promise about them.
+std::string file_set_names();
 platform::PickKind pick_kind(FileSet set);
 std::vector<platform::FileFilter> file_filters(FileSet set);
 

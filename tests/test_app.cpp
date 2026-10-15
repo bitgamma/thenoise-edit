@@ -2718,6 +2718,48 @@ void test_a_frame_reaches_the_request_and_leaves_the_canvas_outside_it_alone() {
     CHECK_EQ(checksum_of(h), before);
 }
 
+// What a picked path *does* is a command, so the routing is testable without a desktop: the words a
+// dialog answers with and the words a probe sends have to do the same thing, or the button and the
+// wire are two doors again.
+void test_a_picked_path_does_what_its_file_set_promised() {
+    Harness h;
+    h.value("doc.new", json{{"width", 24}, {"height", 16}});
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "noise-app-answer-test";
+    std::filesystem::create_directories(dir);
+    std::string error;
+    const std::filesystem::path picture = dir / "lamp.png";
+    CHECK(io::save_png(picture.string(), Image::filled(Extent{6, 8}, 210, 20, 60, 255), error));
+
+    // "image" is the Insert button: the picture on a layer of its own, centred, because a dialog answer
+    // has no pointer to put it under.
+    h.value("file.answer", json{{"for", "image"}, {"path", picture.string()}});
+    REQUIRE(h.state.doc.layers().size() == 2);
+    CHECK_EQ(h.state.doc.layer(1).name, std::string("lamp"));
+    CHECK_EQ(h.state.doc.layer(1).pixels.at(9, 4)[0], std::uint8_t(210));
+    CHECK_EQ(h.state.doc.layer(1).pixels.at(8, 4)[3], std::uint8_t(0));
+
+    // "project" is the document's own file, "flat" one flattened picture, "open" a file read back in.
+    const std::filesystem::path project = dir / "scene.noise";
+    h.value("file.answer", json{{"for", "project"}, {"path", project.string()}});
+    CHECK(std::filesystem::exists(project));
+    CHECK_EQ(h.state.doc.path(), project.string());
+
+    const std::filesystem::path exported = dir / "flat.png";
+    h.value("file.answer", json{{"for", "flat"}, {"path", exported.string()}});
+    CHECK(std::filesystem::exists(exported));
+
+    h.value("layer.add", json{{"name", "spare"}});
+    h.value("file.answer", json{{"for", "open"}, {"path", project.string()}});
+    CHECK_EQ(h.state.doc.path(), project.string());
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(2));
+
+    const CommandResult wrong =
+        h.run("file.answer", json{{"for", "socket"}, {"path", project.string()}});
+    CHECK(!wrong.ok);
+    CHECK(wrong.error.find("project") != std::string::npos);
+    CHECK(wrong.error.find("image") != std::string::npos);
+}
+
 // A dropped picture is the desktop handing over a path, so the command that answers one is tested the
 // same way a click would drive it: the layer takes the file's name, the middle of the picture goes
 // where the pointer was, and a drop that fell whole off the canvas is refused rather than parked at 0,0.
@@ -3280,6 +3322,7 @@ int main() {
     test_choosing_not_to_run_costs_no_upload_encode();
     test_an_aspect_choice_prices_the_frame_it_will_ask_for();
     test_a_frame_reaches_the_request_and_leaves_the_canvas_outside_it_alone();
+    test_a_picked_path_does_what_its_file_set_promised();
     test_a_dropped_picture_lands_where_the_pointer_was();
     test_an_answer_on_a_blank_canvas_becomes_the_canvas();
     test_a_style_choice_moves_which_recipe_the_key_runs();

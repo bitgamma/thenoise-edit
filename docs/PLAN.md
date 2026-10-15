@@ -306,7 +306,18 @@ the tool-panel file row stays. Rule 1 of PRODUCT gained its exception: an answer
 holds nothing fills the empty layer `New` made instead of stacking a picture above an invisible one, which
 is what the front door's prompt was always promising.
 
-Owed to this slice: the `Browse…`/`Save As` path is proven against a stand-in picker, never against zenity
-itself, so it wants one hand-run per desktop; `New` with a prompt runs `ai.generate` and lands the answer
-as a second layer over an empty base, which is the pixel-lock promise holding but not yet the "image
-arrives as the document" of PRODUCT's beat 3 — that wants the empty-base decision, not a special case.
+**Drops, and where they cannot land.** The person is on Wayland, which means the editor runs as an X11
+client under XWayland and a file dragged from a native file manager has to cross XWayland's XDND bridge to
+reach it. sokol implements the X11 target side, and the window now advertises `XdndAware = 5` (measured, not
+assumed), yet the pointer still shows refusal over the window: what is refused is XWayland's side of the
+handshake, which nothing in this tree owns, and sokol master has not moved (one commit since the pin, about
+Vulkan). So *Insert* sits beside Export and runs the same `layer.import` a drop runs, centred on the canvas rather than under a
+pointer: `file.answer {for, path}` is the routing table for every picked path — `open`, `project`, `flat`,
+`image` — because the frame that opens a picker and the frame that gets the answer are minutes apart, and a
+button a person can click has to be a command a probe can call. Writing that table caught a live bug: a
+ternary on the set name gave Insert a **save** dialog.
+
+Owed here: why XWayland refuses the drop is unexplained rather than settled, and the X11-only path is not
+yet a test — a synthetic XDND source under Xvfb would prove sokol's target side and the landing in one go,
+and is the thing to write if drops ever matter again. `Browse…`/`Save As` is proven against a stand-in
+picker and never against zenity itself, so it wants one hand-run per desktop.

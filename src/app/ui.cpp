@@ -829,10 +829,11 @@ std::string pending_pick;
 char front_door_prompt[kVerbFieldChars] = "";
 bool front_door_drawn = false;
 
-void start_pick(CommandTable& commands, const char* for_set, const char* title,
-                const std::string& action) {
-    pending_pick = action;
-    commands.invoke("file.pick", json{{"for", for_set}, {"title", title}});
+// The file set is what is remembered, not a bespoke action word: the answer goes back through
+// `file.answer` under the same name it came in with, so a picker and a probe cannot mean different things.
+void start_pick(CommandTable& commands, const char* set, const char* title) {
+    pending_pick = set;
+    commands.invoke("file.pick", json{{"for", set}, {"title", title}});
 }
 
 // The pick is applied here rather than where it was started, because the menu is gone by the time a
@@ -855,13 +856,10 @@ void apply_finished_pick(CommandTable& commands) {
         }
         return;
     }
-    const json path{{"path", paths.front().get<std::string>()}};
-    if (action == "open") {
-        commands.invoke("doc.open", path);
-    } else if (action == "save") {
-        commands.invoke("doc.save", path);
-    } else if (action == "export") {
-        commands.invoke("doc.export", path);
+    const CommandResult done = commands.invoke(
+        "file.answer", json{{"for", action}, {"path", paths.front().get<std::string>()}});
+    if (!done.ok) {
+        log::error("file answer: " + done.error);
     }
 }
 
@@ -876,7 +874,7 @@ void draw_file_row(AppState& state, CommandTable& commands) {
     }
     ImGui::SameLine();
     if (ImGui::Button("Open")) {
-        start_pick(commands, "open", "Open an image or a document", "open");
+        start_pick(commands, "open", "Open an image or a document");
     }
     const bool has_document = !state.doc.empty();
     ImGui::SameLine();
@@ -888,11 +886,18 @@ void draw_file_row(AppState& state, CommandTable& commands) {
     ImGui::SameLine();
     ImGui::BeginDisabled(!has_document);
     if (ImGui::Button("Save As")) {
-        start_pick(commands, "project", "Save document", "save");
+        start_pick(commands, "project", "Save document");
     }
     ImGui::SameLine();
     if (ImGui::Button("Export")) {
-        start_pick(commands, "flat", "Export an image", "export");
+        start_pick(commands, "flat", "Export an image");
+    }
+    // The way in that does not wait for the compositor to hand the window a file: under Wayland the
+    // editor is an X11 client, so a drop has to cross XWayland's XDND bridge, which is not ours to fix.
+    // This runs the command a drop runs, centred on the canvas instead of under a pointer.
+    ImGui::SameLine();
+    if (ImGui::Button("Insert")) {
+        start_pick(commands, "image", "Insert an image");
     }
     ImGui::EndDisabled();
     if (has_document && state.doc.dirty()) {
@@ -1005,7 +1010,7 @@ void draw_front_door(AppState& state, CommandTable& commands) {
                 }
             }
             if (ImGui::Button("Browse...")) {
-                start_pick(commands, "open", "Open an image or a document", "open");
+                start_pick(commands, "open", "Open an image or a document");
             }
         }
         ImGui::EndChild();

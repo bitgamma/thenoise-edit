@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 #include <string>
 #include <thread>
 #include <vector>
@@ -97,6 +98,17 @@ void test_the_filters_are_the_formats_the_codecs_write() {
     const std::vector<platform::FileFilter> project = app::file_filters(app::FileSet::project);
     REQUIRE(project.size() == 1);
     CHECK_EQ(project[0].extensions.front(), std::string(io::kProjectExtension));
+    // Inserting a picture asks for the reader's formats and nothing else: a `.noise` offered here would
+    // be answered by an import that can only fail.
+    const std::vector<platform::FileFilter> insert = app::file_filters(app::FileSet::image);
+    REQUIRE(!insert.empty());
+    CHECK_EQ(insert[0].extensions, images);
+    for (const platform::FileFilter& filter : insert) {
+        CHECK(std::find(filter.extensions.begin(), filter.extensions.end(),
+                        std::string(io::kProjectExtension)) == filter.extensions.end());
+    }
+    CHECK(app::pick_kind(app::FileSet::image) == platform::PickKind::open);
+
     CHECK(app::file_set_from_name("nonsense").has_value() == false);
     CHECK(app::file_set_from_name("flat").has_value());
     CHECK(app::pick_kind(app::FileSet::open) == platform::PickKind::open);
