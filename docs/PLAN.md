@@ -48,13 +48,14 @@ Not preferences. Each one exists because breaking it was observed as a bug.
 
 ## What is next, in order
 
-1. **Extend (outpaint).** The canvas mechanism nothing else in the app has: `platform::resize_window`
-   **does not exist yet** — window size is set once, in the `sapp_desc` built from `--width`/`--height`,
-   and those flags are a driver's affordance, not the way a person sizes a window. Growing a canvas means
-   building that seam (a platform call that resizes the window, an `Extent` the app owns rather than asks
-   the window for, and the renderer's framebuffer following it) and giving it a wire command, so a driver
-   can put the canvas at a size and read the size back. Then the original frame is cut out of the answer
-   and a new `operation: extend` describes it — not a weakened `reconstruct`, because the hole is a
+1. **Extend (outpaint).** The canvas mechanism nothing else in the app has — and it is a *document*
+   mechanism, not a window one. Measured 2026-10-15: the window is already resizable by the window
+   manager, and the framebuffer, the layout and the canvas rect all follow (900x620 → 1300x900, canvas
+   970x620 → 1012x777). What does not exist is `Document` owning an `Extent` that a command can change:
+   `doc.resize`, undoable, with the view following and the pixel-lock rule holding for the grown area.
+   `platform::resize_window` is only automation convenience on top of that (the `--width`/`--height`
+   flags set `sapp_desc` once), and the size is already readable as `app.state:framebuffer`. Then the
+   original frame is cut out of the answer and a new `operation: extend` describes it — not a weakened `reconstruct`, because the hole is a
    property of the operation. The answer lands on a new layer with the existing pixels byte-untouched,
    which is Rule A and the pixel-lock assertion doing the same work.
 2. **Upscale / resize.** `ai.run {recipe: upscale}` works through the `/images/upscale` shape today; what
