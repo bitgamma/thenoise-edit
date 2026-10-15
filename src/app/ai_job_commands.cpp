@@ -36,7 +36,7 @@ CommandResult need_queue(const char* command, const AppState& state) {
 }  // namespace
 
 void register_ai_job_commands(AppState& state, CommandTable& table) {
-    // The handshake `AI-BACKEND.md` describes: alive? what version? what is loaded? then the model list,
+    // The handshake `ARCHITECTURE.md`'s AI path describes: alive? what version? what is loaded? then the model list,
     // then the roles resolve against it. Nothing here swaps a model - that is `server.load`, priced and
     // explicit, because a swap costs tens of seconds on a shared box.
     table.add("server.connect", "Shake hands with the server and resolve the roles", {}, {},

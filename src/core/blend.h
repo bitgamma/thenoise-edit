@@ -28,7 +28,7 @@ std::uint8_t channel_from_unit(double unit);
 // nowhere else, and a file naming a mode this build does not have is refused by name instead of
 // being opened as `normal`.
 //
-// The eight are the MVP set from `docs/MVP.md`: `darken`/`lighten` are the cheapest pair to
+// The eight are the P0 set: `darken`/`lighten` are the cheapest pair to
 // understand and the only ones that never mix channels, `overlay` is what retouchers reach for,
 // and `color-dodge`/`color-burn` are here because they are the pair that goes wrong at the ends of
 // the range (division by a zero divisor) and are therefore the ones worth having in a table rather

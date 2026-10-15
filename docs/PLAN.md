@@ -1,11 +1,11 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the tree against the docs: **2026-10-11**, after Fill and Change landed as typed
-sequences and the panel's words box was fixed. Read [TOOLS.md](TOOLS.md) first: it is the
-editing-concept re-alignment (verbs, selections, what an operation is) and it is where the UI work is
-tracked. [ARCHITECTURE.md](ARCHITECTURE.md) is the module map, with planned modules marked as such,
-[AI-BACKEND.md](AI-BACKEND.md) the server contract, [MVP.md](MVP.md) the scope and the decision log,
-[USER-GUIDE.md](USER-GUIDE.md) what a person sees. `AGENTS.md` is normative and outranks this file.
+Last re-read of the tree against the docs: **2026-10-15**, when the product was rewritten around what a
+person does ([PRODUCT.md](PRODUCT.md)) and the other design documents were merged into this one,
+[ARCHITECTURE.md](ARCHITECTURE.md) and [TESTING.md](TESTING.md). `AGENTS.md` is normative and outranks this
+file.
+
+---
 
 ## Rules every change has to keep
 
@@ -48,45 +48,48 @@ Not preferences. Each one exists because breaking it was observed as a bug.
 
 ## What is next, in order
 
-1. **Extend (outpaint).** The canvas mechanism nothing else in the app has — and it is a *document*
-   mechanism, not a window one. Measured 2026-10-15: the window is already resizable by the window
-   manager, and the framebuffer, the layout and the canvas rect all follow (900x620 → 1300x900, canvas
-   970x620 → 1012x777). What does not exist is `Document` owning an `Extent` that a command can change:
-   `doc.resize`, undoable, with the view following and the pixel-lock rule holding for the grown area.
-   `platform::resize_window` is only automation convenience on top of that (the `--width`/`--height`
-   flags set `sapp_desc` once), and the size is already readable as `app.state:framebuffer`. Then the
-   original frame is cut out of the answer and a new `operation: extend` describes it — not a weakened `reconstruct`, because the hole is a
-   property of the operation. The answer lands on a new layer with the existing pixels byte-untouched,
-   which is Rule A and the pixel-lock assertion doing the same work.
-2. **Upscale / resize.** `ai.run {recipe: upscale}` works through the `/images/upscale` shape today; what
-   does not exist is a document that can change size — `doc.resize` — so the result has nowhere to go
-   except a layer that disagrees with its canvas. Then the selection tools P0 still owes: lasso, wand,
-   feather, expand/shrink.
-3. **The jobs tray**: variants as `seed+i` jobs landing one by one, A/B wipe, Accept/Discard. It reads the
-   in-memory queue, and the latency EMA it needs for progress already exists.
-4. **The tuning pass**, specified at the end of this file: recipe wording and `prep.radius_px` against
-   hole size. It needs the dev box and a written-down approval, and it changes tables, not code.
+Ordered by what makes the thing usable rather than by what is interesting. Each slice is demoable by a
+human without a terminal, ships the wire command that makes it observable, and ends with a step of
+`tools/flow_probe.py` walking [PRODUCT.md](PRODUCT.md)'s scenario. Until slice 3 the scenario is walked
+partly over the wire; after it, by clicking.
 
-Beyond the queue, MVP's P0 still owed: local `heal`, autosave and crash recovery, the keymap file and
-prefs, Linux packaging. Those are milestones M5's rows, not a fifth thing to start.
+1. **Files.** Start dialog (New / Open + recent), Open, Save, Save As, Export (png / jpg / webp),
+   drag-and-drop onto a new layer, dirty title, quit guard. Native picker through the desktop portal or
+   `zenity`, one file in `src/platform/`, with the in-app browser as the fallback. `doc.new`, `doc.open`,
+   `doc.save` and `doc.export` already exist as commands; what does not exist is a way to reach them.
+2. **New image from an idea.** The New dialog's prompt, kind (a recipe family's `variants`) and size -
+   preset ratios plus explicit pixels - and the dialog **quoting the price** the way the status line does.
+   OK generates into the document's first layer. Progress, coarse or indefinite, plus Cancel.
+3. **One coverage, verbs at the marked area.** Selection and layer mask share the coverage editor, the
+   shape language and the maths, with the target switch saying which lifetime the brush is painting.
+   **Fix**, **Insert**, **Edit**, **Erase** as three-plus separate buttons (decided: not one button with a
+   mode) in a bar attached to the marked area, the panel keeping the full controls. Local `heal` lands
+   here, because *Fix* on a small area should not pay for a round trip.
+4. **Layers you can see.** Thumbnails and mask thumbnails, reorder, opacity, visibility, move and scale,
+   **Flatten** (`layer.merge`). The panel is always visible: it is where a person goes to understand what
+   an edit did.
+5. **Blend, and images as input.** Drop an image → its own layer → *Blend* with no prompt repaints it into
+   the scene on that layer. Needs the third recipe scope, `region: layer`, whose source is the layer's
+   pixels and whose coverage is its alpha. *Blend* with a prompt, then control images (openpose), come in
+   through the same door.
+6. **Document geometry.** `doc.crop`, `doc.resize` for the canvas - with *AI fill* on the grown strip, the
+   outpaint mechanism below - and *Image size* with a method: Lanczos, `AI upscale (fast)` (ESRGAN),
+   `AI upscale (best)` (an edit model, so one `roles.json` row and one recipe). The seam to think about
+   first is history: `Document` fixes its `Extent` at creation today, and the journal holds full-size
+   snapshots, so a size change needs a decision about what undo means across it.
 
-*Generate's aspect presets and style variants landed on 2026-10-12; `git log` has the story.* What they
-changed architecturally is worth the four lines: an aspect is `core::AspectRatio` (a name, `W:H`, parsed
-strictly) and nothing more — it picks a rectangle through `ai::frame_for_aspect` and enters the pipeline as
-coverage, so `size_policy` still owns the pixel grid, the field policy still owns the fields (there is no
-`aspect` field and never will be on the wire), and landing needed no new rule: the coverage *is* the frame,
-so everything outside it is byte-untouched by construction and `test_app` asserts exactly that. A style is
-`Recipe::variants` — recipes standing in for one another at one key — validated by `load_recipes` rather
-than by a caller hoping the table is sane, which is why the verb, the row and the wire cannot disagree: all
-three read `RecipeSet::family`. The door stays `ai.intent`, now carrying `aspect`, and
-`tools/panel_aspect_probe.py` is the claim that the two new dropdowns commit through it — a command-level
-test cannot see a widget, and the probe found the panel needing a taller window before both rows sat above
-the fold.
+   **Outpaint, the mechanism.** Grow the `Extent`, mark the grown border as the coverage, compile the
+   region with the original frame *inside* it as context, and let the answer land on a new layer clipped to
+   the grown strip, so the original pixels stay byte-untouched. It is `reconstruct` with a different mask
+   story, which is why it wants its own `operation: extend` rather than a weakened call.
+7. **The tuning pass and the parked niceties.** Recipe wording and `prep.radius_px` per verb against hole
+   size (specified at the end of this file, needs the box), the `enhance` prompt-improver behind its own
+   button, the keymap file, autosave.
 
-*Fill and Change landed on 2026-10-11; `git log` has the story.* What has to stay true is on the seam:
-`app::kVerbs` generates the commands, `ai.intent` holds the words and the refusal, each asking verb row
-carries its own box, and the answers land named for the verb and the job. `test_panel_words` drives the
-window itself and is what keeps the panel honest — a command-level test cannot see a widget.
+Seed is not a user-facing concept: **Retry** re-asks the same request with a different seed and lands
+another layer. Roles and recipes are ours to pin for now - the sets are in `assets/roles.json` and
+`assets/recipes/`, loaded from disk, and the plan is that a person edits those files, not a dialog, so
+nothing here needs a settings UI to be foreseen later.
 
 ## The seams, and how you see them
 
@@ -150,20 +153,93 @@ seed, resident model put back unpinned.
   tolerance is 0.06, so under ~0.7 is a visible soft patch). If the big hole wants a different radius, the
   recipe grows a rule rather than a second constant.
 
-## Environment
+## Owed from the original scope list
 
-* Build and gate: `cmake -B build -G Ninja && cmake --build build && ctest --test-dir build`. Release
-  tree is `build-release`. `-Werror` with `-Wall -Wextra -Wshadow -Wconversion -Wsign-conversion`.
-  Probes raise their own X display when there is no `$DISPLAY`, so `xvfb-run` is not needed (see
-  TOOLS.md's house rule); under a real `$DISPLAY` they use it.
-* Live tier: `cmake -B build -DNOISE_LIVE_TESTS=ON && ctest --test-dir build -L live`, with
-  `$THENOISE_URL` / `$THENOISE_API_KEY` exported (the dev box). Ask before spending more than ~10 images
-  and name the cost.
-* Commits are unsigned here: `commit.gpgsign=true` with a key that is not in this box's keyring, so
-  `git -c commit.gpgsign=false commit` matches the existing history.
-* Definition of done: builds warning-free · a test that would fail if the feature broke · a wire command
-  for any new observable state · docs still true · no new duplicated constants or default arguments · and
-  this file saying so.
+The checklist the retired scope document carried, kept because some of it is still genuinely owed
+(`heal`, autosave, the keymap file, the role-assignment surface). It has **not** been re-verified against
+the tree and several items have landed since - so it is a source of candidates, not a task list. Where it
+disagrees with [PRODUCT.md](PRODUCT.md) or the code, it is the older text.
+
+**Connect / setup**
+- server profiles (base URL, bearer key from env/keyring/0600 file, TLS opt-out for
+  self-signed LAN certs, connect/request timeouts)
+- connect handshake: `/v1/health` → `/v1/models` → filter `recipe == "thenoise"` → resolve
+  roles → enable/disable commands accordingly
+- **role assignment** UI: generate model, edit model, upscale model, (optional) captioner
+- **session model panel**: what is loaded now (`/v1/health` `model_loaded`, `pinned`), swap
+  with an explicit cost estimate, pin/unpin (`/v1/load`), warm-up request after a swap
+- missing-model guidance: the exact `lemonade import <recipe.json>` / `lemonade pull …` to run
+
+**Canvas / editing**
+- pan, zoom-to-cursor, fit/100%, checkerboard transparency
+- brush (size/hardness/opacity/flow, no pressure — D1), smooth stroke interpolation,
+  eraser, fill (fg/bg), eyedropper (layer | composite)
+- import PNG/WebP/JPEG; export PNG/WebP/JPEG + `.noise`; document ceiling 8192² —
+  **implemented**: `doc.open` reads all three by their bytes, `doc.export` writes all three by
+  extension, and a format with no alpha channel says it flattened (`discarded_alpha`)
+- `Upscale document` (ESRGAN via `/v1/images/upscale`)
+
+**Layers** (raster only)
+- add/delete/duplicate/reorder (drag), visibility, inline rename, opacity, blend modes
+  (normal, multiply, screen, overlay, darken, lighten, color-dodge, color-burn for MVP;
+  soft/hard-light, difference, exclusion, add in M5) —
+  **visibility, opacity and the eight modes are implemented**: `kBlendModes` is the one table, the
+  panel has a dropdown per layer, `layer.set {mode}` sets one, and the composite applies it. Rename,
+  duplicate, drag-reorder and the M5 modes are not
+- merge down, flatten, crop-to-selection, new-layer-via-copy/clone
+- **live**: a layer mask (`Layer::mask`) the composite honours, saved with the project, converting
+  both ways with the selection (`mask.from_selection`, `select.from_mask`) - buttons for both in the
+  Brush panel - and **paintable**: the Layers panel puts one on (`mask.add`), takes it off
+  (`mask.remove`), fills it (`mask.fill {to: show|hide}`), inverts it (`mask.invert`) and aims strokes
+  at it (`mask.target {plane: pixels|mask}`), so the brush reveals coverage and the eraser takes it
+  back, one drag per undo step. Still missing: enable/disable without deleting it, apply
+  (destructive), alt-click to view the mask, and a mask thumbnail in the row
+
+**Selections**
+- rect, ellipse, polygon/lasso (path → scanline fill), magic wand (tolerance,
+  contiguous/global, anti-aliased) on composite or active layer
+- new/add/subtract/intersect modifiers; invert; feather; expand/shrink; border
+- **live**: marching ants, `Ctrl+D` clear, invert, save selection ↔ layer mask (and the reverse), and
+  two shapes — rectangle (`M`) and the anti-aliased ellipse inscribed in the drag (`Shift+M`), plus
+  `select.rect` / `select.ellipse` with `replace`/`add`/`subtract`. Missing: lasso, wand, feather,
+  expand/shrink and border
+
+**AI**
+- `New image from prompt` → new layer, aspect presets at the model's native scale,
+  presets steered toward the model's strength (`-anime` on Anima, `-photo` on Krea 2)
+- `Remove object` (flagship): paint → blur-prep → remove prompt → local composite
+  **implemented**, as a **verb**: mark an area, `Ctrl+Backspace`, and the answer arrives on its own new
+  layer. No words, no preview press, no scope choice, no destination. `ai.verbs` and `ai.intent` are the
+  same surface the key goes through, the compiled request is priced in the status bar before it costs
+  anything, and a model swap asks first.
+- `Change` (in-place edit), `Fill`, `New image` — same plumbing, different recipe, one key each
+  (`Ctrl+Shift+C`, `Ctrl+Shift+F`, `Ctrl+G`). The verbs are rows of `ai_verbs.cpp` over rows of
+  `recipes/*.json`; the panel lists them from `ai.verbs`, so neither the buttons nor the words they ask
+  for are written twice
+- `Heal` — in-process Telea/Chan fusion when there is no server or no edit model; backend
+  when available ("no network, no problem")
+- `Upscale region / document`
+- `Reimagine` — full-frame edit dropped in as a new layer at 50 % opacity
+- `Free command` with exact-request preview (fields + the actual prepped PNG)
+- draft (≤512 px) → refine → commit flow; ETA from client-measured latency EMA — the EMA is built
+  and read (`server.state.latency`, `~X s` on the status bar when the box has answered that size before);
+  the draft/refine *stages* are not
+- variants = N queued jobs with `seed+i` (not the `n` param), landing one-by-one in a tray;
+  A/B wipe; Accept/Discard; every result landed as a layer
+- ~~request cache~~ **out of P0**: it hits only on a byte-identical re-ask (rare in editing, the
+  normal case in probing), and it had no bound and no cleanup. A re-ask costs a second request,
+  which is the true price. Revisit only with an eviction policy and a size cap written down first.
+- journal/provenance panel + "Regenerate with same params"
+
+**Robustness**
+- undo/redo including AI ops (free via blob indirection), autosave every 2 min to a recovery
+  bundle, crash-recovery prompt at launch
+- ~~durable job queue~~ **out by decision**: a request in flight belongs to a document revision a
+  restart cannot guarantee, so its answer would land somewhere that no longer means the same thing.
+  Losing one at a crash costs a re-ask; landing it wrongly costs an edit nobody asked for
+- `ai.log` of every request/response (redacted, image bytes → blob hash)
+
+---
 
 ## 2026-10-15 - Generate answers at a chosen frame, in a chosen style, and it is checked against the box
 

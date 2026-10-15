@@ -16,7 +16,7 @@
 
 namespace noise::ai {
 
-// The failure classes of `AI-BACKEND.md`'s table, as an enum the app can branch on instead of parsing
+// The failure classes of §Failure handling, as an enum the app can branch on instead of parsing
 // prose. There is no `unsupported_field` member: an unrecognised field is *ignored* by this engine
 // (measured - a `seed` of "not-a-number" is answered with 200), so the row cannot be detected at run
 // time and the request builder is what enforces it.

@@ -1,25 +1,32 @@
-# Docs
+# noise-edit
 
-**[`AGENTS.md`](../AGENTS.md) is normative**: ground rules for how this codebase is built and
-maintained (architecture over compatibility, tests that can actually fail, the debug wire, one
-fact per home, minimal comments, LLM-friendly code, when to ask the human). Where a doc here
-and AGENTS.md disagree, AGENTS.md wins.
+A layered raster editor whose AI operations are ordinary editing commands with a compile step in the
+middle: you mark an area and say what you want, the app compiles that into one request, and the answer
+lands on its own layer with everything outside the marked area byte-identical.
 
-| Doc | What's in it |
+## Run it
+
+```sh
+cmake -B build && cmake --build build && ./build/noise-edit [file.noise | image.png]
+ctest --test-dir build                       # hermetic, opens no sockets
+```
+
+`$THENOISE_URL` and `$THENOISE_API_KEY` point it at a Lemonade server; `$NOISE_AI_FIXTURES` points it at
+recorded responses instead. Without either it runs as an editor with no AI verbs available and says so.
+`--width` / `--height` / `--runtime` / `--debug-wire` exist for drivers, not for people.
+
+## The four documents
+
+| File | What it answers |
 |---|---|
-| [TOOLS.md](TOOLS.md) | **the concept the AI path is being aligned to**: AI as ordinary tool actions, the verbs (Remove / Fill / Change / Generate / Extend / Upscale), answers always landing on a new layer, the flattened-composite rule, how outpaint works, and what that deletes |
-| [MVP.md](MVP.md) | scope, P0 feature set, explicit non-goals, feature-availability matrix, milestones, UI layout, risks, decision log, open questions |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | stack + module layout, threading, compositing, painting path, undo/blob store, file format (`.noise`, and why nothing else is adopted), locked design decisions |
-| [AI-BACKEND.md](AI-BACKEND.md) | the Lemonade/`thenoise` contract: supported models & roles, field tiers (and why `mask` is never sent), region compiler, result compositor, draft/refine flow, recipes, error handling, the probe harness |
-| [USER-GUIDE.md](USER-GUIDE.md) | how to run it, the window, every key and mouse gesture that exists today, `.noise` vs PNG, driving the debug wire from a terminal, and what is not implemented yet |
-| [PLAN.md](PLAN.md) | working note: what the last milestone actually delivered, the ordered next steps, machine quirks worth knowing |
-| [probes/](probes/) | measured numbers from the machine this runs on: paint and composite costs, container costs, the live server's contract. Records, not assertions — the bounds that fail are in the tests |
+| **[PRODUCT.md](PRODUCT.md)** | what this is, who it is for, the scenario it has to serve, the rules that do not bend |
+| **[ARCHITECTURE.md](ARCHITECTURE.md)** | how it is built: modules, compositing, painting, history, `.noise`, the AI path, the debug wire |
+| **[TESTING.md](TESTING.md)** | the tiers, what a live run costs, the probe harness, the house rule about processes |
+| **[PLAN.md](PLAN.md)** | what is next and why, the traps the code cannot show, and a dated log of what was measured |
 
-Reading order for a contributor: **MVP.md → TOOLS.md → AI-BACKEND.md → ARCHITECTURE.md**. To just run the
-thing, read [USER-GUIDE.md](USER-GUIDE.md).
+[`../AGENTS.md`](../AGENTS.md) is the working contract for whoever edits this tree — normative, and it
+outranks the docs above. `docs/probes/` holds dated measurements; nothing there is a claim about how the
+code works today.
 
-The one idea that ties it together: the backend is a dumb `image + words → image`
-function, so *all spatial precision lives in the client* — crop, prep, prompt, resample,
-composite under a feathered mask. The Noise document format exists mainly so that
-generation provenance (prompt, model, seed, timings) is a first-class file-format feature
-and so that undoing a multi-minute generation costs a pointer swap.
+Read in that order if you are new. `command.list` over the debug wire is the only reference for the command
+surface and the keyboard, so no document duplicates it.

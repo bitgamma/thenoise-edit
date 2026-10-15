@@ -2,7 +2,7 @@
 
 noise-edit: a layered raster editor whose AI operations are ordinary editing commands with
 a compile step in the middle. C++20, sokol, Dear ImGui, Lemonade/`thenoise` backend.
-Design docs: [docs/README.md](docs/README.md). Read `docs/AI-BACKEND.md` before touching `ai/`.
+Design docs: [docs/README.md](docs/README.md). Read the AI path in `docs/ARCHITECTURE.md` before touching `ai/`.
 
 ## 1. Architecture beats compatibility
 
@@ -156,7 +156,7 @@ comprehensible, and honest about its state.
 - If you catch yourself deliberating between two designs for more than a few minutes, stop
   and ask: state both options, give a recommendation and the reason, ask one question.
 - Always ask before: a new dependency; a change to `.noise`, the debug wire protocol, the
-  field policy, or the P0 scope in `docs/MVP.md`; swapping models on the shared server for
+  field policy, or the scope in `docs/PRODUCT.md`; swapping models on the shared server for
   anything other than a test that restores it; anything network-touching beyond the
   configured server.
 - Request, don't perm: needing the live server is a resource request ("export

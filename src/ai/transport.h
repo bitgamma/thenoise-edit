@@ -28,7 +28,7 @@ struct OutgoingRequest {
     std::string text() const { return std::string(body.begin(), body.end()); }
 };
 
-// A refusal is data, not an exception: the failure table in `AI-BACKEND.md` branches on the status and
+// A refusal is data, not an exception: the failure table in `ARCHITECTURE.md` branches on the status and
 // the body, so both come back and the transport decides nothing.
 struct IncomingResponse {
     // 0 when no status could be read at all.
