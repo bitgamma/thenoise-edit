@@ -143,6 +143,14 @@ at the same X server or the events land on nobody.
 SIGINT/SIGTERM, Xvfb included, and releases the locks it claimed. A probe that crashes must leave no
 `noise-edit`, no `Xvfb`, and no stale `/tmp/.X11-lock/X*`.
 
+Reaping is not enough, because a probe killed by `SIGKILL` - a test timeout escalated, a terminal closed -
+runs no cleanup at all, and an editor holding a framebuffer redraws at full CPU until someone notices.
+**`python3 tools/sweep_procs.py` is the back stop**: it kills every `noise-edit` and `Xvfb` the user owns
+and exits 1 when it found any. Run it after a probe session, after a timed-out `ctest`, and after any
+ad-hoc script that started the app; `--list` looks without touching. An ad-hoc script is not exempt from
+the reaping rule either - it cleans up in `finally` with `wd.shutdown(proc, wire)`, the way the probes
+do.
+
 ## What is still owed to the box
 
 * One live run measuring the paired drift correction (`colour_match_drift`) on a real answer — the numbers

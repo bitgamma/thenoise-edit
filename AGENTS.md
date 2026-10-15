@@ -185,7 +185,12 @@ comprehensible, and honest about its state.
   outside the shim, UTF-8 internally, `std::filesystem` at the boundary.
 - No network access at build time, and none in the default test run. Live-tier tests are
   gated on `THENOISE_URL`/`THENOISE_API_KEY`. Vendored/FetchContent deps only, pinned.
-- Commits: imperative subject, one concern each; body says why. Never commit an unsigned
+- No process outlives the run. Anything that starts the app must end it: after probes, a timed-out
+  `ctest`, or any ad-hoc script that launched the editor, run `python3 tools/sweep_procs.py` (exit 1 means
+  it found strays) and leave it saying `clean`. An orphaned `noise-edit` plus its `Xvfb` redraws at full
+  CPU on a shared box, and nothing in a green test run shows it. Ad-hoc scripts clean up in `finally` with
+  `wd.shutdown(proc, wire)` like the probes do; note `Escape` is `app.quit`, so it is not a way to dismiss a
+  popup. Never commit an unsigned
   build-breaking tree, and never commit generated files.
 - Definition of done: builds warning-free · tests added that would fail if the feature broke ·
   debug-wire command for any new observable state · docs still true · no new duplicated

@@ -121,9 +121,13 @@ class Injector:
         self._flush()
 
     def wheel(self, clicks: int) -> None:
-        for _ in range(clicks):
-            self.button(4, True)   # wheel buttons are 4 (up) and 5 (down) on X11
-            self.button(4, False)
+        """Scroll: positive clicks go up, negative down. X11 wheel buttons are 4 (up) and 5 (down),
+        and `range()` of a negative count is empty - a helper that silently did nothing for a downward
+        scroll is how a panel that does not scroll looks like a panel that does."""
+        button = 4 if clicks > 0 else 5
+        for _ in range(abs(clicks)):
+            self.button(button, True)
+            self.button(button, False)
 
     def key(self, keysym: int) -> None:
         """One press/release of the key whose keysym is `keysym`, modifiers untouched."""
