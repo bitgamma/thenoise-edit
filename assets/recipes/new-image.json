@@ -1,6 +1,6 @@
 {
   "id": "new-image",
-  "label": "Generate",
+  "label": "no style",
   "operation": "from_words",
   "endpoint": "generations",
   "role": "generate.photo",

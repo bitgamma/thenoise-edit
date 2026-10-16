@@ -9,6 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <thread>
 #include <utility>
 
@@ -38,10 +39,35 @@ json presets_json() {
     return out;
 }
 
-json new_document_json(const NewDocumentForm& form) {
+// The kinds the dialog offers, straight from the family: `label` is what the row says, `id` is what a
+// press sends. A style added to `assets/recipes/` appears here without anything in this file knowing.
+json kinds_json(const ai::RecipeSet& recipes) {
+    json out = json::array();
+    for (const ai::Recipe* recipe : recipes.family(kNewDocumentFamily)) {
+        if (recipe != nullptr) {
+            out.push_back({{"id", recipe->id}, {"label", recipe->label}});
+        }
+    }
+    return out;
+}
+
+std::string kind_names(const json& kinds) {
+    std::string out;
+    for (const json& kind : kinds) {
+        if (!out.empty()) {
+            out += ", ";
+        }
+        out += kind["id"].get<std::string>();
+    }
+    return out;
+}
+
+json new_document_json(const NewDocumentForm& form, const ai::RecipeSet& recipes) {
     return {{"width", form.width},
             {"height", form.height},
             {"prompt", form.prompt},
+            {"kind", form.kind},
+            {"kinds", kinds_json(recipes)},
             {"max_edge", kNewDocumentMaxEdge},
             {"presets", presets_json()}};
 }
@@ -154,7 +180,7 @@ std::vector<platform::FileFilter> file_filters(FileSet set) {
 
 json front_door_json(const AppState& state) {
     return {{"front_door", front_door_name(state.front_door)},
-            {"new_document", new_document_json(state.new_document)}};
+            {"new_document", new_document_json(state.new_document, state.ai.recipes)}};
 }
 
 void register_file_commands(AppState& state, CommandTable& table) {
@@ -222,15 +248,33 @@ void register_file_commands(AppState& state, CommandTable& table) {
     });
 
     table.add("new_document", "Read or set the New dialog's fields", {},
-              {"width", "height", "prompt"}, [&state](const json& args) -> CommandResult {
+              {"width", "height", "prompt", "kind"}, [&state](const json& args) -> CommandResult {
         int width = state.new_document.width;
         int height = state.new_document.height;
         std::string prompt = state.new_document.prompt;
+        std::string kind = state.new_document.kind;
         if (!arg_int(args, "width", width) || !arg_int(args, "height", height)) {
             return fail("new_document", "expected integers 'width' and 'height'");
         }
         if (!arg_text(args, "prompt", prompt)) {
             return fail("new_document", "expected string 'prompt'");
+        }
+        if (!arg_name(args, "kind", kind)) {
+            return fail("new_document", "expected string 'kind'");
+        }
+        // Only a call that names a kind is checked against the table, so reading the form still works
+        // when the recipes failed to load — and the AI command is the one that explains that failure.
+        if (args.contains("kind")) {
+            const json kinds = kinds_json(state.ai.recipes);
+            const bool offered = std::any_of(kinds.begin(), kinds.end(),
+                                             [&kind](const json& row) {
+                                                 return row["id"].get<std::string>() == kind;
+                                             });
+            if (!offered) {
+                return fail("new_document",
+                            "'kind' is not a kind of '" + std::string(kNewDocumentFamily) + "': '" +
+                                kind + "' (" + kind_names(kinds) + ")");
+            }
         }
         if (width <= 0 || height <= 0) {
             return fail("new_document", "width and height must be positive (got " +
@@ -240,9 +284,42 @@ void register_file_commands(AppState& state, CommandTable& table) {
             return fail("new_document", "an edge over " + std::to_string(kNewDocumentMaxEdge) +
                                             " px is refused before the document is allocated");
         }
-        state.new_document = NewDocumentForm{width, height, prompt};
-        return command_ok(new_document_json(state.new_document));
+        state.new_document = NewDocumentForm{width, height, prompt, kind};
+        return command_ok(new_document_json(state.new_document, state.ai.recipes));
     });
+
+    // Create is a command rather than a widget's body: what the dialog promises — a canvas of this size,
+    // and the words in it generated into the first layer — has to be startable by a driver, logged with
+    // its recipe, and refused in one place. A refusal leaves the door open, because the person has to be
+    // able to fix the words rather than reopen the dialog.
+    table.add("front_door.create", "Make the document the New dialog describes", {}, {},
+              [&state, &table](const json&) -> CommandResult {
+                  const NewDocumentForm form = state.new_document;
+                  const CommandResult made = table.invoke(
+                      "doc.new", json{{"width", form.width}, {"height", form.height}});
+                  if (!made.ok) {
+                      return made;
+                  }
+                  json out{{"width", form.width},
+                           {"height", form.height},
+                           {"kind", form.kind},
+                           {"asked", !form.prompt.empty()}};
+                  if (!form.prompt.empty()) {
+                      const CommandResult intent = table.invoke(
+                          "ai.intent", json{{"recipe", form.kind},
+                                            {"vars", {{"prompt", form.prompt}}}});
+                      if (!intent.ok) {
+                          return intent;
+                      }
+                      const CommandResult started = table.invoke("ai.generate", json::object());
+                      if (!started.ok) {
+                          return started;
+                      }
+                      out["job"] = started.value.value("job", json::object());
+                  }
+                  table.invoke("front_door", json{{"show", "close"}});
+                  return command_ok(out);
+              });
 
     // The door is one command with one argument rather than three commands with the same effect: what
     // is on screen is a state, and the launch path and a menu click should not be able to disagree

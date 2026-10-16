@@ -2718,6 +2718,48 @@ void test_a_frame_reaches_the_request_and_leaves_the_canvas_outside_it_alone() {
     CHECK_EQ(checksum_of(h), before);
 }
 
+// "New image from an idea" end to end, over the wire: the kind list is the recipe family's rows, the
+// chosen kind is the recipe the job runs, and the size typed is the canvas. Create is one command, so
+// what the button does and what a driver does cannot be two different products.
+void test_the_new_dialog_creates_the_document_and_the_idea_it_holds() {
+    Harness h;
+    h.value("server.connect", json::object());
+
+    const json form = h.value("new_document", json::object());
+    CHECK_EQ(form["kind"].get<std::string>(), std::string("new-image"));
+    CHECK(form["kinds"].size() >= 2);
+    CHECK_EQ(form["kinds"][0]["id"].get<std::string>(), std::string("new-image"));
+    CHECK(!form["kinds"][0]["label"].get<std::string>().empty());
+
+    // A recipe from another family is not a kind of this dialog, and the refusal says which ones are.
+    const CommandResult wrong = h.run("new_document", json{{"kind", "inpaint-remove"}});
+    CHECK(!wrong.ok);
+    CHECK(wrong.error.find("inpaint-remove") != std::string::npos);
+    CHECK(wrong.error.find("new-image-anime") != std::string::npos);
+
+    h.value("front_door", json{{"show", "new"}});
+    h.value("new_document", json{{"width", 256},
+                                 {"height", 256},
+                                 {"prompt", "a red cube on a shelf"},
+                                 {"kind", "new-image-anime"}});
+    const json created = h.value("front_door.create", json::object());
+    CHECK_EQ(h.state.doc.width(), 256);
+    CHECK_EQ(h.state.doc.height(), 256);
+    CHECK(created["asked"].get<bool>());
+    CHECK_EQ(h.value("app.state", json::object())["front_door"]["front_door"].get<std::string>(),
+             std::string("closed"));
+    const std::string id = created["job"]["id"].get<std::string>();
+    CHECK_EQ(h.value("job.get", json{{"id", id}})["recipe"].get<std::string>(),
+             std::string("new-image-anime"));
+
+    // No words, no request: the dialog still makes the canvas it was given.
+    h.value("new_document", json{{"prompt", ""}});
+    const json blank = h.value("front_door.create", json::object());
+    CHECK_EQ(blank["asked"].get<bool>(), false);
+    CHECK(!blank.contains("job"));
+    CHECK_EQ(h.state.doc.width(), 256);
+}
+
 // What a picked path *does* is a command, so the routing is testable without a desktop: the words a
 // dialog answers with and the words a probe sends have to do the same thing, or the button and the
 // wire are two doors again.
@@ -3322,6 +3364,7 @@ int main() {
     test_choosing_not_to_run_costs_no_upload_encode();
     test_an_aspect_choice_prices_the_frame_it_will_ask_for();
     test_a_frame_reaches_the_request_and_leaves_the_canvas_outside_it_alone();
+    test_the_new_dialog_creates_the_document_and_the_idea_it_holds();
     test_a_picked_path_does_what_its_file_set_promised();
     test_a_dropped_picture_lands_where_the_pointer_was();
     test_an_answer_on_a_blank_canvas_becomes_the_canvas();

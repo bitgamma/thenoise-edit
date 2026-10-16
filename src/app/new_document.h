@@ -34,12 +34,19 @@ inline constexpr NewDocumentPreset kNewDocumentDefault{1024, 1024, "square"};
 // of that size costs 3.4 GB of RGBA before anything is drawn into it.
 inline constexpr int kNewDocumentMaxEdge = 16384;
 
+// The recipe family the dialog offers as *kind*: the head is what a prompt runs when nothing was
+// chosen, its variants are the styles listed beside it. Adding a style to `assets/recipes/` adds a row
+// to the dialog, which is why the family is named here and its members are not.
+inline constexpr const char* kNewDocumentFamily = "new-image";
+
 // The New dialog's fields, and what the `new_document` command reads and writes: state rather than
 // widget values, so a click and a driver mean the same Create.
 struct NewDocumentForm {
     int width = kNewDocumentDefault.width;
     int height = kNewDocumentDefault.height;
     std::string prompt;
+    // Which recipe of `kNewDocumentFamily` the prompt will run.
+    std::string kind = kNewDocumentFamily;
 };
 
 }  // namespace noise::app

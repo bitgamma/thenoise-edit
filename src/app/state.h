@@ -119,6 +119,9 @@ struct AppState {
     // Bumped once per presented frame: a wire client waits on it so captures and
     // assertions land on a frame the app actually drew.
     std::uint64_t frame = 0;
+    // Published by the host each frame, in the units the queue stamps jobs with. A widget that says
+    // "6 s" reads this rather than calling a clock, so a test can pin the sentence.
+    double now = 0.0;
     // How many times an upload has been prepped and PNG-encoded this run. Reading the AI action must not
     // move it; `ai.preview` and a run must. It is a number rather than a log line because the claim
     // "choosing not to run costs nothing" has to be assertable.

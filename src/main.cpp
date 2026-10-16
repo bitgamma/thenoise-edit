@@ -203,6 +203,7 @@ void frame(void) {
 
 
     simgui_frame_desc_t frame_desc{};
+    g.state.now = platform::now_seconds();
     frame_desc.width = sapp_width();
     frame_desc.height = sapp_height();
     frame_desc.delta_time = sapp_frame_duration();

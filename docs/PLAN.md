@@ -53,6 +53,10 @@ human without a terminal, ships the wire command that makes it observable, and e
 `tools/flow_probe.py` walking [PRODUCT.md](PRODUCT.md)'s scenario. Until slice 3 the scenario is walked
 partly over the wire; after it, by clicking.
 
+**Slices 1 and 2 landed 2026-10-15** — files, and a new image from an idea — with two deliberate gaps: the
+New dialog quotes no price, because that was cut by decision, and *Blend* belongs to slice 5. Slice 3, one
+coverage with verbs at the marked area, is next.
+
 1. **Files.** Start dialog (New / Open + recent), Open, Save, Save As, Export (png / jpg / webp),
    drag-and-drop onto a new layer, dirty title, quit guard. Native picker through the desktop portal or
    `zenity`, one file in `src/platform/`, with the in-app browser as the fallback. `doc.new`, `doc.open`,
@@ -317,7 +321,30 @@ pointer: `file.answer {for, path}` is the routing table for every picked path �
 button a person can click has to be a command a probe can call. Writing that table caught a live bug: a
 ternary on the set name gave Insert a **save** dialog.
 
-Owed here: why XWayland refuses the drop is unexplained rather than settled, and the X11-only path is not
-yet a test — a synthetic XDND source under Xvfb would prove sokol's target side and the landing in one go,
-and is the thing to write if drops ever matter again. `Browse…`/`Save As` is proven against a stand-in
-picker and never against zenity itself, so it wants one hand-run per desktop.
+**Settled, with the desktop as the witness.** A file dropped on GIMP 3.2 (a native Wayland client) lands;
+the same drop on `xterm` (X11) is refused exactly as it is here. So the rule on this compositor is
+*XWayland windows receive no drops*, and it is not a bug this tree can fix: file drops need a Wayland
+backend, which sokol does not have, or an X11 session. `Insert` is the operation until then, and the XDND
+code stays because it is the same `layer.import` either way.
+
+## 2026-10-15 - Slice 2: the New dialog makes the document and the idea in it
+
+The dialog offers **kind** now — `no style / photo / illustration`, read from `RecipeSet::family` through
+the `new_document` command and validated against it, so adding a style to `assets/recipes/` is one more
+radio button and nothing in the code knows the word "photo". Those three labels stopped being
+sentence-case descriptions of recipes because the same field is read by the panel's style row and the
+dialog's kind row, and a person picking a style is not choosing a recipe.
+
+**Create** is the command `front_door.create`: it makes the canvas of the size typed and, if the box holds
+words, points the intent at the chosen kind and runs `ai.generate`. The button is one line, a driver walks
+the identical path, and a refusal leaves the door open — the words are usually what is wrong, and a dialog
+that shut on the way out would throw them away with it. A running job reads `working: <recipe>  <n> s`
+with a **Cancel** that calls `job.cancel`; the id returns for a finished job, where it is the one thing a
+log line and a bug report have in common. `AppState.now` is published by the host rather than read from a
+clock inside a widget, so the elapsed number is something a test could pin rather than a wall-clock read
+ smuggled into a frame.
+
+The prompt box was a lesson in where truth lives. It held a `char` buffer filled when the dialog opened, so
+a prompt set over the wire stored correctly and rendered empty forever: the buffer is a *view* of
+`new_document` and is refilled from the form whenever the keyboard is not holding it — the rule the verb
+fields already used, discovered by looking at the working case instead of inventing a second one.

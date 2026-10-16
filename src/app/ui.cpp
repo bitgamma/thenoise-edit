@@ -266,7 +266,7 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
 }
 
 void draw_verb_section(CommandTable& commands, const json& intent);
-void draw_ai_status_line(CommandTable& commands, const json& view);
+void draw_ai_status_line(AppState& state, CommandTable& commands, const json& view);
 
 // Every widget here is a front-end for a command: the panel, a key and a wire client cannot
 // drift apart because there is nothing else to keep in step.
@@ -572,7 +572,7 @@ void draw_verb_section(CommandTable& commands, const json& intent) {
 // is on screen whatever panel is docked in front - which model answers, what it costs on this box,
 // whether it has to load one first, and the job that is running or waiting to land. Every fact comes
 // from `ai.intent`, so the bar cannot quote a price the command would not charge.
-void draw_ai_status_line(CommandTable& commands, const json& view) {
+void draw_ai_status_line(AppState& state, CommandTable& commands, const json& view) {
     if (!view["configured"].get<bool>()) {
         ImGui::TextDisabled("ai: no server, set $THENOISE_URL");
         return;
@@ -620,8 +620,23 @@ void draw_ai_status_line(CommandTable& commands, const json& view) {
         const json& job = view["job"];
         const std::string job_state = job.contains("state") ? job["state"].get<std::string>() : "?";
         ImGui::SameLine();
-        ImGui::TextDisabled("%s %s", job.contains("id") ? job["id"].get<std::string>().c_str() : "",
-                            job_state.c_str());
+        // While it works, the row says what was asked and for how long, because that is the sentence a
+        // person is waiting to hear; the id comes back for a finished job, where it is what a log line
+        // and a bug report have in common.
+        if (job_state == "queued" || job_state == "running") {
+            const double started = job.value("started_at", 0.0);
+            if (started > 0.0) {
+                ImGui::TextDisabled("working: %s  %d s",
+                                    job.value("recipe", std::string()).c_str(),
+                                    static_cast<int>(state.now - started));
+            } else {
+                ImGui::TextDisabled("working: %s", job.value("recipe", std::string()).c_str());
+            }
+        } else {
+            ImGui::TextDisabled("%s %s",
+                                job.contains("id") ? job["id"].get<std::string>().c_str() : "",
+                                job_state.c_str());
+        }
         if (job_state == "succeeded") {
             // No Apply button: the answer is already on the document by the time the job says so, on a
             // layer named for the verb and the job, and `Ctrl+Z` takes the layer and its pixels together.
@@ -635,6 +650,13 @@ void draw_ai_status_line(CommandTable& commands, const json& view) {
                 ImGui::TextDisabled("landing...");
             } else {
                 ImGui::TextDisabled("on '%s', Ctrl+Z", landed_layer.c_str());
+            }
+        } else if (job_state == "queued" || job_state == "running") {
+            // The one stop that means something while the box is working. An answer that arrived anyway
+            // is kept, which is `job.cancel`'s promise rather than a second opinion here.
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Cancel")) {
+                commands.invoke("job.cancel", json{{"id", job["id"]}});
             }
         } else if (job_state == "failed" || job_state == "cancelled") {
             ImGui::SameLine();
@@ -827,6 +849,9 @@ void build_default_dock(ImGuiID dockspace, const ImVec2& size) {
 // frame. This remembers which door the open picker is behind.
 std::string pending_pick;
 char front_door_prompt[kVerbFieldChars] = "";
+// Which box the keyboard has, by name, taken after the widget drew: the same rule the verb fields use, so
+// the form can fill a box a driver wrote to without rewriting one a hand is typing into.
+std::string front_door_editing;
 bool front_door_drawn = false;
 
 // The file set is what is remembered, not a bespoke action word: the answer goes back through
@@ -931,27 +956,45 @@ void draw_new_document_body(AppState& state, CommandTable& commands) {
     if (resized) {
         commands.invoke("new_document", json{{"width", width}, {"height", height}});
     }
+    // The kinds are the recipe family's rows, read through the command that stores the choice: the label
+    // that says "photo" and the recipe a press runs are one table read, so they cannot drift.
+    const json form = commands.invoke("new_document", json::object()).value;
+    const json& kinds = form["kinds"];
+    if (!kinds.empty()) {
+        ImGui::TextDisabled("kind");
+        const std::string chosen = form["kind"].get<std::string>();
+        for (const json& kind : kinds) {
+            const std::string id = kind["id"].get<std::string>();
+            const std::string label = kind["label"].get<std::string>() + "###" + id;
+            if (ImGui::RadioButton(label.c_str(), chosen == id)) {
+                commands.invoke("new_document", json{{"kind", id}});
+            }
+            ImGui::SameLine();
+        }
+        ImGui::NewLine();
+    }
     ImGui::TextDisabled("what should it be?  (empty makes a blank canvas)");
-    if (ImGui::InputTextMultiline("##new_prompt", front_door_prompt, sizeof(front_door_prompt),
+    if (front_door_editing != "prompt") {
+        std::snprintf(front_door_prompt, sizeof(front_door_prompt), "%s",
+                      state.new_document.prompt.c_str());
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    // The value goes out as typed, blanks included: clearing the box means a blank canvas, which is what
+    // the label above it says.
+    if (ImGui::InputTextMultiline("##new_prompt", front_door_prompt, sizeof(front_door_prompt) - 1,
                                   ImVec2(-1.0f, ImGui::GetTextLineHeight() * 3.0f))) {
         commands.invoke("new_document", json{{"prompt", front_door_prompt}});
     }
+    front_door_editing = ImGui::IsItemActive() ? "prompt" : std::string();
 }
 
-void create_from_front_door(AppState& state, CommandTable& commands) {
-    commands.invoke("doc.new", json{{"width", state.new_document.width},
-                                    {"height", state.new_document.height}});
-    if (!state.new_document.prompt.empty()) {
-        // The panel's own door: intent, then the verb. The New dialog does not get a private route to
-        // the server, so the recipe, the role and the price are decided in exactly one place.
-        commands.invoke("ai.intent", json{{"recipe", "new-image"},
-                                          {"vars", {{"prompt", state.new_document.prompt}}}});
-        const CommandResult started = commands.invoke("ai.generate", json::object());
-        if (!started.ok) {
-            log::error("new image: " + started.error);
-        }
+void create_from_front_door(CommandTable& commands) {
+    const CommandResult made = commands.invoke("front_door.create", json::object());
+    if (!made.ok) {
+        // The door stays open on a refusal: the words are usually what is wrong, and a dialog that shut
+        // on the way out would throw away what was typed with it.
+        log::error("new document: " + made.error);
     }
-    commands.invoke("front_door", json{{"show", "close"}});
 }
 
 void draw_front_door(AppState& state, CommandTable& commands) {
@@ -983,7 +1026,7 @@ void draw_front_door(AppState& state, CommandTable& commands) {
     if (ImGui::BeginChild("new", ImVec2(welcome ? 340.0f : 0.0f, 0.0f), false)) {
         draw_new_document_body(state, commands);
         if (ImGui::Button("Create")) {
-            create_from_front_door(state, commands);
+            create_from_front_door(commands);
         }
         ImGui::SameLine();
         // Inside the column rather than under both of them: the children take the dialog's height, and
@@ -1075,7 +1118,7 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
     ImGui::SameLine();
     ImGui::TextDisabled("wire :%u", state.wire_port);
     ImGui::NewLine();
-    draw_ai_status_line(commands, ai_view);
+    draw_ai_status_line(state, commands, ai_view);
     ImGui::End();
 }
 
