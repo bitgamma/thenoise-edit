@@ -72,9 +72,9 @@ coverage with verbs at the marked area, is next.
    that wants words opens a phrase box over the mark (`verb.ask`) instead of reading the panel;
    `un-cover` (`Shift+K`) takes coverage back; and the tool panel dropped the marked-area verbs and
    everything else another surface already says, which retired `panel_words_probe` - the bar probe now
-   makes those claims with real keys. **Still owed**: coverage as a semitransparent overlay (it wants a
-   cached coverage texture, not a per-frame walk of the plane), and local `heal` (in-process Telea/Chan,
-   below), because *Heal* on a small area should not pay for a round trip.
+   makes those claims with real keys. The wash over the marked area landed the same week, below.
+   **Still owed**: local `heal` (in-process Telea/Chan, below), because *Heal* on a small area should
+   not pay for a round trip.
 
    **Owed, and decided**: coverage edits enter the history. The marked area is already a document
    property (`Document::selection_`, saved with the project); what it lacks is undo. The rule to hold to:
@@ -88,14 +88,36 @@ coverage with verbs at the marked area, is next.
    (it is saved), the marquee committing once on release with the drag provisional until then. The claims
    to flip are the ones made this week that marking costs no undo step, plus the invariant bullets in
    `core/document.h` and `docs/ARCHITECTURE.md`.
-4. **Layers you can see.** Thumbnails and mask thumbnails, reorder, opacity, visibility, move and scale,
+4. **The pointer says which tool it is.** The cursor is the desktop arrow whatever tool is selected,
+   which makes a brush unusable: nothing on screen says how wide it is, and `cover` - the tool whose
+   whole point is what it changed - looks exactly like the tool that moves things. Two halves, and only
+   the second is the hard one:
+
+   - **Shape per tool.** ImGui's mouse-cursor request, which `simgui_handle_event` forwards to the host.
+     Crosshair for `select`, `cover`, `un-cover`; arrow elsewhere; a resize glyph while a layer-move drag
+     owns the pointer. One row per tool next to the tool table, so adding a tool breaks the build until
+     its cursor is named. The OS cursor can say shape and nothing else.
+   - **The brush's footprint, drawn on the canvas.** A ring of `radius * view.scale` at the pointer, with
+     the hardness falloff as a second ring, because size, zoom and hardness all move it and no OS cursor
+     can follow. The OS cursor is hidden over the canvas while a paint tool is under it, otherwise the
+     ring and the arrow disagree about where the paint lands. This is the half that answers "what size is
+     my brush", which today is answerable only by pressing `[` and watching a number change.
+   - **Wire.** `app.state` reports what the frame drew (`pointer.shape`, `pointer.footprint_px`) and
+     `pointer.footprint {show: true|false}` forces it, so one capture can show a 4 px brush and a 90 px
+     one and a probe can measure the ring's diameter instead of trusting the state that drew it. Same
+     per-frame draw-list pass as the coverage wash: a view of state, nothing uploaded, no new GPU
+     resource.
+
+   The shape is an afternoon and makes the difference obvious; the footprint is the fix. Both belong
+   before layer thumbnails, because a tool you cannot aim is worse than a panel you cannot read.
+5. **Layers you can see.** Thumbnails and mask thumbnails, reorder, opacity, visibility, move and scale,
    **Flatten** (`layer.merge`). The panel is always visible: it is where a person goes to understand what
    an edit did.
-5. **Blend, and images as input.** Drop an image → its own layer → *Blend* with no prompt repaints it into
+6. **Blend, and images as input.** Drop an image → its own layer → *Blend* with no prompt repaints it into
    the scene on that layer. Needs the third recipe scope, `region: layer`, whose source is the layer's
    pixels and whose coverage is its alpha. *Blend* with a prompt, then control images (openpose), come in
    through the same door.
-6. **Document geometry.** `doc.crop`, `doc.resize` for the canvas - with *AI fill* on the grown strip, the
+7. **Document geometry.** `doc.crop`, `doc.resize` for the canvas - with *AI fill* on the grown strip, the
    outpaint mechanism below - and *Image size* with a method: Lanczos, `AI upscale (fast)` (ESRGAN),
    `AI upscale (best)` (an edit model, so one `roles.json` row and one recipe). The seam to think about
    first is history: `Document` fixes its `Extent` at creation today, and the journal holds full-size
@@ -105,7 +127,7 @@ coverage with verbs at the marked area, is next.
    region with the original frame *inside* it as context, and let the answer land on a new layer clipped to
    the grown strip, so the original pixels stay byte-untouched. It is `reconstruct` with a different mask
    story, which is why it wants its own `operation: extend` rather than a weakened call.
-7. **The tuning pass and the parked niceties.** Recipe wording and `prep.radius_px` per verb against hole
+8. **The tuning pass and the parked niceties.** Recipe wording and `prep.radius_px` per verb against hole
    size (specified at the end of this file, needs the box), the `enhance` prompt-improver behind its own
    button, the keymap file, autosave.
 
@@ -113,6 +135,30 @@ Seed is not a user-facing concept: **Retry** re-asks the same request with a dif
 another layer. Roles and recipes are ours to pin for now - the sets are in `assets/roles.json` and
 `assets/recipes/`, loaded from disk, and the plan is that a person edits those files, not a dialog, so
 nothing here needs a settings UI to be foreseen later.
+
+## 2026-10-16 - Coverage you can see
+
+Marked coverage was a boundary and nothing else: `cover` and `un-cover` looked identical while you did
+them, and a soft edge from a brush was invisible until something was painted into it. Coverage now draws
+twice - the ants say where the edge is, the wash says how much of the area is claimed - with
+`view.coverage {mode: ants|overlay|both}` choosing, defaulting to `both`, reported in `app.state.view`.
+
+The wash is one RGBA texture whose **alpha is the coverage byte**, so a half-covered edge washes half as
+hard, and it is sized to the coverage's own bounds rather than to the canvas. `gfx::Texture::sync`
+recreates when the revision moves, so the cache key is a stamp: FNV over the covered box's bytes, with
+the box in the seed, one pass, and an upload only when they differ. That is what keeps a live `cover`
+stroke inside budget - the pass is microseconds at these sizes, an upload per dab would be a megabyte.
+
+`coverage_view_probe` is the claim only a capture can make, and it earned its keep: **108 676 of
+109 350 px changed inside the mark, 0 px outside it**. Its first run failed for its own reason - it was
+comparing framebuffer coordinates against capture-local pixels, the mistake the ant probe was already
+written not to make - and the failure was worth having, because "0 outside" is the half that says the
+wash is coverage rather than a haze over the viewport.
+
+Owed here: the wash follows the *marked area* only. With `coverage.target` on `mask` the coverage being
+painted is a layer mask, which the composite already half-shows; the question to settle later is whether
+a mask being painted should wash in a different hue, which is a second `CoverageTint` instance and not a
+new mechanism.
 
 ## The seams, and how you see them
 

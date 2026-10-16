@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/command_args.h"
 
+#include "app/ants.h"
+
 #include "io/file.h"
 #include "io/project.h"
 
@@ -166,7 +168,8 @@ json view_json(const AppState& state) {
     return json{{"scale", state.view.scale},
                 {"origin", json::array({state.view.origin.x, state.view.origin.y})},
                 {"image", json::array({state.view.image.w, state.view.image.h})},
-                {"fit_pending", state.fit_pending}};
+                {"fit_pending", state.fit_pending},
+                {"coverage", coverage_view_name(state.coverage_view)}};
 }
 
 json image_json(const Image& image, const std::string& label) {

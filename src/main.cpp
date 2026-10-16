@@ -93,6 +93,7 @@ struct Runtime {
     AppState state;
     gfx::Texture canvas_texture;
     gfx::Checker checker;
+    app::CoverageTint coverage_tint;
     CommandTable commands;
     dbg::DebugWire wire{commands};
     Args args;
@@ -214,7 +215,7 @@ void frame(void) {
     // A desktop dialog answers whenever the person finishes with it, on its own thread; this is where
     // its answer becomes an editing command.
     app::pump_picked_files(g.state, g.commands);
-    app::draw_ui(g.state, g.commands, g.canvas_texture, g.checker);
+    app::draw_ui(g.state, g.commands, g.canvas_texture, g.checker, g.coverage_tint);
     // The UI has now measured the canvas for this frame, so a fit that was waiting for a
     // real viewport can be applied before the commands this frame's wire poll serves.
     g.state.viewport_published = true;

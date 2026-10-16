@@ -105,4 +105,38 @@ std::vector<AntDash> ant_dashes(float axis_from, float axis_to, float s_from, fl
     return dashes;
 }
 
+const char* coverage_view_name(CoverageView view) {
+    switch (view) {
+        case CoverageView::ants:
+            return "ants";
+        case CoverageView::overlay:
+            return "overlay";
+        case CoverageView::both:
+            return "both";
+    }
+    return "both";
+}
+
+std::optional<CoverageView> coverage_view_from_name(std::string_view name) {
+    for (const CoverageView view : {CoverageView::ants, CoverageView::overlay,
+                                    CoverageView::both}) {
+        if (name == coverage_view_name(view)) {
+            return view;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string coverage_view_names() {
+    std::string names;
+    for (const CoverageView view : {CoverageView::ants, CoverageView::overlay,
+                                    CoverageView::both}) {
+        if (!names.empty()) {
+            names += ", ";
+        }
+        names += coverage_view_name(view);
+    }
+    return names;
+}
+
 }  // namespace noise::app

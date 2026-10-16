@@ -3,9 +3,26 @@
 
 #include "core/geom.h"
 
+#include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace noise::app {
+
+// How marked coverage is shown. The ants say where the edge is and nothing about how much of the area
+// is claimed; the wash says how much, and buries the edge. `both` is the default because a stroke that
+// took coverage away has to be visible as one - with ants alone, adding and removing look identical.
+enum class CoverageView {
+    ants,
+    overlay,
+    both,
+};
+
+const char* coverage_view_name(CoverageView view);
+std::optional<CoverageView> coverage_view_from_name(std::string_view name);
+// "ants, overlay, both" - what a refusal offers instead of the word it was given.
+std::string coverage_view_names();
 
 // Marching ants: the dashes that walk round a selection's boundary. Everything here is in one unit -
 // screen pixels measured along the boundary - and is free of ImGui and of the document's pixels, so

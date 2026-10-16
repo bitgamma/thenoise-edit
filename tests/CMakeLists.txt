@@ -180,6 +180,17 @@ if(Python3_Interpreter_FOUND)
                          TIMEOUT 420
                          DEPENDS noise-edit)
 
+    # That marked coverage is a wash over the covered area and nowhere else: a haze over the whole
+    # document, or a wash that misses the part of the mark away from the origin, both fail here, and
+    # only a capture can say.
+    add_test(NAME test_coverage_view_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/coverage_view_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_coverage_view_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 420
+                         DEPENDS noise-edit)
+
     # Whether the desktop will hand this window a file at all, and whether a driver can do what a drop
     # does. The drag itself needs a second program and a real pointer, so these are the two halves that
     # are observable headless.

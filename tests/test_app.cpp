@@ -3509,6 +3509,23 @@ void test_a_save_name_without_an_extension_gets_the_project_one() {
     CHECK(wrong.error.find("doc.export") != std::string::npos);
 }
 
+// The wash is a view choice with three answers and one door, so a probe can ask for the picture with
+// the coverage visible and get it. The pixel claim belongs to `coverage_view_probe`; this is the claim
+// that a wrong word is refused by listing the right ones.
+void test_how_coverage_is_drawn_is_a_choice_the_wire_can_make() {
+    Harness h;
+    CHECK(std::string(app::coverage_view_name(h.state.coverage_view)) == "both");
+    h.value("view.coverage", json{{"mode", "overlay"}});
+    CHECK(h.state.coverage_view == app::CoverageView::overlay);
+    CHECK_EQ(h.value("view.coverage", json::object())["coverage"], std::string("overlay"));
+
+    const CommandResult bad = h.run("view.coverage", json{{"mode", "xray"}});
+    CHECK(!bad.ok);
+    CHECK(bad.error.find("ants") != std::string::npos);
+    CHECK(bad.error.find("overlay") != std::string::npos);
+    CHECK(h.state.coverage_view == app::CoverageView::overlay);
+}
+
 void test_the_front_door_is_a_state_the_wire_can_open_and_shut() {
     Harness harness;
     CHECK_EQ(harness.value("app.state", json::object())["front_door"]["front_door"].get<std::string>(),
@@ -3669,6 +3686,7 @@ int main() {
     test_unsaved_work_holds_a_quit();
     test_a_picked_path_is_applied_whatever_asked_for_the_dialog();
     test_a_save_name_without_an_extension_gets_the_project_one();
+    test_how_coverage_is_drawn_is_a_choice_the_wire_can_make();
     test_the_front_door_is_a_state_the_wire_can_open_and_shut();
     test_the_new_document_form_offers_the_sizes_and_refuses_the_impossible();
     test_the_recent_files_are_the_documents_this_app_touched();

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/command_groups.h"
 
+#include "app/ants.h"
 #include "app/command_args.h"
 
 #include "app/commands.h"
@@ -18,6 +19,20 @@ void register_view_commands(AppState& state, CommandTable& table) {
             return guard;
         }
         request_fit(state);
+        return command_ok(view_json(state));
+    });
+
+    table.add("view.coverage", "Read or set how marked coverage is drawn", {}, {"mode"},
+              [&state](const json& args) -> CommandResult {
+        if (args.contains("mode")) {
+            const std::string named = args.at("mode").get<std::string>();
+            const std::optional<CoverageView> view = coverage_view_from_name(named);
+            if (!view) {
+                return fail("view.coverage",
+                            "unknown mode '" + named + "' (expected: " + coverage_view_names() + ")");
+            }
+            state.coverage_view = *view;
+        }
         return command_ok(view_json(state));
     });
 

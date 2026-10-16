@@ -2,6 +2,7 @@
 #include "app/ui.h"
 
 #include "app/ants.h"
+#include "app/coverage_tint.h"
 #include "app/brush_steps.h"
 #include "app/command_args.h"
 #include "app/verb_bar.h"
@@ -150,9 +151,32 @@ void draw_ants_phases(ImDrawList* list, AppState& state, const ImVec2& origin,
 // The selection's outline, or the frozen bands a probe asked for. The clock is read here and
 // published: it is the only wall time an overlay may use, and `app.state` has to say what a frame
 // actually drew for a screenshot to be reproducible.
-void draw_selection(ImDrawList* list, AppState& state, const ImVec2& origin) {
+void draw_selection(ImDrawList* list, AppState& state, const ImVec2& origin, CoverageTint& tint) {
     state.ants.time = ImGui::GetTime();
     if (!state.doc.selection()) {
+        tint.sync(Mask{});
+        return;
+    }
+    // The wash goes under the ants and over the picture: it is the amount of coverage, and the
+    // boundary is drawn on top of it so the two read as one shape rather than as a haze with a line
+    // somewhere near it.
+    if (state.coverage_view != CoverageView::ants) {
+        tint.sync(*state.doc.selection());
+        if (tint.drawn && tint.texture.valid()) {
+            const Vec2 corner = state.view.world_to_view(
+                {static_cast<double>(tint.bounds.x), static_cast<double>(tint.bounds.y)});
+            const Vec2 far = state.view.world_to_view(
+                {static_cast<double>(tint.bounds.right()), static_cast<double>(tint.bounds.bottom())});
+            list->AddImage(simgui_imtextureid(tint.texture.view),
+                           ImVec2(origin.x + static_cast<float>(corner.x),
+                                  origin.y + static_cast<float>(corner.y)),
+                           ImVec2(origin.x + static_cast<float>(far.x),
+                                  origin.y + static_cast<float>(far.y)));
+        }
+    } else {
+        tint.sync(Mask{});
+    }
+    if (state.coverage_view == CoverageView::overlay) {
         return;
     }
     if (state.ants.phases.empty()) {
@@ -163,7 +187,7 @@ void draw_selection(ImDrawList* list, AppState& state, const ImVec2& origin) {
 }
 
 void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
-                 const gfx::Checker& checker) {
+                 const gfx::Checker& checker, CoverageTint& tint) {
     if (!ImGui::Begin(kWindowCanvas)) {
         ImGui::End();
         return;
@@ -207,7 +231,7 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
             list->AddImage(simgui_imtextureid(canvas_texture.view), canvas_min, canvas_max);
         }
         list->AddRect(canvas_min, canvas_max, kCanvasBorder);
-        draw_selection(list, state, origin);
+        draw_selection(list, state, origin, tint);
         if (state.select.active && !state.select.rect.empty()) {
             // The marquee is the selection during the gesture, and drawing it on top is what tells
             // the user the second corner follows the pointer rather than the first.
@@ -1082,7 +1106,7 @@ void draw_quit_guard(AppState& state, CommandTable& commands) {
 }
 
 void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
-             const gfx::Checker& checker) {
+             const gfx::Checker& checker, CoverageTint& tint) {
     // The door is opened here, before the menu bar is drawn, because a menu item's callback is the
     // frame that sets it — and `OpenPopup` from inside a menu attaches the popup to a menu window that
     // closes at the end of that same frame, which is an ImGui assertion rather than a dialog. One
@@ -1097,7 +1121,7 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
         build_default_dock(dockspace, viewport->WorkSize);
     }
 
-    draw_canvas(state, commands, canvas_texture, checker);
+    draw_canvas(state, commands, canvas_texture, checker, tint);
     // One read of the AI action per frame, shared by the verb rows and the status line: the answer is
     // what a press would do and what it costs, and asking twice would ask the settle rule to notice a
     // change in half a frame.

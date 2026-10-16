@@ -104,6 +104,8 @@ struct AppState {
     // have no mask, and then a stroke aimed at one is refused naming the layer, rather than quietly
     // painting the marked area instead.
     app::CoverageTarget coverage_target = app::CoverageTarget::marked;
+    // How marked coverage is drawn: boundary, wash, or both.
+    app::CoverageView coverage_view = app::CoverageView::both;
     // The verb whose words the bar's popup is holding, if one is open. A verb that asks for nothing is
     // never in here: its button runs, and a popup for it would be an empty box.
     std::optional<app::VerbId> ask_verb;
