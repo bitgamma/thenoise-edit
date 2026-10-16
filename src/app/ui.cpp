@@ -434,7 +434,7 @@ void draw_tool_panel(AppState& state, CommandTable& commands, const json& intent
 // the words for one recipe at a time (Rule E prunes the rest when the intent moves), so a row whose
 // recipe is not the intent's shows an empty box - which is the truth, and what asking means.
 void draw_verb_section(CommandTable& commands, const json& intent) {
-    ImGui::SeparatorText("on the marked area");
+    ImGui::SeparatorText("verbs");
     const json view = commands.invoke("ai.verbs", json::object()).value;
     const std::string table_error = view["error"].get<std::string>();
     if (!table_error.empty()) {
@@ -450,6 +450,12 @@ void draw_verb_section(CommandTable& commands, const json& intent) {
 
     for (const json& verb : view["verbs"]) {
         const std::string id = verb["id"].get<std::string>();
+        if (verb["scope"].get<std::string>() == "selection") {
+            // These live on the canvas, beside the mark they act on, words and all. A second copy of
+            // each button on the far side of the window is a second thing to remember and a second
+            // place for the same refusal to appear.
+            continue;
+        }
         const std::string label = verb["label"].is_null() ? id : verb["label"].get<std::string>();
         const std::string reason = verb["reason"].get<std::string>();
         const std::string recipe = verb["recipe"].get<std::string>();
@@ -794,8 +800,6 @@ void draw_layers_panel(AppState& state, CommandTable& commands) {
             ImGui::SameLine();
             ImGui::TextDisabled("nothing hidden");
         }
-        ImGui::TextDisabled("%d x %d  %.1f%%", state.doc.width(), state.doc.height(),
-                            state.view.scale * 100.0);
     }
     ImGui::End();
 }

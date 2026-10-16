@@ -127,6 +127,11 @@ def run(wire: wd.Wire, inj_display: str, p: Probe) -> None:
         held = wire.call("ai.intent", {})["recipe"]
         # The style row is the next one down from the aspect row, so the sweep is bounded rather than
         # running to the bottom of the dock: what it would find there is a slider.
+        # The list the aspect sweep left open hangs down over the row beneath it, so it is put away
+        # first: the status bar has nothing to press, and a sweep that started below the entries would
+        # miss a style row that sits right where the aspect row's neighbour belongs.
+        click(inj, WIDTH - 30, HEIGHT - 10)
+        wd.settle(wire)
         style_y = find_row(wire, inj, lambda: wire.call("ai.intent", {})["recipe"], p, "style",
                            start=y_aspect + SWEEP_STEP, stop=y_aspect + 200)
         if style_y is None:

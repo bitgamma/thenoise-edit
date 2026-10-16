@@ -20,6 +20,10 @@ const std::vector<ToolInfo> kTools{
     // hand and a hole punched in a layer mask are the same gesture over one Mask.
     {"cover", ToolAction::coverage, PaintMode::Over, std::nullopt, "K",
      "Paint coverage with the pointer"},
+    // The same dab at the other end of the coverage scale: marking an area is only useful if the
+    // mistake can be rubbed out without starting again.
+    {"un-cover", ToolAction::coverage, PaintMode::Erase, std::nullopt, "Shift+K",
+     "Take coverage away with the pointer"},
     {"move", ToolAction::move, std::nullopt, std::nullopt, "V",
      "Move the active layer with the pointer"},
     {"select", ToolAction::select, std::nullopt, MaskShape::rect, "M",

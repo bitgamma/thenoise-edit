@@ -1704,7 +1704,19 @@ void test_the_coverage_target_decides_where_a_stroke_lands() {
     h.value("tool.stroke", json{{"points", points}});
     CHECK_EQ(h.value("layer.list", json::object())["layers"][0]["checksum"].get<std::string>(), before);
     CHECK_EQ(h.value("mask.get", json::object())["mask"].dump(), coverage);
-    CHECK(h.value("select.get", json::object())["covered"].get<std::int64_t>() > 0);
+    const std::int64_t marked_px = h.value("select.get", json::object())["covered"].get<std::int64_t>();
+    CHECK(marked_px > 0);
+    CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), undo_before);
+
+    // The same dab at the other end of the coverage scale takes coverage back, so a mark is corrected
+    // rather than cleared and redrawn. Still no pixel byte, still no undo step.
+    h.value("tool.set", json{{"tool", "un-cover"}, {"size", 10.0}, {"hardness", 1.0},
+                             {"opacity", 1.0}});
+    h.value("tool.stroke", json{{"points", json::array({json::array({3.0, 6.0})})}});
+    const json rubbed = h.value("select.get", json::object());
+    CHECK(rubbed["covered"].get<std::int64_t>() > 0);
+    CHECK(rubbed["covered"].get<std::int64_t>() < marked_px);
+    CHECK_EQ(h.value("layer.list", json::object())["layers"][0]["checksum"].get<std::string>(), before);
     CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), undo_before);
 
     // Colour is a tool, not a target: aimed at the mask, the brush still moves colour and leaves the

@@ -68,9 +68,13 @@ coverage with verbs at the marked area, is next.
    (`K`) make one editor over the two lifetimes, and the marquee follows the same switch; the bar is on
    the canvas, holding a separate button for each verb whose recipe reads the marked area - **Heal**,
    **Remove**, **Fill**, **Change** - with the panel keeping the full controls beside it.
-   Remaining: the bar's labels are the recipe labels today, and whether they should read **Fix / Insert /
-   Edit / Erase** is an open product call; and local `heal` (in-process Telea/Chan, owed below) still has
-   to land, because *Heal* on a small area should not pay for a round trip.
+   Settled since: the labels stay the recipe labels (**Heal / Remove / Fill / Change**); a bar button
+   that wants words opens a phrase box over the mark (`verb.ask`) instead of reading the panel;
+   `un-cover` (`Shift+K`) takes coverage back; and the tool panel dropped the marked-area verbs and
+   everything else another surface already says, which retired `panel_words_probe` - the bar probe now
+   makes those claims with real keys. **Still owed**: coverage as a semitransparent overlay (it wants a
+   cached coverage texture, not a per-frame walk of the plane), and local `heal` (in-process Telea/Chan,
+   below), because *Heal* on a small area should not pay for a round trip.
 4. **Layers you can see.** Thumbnails and mask thumbnails, reorder, opacity, visibility, move and scale,
    **Flatten** (`layer.merge`). The panel is always visible: it is where a person goes to understand what
    an edit did.
@@ -114,7 +118,6 @@ nothing here needs a settings UI to be foreseen later.
 | `ai/recipes` (`aspects`, `variants`) | a frame is offered only by a document-scope `from_words` recipe, and a variant is interchangeable with its head at the key it shares (operation, endpoint, `ask`, `aspects`) or the table does not load | `test_recipes` |
 | `pump_ai_landings` | a succeeded job lands itself at the first door that reads the queue; it never re-lands what undo removed; a job lands only in the `document_epoch` it was queued under | `test_app`, `wire_input` |
 | `tools/ai_job_probe.py` | every marked-area verb on the recordings in the order a person has it: bare press refused naming recipe and field → preview carries the typed words in the tier-1 field set → the row's command presses → the answer lands itself on a layer named for the verb and the job → no pixel outside the coverage claimed → undo byte-for-byte | `test_ai_job_probe` |
-| `tools/panel_words_probe.py` | the panel's own door: injected keys into a box found by sweeping the dock, then the verb's real key → a job whose prompt carries the typed marker → the layer named for it. A bare key with nothing typed starts nothing | `test_panel_words` |
 | `tools/panel_aspect_probe.py` | the aspect and style dropdowns commit: a click pair changes `aspect` and the quoted size follows it (ratio held, one axis still full), a second pair changes which recipe the intent holds and what `ai.verbs` calls `active`, then the key runs that recipe and it lands | `test_panel_aspect_probe` |
 
 ## 2026-10-16 - One coverage, and the verbs that come to it
