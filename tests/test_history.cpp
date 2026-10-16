@@ -38,6 +38,18 @@ std::vector<Layer> one_layer(Image contents) {
 
 std::uint64_t id_of(const Document& doc, std::size_t index) { return doc.layer(index).id; }
 
+// The stack as identities in order - the shape a shuffle is caught by and a name is not.
+std::string ids_of_layers(const Document& doc) {
+    std::string out;
+    for (const Layer& layer : doc.layers()) {
+        if (!out.empty()) {
+            out += ",";
+        }
+        out += std::to_string(layer.id);
+    }
+    return out;
+}
+
 void paint_rect(Image& image, Rect rect, std::uint8_t grey) {
     const std::uint8_t rgba[4] = {grey, grey, grey, 255};
     image.fill_rect(rect, rgba);
@@ -410,6 +422,83 @@ void test_undoing_an_answer_leaves_the_layer_under_it_byte_for_byte() {
     }
 }
 
+// A replaced stack is the most the history can hold, and it holds it on whichever side of the swap is
+// not current. Get either half wrong - the order the layers go back in, or the bytes they cost - and
+// nothing complains: the stack returns shuffled, or `bytes_` underflows and the budget "recovers" by
+// dropping every step, leaving the undo key dead in a document that looks fine.
+void test_a_replaced_stack_walks_back_and_forward_unchanged() {
+    Document doc;
+    std::vector<Layer> stack;
+    for (int at = 0; at < 4; ++at) {
+        Layer layer;
+        layer.name = "layer" + std::to_string(at);
+        layer.pixels = Image::filled(Extent{64, 48}, 40 * at, 10, 200 - 30 * at, 255);
+        stack.push_back(std::move(layer));
+    }
+    doc.reset(std::move(stack), std::nullopt, "stack.noise");
+    const std::string ids_original = ids_of_layers(doc);
+    const std::string whole = doc.checksum();
+
+    REQUIRE(doc.flatten_layers());
+    const std::size_t holding_the_stack = doc.history().bytes;
+    // The entry holds every layer of the stack it replaced, and that is nearly all of it.
+    CHECK(holding_the_stack >= 4u * 64u * 48u * 4u);
+
+    for (int round = 0; round < 3; ++round) {
+        REQUIRE(doc.undo());
+        CHECK_EQ(ids_of_layers(doc), ids_original);
+        CHECK_EQ(doc.checksum(), whole);
+        // Holding the one flattened layer rather than the four it swapped out is strictly cheaper.
+        CHECK(doc.history().bytes < holding_the_stack);
+        REQUIRE(doc.redo());
+        CHECK_EQ(doc.layers().size(), 1u);
+        // The price lands back on the same number each time: an entry that gained or lost bytes per
+        // application walks the budget into the floor, and the floor drops every step.
+        CHECK_EQ(doc.history().bytes, holding_the_stack);
+        CHECK_EQ(doc.history().undo_depth, 1);
+        CHECK(doc.can_undo());
+    }
+}
+
+// Two removals in one step is not a step. Each index is read off the stack as it stands, so the second is
+// recorded against a stack the first already shrank, and applying the pair back restores a shuffle - which
+// is what flattening used to do before it recorded the replaced stack instead. A record that cannot be part
+// of an exactly-reversible step is refused loudly: a silently missing entry is a person finding their undo
+// key dead with no reason attached to it.
+void test_two_removals_in_one_step_are_not_a_step() {
+    auto three = [] {
+        std::vector<Layer> layers;
+        for (int at = 0; at < 3; ++at) {
+            Layer layer;
+            layer.name = "layer" + std::to_string(at);
+            layer.pixels = Image::filled(Extent{4, 4}, 9, 90, 200 - 40 * at, 255);
+            layers.push_back(std::move(layer));
+        }
+        return layers;
+    };
+
+    std::vector<Layer> recordable = three();
+    History alone{kHistoryBudgetBytes};
+    alone.begin_step();
+    alone.record_layer_removed(std::move(recordable[2]), 2);
+    alone.end_step();
+    // The contrast: one removal per step is exactly what merge-down does, and it is kept.
+    CHECK(alone.can_undo());
+
+    recordable = three();
+    History pair{kHistoryBudgetBytes};
+    pair.begin_step();
+    pair.record_layer_removed(std::move(recordable[2]), 2);
+    pair.record_layer_removed(std::move(recordable[1]), 1);
+    pair.end_step();
+    // Not half a step either: the whole thing goes, because undoing the one entry it kept would leave the
+    // other layer gone with nothing recorded about it.
+    CHECK(!pair.can_undo());
+    std::vector<Layer> live = three();
+    CHECK(!pair.undo(live).has_value());
+    CHECK_EQ(live.size(), 3u);  // and a refused record applies nothing to the caller's stack
+}
+
 int main() {
     test_an_added_layer_and_its_pixels_come_back_as_one_step();
     test_a_refused_write_adds_no_layer_and_records_nothing();
@@ -428,5 +517,7 @@ int main() {
     test_each_layer_undoes_independently_and_in_order();
     test_deleting_a_layer_drops_only_its_own_steps();
     test_a_history_that_no_longer_fits_its_layers_is_dropped();
+    test_a_replaced_stack_walks_back_and_forward_unchanged();
+    test_two_removals_in_one_step_are_not_a_step();
     return noise::test::summary("history");
 }

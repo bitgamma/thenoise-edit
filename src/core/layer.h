@@ -15,6 +15,9 @@ namespace noise {
 // Names are generated from this prefix in one place; the container writes whatever a layer is
 // actually called, so a file from elsewhere keeps its own naming.
 inline constexpr const char* kLayerNamePrefix = "Layer";
+// The name of the single layer a flatten leaves behind. It is not "Layer 1" again, because the thing it
+// says is different: this layer is no longer one of several, it is the picture.
+inline constexpr const char* kFlattenedLayerName = "Background";
 
 std::string default_layer_name(std::size_t index);
 
@@ -74,10 +77,10 @@ struct Layer {
     // outside it is 0, which is a mask that hides the layer rather than a layer with no mask.
     std::optional<Mask> mask;
 
-    // Bumped by every write to this layer's pixels or mask, and by any change to the stack. A viewer of
-    // one layer - a thumbnail - caches against it, which is why a layer's visibility, opacity and blend
-    // mode leave it alone: those change what the composite is made of, not what this layer holds, and a
-    // slider that invalidated every thumbnail would re-sample the stack on every frame it is dragged.
+    // Bumped by every write to this layer's pixels or mask, and by nothing else: a viewer of one layer - a
+    // thumbnail keyed to the layer - caches against it, so an opacity slider, a reorder and a layer
+    // arriving or going all leave it alone, and a card that followed them would re-sample the stack on
+    // every frame of a drag. What the composite is made of is `Document::revision`'s business.
     std::uint64_t content_revision = 0;
 };
 

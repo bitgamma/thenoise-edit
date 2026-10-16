@@ -66,6 +66,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                                               state.layers_window.w,
                                                               state.layers_window.h})},
                                {"layer_cards", layer_cards_json(state)},
+                               {"layer_panel", layer_panel_json(state)},
                                // How often the panel had to resample a picture: the caching rule as a
                                // number, so "dragging opacity rebuilds nothing" is a reading and not a
                                // promise.

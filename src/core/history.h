@@ -54,8 +54,18 @@ public:
     // A layer this step **took away** - merged into the layer under it, say. `layer` is the whole of it,
     // pixels and mask and name included, so undo puts the layer back as it was rather than as an empty
     // one; `index` is where it sat. This is the entry `remove_layer` never had, which is why deleting a
-    // layer could only drop its history.
+    // layer could only drop its history. One removal per step: `index` is read against the stack the
+    // layer goes back into, and putting one layer back cannot shift another.
     void record_layer_removed(Layer layer, int index);
+
+    // A step that replaced the **whole stack** with layers none of the old ones can become - flattening
+    // is the case. The entry holds the stack that is not current and applying it swaps the two, so undo
+    // and redo are the same operation and every layer returns to the place it came from; encoding the
+    // same thing as one arrival-plus-departure entry per layer needs an index per layer, and indices
+    // read against a shrinking stack do not say where the layers go back. Such a step records nothing
+    // else: the swap carries every pixel, and anything else would describe a layer it is about to
+    // replace.
+    void record_stack_replaced(std::vector<Layer> stack);
 
     struct Applied {
         std::uint64_t layer;
@@ -97,6 +107,7 @@ private:
         layer_created,
         layer_absent,
         layer_order,
+        stack_replaced,
     };
 
     struct Stacked {
@@ -116,6 +127,8 @@ private:
         // *created* comes back empty and gets its pixels from the pixel entries of the same step, so
         // `whole` is empty for those.
         Layer whole;
+        // The stack on the far side, for `stack_replaced`.
+        std::vector<Layer> stack;
     };
 
     // What an entry costs the budget: its bytes, plus the pixels and mask of a whole layer it carries.

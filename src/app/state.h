@@ -75,6 +75,16 @@ struct LayerCard {
     bool can_merge = false;
 };
 
+// The row of controls under the cards: the ones that answer to the stack rather than to a layer. Their
+// boxes are reported so a driver presses the button instead of the command it stands in for - the claim
+// being that the panel works, not that the command table does.
+struct LayerPanelControls {
+    ScreenRect add{};
+    ScreenRect remove{};
+    ScreenRect flatten{};
+    bool can_flatten = false;
+};
+
 // The gesture the pointer is making, if any. The walk carries the dab spacing across events
 // and the scratch holds the stroke's coverage, which is what lets a gesture painted frame by
 // frame land on the same bytes as the same path painted in one go.
@@ -179,6 +189,7 @@ struct AppState {
     // resample since the run started.
     std::uint64_t layer_thumb_rebuilds = 0;
     std::vector<LayerCard> layer_cards{};
+    LayerPanelControls layer_panel{};
     // And the same for the phrase box the bar opens, so a driver can read the box's own rect rather
     // than deriving it from the bar's.
     ScreenRect verb_ask{};

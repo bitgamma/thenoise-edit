@@ -562,13 +562,17 @@ panel`, "Regenerate with same params", kept variants) and nothing in the tree st
   storage granularity when partial texture uploads need them. Deleting a layer drops the entries
   naming it from both stacks: a change to a layer that is gone cannot be put back, and the
   unrelated steps around it are worth more than the half-restored one that would remain.
-  Structural commands are planned to store the inverse command. Two are in the timeline today, as entries
+  Structural commands are planned to store the inverse command. Three are in the timeline today, as entries
   of their own rather than as pixels: a reorder (`layer.move`) records the stack's ids in order and keeps
-  the order it displaced, because no pixel moved and what the composite shows changed everywhere; and a
-  merge down (`layer.merge`) records the **whole** layer that went away, so undo returns its pixels, mask,
-  mode and opacity rather than an empty layer wearing the right name. Adding or deleting a layer, hiding
-  one, fading one or changing its mode still does not enter the timeline - and deleting is now one entry
-  away, since the entry a merge needs is the entry deletion needs, which is a decision not yet taken.
+  the order it displaced, because no pixel moved and what the composite shows changed everywhere; a merge
+  down (`layer.merge`) records the **whole** layer that went away, so undo returns its pixels, mask, mode
+  and opacity rather than an empty layer wearing the right name; and a flatten (`layer.flatten`) records the
+  **whole stack** and applies it as a swap, so undo and redo are the same operation - the only encoding that
+  needs no position for a layer, since a removal sees a stack shrinking while an insert needs one growing.
+  Such a step carries every pixel of both sides and therefore records nothing else, and it is the only entry
+  that names no layer, so deleting a layer leaves it alone. Adding or deleting a layer, hiding one, fading
+  one or changing its mode still does not enter the timeline - and deleting is now one entry away, since the
+  entry a merge needs is the entry deletion needs, which is a decision not yet taken.
 * Undo and redo are commands like any other (`edit.undo`, `edit.redo`, bound to `Ctrl+Z` and
   `Ctrl+Y`), so a driver can put the pixels back and compare checksums without a keyboard.
 * **(planned)** `history.jsonl` — append-only *journal*: every op with timestamp, params, prompt,

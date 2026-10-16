@@ -258,6 +258,21 @@ void register_layer_commands(AppState& state, CommandTable& table) {
         return command_ok(layers_json(state));
     });
 
+    // The whole stack into the one layer the canvas shows, as one step: the person who flattened by
+    // mistake gets every layer back by name, mask and opacity intact.
+    table.add("layer.flatten", "Flatten the whole stack into one layer", {}, {},
+              [&state](const json&) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        if (!state.doc.flatten_layers()) {
+            return fail("layer.flatten",
+                        "'" + state.doc.layer(0).name + "' is the only layer: there is nothing to flatten");
+        }
+        return command_ok(layers_json(state));
+    });
+
     table.add("layer.merge", "Merge a layer down onto the one under it", {}, {"index"},
               [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "core/history.h"
 
+#include "core/log.h"
+
 #include <algorithm>
 #include <cstring>
 #include <span>
@@ -58,7 +60,8 @@ void History::record(std::uint64_t layer_id, LayerPlane plane, Rect rect,
                                   .index = 0,
                                   .size = {},
                                   .order = {},
-                                  .whole = {}});
+                                  .whole = {},
+                                   .stack = {}});
     drop_oldest_until_within_budget();
 }
 
@@ -82,7 +85,8 @@ void History::record_layer_created(std::uint64_t layer_id, std::string name, int
                                   .index = index,
                                   .size = size,
                                   .order = {},
-                                  .whole = {}});
+                                  .whole = {},
+                                   .stack = {}});
     drop_oldest_until_within_budget();
 }
 
@@ -92,6 +96,14 @@ std::size_t History::held(const Stacked& entry) {
     if (entry.whole.mask) {
         bytes += entry.whole.mask->plane().size();
     }
+    // A `stack_replaced` entry carries its whole layers in `stack`, and they are nearly all of what the
+    // step costs.
+    for (const Layer& layer : entry.stack) {
+        bytes += layer.pixels.bytes();
+        if (layer.mask) {
+            bytes += layer.mask->plane().size();
+        }
+    }
     return bytes;
 }
 
@@ -99,11 +111,24 @@ std::size_t History::held(const Stacked& entry) {
 // pixel entries of the same step look for it.
 bool History::inserts(const Stacked& entry) { return entry.kind == Kind::layer_absent; }
 
-bool History::names_layer(const Stacked& entry, std::uint64_t id) {
+bool History::names_layer(const Stacked& entry, const std::uint64_t id) {
+    // A `stack_replaced` entry is not matched: it holds a stack instead of naming a layer, and a layer
+    // deleted after the swap is a later step, undone before this one is reached.
     if (entry.kind == Kind::layer_order) {
         return std::find(entry.order.begin(), entry.order.end(), id) != entry.order.end();
     }
-    return entry.layer == id;
+    return entry.kind != Kind::stack_replaced && entry.layer == id;
+}
+
+void History::record_stack_replaced(std::vector<Layer> stack) {
+    redo_stack_.clear();
+    Stacked entry;
+    entry.kind = Kind::stack_replaced;
+    entry.step = open_step_ != 0 ? open_step_ : ++next_step_;
+    entry.stack = std::move(stack);
+    bytes_ += held(entry);
+    undo_stack_.push_back(std::move(entry));
+    drop_oldest_until_within_budget();
 }
 
 void History::record_layer_order(std::vector<std::uint64_t> order) {
@@ -120,11 +145,27 @@ void History::record_layer_order(std::vector<std::uint64_t> order) {
                                   .index = 0,
                                   .size = {},
                                   .order = std::move(order),
-                                  .whole = {}});
+                                  .whole = {},
+                                   .stack = {}});
     drop_oldest_until_within_budget();
 }
 
 void History::record_layer_removed(Layer layer, int index) {
+    // One removal per step, checked rather than trusted: a second one in the same step undoes as a
+    // shuffle, because each index was read off the stack as it stood and the step puts both back into one
+    // that has since shrunk. A step taking more than one layer away replaces the stack, which is
+    // `record_stack_replaced` - and a step that can be applied but not put back goes, rather than being
+    // kept to half-restore.
+    const int opening = open_step_ != 0 ? open_step_ : next_step_ + 1;
+    for (const Stacked& entry : undo_stack_) {
+        if (entry.step == opening && entry.kind == Kind::layer_absent) {
+            log::error("a step cannot remove two layers: '" + layer.name +
+                       "' joins a removal already recorded - the history goes rather than undoing to a "
+                       "shuffled stack");
+            clear();
+            return;
+        }
+    }
     redo_stack_.clear();
     const int step = open_step_ != 0 ? open_step_ : ++next_step_;
     Stacked entry{.layer = layer.id,
@@ -137,7 +178,8 @@ void History::record_layer_removed(Layer layer, int index) {
                   .index = index,
                   .size = layer.pixels.size(),
                   .order = {},
-                  .whole = std::move(layer)};
+                  .whole = std::move(layer),
+                  .stack = {}};
     bytes_ += held(entry);
     undo_stack_.push_back(std::move(entry));
     drop_oldest_until_within_budget();
@@ -221,6 +263,9 @@ bool History::fits(const Layer* layer, const Stacked& entry) {
         case Kind::layer_order:
             // Checked against the whole stack by `fits_stack`.
             return true;
+        case Kind::stack_replaced:
+            // Nothing to check: it supplies every layer rather than reading one.
+            return true;
     }
     return false;
 }
@@ -247,6 +292,14 @@ bool History::fits_stack(const std::vector<Layer>& layers, const Stacked& entry)
 
 void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
                              std::vector<Layer>& layers, int step) {
+    if (entry.kind == Kind::stack_replaced) {
+        // The entry leaves holding the stack that is current now, which is what the other direction
+        // needs: undo and redo are the same swap, so a layer cannot come back in the wrong place.
+        std::swap(layers, entry.stack);
+        entry.step = step;
+        into.push_back(std::move(entry));
+        return;
+    }
     if (entry.kind == Kind::layer_created) {
         for (std::size_t at = 0; at < layers.size(); ++at) {
             if (layers[at].id != entry.layer) {
@@ -353,6 +406,9 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
             }
             continue;
         }
+        if (entry.kind == Kind::stack_replaced) {
+            continue;  // it replaces every layer, so there is nothing about this stack to check
+        }
         if (entry.kind == Kind::layer_absent) {
             if (!fits(found, entry)) {
                 clear();
@@ -394,8 +450,10 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
             step_structure(entry, into, layers, step);
             // A structural entry trades content with the stack, so what it costs the budget changes with
             // the trade: a step that takes a layer away starts paying for it, and one that gives it back
-            // stops.
-            bytes_ += held(entry) - carried;
+            // stops. The entry is moved by now, so the price of what stays is read where it landed - a
+            // `stack_replaced` entry leaves holding the stack the document just gave up, and pricing that
+            // as nothing underflows `bytes_` and drops the whole timeline.
+            bytes_ += held(into.back()) - carried;
             touched.structure = true;
             continue;
         }
@@ -415,7 +473,8 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
                                    .index = 0,
                                    .size = {},
                                    .order = {},
-                                   .whole = {}});
+                                   .whole = {},
+                                   .stack = {}});
         } else {
             const Mask displaced = layer.mask->region(entry.rect);
             into.push_back(Stacked{.layer = entry.layer,
@@ -428,7 +487,8 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
                                    .index = 0,
                                    .size = {},
                                    .order = {},
-                                   .whole = {}});
+                                   .whole = {},
+                                   .stack = {}});
         }
         bytes_ += into.back().bytes.size();
         if (entry.plane == LayerPlane::pixels) {

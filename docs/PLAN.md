@@ -90,13 +90,13 @@ coverage with verbs at the marked area, is next.
    `core/document.h` and `docs/ARCHITECTURE.md`.
 4. **The pointer says which tool it is.** Landed 2026-10-16, below: the host cursor takes the tool's
    shape and the canvas draws the dab's footprint, measured against the size the app reports.
-5. **Layers you can see.** Landed since 2026-10-17: thumbnails of the layer and its mask, one bordered card
+5. **Layers you can see.** Landed since 2026-10-16: thumbnails of the layer and its mask, one bordered card
    per layer holding its own controls, visibility, opacity, blend mode, reorder (`Up`/`Down` on the card,
-   `layer.move`) and **Merge down** (`layer.merge`). What the slice owes: moving and scaling a layer's
-   picture, **Flatten** of the whole stack - under its own id, since `layer.merge` is merge-down now, and
-   with a history entry that restores the survivor's properties, which is the hard part (see the
-   2026-10-17 note) - and inline rename. The panel is always visible: it is where a person goes to
-   understand what an edit did.
+   `layer.move`), **Merge down** (`layer.merge`) and **Flatten** of the whole stack (`layer.flatten`, whose
+   history entry is the replaced stack itself - see *The stack becomes one layer* below). What the slice
+   owes: moving and scaling a layer's picture, inline rename, and the panel's own row of buttons pinned
+   clear of the scrolling card list. The panel is always visible: it is where a person goes to understand
+   what an edit did.
 6. **Blend, and images as input.** Drop an image → its own layer → *Blend* with no prompt repaints it into
    the scene on that layer. Needs the third recipe scope, `region: layer`, whose source is the layer's
    pixels and whose coverage is its alpha. *Blend* with a prompt, then control images (openpose), come in
@@ -120,7 +120,54 @@ another layer. Roles and recipes are ours to pin for now - the sets are in `asse
 `assets/recipes/`, loaded from disk, and the plan is that a person edits those files, not a dialog, so
 nothing here needs a settings UI to be foreseen later.
 
-## 2026-10-17 - Moving a layer, and what a change to the stack actually carries
+## 2026-10-16 - The stack becomes one layer, and the history entry that can say so
+
+`layer.flatten`, with a `Flatten` button on the panel's own row: PRODUCT's beat 11, *"I am lost in layers"*.
+The layer holds `Document::composite()`, so the canvas does not move - and that claim is exact rather than
+bounded, unlike merge-down's one-step rounding, because nothing is re-blended: 0 px of 447 700 in the probe.
+It is named `Background` and comes out neutral (visible, opacity 1, `normal`, no mask) because with those
+the composite *is* the layer; give it the active layer's 0.35 and the canvas quietly halves. A stack of one
+refuses, and refusing records no step. On the wire it is `layer.flatten`, and `app.state.layer_panel`
+reports the box of each of the panel's three buttons and whether Flatten can apply.
+
+**The obvious encoding put the stack back reversed, and only the second time.** One `layer_created` plus a
+`layer_absent` per removed layer looked right, and the first undo did give all four layers back. Redo, then
+undo again, gave `ghost, haze, bird, sky`. The index is the whole of it: a removal records the position it
+saw in a stack that is **shrinking** (once `sky` is gone, `bird` is at 0), and the insert pass reads that
+number as a position in a stack that is **growing**. With one removal per step the two frames coincide,
+which is why `layer.merge` was never wrong and why this needed four layers to show. Making the frames agree
+in general means inventing an ordering rule for the indices within a step, to describe a case that is not
+"layers moved about" but "the stack was replaced".
+
+**So a replaced stack is one entry that holds the stack.** `Kind::stack_replaced` carries the layers that
+are not current and applying it *swaps* them: undo and redo are the same operation, no position is asserted
+anywhere, and the entry says what the command did. It is the only entry that names no layer, which is why
+`drop_layer` skips it - a layer deleted after the swap belongs to a later step, undone before this one is
+reached - and it carries every pixel of both sides, which is why such a step records nothing else. It is
+also the whole answer to the properties question the note below raises: name, opacity, mode and mask
+come back because the layers themselves do.
+
+**The budget is where it actually hurt.** A structural entry's cost was read *after* `step_structure` had
+moved it into the other stack - zero for the kinds whose payload had just been moved out, and wrong for a
+swap, whose other side is the entire live stack. `bytes_` underflowed to 1.8e19 and
+`drop_oldest_until_within_budget` did what it is told: dropped every step, oldest first, leaving `Ctrl+Z`
+dead in a document that looked untouched and saying nothing. The price is read where it landed
+(`held(into.back())`), and `test_history` walks a flatten three times holding the byte count, the ids and
+the depth on each lap.
+
+**A control below the cards is below the panel's fold.** The panel's own row (`Add layer`, `Delete layer`,
+`Flatten`) and the mask section are submitted after the cards *in the panel's own scroll region*, so on three
+layers that row starts past the window's bottom edge - `app.state` reported it at y=926 in a window ending
+at 800: drawn nowhere, unreachable until scrolled. The probe wheels to it and then presses where the app
+says it is, the rule the last card is already held to. **Not yet decided**: whether that row is pinned
+outside the scrolling list, so the buttons for the whole stack are where they always are rather than at the
+bottom of a scroll.
+
+**Owed from here**: moving and scaling a layer's picture, inline rename, and `layer.remove` in the timeline
+(`layer_absent` is the entry deletion always needed; the decision is whether deleting belongs in the
+timeline at all). The coverage-undo decision further up is still the bigger of the two.
+
+## 2026-10-16 - Moving a layer, and what a change to the stack actually carries
 
 A card holds the stack's own controls now: `Up` and `Down` on its title row, `Merge down` beside its
 pictures. Both are commands before they are buttons — `layer.move {index,to}`, `layer.merge {index}` — and
@@ -161,13 +208,12 @@ inside the card rather than a slice of the panel (its arrow sat past the border)
 apply go through `BeginDisabled` rather than a hand-picked alpha plus a guard that threw the click away.
 
 **Owed, and why it is owed**: `layer.flatten`. Merging two layers keeps the survivor's identity, so the
-history entry only has to restore *pixels*. Flattening the stack into one layer changes the surviving
-layer's name, opacity, mode and mask as well, so it needs an entry that restores those properties too —
-`layer_absent` carries them for a layer that went away, and nothing yet carries them for a layer that
-stayed and became something else. Moving and scaling a layer's picture, and inline rename, are the rest of
-the slice.
+history entry only has to restore *pixels*; flattening replaces the stack, so the survivor's name, opacity,
+mode and mask change with it too. What landed removed the question rather than answering it as posed — see
+*The stack becomes one layer* above. Moving and scaling a layer's picture, and inline rename, are the rest
+of the slice.
 
-## 2026-10-17 - A surface per layer, and its own picture on it
+## 2026-10-16 - A surface per layer, and its own picture on it
 
 The panel put a checkbox, a name, a slider and a dropdown in a row and moved on to the next layer, so
 which layer any of them belonged to was a guess from proximity. Each layer is now a bordered card - its
@@ -303,6 +349,18 @@ which is the only way either fact could have been found.
 invariant) carry the rest. Suite: 37/37 with `test_verb_bar_probe` added.
 
 ## Traps the code cannot show
+* **A position recorded while a stack shrinks is not a position for putting it back.** Undo re-inserts the
+  layers a step removed in the order it removed them, each into a stack that is *growing*, while the index
+  each carries was read off a stack that was *shrinking*. One removal per step and the two frames coincide;
+  several, and a four-layer stack comes back reversed — a plausible-looking stack, which is why no test of a
+  single undo sees it, and why the claim has to be walked twice. A step that replaces the stack holds the
+  stack and swaps it; only a step that removes exactly one layer may be trusted with a position.
+* **Price a history entry where it lands, not where it was written.** `step_structure` moves the entry into
+  the other stack, so `held(entry)` after that call prices a moved-from object: nothing for the kinds whose
+  payload had just left, and a whole stack for a swap. `bytes_` underflowing does not assert — the budget
+  simply believes the history is enormous and drops steps from the bottom, so undo dies quietly in a document
+  that looks untouched. Read `held(into.back())`.
+
 * **ImGui gives a point to the item submitted *first*, not the one drawn on top.** A widget whose rect lies
   inside an earlier, wider one - a 22 px button over a 300 px `Selectable` - draws, lights up under the
   cursor and never fires, because `ItemHoverable` refuses the later item while `HoveredId` belongs to

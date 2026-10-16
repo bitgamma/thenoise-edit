@@ -88,6 +88,15 @@ public:
     // shows everywhere, the whole canvas is repainted rather than a rectangle.
     bool move_layer(int index, int to);
 
+    // The whole stack into one layer, holding exactly what the canvas showed - hidden layers and all the
+    // blending included, because that is the picture a person is looking at when they ask for it. Its
+    // history entry is the stack itself rather than an entry per layer: nothing stays behind to carry the
+    // undo of what left, and a stack put back by swapping needs no position per layer - one removal per
+    // step is as much as an index can be trusted with. The new layer is visible, at full opacity, in normal
+    // mode and unmasked - not for tidiness: those are the facts that let the composite be the layer, so the
+    // canvas cannot re-blend what was just baked. False when there is nothing to flatten.
+    bool flatten_layers();
+
     // The layer at `index` onto the one under it, exactly as the canvas shows them: the upper layer's
     // mask, blend mode and opacity are applied on the way down, and it leaves the stack while the layer
     // under it keeps its identity - name, mode, opacity, mask - which is what makes the undo exact. An

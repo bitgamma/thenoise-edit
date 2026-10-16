@@ -789,6 +789,7 @@ float button_px(const char* label) {
 void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thumbs) {
     ImGui::Begin(kWindowLayers);
     state.layer_cards.clear();
+    state.layer_panel = LayerPanelControls{};
     const ImVec2 panel_pos = ImGui::GetWindowPos();
     const ImVec2 panel_size = ImGui::GetWindowSize();
     state.layers_window = ScreenRect{panel_pos.x, panel_pos.y, panel_size.x, panel_size.y};
@@ -935,13 +936,26 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
             ImGui::PopStyleColor(3);
             ImGui::PopID();
         }
+        // The whole stack's own controls, under the cards rather than on any one of them.
         if (ImGui::Button("Add layer")) {
             commands.invoke("layer.add", json::object());
         }
+        state.layer_panel.add = item_rect();
         ImGui::SameLine();
         if (ImGui::Button("Delete layer")) {
             commands.invoke("layer.remove", json::object());
         }
+        state.layer_panel.remove = item_rect();
+        ImGui::SameLine();
+        // "I am lost in layers": one layer holding what the canvas shows. It stays in place and disabled
+        // when there is only one, so the panel does not grow and shrink as the stack changes.
+        state.layer_panel.can_flatten = layers.size() > 1;
+        ImGui::BeginDisabled(!state.layer_panel.can_flatten);
+        if (ImGui::Button("Flatten")) {
+            commands.invoke("layer.flatten", json::object());
+        }
+        ImGui::EndDisabled();
+        state.layer_panel.flatten = item_rect();
         // The active layer's mask, and which plane of it strokes write. Every control is a `mask.*`
         // command, so a click, the wire and a scripted test cannot disagree about what "Hide all"
         // means, and none of them has to know whether a mask is a plane, a channel or a claim.

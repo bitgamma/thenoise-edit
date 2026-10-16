@@ -11,7 +11,8 @@ drag), and that painting into the layer does change it.
 
 The stack controls are claimed the same way: an arrow moves the layer of *its* card, a dim arrow answers a
 press with nothing, a merge leaves the canvas exactly as it was, and undo gives the merged layer back as a
-layer rather than as an empty one with the right name.
+layer rather than as an empty one with the right name. Flatten is claimed the same way too, and walked
+twice, because a stack put back in the wrong order still looks like a stack.
 
 Everything is pressed and measured at the coordinates the app reports in `app.state.layer_cards`, so the
 probe follows the layout instead of remembering one.
@@ -320,9 +321,82 @@ def main() -> int:
                                            "thumb-lower-undone")).getbbox() is None,
                 "and the other layer back to only its own pixels")
 
+        # Flatten: the whole stack becomes the one layer the canvas was showing. The picture is the claim
+        # that decides whether the beat works - "I am lost in layers" is no win if the canvas changes -
+        # and the order the layers come back in is the thing a history of one-position-per-layer cannot
+        # promise, so it is walked twice here on a stack whose layers are each a different colour.
+        top_thumb = grab(wire, cards(wire)[0]["picture"], "thumb-top-before-flatten")
+        # The stack's own buttons are below the cards in the same scrollable panel, so on three layers
+        # they begin past the fold; the claim is that the wheel reaches them and that the press lands
+        # where the app then says they are, which is the same rule the last card is held to.
+        inj.move(window[0] + window[2] / 2.0, window[1] + window[3] / 2.0)
+        for _ in range(8):
+            if inside_box(wire.call("app.state")["layer_panel"]["flatten"], window):
+                break
+            inj.wheel(-3)
+            wd.settle(wire)
+        panel = wire.call("app.state")["layer_panel"]
+        p.check(inside_box(panel["flatten"], window), "the wheel brings the panel's own buttons up",
+                f"flatten={[round(v) for v in panel['flatten']]} in "
+                f"window={[round(v) for v in window]}")
+        p.check(not overlaps(panel["flatten"], panel["add"]) and
+                not overlaps(panel["flatten"], panel["remove"]),
+                "and the three of them claim no pixel twice",
+                f"{[round(v) for v in panel['add']]} {[round(v) for v in panel['remove']]} "
+                f"{[round(v) for v in panel['flatten']]}")
+        p.check(panel["can_flatten"] is True, "and Flatten is live while the stack has more than one layer")
+        click(inj, *centre(panel["flatten"]))
+        wd.settle(wire)
+        flat = wire.call("layer.list")["layers"]
+        p.check(len(flat) == 1, "one press leaves one layer", str([l["name"] for l in flat]))
+        p.check(flat[0]["name"] == "Background", "under the name that says what it is", flat[0]["name"])
+        p.check(flat[0]["opacity"] == 1.0 and flat[0]["mode"] == "normal" and flat[0]["visible"],
+                "neutral, so the composite cannot re-blend what was just baked into it",
+                str({key: flat[0][key] for key in ("opacity", "mode", "visible")}))
+        flattened_canvas = canvas_shot(wire, "stack-flattened")
+        p.check(ImageChops.difference(canvas_before, flattened_canvas).getbbox() is None,
+                "and the canvas has not moved by a pixel - flatten bakes, it does not repaint",
+                apart(canvas_before, flattened_canvas))
+        # The card holds a layer's own content, so the survivor's picture has to be more than any single
+        # layer's was - the strokes and the photograph underneath them, where the top layer had its own
+        # stroke over nothing.
+        p.check(ImageChops.difference(top_thumb,
+                                      grab(wire, cards(wire)[0]["picture"],
+                                           "thumb-flattened")).getbbox() is not None,
+                "and the one card left shows the picture the stack was making, not one layer's")
+        p.check(wire.call("app.state")["layer_panel"]["can_flatten"] is False,
+                "a stack of one has nothing to flatten, and says so")
+        click(inj, *centre(wire.call("app.state")["layer_panel"]["flatten"]))
+        wd.settle(wire)
+        p.check(len(wire.call("layer.list")["layers"]) == 1,
+                "and the dim button answers a press with nothing")
+        wire.call("edit.undo", {})
+        wd.settle(wire)
+        p.check(stack() == stack_before, "one undo gives the whole stack back, in the order it was",
+                f"{stack()} from {stack_before}")
+        p.check(wire.call("doc.get")["checksum"] == shown_before,
+                "every layer byte for byte, none of them holding the flattened picture")
+        p.check(ImageChops.difference(canvas_before,
+                                      canvas_shot(wire, "stack-flatten-undone")).getbbox() is None,
+                "and the canvas as it was")
+        wire.call("edit.redo", {})
+        wd.settle(wire)
+        p.check(len(wire.call("layer.list")["layers"]) == 1, "redo flattens it again")
+        wire.call("edit.undo", {})
+        wd.settle(wire)
+        # The second walk is the one that catches a stack put back in the wrong order: an index recorded
+        # against a shrinking stack re-inserts bottom-last, which shuffles and looks plausible.
+        p.check(stack() == stack_before, "and undo a second time is as exact as the first", str(stack()))
+
         # A card's title row selects its layer - and about the awkward one, which is the last card down:
         # three of them do not fit a panel this tall, so the wheel is how a person reaches it, and the
         # press has to land where the app now says the control is rather than where it used to be.
+        # Back to the top of the list first: the claims below are about a wheel-down reaching the last
+        # card, which is nothing if the panel is already at the bottom.
+        inj.move(window[0] + window[2] / 2.0, window[1] + window[3] / 2.0)
+        for _ in range(10):
+            inj.wheel(3)
+            wd.settle(wire)
         wire.call("layer.select", {"index": cards(wire)[0]["index"]})
         wd.settle(wire)
         above_fold = card_at(cards(wire), 0)

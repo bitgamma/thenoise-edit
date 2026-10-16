@@ -202,6 +202,14 @@ json layer_cards_json(const AppState& state) {
     return cards;
 }
 
+json layer_panel_json(const AppState& state) {
+    const LayerPanelControls& controls = state.layer_panel;
+    return json{{"add", screen_json(controls.add)},
+                {"remove", screen_json(controls.remove)},
+                {"flatten", screen_json(controls.flatten)},
+                {"can_flatten", controls.can_flatten}};
+}
+
 json image_json(const Image& image, const std::string& label) {
     return json{{"label", label},
                 {"width", image.size().w},

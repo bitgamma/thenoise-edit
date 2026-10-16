@@ -146,6 +146,31 @@ bool Document::move_layer(int index, int to) {
     return true;
 }
 
+bool Document::flatten_layers() {
+    if (layers_.size() < 2) {
+        return false;
+    }
+    // A copy, because what follows empties the stack the composite was read out of.
+    Image shown = composite();
+    const Extent canvas = size();
+
+    // One entry holding the whole stack. No layer of the old stack survives to carry this undo, and the
+    // swap it records needs no positions, so every layer comes back exactly where it was - which is not
+    // something an arrival-plus-departure entry per layer can promise.
+    history_.record_stack_replaced(std::move(layers_));
+
+    Layer flat;
+    flat.id = next_layer_id_++;
+    flat.name = kFlattenedLayerName;
+    flat.pixels = std::move(shown);
+    layers_.push_back(std::move(flat));
+    active_ = 0;
+    pending_ = Rect{0, 0, canvas.w, canvas.h};
+    dirty_ = true;
+    changed_composite();
+    return true;
+}
+
 bool Document::merge_down(int index) {
     if (index < 1 || static_cast<std::size_t>(index) >= layers_.size()) {
         return false;

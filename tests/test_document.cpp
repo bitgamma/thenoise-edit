@@ -30,6 +30,30 @@ std::vector<Layer> stack(std::vector<std::pair<std::string, Image>> contents) {
     return layers;
 }
 
+// The stack as "bottom,middle,top", bottom first: the shape a reorder or a flatten is claimed against.
+std::string layer_names(const Document& doc) {
+    std::string out;
+    for (const Layer& layer : doc.layers()) {
+        if (!out.empty()) {
+            out += ",";
+        }
+        out += layer.name;
+    }
+    return out;
+}
+
+// The stack's identities, bottom first. Names can be typed twice; these cannot.
+std::string layer_ids(const Document& doc) {
+    std::string out;
+    for (const Layer& layer : doc.layers()) {
+        if (!out.empty()) {
+            out += ",";
+        }
+        out += std::to_string(layer.id);
+    }
+    return out;
+}
+
 // What each layer's own counter says, keyed by layer: the fact a viewer of one layer - a thumbnail -
 // caches against, seen from outside the document. Keyed rather than listed, because a reorder moves a
 // layer between indices, so a list taken by index cannot tell "unchanged" from "carried off with it".
@@ -1292,16 +1316,7 @@ void test_a_layer_moves_as_one_step_that_undoes_itself() {
                      {"middle", Image::filled(Extent{4, 4}, 80, 80, 80, 255)},
                      {"top", Image::filled(Extent{4, 4}, 200, 200, 200, 255)}}),
               std::nullopt, "x.noise");
-    const auto names = [&doc] {
-        std::string out;
-        for (const Layer& layer : doc.layers()) {
-            if (!out.empty()) {
-                out += ",";
-            }
-            out += layer.name;
-        }
-        return out;
-    };
+    const auto names = [&doc] { return layer_names(doc); };
     const std::string whole = doc.checksum();
     const std::string shown = doc.composite().checksum_hex();
     const auto held = content_revisions(doc);
@@ -1391,6 +1406,100 @@ void test_merging_down_shows_what_the_canvas_already_showed() {
     CHECK(hidden.layer(1).pixels.checksum_hex() != ghost_pixels);
 }
 
+// The beat this exists for: "I am lost in layers" - Flatten, and the picture is one layer. It cannot have
+// changed, because the layer holds exactly what the canvas was showing; and undo has to hand back every
+// layer as it was, since nothing was written to any of them.
+void test_flattening_leaves_one_layer_that_shows_what_the_stack_showed() {
+    Document doc;
+    doc.reset(stack({{"sky", Image::filled(Extent{4, 4}, 30, 60, 90, 255)},
+                     {"bird", Image::filled(Extent{4, 4}, 250, 250, 250, 200)},
+                     {"haze", Image::filled(Extent{4, 4}, 12, 12, 12, 255)},
+                     {"ghost", Image::filled(Extent{4, 4}, 200, 0, 0, 255)}}),
+              std::nullopt, "x.noise");
+    Mask mask(Extent{4, 4});
+    mask.op(Rect{0, 0, 4, 2}, MaskOp::replace);
+    CHECK(doc.set_layer_mask(1, mask));
+    CHECK(doc.set_layer_opacity(2, 0.4));
+    CHECK(doc.set_layer_mode(2, BlendMode::multiply));
+    // A layer nobody can see is not part of the picture, and is not part of the flattened layer either -
+    // but it is part of the document, so undo gives it back.
+    CHECK(doc.set_layer_visible(3, false));
+
+    const std::string shown = doc.composite().checksum_hex();
+    const std::string whole = doc.checksum();
+    const std::string names = layer_names(doc);
+    const std::string bird_pixels = doc.layer(1).pixels.checksum_hex();
+    // Ids, not just names: a card caches a thumbnail against the id, the active layer indexes a stack
+    // that has just changed shape, and every later step names its layer by id - an id minted twice is not
+    // a cosmetic slip.
+    const std::string ids = layer_ids(doc);
+
+    Document alone;
+    alone.reset(stack({{"only", Image::filled(Extent{2, 2}, 1, 1, 1, 255)}}), std::nullopt,
+                "y.noise");
+    CHECK(!alone.flatten_layers());
+
+    CHECK(doc.flatten_layers());
+    CHECK_EQ(doc.layers().size(), 1u);
+    CHECK_EQ(doc.layer(0).name, std::string(kFlattenedLayerName));
+    // Neutral by necessity, not by tidiness: with these the composite *is* the layer, so the canvas
+    // cannot re-blend what was just baked into it.
+    CHECK(doc.layer(0).visible);
+    CHECK(doc.layer(0).opacity == kLayerOpacityDefault);
+    CHECK(doc.layer(0).mode == BlendMode::normal);
+    CHECK(!doc.layer(0).mask.has_value());
+    CHECK_EQ(doc.composite().checksum_hex(), shown);
+    CHECK_EQ(doc.history().undo_depth, 1);
+    CHECK(doc.dirty());
+
+    CHECK(doc.undo());
+    CHECK_EQ(doc.layers().size(), 4u);
+    CHECK_EQ(layer_names(doc), names);
+    CHECK_EQ(doc.layer(1).pixels.checksum_hex(), bird_pixels);
+    CHECK(doc.layer(1).mask.has_value());
+    CHECK(doc.layer(2).opacity == 0.4);
+    CHECK(doc.layer(2).mode == BlendMode::multiply);
+    CHECK(!doc.layer(3).visible);
+    CHECK_EQ(doc.composite().checksum_hex(), shown);
+    CHECK_EQ(doc.checksum(), whole);
+
+    CHECK(doc.redo());
+    CHECK_EQ(doc.layers().size(), 1u);
+    CHECK_EQ(doc.composite().checksum_hex(), shown);
+    // The second round trip is as exact as the first: undoing a replaced stack and redoing it are the
+    // same swap, so nothing about the order the layers return in can drift with how often it is run.
+    CHECK(doc.undo());
+    CHECK_EQ(layer_names(doc), names);
+    CHECK_EQ(layer_ids(doc), ids);  // the same identities, in the same places, second time round
+    CHECK_EQ(doc.checksum(), whole);
+    // And that was the bottom of the timeline: opacity, mode, visibility and a replaced mask travel with
+    // their layer instead of being steps, so flatten was the only one.
+    CHECK(!doc.can_undo());
+    CHECK_EQ(doc.history().undo_depth, 0);
+
+    // A step recorded *after* the flatten names the very layer the swap takes away. Stepping back has to
+    // undo the paint while that layer is still there and only then replace the stack - the one case that
+    // decides whether a whole-stack entry and a pixel entry can share a timeline.
+    CHECK(doc.redo());
+    paint_on(doc, Rect{0, 0, 2, 2}, 7);
+    const std::string painted = doc.composite().checksum_hex();
+    CHECK(painted != shown);
+    CHECK(doc.undo());
+    CHECK_EQ(doc.composite().checksum_hex(), shown);
+    CHECK(doc.undo());
+    CHECK_EQ(layer_names(doc), names);
+    CHECK_EQ(doc.checksum(), whole);
+    CHECK(doc.redo());
+    CHECK(doc.redo());
+    CHECK_EQ(doc.layers().size(), 1u);
+    CHECK_EQ(doc.composite().checksum_hex(), painted);
+
+    // A stack of one has nothing to flatten, and refusing costs the timeline nothing: the two steps are
+    // still exactly the flatten and the paint.
+    CHECK(!doc.flatten_layers());
+    CHECK_EQ(doc.history().undo_depth, 2);
+}
+
 // Both fences at once: the selection limits what a write may change, the layer mask limits what the
 // canvas shows of what was changed. A stroke under a masked-out area is real - it is on the layer -
 // and simply is not visible until the mask moves.
@@ -1477,5 +1586,6 @@ int main() {
     test_what_a_layer_holds_and_what_the_composite_uses_are_two_counters();
     test_a_layer_moves_as_one_step_that_undoes_itself();
     test_merging_down_shows_what_the_canvas_already_showed();
+    test_flattening_leaves_one_layer_that_shows_what_the_stack_showed();
     return noise::test::summary("document");
 }
