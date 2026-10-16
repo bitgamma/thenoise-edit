@@ -107,6 +107,9 @@ struct AppState {
     // The verb whose words the bar's popup is holding, if one is open. A verb that asks for nothing is
     // never in here: its button runs, and a popup for it would be an empty box.
     std::optional<app::VerbId> ask_verb;
+    // An ask to leave that unsaved work is holding. It is state rather than a dialog the window
+    // remembers, so the wire sees the question and answers it the same way the button does.
+    bool quit_pending = false;
     PointerStroke stroke;
     PointerMove move;
     PointerSelection select;

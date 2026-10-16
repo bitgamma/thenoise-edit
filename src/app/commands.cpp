@@ -53,6 +53,8 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                {"framebuffer", json::array({state.framebuffer.w, state.framebuffer.h})},
                                {"document", doc},
                                {"front_door", front_door_json(state)},
+                               // The question a driver has to answer before the app will leave.
+                               {"quit_pending", state.quit_pending},
                                {"brush", brush_json(state)},
                                {"stroke", stroke_json(state)},
                                {"view", view_json(state)},
@@ -66,13 +68,32 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                {"wire_port", wire.port()}});
     });
 
-    table.add("app.quit", "Ask the application to exit cleanly", {"Escape", "Ctrl+Q"}, {},
-              [hooks](const json&) -> CommandResult {
+    // A key does not throw away work. `Escape`, `Ctrl+Q` and the window manager's close all come
+    // through here, so the guard is in the command rather than in either caller: with unsaved changes
+    // the ask becomes a pending decision, which the window shows and a driver answers with `force` -
+    // or withdraws by asking again, which is what a second `Escape` means.
+    table.add("app.quit", "Ask the application to exit cleanly ('force' discards unsaved changes)",
+              {"Escape", "Ctrl+Q"}, {"force"},
+              [&state, hooks](const json& args) -> CommandResult {
+        if (args.contains("force") && !args.at("force").is_boolean()) {
+            return fail("app.quit", "'force' must be true or false");
+        }
+        const bool force = args.value("force", false);
+        if (!force && state.doc.dirty()) {
+            state.quit_pending = !state.quit_pending;
+            return command_ok(json{{"quitting", false},
+                                   {"pending", state.quit_pending},
+                                   {"dirty", true},
+                                   {"path", state.doc.path().empty()
+                                                ? json(nullptr)
+                                                : json(state.doc.path())}});
+        }
         if (!hooks.quit) {
             return fail("app.quit", "no quit hook is attached");
         }
+        state.quit_pending = false;
         hooks.quit();
-        return command_ok(json{{"quitting", true}});
+        return command_ok(json{{"quitting", true}, {"pending", false}});
     });
 
     table.add("log.tail", "Return the most recent log lines", {}, {"count"}, [](const json& args) -> CommandResult {

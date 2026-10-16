@@ -1067,6 +1067,39 @@ void draw_front_door(AppState& state, CommandTable& commands) {
     ImGui::EndPopup();
 }
 
+// A key asked to leave and the document is not saved. The question is `app.quit`'s, held in
+// `quit_pending`, so the window draws an answer rather than owning a decision: `Keep editing` withdraws
+// the ask (which is also what a second Escape does), and `Discard` is the same press with `force`.
+// Saving is not offered here - that is a different question, with a file dialog of its own.
+void draw_quit_guard(AppState& state, CommandTable& commands) {
+    if (!state.doc.dirty()) {
+        // The question exists only while there is something to discard, so saving answers it.
+        state.quit_pending = false;
+    }
+    if (!state.quit_pending) {
+        return;
+    }
+    if (!ImGui::IsPopupOpen("Discard unsaved changes?")) {
+        ImGui::OpenPopup("Discard unsaved changes?");
+    }
+    if (ImGui::BeginPopupModal("Discard unsaved changes?", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (state.doc.path().empty()) {
+            ImGui::TextUnformatted("This picture has unsaved changes.");
+        } else {
+            ImGui::Text("'%s' has unsaved changes.", state.doc.path().c_str());
+        }
+        if (ImGui::Button("Keep editing")) {
+            commands.invoke("app.quit", json::object());
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Discard")) {
+            commands.invoke("app.quit", json{{"force", true}});
+        }
+        ImGui::EndPopup();
+    }
+}
+
 void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
              const gfx::Checker& checker) {
     // The door is opened here, before the menu bar is drawn, because a menu item's callback is the
@@ -1074,6 +1107,7 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
     // closes at the end of that same frame, which is an ImGui assertion rather than a dialog. One
     // frame later the menu is gone and the popup has somewhere to live.
     draw_front_door(state, commands);
+    draw_quit_guard(state, commands);
     apply_finished_pick(commands);
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImGuiID dockspace = ImGui::DockSpaceOverViewport(0, viewport);

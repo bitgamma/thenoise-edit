@@ -3407,6 +3407,45 @@ void test_an_answer_lands_on_its_own_layer_over_another_one() {
 
 // The front door is state, not an ImGui flag: whether the app is waiting for a person is a fact the
 // wire reports and a probe can put there.
+// One key must not throw away work: the ask is held while the document is dirty, the window's answer
+// and the wire's are the same command, and only an explicit `force` reaches the host.
+void test_unsaved_work_holds_a_quit() {
+    Harness h;
+    // A picture nobody saved is not a picture to discard quietly: `doc.new` leaves the document dirty,
+    // which is exactly the state a stray Escape would otherwise destroy.
+    h.value("doc.new", json{{"width", 8}, {"height", 8}});
+    CHECK(h.state.doc.dirty());
+    const json held = h.value("app.quit", json::object());
+    CHECK(!held["quitting"].get<bool>());
+    CHECK(held["pending"].get<bool>());
+    CHECK(held["dirty"].get<bool>());
+    CHECK(held["path"].is_null());
+    CHECK_EQ(h.quits, 0);
+    CHECK_EQ(h.value("app.state", json::object())["quit_pending"].get<bool>(), true);
+
+    // Asking again withdraws it - the second Escape - and the host is still not reached.
+    CHECK(!h.value("app.quit", json::object())["pending"].get<bool>());
+    CHECK_EQ(h.quits, 0);
+
+    // `force` is what the window's `Discard` presses, and it is the only way past a dirty document.
+    h.value("app.quit", json::object());
+    CHECK(h.value("app.quit", json{{"force", true}})["quitting"].get<bool>());
+    CHECK_EQ(h.quits, 1);
+    CHECK(h.run("app.quit", json{{"force", "yes"}}).error.find("'force' must be true or false") !=
+          std::string::npos);
+
+    // Saving ends the question rather than answering it: nothing pending, and the next ask leaves.
+    h.value("app.quit", json::object());
+    CHECK(h.value("app.state", json::object())["quit_pending"].get<bool>());
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "noise-app-quit-test";
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path saved = dir / "kept.noise";
+    h.value("doc.save", json{{"path", saved.string()}});
+    CHECK(!h.state.doc.dirty());
+    CHECK(!h.value("app.quit", json::object())["pending"].get<bool>());
+    CHECK_EQ(h.quits, 2);
+}
+
 void test_the_front_door_is_a_state_the_wire_can_open_and_shut() {
     Harness harness;
     CHECK_EQ(harness.value("app.state", json::object())["front_door"]["front_door"].get<std::string>(),
@@ -3564,6 +3603,7 @@ int main() {
     test_screenshot_returns_exactly_what_the_capture_gave();
     test_a_shorter_image_stays_centred_under_panning();
     test_view_navigation_keeps_the_image_reachable();
+    test_unsaved_work_holds_a_quit();
     test_the_front_door_is_a_state_the_wire_can_open_and_shut();
     test_the_new_document_form_offers_the_sizes_and_refuses_the_impossible();
     test_the_recent_files_are_the_documents_this_app_touched();
