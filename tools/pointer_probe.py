@@ -191,6 +191,22 @@ def main() -> int:
                 "and still matches the size the app reports",
                 f"measured {wide_diameter:.1f} px, expected {expected_wide:.1f} px")
         shutil.copy(wide_ring_path, "/tmp/pointer_brush_wide.png")
+
+        # Leaving the canvas has to hand the cursor back: the brush hid it, and nothing else in the build
+        # re-shows it. The panel is where a person goes next, so an invisible pointer there is the bug
+        # this claim exists for.
+        # Left of the canvas *window*, not left of the document: the backdrop beside the picture is
+        # still the canvas, and the tool acts there, so the ring belongs there too.
+        # Up out of the canvas window, into the row above it. Sideways does not work here: the pointer
+        # clamps against the Xvfb framebuffer before it reaches the panel column, so a sideways claim
+        # would be testing the display and not the app.
+        canvas = wider["canvas"]
+        inj.move(px, canvas[1] - 10.0)
+        wd.settle(wire)
+        gone = wire.call("app.state")["pointer"]
+        p.check(gone["over_canvas"] is False and gone["cursor"] != "hidden",
+                "and the cursor comes back when the canvas does not have it",
+                f"over_canvas={gone['over_canvas']} cursor={gone['cursor']}")
     finally:
         wd.shutdown(proc, wire)
         shutil.rmtree(runtime, ignore_errors=True)

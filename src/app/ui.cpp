@@ -225,6 +225,16 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
     // IsItemHovered() would report whatever widget another window submitted last.
     const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 
+    // The overlay reads the pointer the host reported, so a driver that moves the real pointer and a
+    // hand doing the same thing land on one code path. Decided every frame, including the frames with no
+    // document: a stale `over_canvas` here leaves the OS cursor hidden over a window with nothing in it.
+    const std::optional<Vec2> over_canvas =
+        (hovered && !state.doc.empty())
+            ? std::optional<Vec2>(state.view.view_to_world(
+                  {io.MousePos.x - origin.x, io.MousePos.y - origin.y}))
+            : std::nullopt;
+    state.pointer = resolve_pointer(state, over_canvas, state.footprint_forced);
+
     if (!state.doc.empty()) {
         const Vec2 image_screen = state.view.world_to_view({0.0, 0.0});
         const ImVec2 canvas_min(origin.x + static_cast<float>(image_screen.x),
@@ -251,13 +261,6 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
         }
         list->AddRect(canvas_min, canvas_max, kCanvasBorder);
         draw_selection(list, state, origin, tint);
-        // The overlay reads the pointer the host reported, so a driver that moves the real pointer and
-        // a hand doing the same thing land on one code path.
-        const std::optional<Vec2> over_canvas =
-            hovered ? std::optional<Vec2>(state.view.view_to_world(
-                          {io.MousePos.x - origin.x, io.MousePos.y - origin.y}))
-                    : std::nullopt;
-        state.pointer = resolve_pointer(state, over_canvas, state.footprint_forced);
         if (state.pointer.drawn) {
             draw_footprint(list, ImVec2(io.MousePos.x, io.MousePos.y),
                            state.pointer.footprint_px, state.pointer.core_px);

@@ -216,10 +216,15 @@ void frame(void) {
     // its answer becomes an editing command.
     app::pump_picked_files(g.state, g.commands);
     app::draw_ui(g.state, g.commands, g.canvas_texture, g.checker, g.coverage_tint);
+    const app::PointerRequest request = app::pointer_request(g.state.pointer);
     // sokol_imgui applies ImGui's own cursor request at new-frame, before the canvas has decided what
     // it needs, so this is the frame's last word - and only over the canvas, so a text field in a panel
     // keeps its I-beam and a button keeps its hand.
-    switch (app::pointer_request(g.state.pointer)) {
+    // Visibility is stated every frame: sokol_imgui re-applies ImGui's *shape* at new-frame and never
+    // re-shows a cursor the app hid, so a cursor hidden by a brush would otherwise stay hidden over the
+    // whole window for the rest of the session.
+    sapp_show_mouse(request != app::PointerRequest::hidden);
+    switch (request) {
         case app::PointerRequest::leave_alone:
             break;
         case app::PointerRequest::arrow:

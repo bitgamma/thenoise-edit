@@ -159,7 +159,10 @@ hardness, so the canvas draws it: `brush.size * view.scale` (`Brush::size` is a 
 pixels, so the zoom enters in exactly one place), a light ring at the rim and a dark circle *inside* it -
 inside, because the rim is what a person aims with and the overlay's outer edge has to be that rim. The
 OS cursor stands down only while that ring is on screen; with the ring forced off a paint tool gets a
-crosshair instead, because a hidden cursor and no ring is a tool you cannot see at all.
+crosshair instead, because a hidden cursor and no ring is a tool you cannot see at all. Hiding it is the
+app's call and **re-showing it is too**: sokol_imgui re-applies ImGui's shape each frame and never touches
+visibility, so the host states `sapp_show_mouse` on every frame rather than only when the ring appears -
+the first version left the cursor invisible over the whole window the moment a brush had been under it.
 
 `pointer.footprint {show: true|false|null}` exists because a wire client has no pointer: forcing is how a
 capture gets the ring where no hand is, and how it proves the tool alone would not have drawn it.
@@ -218,6 +221,11 @@ which is the only way either fact could have been found.
 invariant) carry the rest. Suite: 37/37 with `test_verb_bar_probe` added.
 
 ## Traps the code cannot show
+* **A hidden mouse cursor is yours until you show it again.** `sapp_show_mouse(false)` is sticky:
+  sokol_imgui re-applies the cursor *shape* from ImGui at new-frame and never re-asserts visibility. A
+  canvas that hides the cursor to draw a brush footprint in its place must state visibility every frame,
+  not toggle it on entry, or the cursor is gone over the entire window for the rest of the session.
+  `pointer_probe` holds this: leaving the canvas asks for a visible cursor again.
 
 * **A held quit has to be cancelled with the host.** `SAPP_EVENTTYPE_QUIT_REQUESTED` only asks: sokol
   quits unless the app calls `sapp_cancel_quit()` (in the Linux loop, the `quit_requested &&
