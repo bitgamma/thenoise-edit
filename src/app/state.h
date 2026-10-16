@@ -136,6 +136,9 @@ struct AppState {
     // mark to anchor it to. Published for the wire: a driver clicks the bar by reading this back
     // rather than by measuring a screenshot.
     ScreenRect verb_bar{};
+    // And the same for the phrase box the bar opens, so a driver can read the box's own rect rather
+    // than deriving it from the bar's.
+    ScreenRect verb_ask{};
     std::uint16_t wire_port = 0;
     // Bumped once per presented frame: a wire client waits on it so captures and
     // assertions land on a frame the app actually drew.

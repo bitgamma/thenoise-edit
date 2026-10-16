@@ -38,7 +38,11 @@ json verb_ask_state(AppState& state, CommandTable& table) {
                 {"recipe", active->id},
                 {"field", field},
                 {"command", std::string("ai.") + verb_name(info->id)},
-                {"value", intent.value("vars", json::object()).value(field, std::string())}};
+                {"value", intent.value("vars", json::object()).value(field, std::string())},
+                // Where the frame last drew it, so a driver reads the box rather than the bar it hangs
+                // from, and can tell a box that clipped its own buttons from one that did not.
+                {"screen", json::array({state.verb_ask.x, state.verb_ask.y, state.verb_ask.w,
+                                        state.verb_ask.h})}};
 }
 
 // The rows the mark is an instruction for: `scope` is the recipe's own region, read off `ai.verbs`

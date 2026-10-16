@@ -146,6 +146,9 @@ def main() -> int:
                 "the button that wants words opened a box instead of running", str(ask))
         p.check(len(wire.call("job.list")["jobs"]) == jobs_before_fill,
                 "and nothing started while the box was empty")
+        ax, ay, aw, ah = ask["screen"]
+        p.check(aw >= 200 and ah >= 3 * 22, "the box is big enough for its own label and buttons",
+                f"{aw:.0f}x{ah:.0f}")
 
         # Typed with real keys into the box the click opened, then confirmed with Return: the whole
         # gesture a person makes, with the pointer only ever clicking what the app reported.

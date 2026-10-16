@@ -31,11 +31,12 @@ constexpr double kAskWidthPx = 340.0;
 // The words a marked-area verb asks for, typed over the mark rather than in the panel across the
 // window. The words belong to the intent and the press to `ai.<verb>`; this holds nothing of its own
 // but the edit buffer and the last refusal, and closes when the press is accepted.
-void draw_ask(AppState& state, CommandTable& commands, const json& ask) {
+void draw_ask(AppState& state, CommandTable& commands, const json& ask, bool bar_above_mark) {
     static std::string open_for;
     static std::string refused;
     static bool field_held = false;
     if (ask.is_null()) {
+        state.verb_ask = {};
         open_for.clear();
         refused.clear();
         field_held = false;
@@ -46,23 +47,27 @@ void draw_ask(AppState& state, CommandTable& commands, const json& ask) {
     open_for = verb;
 
     const ImGuiStyle& style = ImGui::GetStyle();
-    const double line = ImGui::GetTextLineHeight() + style.FramePadding.y * 2.0;
     const double width = std::max(kAskWidthPx, static_cast<double>(state.verb_bar.w));
-    const double height =
-        kBarPadPx * 2.0 + line + style.ItemSpacing.y * 2.0 +
-        (refused.empty() ? 0.0 : ImGui::GetTextLineHeight() + style.ItemSpacing.y);
+    // Room enough for the tallest it can be (label, field, buttons, refusal) is used only to decide
+    // which side of the bar it goes on; the box sizes itself to what it actually holds, because a box
+    // measured by hand is a box that clips its own buttons.
+    const double reserve = ImGui::GetTextLineHeight() * 4.0 + style.FramePadding.y * 4.0 +
+                           style.ItemSpacing.y * 3.0 + kBarPadPx * 2.0;
 
+    // On the far side of the bar from the mark: a box over the boundary would hide the edge whose
+    // coverage is being described, and the bar is already on the other side of it.
     double x = state.verb_bar.x;
-    double y = state.verb_bar.y + state.verb_bar.h + kBarGapPx;
-    if (y + height > state.canvas_origin.y + state.viewport.h) {
-        y = state.verb_bar.y - kBarGapPx - height;
+    double y = bar_above_mark ? state.verb_bar.y - kBarGapPx - reserve
+                              : state.verb_bar.y + state.verb_bar.h + kBarGapPx;
+    if (bar_above_mark && y < state.canvas_origin.y) {
+        y = state.verb_bar.y + state.verb_bar.h + kBarGapPx;
+    } else if (!bar_above_mark && y + reserve > state.canvas_origin.y + state.viewport.h) {
+        y = state.verb_bar.y - kBarGapPx - reserve;
     }
     x = std::min(x, state.canvas_origin.x + state.viewport.w - width);
     x = std::max(x, static_cast<double>(state.canvas_origin.x));
 
     ImGui::SetNextWindowPos(ImVec2(static_cast<float>(x), static_cast<float>(y)), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(static_cast<float>(width), static_cast<float>(height)),
-                             ImGuiCond_Always);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(22, 22, 26, 242));
     ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(150, 150, 168, 220));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(static_cast<float>(kBarPadPx),
@@ -70,8 +75,12 @@ void draw_ask(AppState& state, CommandTable& commands, const json& ask) {
     ImGui::Begin("##verb_ask", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+    ImGui::Dummy(ImVec2(static_cast<float>(width) - style.WindowPadding.x * 2.0f, 0.0f));
+    state.verb_ask = {ImGui::GetWindowPos().x, ImGui::GetWindowPos().y, ImGui::GetWindowSize().x,
+                      ImGui::GetWindowSize().y};
 
     const std::string field = ask["field"].get<std::string>();
     std::array<char, kVerbFieldChars>& box = verb_field_boxes()[verb];
@@ -156,8 +165,10 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
     // the bar cannot hide behind the panel edge.
     double x = anchor_x + (far_x - anchor_x - width) * 0.5;
     double y = anchor_y - kBarGapPx - height;
+    bool bar_above_mark = true;
     if (y < state.canvas_origin.y) {
         y = far_y + kBarGapPx;
+        bar_above_mark = false;
     }
     const double limit_x = state.canvas_origin.x + state.viewport.w - width;
     const double limit_y = state.canvas_origin.y + state.viewport.h - height;
@@ -216,7 +227,7 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(2);
 
-    draw_ask(state, commands, verb_ask_state(state, commands));
+    draw_ask(state, commands, verb_ask_state(state, commands), bar_above_mark);
 }
 
 }  // namespace noise::app

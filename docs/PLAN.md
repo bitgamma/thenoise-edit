@@ -75,6 +75,19 @@ coverage with verbs at the marked area, is next.
    makes those claims with real keys. **Still owed**: coverage as a semitransparent overlay (it wants a
    cached coverage texture, not a per-frame walk of the plane), and local `heal` (in-process Telea/Chan,
    below), because *Heal* on a small area should not pay for a round trip.
+
+   **Owed, and decided**: coverage edits enter the history. The marked area is already a document
+   property (`Document::selection_`, saved with the project); what it lacks is undo. The rule to hold to:
+   *one gesture that changes coverage is one undo step* — marquee press to release, `cover` and
+   `un-cover`, All / None / Invert, to-mask and from-mask — and a pixel write carries no coverage with
+   it, because it did not move any. That reverses the claim in `core/document.h` that a selection enters
+   no step "exactly like a layer's visibility"; its worry was a step undoing something the user never
+   touched, and the answer is a step that snapshots only what it touched (`pixels`, `layer mask`,
+   `marked coverage`) rather than the whole document. Shape: a payload kind in `core/history`, a writing
+   variant of `Document::set_selection` that pushes the previous coverage and marks the document dirty
+   (it is saved), the marquee committing once on release with the drag provisional until then. The claims
+   to flip are the ones made this week that marking costs no undo step, plus the invariant bullets in
+   `core/document.h` and `docs/ARCHITECTURE.md`.
 4. **Layers you can see.** Thumbnails and mask thumbnails, reorder, opacity, visibility, move and scale,
    **Flatten** (`layer.merge`). The panel is always visible: it is where a person goes to understand what
    an edit did.
