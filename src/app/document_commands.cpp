@@ -2,6 +2,7 @@
 #include "app/command_groups.h"
 
 #include "app/command_args.h"
+#include "app/new_document.h"
 
 #include "app/commands.h"
 #include "core/base64.h"
@@ -27,6 +28,9 @@ namespace {
 // the last file land in this one.
 void note_new_document(AppState& state) {
     ++state.document_epoch;
+    // The door is the way in, and a document in hand closes it - whoever made the document: the
+    // picker, the recent list, a launch argument, a driver.
+    state.front_door = FrontDoor::closed;
 }
 
 }  // namespace

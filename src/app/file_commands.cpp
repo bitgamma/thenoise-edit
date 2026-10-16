@@ -317,7 +317,6 @@ void register_file_commands(AppState& state, CommandTable& table) {
                       }
                       out["job"] = started.value.value("job", json::object());
                   }
-                  table.invoke("front_door", json{{"show", "close"}});
                   return command_ok(out);
               });
 

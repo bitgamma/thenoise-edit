@@ -27,6 +27,7 @@ import wire_drive as wd  # noqa: E402
 import wire_input as wi  # noqa: E402
 
 WIDTH, HEIGHT = 1100, 900
+KEY_RETURN = 0xFF0D  # XK_Return: the popup takes Enter as confirmation
 MARK = [120, 100, 200, 140]
 EXPECTED = ["ai.heal", "ai.remove", "ai.fill", "ai.change"]
 
@@ -132,6 +133,38 @@ def main() -> int:
                     f"{len(landed)} layers")
             p.check(wire.call("doc.get")["checksum"] != blank_checksum,
                     "and the canvas changed")
+
+        # A verb that wants words answers a click with a box over the mark, not with a run on whatever
+        # the panel happens to hold - and not with a job either, until the words are in.
+        fill = next(b for b in bar["buttons"] if b["verb"] == "fill")
+        fill_index = bar["buttons"].index(fill)
+        jobs_before_fill = len(wire.call("job.list")["jobs"])
+        click(inj, bx + step * (fill_index + 0.5), by + bh / 2)
+        wd.settle(wire)
+        ask = wire.call("verb.bar")["ask"]
+        p.check(ask is not None and ask["verb"] == "fill",
+                "the button that wants words opened a box instead of running", str(ask))
+        p.check(len(wire.call("job.list")["jobs"]) == jobs_before_fill,
+                "and nothing started while the box was empty")
+
+        # Typed with real keys into the box the click opened, then confirmed with Return: the whole
+        # gesture a person makes, with the pointer only ever clicking what the app reported.
+        marker = "quartz lampshade"
+        for ch in marker:
+            inj.key(0x20 if ch == " " else ord(ch))
+        wd.settle(wire)
+        p.check(marker in wire.call("ai.intent")["vars"].get("prompt", ""),
+                "the box holds what was typed", str(wire.call("ai.intent")["vars"]))
+        inj.key(KEY_RETURN)
+        wd.settle(wire, 2)
+        started_fill = wire.call("job.list")["jobs"]
+        p.check(len(started_fill) == jobs_before_fill + 1, "and Return ran the verb",
+                f"{jobs_before_fill} -> {len(started_fill)}")
+        if len(started_fill) > jobs_before_fill:
+            done_fill = wire.call("job.wait", {"id": started_fill[-1]["id"], "timeout": 120})
+            p.check(done_fill["state"] == "succeeded", "and it finished",
+                    str(done_fill.get("job", {}).get("error", "")))
+        p.check(wire.call("verb.bar")["ask"] is None, "and the box closed when the press was taken")
 
         # With the mark gone the bar is gone, and the pixels where it used to be are only canvas: a
         # click there starts nothing rather than pressing an invisible button.

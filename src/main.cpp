@@ -281,10 +281,15 @@ void event(const sapp_event* ev) {
     }
     // Escape answers the dialog in front of the person rather than the application: at the front door
     // it means "never mind", and `app.quit` on the same key would throw away the run.
-    if (ev->type == SAPP_EVENTTYPE_KEY_DOWN && ev->key_code == SAPP_KEYCODE_ESCAPE &&
-        g.state.front_door != app::FrontDoor::closed) {
-        invoke_command("front_door", json{{"show", "close"}}, "close the front door");
-        return;
+    if (ev->type == SAPP_EVENTTYPE_KEY_DOWN && ev->key_code == SAPP_KEYCODE_ESCAPE) {
+        if (g.state.ask_verb) {
+            invoke_command("verb.ask", json{{"show", "close"}}, "close the phrase box");
+            return;
+        }
+        if (g.state.front_door != app::FrontDoor::closed) {
+            invoke_command("front_door", json{{"show", "close"}}, "close the front door");
+            return;
+        }
     }
     // A widget that owns the keyboard (text entry, later) keeps the key: a shortcut fired
     // through it would move the canvas while the user types.

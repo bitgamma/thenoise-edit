@@ -5,6 +5,7 @@
 #include "app/brush_steps.h"
 #include "app/command_args.h"
 #include "app/verb_bar.h"
+#include "app/verb_fields.h"
 
 #include "core/log.h"
 #include "gfx/checker.h"
@@ -52,11 +53,6 @@ constexpr float kLayerOpacitySliderPx = 88.0f;
 constexpr ImU32 kAntLight = IM_COL32(255, 255, 255, 255);
 constexpr ImU32 kAntDark = IM_COL32(20, 20, 20, 255);
 constexpr float kLayerNameMinPx = 40.0f;
-// A prompt field holds a phrase, not a paragraph. One box per asking verb row, and ImGui writes into
-// the buffer it was handed, so each row owns a buffer of its own rather than sharing one between the
-// boxes drawn around it.
-constexpr int kVerbFieldChars = 220;
-
 // What the swap confirmation is about, remembered between the frame that opened the popup and the one
 // whose button answers it: the verb row is gone by then, and a modal that re-read the table would ask
 // about whatever the table said next rather than what was pressed.
@@ -450,7 +446,7 @@ void draw_verb_section(CommandTable& commands, const json& intent) {
         intent["recipe"].is_null() ? std::string() : intent["recipe"].get<std::string>();
     // The row whose box currently owns the keyboard: only that box may be left as ImGui last wrote it.
     static std::string editing;
-    static std::map<std::string, std::array<char, kVerbFieldChars>> boxes;
+    std::map<std::string, std::array<char, kVerbFieldChars>>& boxes = verb_field_boxes();
 
     for (const json& verb : view["verbs"]) {
         const std::string id = verb["id"].get<std::string>();

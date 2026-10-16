@@ -3050,6 +3050,46 @@ void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
     CHECK_EQ(bar["buttons"].size(), std::size_t(4));
     CHECK_EQ(bar["buttons"][0]["command"].get<std::string>(), std::string("ai.heal"));
     CHECK_EQ(bar["screen"], json::array({0, 0, 0, 0}));
+    // Only a verb that wants words gets a box: the two silent ones run on the press, and a box for
+    // them would be an empty field with a button on it.
+    json fields;
+    for (const json& button : bar["buttons"]) {
+        fields[button["verb"].get<std::string>()] = button["field"];
+    }
+    CHECK(fields["heal"].is_null());
+    CHECK(fields["remove"].is_null());
+    CHECK_EQ(fields["fill"].get<std::string>(), std::string("prompt"));
+    CHECK_EQ(fields["change"].get<std::string>(), std::string("instruction"));
+
+    // The box opens over the mark and takes the intent with it, so what is typed belongs to the verb
+    // the button was pressed for.
+    CHECK(bar["ask"].is_null());
+    const json opened = h.value("verb.ask", json{{"show", "fill"}});
+    CHECK_EQ(opened["verb"].get<std::string>(), std::string("fill"));
+    CHECK_EQ(opened["field"].get<std::string>(), std::string("prompt"));
+    CHECK_EQ(opened["command"].get<std::string>(), std::string("ai.fill"));
+    CHECK_EQ(opened["recipe"].get<std::string>(), std::string("region-fill"));
+    CHECK_EQ(h.value("ai.intent", json::object())["recipe"].get<std::string>(),
+             std::string("region-fill"));
+    CHECK_EQ(h.value("verb.bar", json::object())["ask"]["verb"].get<std::string>(),
+             std::string("fill"));
+    // Words typed into the box are the intent's, so the press the panel makes and the press the box
+    // makes are the same command reading the same value.
+    h.value("ai.intent", json{{"recipe", "region-fill"},
+                              {"vars", {{"prompt", "a brass door handle"}}}});
+    CHECK_EQ(h.value("verb.ask", json{{"show", "fill"}})["value"].get<std::string>(),
+             std::string("a brass door handle"));
+    CHECK(h.value("verb.ask", json{{"show", "close"}}).is_null());
+    CHECK(h.value("verb.bar", json::object())["ask"].is_null());
+
+    // A verb that asks nothing has no box, and the refusal says why rather than opening an empty one.
+    const CommandResult silent = h.run("verb.ask", json{{"show", "remove"}});
+    CHECK(!silent.ok);
+    CHECK(silent.error.find("asks for nothing") != std::string::npos);
+    const CommandResult nonsense = h.run("verb.ask", json{{"show", "sideways"}});
+    CHECK(!nonsense.ok);
+    CHECK(nonsense.error.find("fill") != std::string::npos);
+
     h.value("select.clear", json::object());
     const json nothing = h.value("verb.bar", json::object());
     CHECK(!nothing["shown"].get<bool>());
@@ -3369,6 +3409,18 @@ void test_the_front_door_is_a_state_the_wire_can_open_and_shut() {
     CHECK(!nonsense.ok);
     CHECK(nonsense.error.find("sideways") != std::string::npos);
     CHECK_EQ(harness.value("front_door", json{{"show", "close"}})["front_door"].get<std::string>(),
+             std::string("closed"));
+
+    // A file opened through the door shuts it: the door is the way in, and its job ends when a
+    // document is in hand. The welcome screen staying up over a loaded picture is the bug.
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "noise-app-door-test";
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path project = dir / "shut.noise";
+    harness.value("doc.new", json{{"width", 8}, {"height", 8}});
+    harness.value("doc.save", json{{"path", project.string()}});
+    harness.value("front_door", json{{"show", "welcome"}});
+    harness.value("doc.open", json{{"path", project.string()}});
+    CHECK_EQ(harness.value("app.state", json::object())["front_door"]["front_door"].get<std::string>(),
              std::string("closed"));
 }
 

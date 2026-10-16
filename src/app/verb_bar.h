@@ -23,6 +23,10 @@ void register_verb_bar_commands(AppState& state, CommandTable& table);
 // The mark the bar hangs from, in document pixels, and the rows it offers: `scope == "selection"` on
 // `ai.verbs`, which is the recipe's own region rather than a list kept here.
 std::optional<Rect> verb_bar_mark(const AppState& state);
+
+// The phrase box standing over the mark, or null: the field a press would want and the words held for
+// it, as the intent has them.
+nlohmann::json verb_ask_state(AppState& state, CommandTable& table);
 nlohmann::json verb_bar_rows(CommandTable& table, std::string* why);
 
 // Called from the frame after the canvas, so the placement uses the origin and view that frame drew

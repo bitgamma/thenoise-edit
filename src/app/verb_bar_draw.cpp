@@ -2,10 +2,14 @@
 #include "app/verb_bar.h"
 
 #include "imgui.h"
+
+#include "app/verb_fields.h"
 #include "imgui_internal.h"  // BringWindowToDisplayFront: the bar has to sit above the canvas
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <string>
 
 #include "app/state.h"
@@ -20,6 +24,98 @@ using nlohmann::json;
 // the boundary is unreadable exactly where the feather is.
 constexpr double kBarGapPx = 10.0;
 constexpr double kBarPadPx = 6.0;
+// A prompt is a sentence: a box that shows eight characters of it is a box nobody types into, so the
+// phrase box is wider than the bar it hangs from.
+constexpr double kAskWidthPx = 340.0;
+
+// The words a marked-area verb asks for, typed over the mark rather than in the panel across the
+// window. The words belong to the intent and the press to `ai.<verb>`; this holds nothing of its own
+// but the edit buffer and the last refusal, and closes when the press is accepted.
+void draw_ask(AppState& state, CommandTable& commands, const json& ask) {
+    static std::string open_for;
+    static std::string refused;
+    static bool field_held = false;
+    if (ask.is_null()) {
+        open_for.clear();
+        refused.clear();
+        field_held = false;
+        return;
+    }
+    const std::string verb = ask["verb"].get<std::string>();
+    const bool just_opened = verb != open_for;
+    open_for = verb;
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const double line = ImGui::GetTextLineHeight() + style.FramePadding.y * 2.0;
+    const double width = std::max(kAskWidthPx, static_cast<double>(state.verb_bar.w));
+    const double height =
+        kBarPadPx * 2.0 + line + style.ItemSpacing.y * 2.0 +
+        (refused.empty() ? 0.0 : ImGui::GetTextLineHeight() + style.ItemSpacing.y);
+
+    double x = state.verb_bar.x;
+    double y = state.verb_bar.y + state.verb_bar.h + kBarGapPx;
+    if (y + height > state.canvas_origin.y + state.viewport.h) {
+        y = state.verb_bar.y - kBarGapPx - height;
+    }
+    x = std::min(x, state.canvas_origin.x + state.viewport.w - width);
+    x = std::max(x, static_cast<double>(state.canvas_origin.x));
+
+    ImGui::SetNextWindowPos(ImVec2(static_cast<float>(x), static_cast<float>(y)), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(static_cast<float>(width), static_cast<float>(height)),
+                             ImGuiCond_Always);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(22, 22, 26, 242));
+    ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(150, 150, 168, 220));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(static_cast<float>(kBarPadPx),
+                                                            static_cast<float>(kBarPadPx)));
+    ImGui::Begin("##verb_ask", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+
+    const std::string field = ask["field"].get<std::string>();
+    std::array<char, kVerbFieldChars>& box = verb_field_boxes()[verb];
+    if (!field_held) {
+        std::snprintf(box.data(), box.size(), "%s", ask["value"].get<std::string>().c_str());
+    }
+    ImGui::TextUnformatted(ask["label"].get<std::string>().c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("(%s)", field.c_str());
+    if (just_opened) {
+        ImGui::SetKeyboardFocusHere();
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::InputText("##ask_words", box.data(), box.size() - 1)) {
+        refused.clear();
+        commands.invoke("ai.intent", json{{"recipe", ask["recipe"]},
+                                          {"vars", json{{field, box.data()}}}});
+    }
+    field_held = ImGui::IsItemActive();
+
+    const bool confirmed_enter = ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter, false);
+    const bool confirmed_click = ImGui::Button("Run");
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+        commands.invoke("verb.ask", json{{"show", "close"}});
+    }
+    if (!refused.empty()) {
+        ImGui::TextDisabled("%s", refused.c_str());
+    }
+    // A press that is refused leaves the box standing with the reason in it: the words are already in
+    // the intent, so the fix is one edit away rather than a retyped phrase.
+    if (confirmed_enter || confirmed_click) {
+        const CommandResult ran =
+            commands.invoke(ask["command"].get<std::string>(), json::object());
+        if (ran.ok) {
+            commands.invoke("verb.ask", json{{"show", "close"}});
+        } else {
+            refused = ran.error;
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(2);
+}
 
 }  // namespace
 
@@ -99,10 +195,17 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
             ImGui::SameLine();
         }
         ImGui::BeginDisabled(!row["ready"].get<bool>());
-        if (ImGui::Button(row["label"].get<std::string>().c_str())) {
-            commands.invoke(row["command"].get<std::string>(), json::object());
-        }
+        const bool pressed = ImGui::Button(row["label"].get<std::string>().c_str());
         ImGui::EndDisabled();
+        // A verb that wants words opens the box over the mark instead of running on whatever the panel
+        // happens to hold; one that wants none runs, because a dialog in its way would be theatre.
+        if (pressed) {
+            if (row["field"].is_null()) {
+                commands.invoke(row["command"].get<std::string>(), json::object());
+            } else {
+                commands.invoke("verb.ask", json{{"show", row["verb"]}});
+            }
+        }
         // Why a button is dim, where a person looks when a button does nothing. The panel states the
         // same reason beside its own copy; the bar has no room for it and no need to restate it.
         if (!row["ready"].get<bool>() && ImGui::IsItemHovered()) {
@@ -112,6 +215,8 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
     ImGui::End();
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(2);
+
+    draw_ask(state, commands, verb_ask_state(state, commands));
 }
 
 }  // namespace noise::app

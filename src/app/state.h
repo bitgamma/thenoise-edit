@@ -4,6 +4,7 @@
 #include "app/ai_intent.h"
 #include "app/ai_session.h"
 #include "app/ants.h"
+#include "app/ai_verbs.h"
 #include "app/coverage.h"
 #include "app/new_document.h"
 
@@ -103,6 +104,9 @@ struct AppState {
     // have no mask, and then a stroke aimed at one is refused naming the layer, rather than quietly
     // painting the marked area instead.
     app::CoverageTarget coverage_target = app::CoverageTarget::marked;
+    // The verb whose words the bar's popup is holding, if one is open. A verb that asks for nothing is
+    // never in here: its button runs, and a popup for it would be an empty box.
+    std::optional<app::VerbId> ask_verb;
     PointerStroke stroke;
     PointerMove move;
     PointerSelection select;

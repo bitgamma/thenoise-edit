@@ -171,6 +171,7 @@ add_library(noise_app STATIC
     src/app/coverage.cpp
     src/app/coverage_commands.cpp
     src/app/verb_bar.cpp
+    src/app/verb_fields.cpp
     src/app/tools/brush.cpp
     src/app/tools/cover.cpp
     src/app/tools/move.cpp
