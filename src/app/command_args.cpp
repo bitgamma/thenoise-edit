@@ -187,8 +187,17 @@ json layer_cards_json(const AppState& state) {
                          {"visible", card.visible},
                          {"box", screen_json(card.box)},
                          {"visibility", screen_json(card.visibility)},
+                         {"title", screen_json(card.title)},
                          {"picture", screen_json(card.picture)},
-                         {"mask_picture", screen_json(card.mask_picture)}});
+                         {"mask_picture", screen_json(card.mask_picture)},
+                         {"move_up", screen_json(card.move_up)},
+                         {"move_down", screen_json(card.move_down)},
+                         {"merge", screen_json(card.merge)},
+                         {"opacity", screen_json(card.opacity)},
+                         {"mode", screen_json(card.mode)},
+                         {"can_move_up", card.can_move_up},
+                         {"can_move_down", card.can_move_down},
+                         {"can_merge", card.can_merge}});
     }
     return cards;
 }

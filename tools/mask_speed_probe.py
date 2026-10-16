@@ -8,7 +8,7 @@ a test measures a function, and the cost that mattered was a scan the panel trig
 
 Skips loudly when there is no display: a missing display is an unavailable resource, not a regression.
 
-    timeout 600 xvfb-run -a python3 tools/mask_speed_probe.py --bin build/noise-edit
+    timeout 600 env -u DISPLAY python3 tools/mask_speed_probe.py --bin build/noise-edit
 """
 from __future__ import annotations
 

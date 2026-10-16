@@ -80,6 +80,23 @@ public:
                           const std::function<bool(Image&)>& write);
     // False when `index` is out of range or it is the last layer standing.
     bool remove_layer(int index);
+
+    // The layer at `index` to `to`, both stack indices, bottom-first, with the moved layer left active.
+    // `index == to` succeeds without a step, a revision or a dirty flag: nothing moved, and the same rule
+    // a write that changed no pixel follows keeps the timeline honest. What the step holds is the order
+    // itself, so undo puts the stack back as it was - and because a reorder changes what the composite
+    // shows everywhere, the whole canvas is repainted rather than a rectangle.
+    bool move_layer(int index, int to);
+
+    // The layer at `index` onto the one under it, exactly as the canvas shows them: the upper layer's
+    // mask, blend mode and opacity are applied on the way down, and it leaves the stack while the layer
+    // under it keeps its identity - name, mode, opacity, mask - which is what makes the undo exact. An
+    // invisible upper layer contributes nothing, so merging it takes it away without moving a pixel; it
+    // still comes back on undo. False when `index` is out of range or has nothing under it.
+    //
+    // A merge is not a paint: the marked area limits what a write may change, not which layers the stack
+    // holds, so no selection fences this.
+    bool merge_down(int index);
     // False when `index` is out of range. Selecting changes no pixels, so it bumps no revision.
     bool select_layer(int index);
 
@@ -189,11 +206,13 @@ private:
 
     // Every change to the document leaves through one of these three, so "what the canvas shows moved"
     // and "which layer's own content moved" cannot drift apart. The second is what a viewer of a single
-    // layer caches against: a thumbnail rebuilt on the first would re-sample the whole stack on every
-    // frame of an opacity drag, which moves nobody's content.
-    void changed_stack();
-    void changed_layer(Layer& layer);
+    // layer - a thumbnail - caches against, which is why a reorder and a layer arriving or going are the
+    // first one's business only: they move no layer's content, and a card rebuilt for them would
+    // re-sample the stack on a change that changed no picture. The third is for a step whose reach the
+    // history reports as rectangles rather than as layers: undo and redo.
     void changed_composite();
+    void changed_layer(Layer& layer);
+    void changed_all_layers();
 
     Layer* layer_of(std::uint64_t id);
     Image* layer_pixels(std::uint64_t id);

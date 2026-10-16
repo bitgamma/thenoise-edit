@@ -49,11 +49,10 @@ struct ScreenRect {
     bool empty() const { return w <= 0.0f || h <= 0.0f; }
 };
 
-// The gesture the pointer is making, if any. The walk carries the dab spacing across events
-// and the scratch holds the stroke's coverage, which is what lets a gesture painted frame by
-// frame land on the same bytes as the same path painted in one go.
-// One layer's card in the panel: the bordered box that owns its controls, and the control a driver is
-// most likely to press.
+// One layer's card in the panel: the bordered box that owns its controls, and every control's box, so a
+// driver presses what the app drew instead of remembering a layout. The rects are reported whether or not
+// the control can be pressed, and no two of them may overlap - the item ImGui submitted first for a point
+// is the one that gets it, so an overlapping control is a dead one.
 struct LayerCard {
     int index = 0;
     std::string name;
@@ -61,12 +60,24 @@ struct LayerCard {
     bool visible = true;
     ScreenRect box{};
     ScreenRect visibility{};
+    ScreenRect title{};
     // The layer's own pictures, where the card drew them. Empty when there was nothing to draw, which
     // is what makes "the thumbnail is the layer" a claim a driver can check rather than assume.
     ScreenRect picture{};
     ScreenRect mask_picture{};
+    ScreenRect move_up{};
+    ScreenRect move_down{};
+    ScreenRect merge{};
+    ScreenRect opacity{};
+    ScreenRect mode{};
+    bool can_move_up = false;
+    bool can_move_down = false;
+    bool can_merge = false;
 };
 
+// The gesture the pointer is making, if any. The walk carries the dab spacing across events
+// and the scratch holds the stroke's coverage, which is what lets a gesture painted frame by
+// frame land on the same bytes as the same path painted in one go.
 struct PointerStroke {
     bool active = false;
     Vec2 last{};
@@ -164,6 +175,9 @@ struct AppState {
     // first, each with the box its visibility control occupies. A driver clicks what the app reports
     // rather than a coordinate it remembered from a screenshot.
     ScreenRect layers_window{};
+    // The panel's picture cache, read out of it each frame it draws: how many thumbnails it has had to
+    // resample since the run started.
+    std::uint64_t layer_thumb_rebuilds = 0;
     std::vector<LayerCard> layer_cards{};
     // And the same for the phrase box the bar opens, so a driver can read the box's own rect rather
     // than deriving it from the bar's.

@@ -227,6 +227,61 @@ void register_layer_commands(AppState& state, CommandTable& table) {
         }
         return command_ok(json{{"active", state.doc.active()}, {"layers", layers_json(state)}});
     });
+
+    // The stack's order, moved one step at a time by the arrows on a card and to any index by a driver.
+    // No pixel is written: what the canvas shows changes because the layers stack differently.
+    table.add("layer.move", "Move a layer to another position in the stack", {},
+              {"index", "to"}, [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        int index = state.doc.active();
+        if (args.contains("index") && !want_int(args, "index", index)) {
+            return fail("layer.move", "'index' must be an integer");
+        }
+        int to = 0;
+        if (!want_int(args, "to", to)) {
+            return fail("layer.move", "expected integer 'to'");
+        }
+        const std::size_t count = state.doc.layers().size();
+        if (index < 0 || static_cast<std::size_t>(index) >= count) {
+            return fail("layer.move", range_error("layer.move", index, count));
+        }
+        if (to < 0 || static_cast<std::size_t>(to) >= count) {
+            return fail("layer.move", range_error("layer.move", to, count));
+        }
+        if (!state.doc.move_layer(index, to)) {
+            return fail("layer.move", "the document refused to move '" +
+                                    state.doc.layer(static_cast<std::size_t>(index)).name + "'");
+        }
+        return command_ok(layers_json(state));
+    });
+
+    table.add("layer.merge", "Merge a layer down onto the one under it", {}, {"index"},
+              [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        int index = state.doc.active();
+        if (args.contains("index") && !want_int(args, "index", index)) {
+            return fail("layer.merge", "'index' must be an integer");
+        }
+        const std::size_t count = state.doc.layers().size();
+        if (index < 0 || static_cast<std::size_t>(index) >= count) {
+            return fail("layer.merge", range_error("layer.merge", index, count));
+        }
+        if (index == 0) {
+            return fail("layer.merge",
+                        "'" + state.doc.layer(0).name +
+                            "' is the bottom layer: there is nothing under it to merge onto");
+        }
+        if (!state.doc.merge_down(index)) {
+            return fail("layer.merge", "the document refused to merge the layer down");
+        }
+        return command_ok(layers_json(state));
+    });
 }
 
 }  // namespace noise::app

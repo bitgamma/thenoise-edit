@@ -47,11 +47,10 @@ constexpr float kStatusBarHeightPx = 86.0f;
 // The Tool panel holds the verbs as well as the tool rows, and the generate row carries an aspect and a
 // style dropdown under its words: measured against a 700 px tall window, where 0.52 clipped the verbs.
 constexpr float kToolPanelFraction = 0.64f;
-// A layer row is eye + name + opacity on one line and a blend-mode dropdown on the next. The
-// slider gets a fixed slice so a long name clips instead of pushing the control off the panel, and
-// the name keeps a slice of its own so a narrow panel still shows which layer is which. The mode
-// dropdown is the width of the name slice, so the two lines read as one record.
+// The card's last row is the slider then the dropdown: the slider takes a fixed slice so a long blend
+// mode name cannot push it off the card, and the dropdown takes whatever width is left.
 constexpr float kLayerOpacitySliderPx = 88.0f;
+constexpr float kLayerModeMinPx = 64.0f;
 // Each layer is one bordered card, because a checkbox, a slider and a dropdown that float in a list
 // belong to whichever name they happen to sit near. The active card's border is the accent so which
 // layer the controls answer to is a fact about the frame, not about proximity.
@@ -68,6 +67,11 @@ constexpr ImU32 kAntDark = IM_COL32(20, 20, 20, 255);
 constexpr ImU32 kFootprint = IM_COL32(255, 255, 255, 235);
 constexpr float kFootprintOutlinePx = 1.0f;
 constexpr float kLayerNameMinPx = 40.0f;
+// The stack controls sit on the title row, so the labels are named here rather than at the buttons:
+// the row has to give them their measured width before it lays the name out.
+constexpr const char* kLabelMoveUp = "Up";
+constexpr const char* kLabelMoveDown = "Down";
+constexpr const char* kLabelMergeDown = "Merge down";
 // What the swap confirmation is about, remembered between the frame that opened the popup and the one
 // whose button answers it: the verb row is gone by then, and a modal that re-read the table would ask
 // about whatever the table said next rather than what was pressed.
@@ -768,6 +772,20 @@ ImVec2 thumb_draw_size(Extent size) {
                   std::max(1.0f, static_cast<float>(size.h) * scale));
 }
 
+// The box of the item just submitted, in screen coordinates - the same box the hit test used.
+ScreenRect item_rect() {
+    const ImVec2 from = ImGui::GetItemRectMin();
+    const ImVec2 to = ImGui::GetItemRectMax();
+    return ScreenRect{from.x, from.y, to.x - from.x, to.y - from.y};
+}
+
+// A button is its label plus the frame padding on each side, which is `ButtonEx`'s own formula. Measured
+// rather than estimated: `ItemHoverable` gives a point to the *first* item submitted under it, so a
+// button left overlapping a wider one draws, lights up, and never answers a press.
+float button_px(const char* label) {
+    return ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+}
+
 void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thumbs) {
     ImGui::Begin(kWindowLayers);
     state.layer_cards.clear();
@@ -781,14 +799,14 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
         // the rows run against the indices.
         const std::span<const Layer> layers = state.doc.layers();
         const bool live = state.doc.in_provisional();
-        thumbs.resize(layers.size());
-        const float card_px = ImGui::GetContentRegionAvail().x;
-        const float name_px = std::max(
-            kLayerNameMinPx,
-            card_px - (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x * 2.0f));
+        thumbs.keep(layers);
+        // Both arrows take the right end of every title row, so their width is known before the first
+        // name of the stack is measured.
+        const float arrows_px = button_px(kLabelMoveUp) + ImGui::GetStyle().ItemSpacing.x +
+                                button_px(kLabelMoveDown);
         for (std::size_t row = layers.size(); row-- > 0;) {
             const Layer& layer = layers[row];
-            thumbs.sync(row, layer, live);
+            thumbs.sync(layer, live);
             const bool active = static_cast<int>(row) == state.doc.active();
             ImGui::PushID(static_cast<int>(row));
             ImGui::PushStyleColor(ImGuiCol_ChildBg, active ? kCardActiveBg : kCardBg);
@@ -806,42 +824,72 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
                     commands.invoke("layer.set", json{{"index", static_cast<int>(row)},
                                                       {"visible", visible}});
                 }
-                const ImVec2 box_toggle_min = ImGui::GetItemRectMin();
-                const ImVec2 box_toggle_max = ImGui::GetItemRectMax();
-                card_state.visibility = ScreenRect{box_toggle_min.x, box_toggle_min.y,
-                                                   box_toggle_max.x - box_toggle_min.x,
-                                                   box_toggle_max.y - box_toggle_min.y};
+                card_state.visibility = item_rect();
                 ImGui::SameLine();
+                // The name stops where the arrows begin, so no pixel belongs to two controls. Its floor is
+                // the one thing that can lay them over each other again, in a card too narrow for the
+                // arrows and a name nobody could read anyway.
+                const float name_px = std::max(
+                    kLayerNameMinPx,
+                    ImGui::GetContentRegionAvail().x - arrows_px - ImGui::GetStyle().ItemSpacing.x);
                 if (ImGui::Selectable(layer.name.c_str(), active, 0, ImVec2(name_px, 0.0f))) {
                     commands.invoke("layer.select", json{{"index", static_cast<int>(row)}});
                 }
+                card_state.title = item_rect();
+                // "Up" is towards the top of the picture, which in a bottom-first stack is the next index
+                // up. An arrow that cannot apply stays where it is and disabled, so every card has the
+                // same shape and the same coordinates mean the same thing.
+                const int stack_count = static_cast<int>(layers.size());
+                card_state.can_move_up = card_state.index + 1 < stack_count;
+                card_state.can_move_down = card_state.index > 0;
+                card_state.can_merge = card_state.index > 0;
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!card_state.can_move_up);
+                if (ImGui::Button(kLabelMoveUp)) {
+                    commands.invoke("layer.move", json{{"index", static_cast<int>(row)},
+                                                       {"to", static_cast<int>(row) + 1}});
+                }
+                ImGui::EndDisabled();
+                card_state.move_up = item_rect();
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!card_state.can_move_down);
+                if (ImGui::Button(kLabelMoveDown)) {
+                    commands.invoke("layer.move", json{{"index", static_cast<int>(row)},
+                                                       {"to", static_cast<int>(row) - 1}});
+                }
+                ImGui::EndDisabled();
+                card_state.move_down = item_rect();
+                ImGui::NewLine();
                 // The layer's own pictures: what it holds, and the coverage that hides part of it. Both
                 // are inside this border because both belong to the name above them.
-                const LayerThumbs::Card& card = thumbs.card(row);
+                const LayerThumbs::Card& card = thumbs.card(layer.id);
                 if (card.pixels.valid()) {
                     ImGui::Image(simgui_imtextureid(card.pixels.view),
                                  thumb_draw_size(layer.pixels.size()));
-                    const ImVec2 picture_min = ImGui::GetItemRectMin();
-                    const ImVec2 picture_max = ImGui::GetItemRectMax();
-                    card_state.picture = ScreenRect{picture_min.x, picture_min.y,
-                                                    picture_max.x - picture_min.x,
-                                                    picture_max.y - picture_min.y};
+                    card_state.picture = item_rect();
                 }
                 if (card.has_mask && card.mask.valid()) {
                     ImGui::SameLine();
                     ImGui::Image(simgui_imtextureid(card.mask.view),
                                  thumb_draw_size(layer.mask->size()));
-                    const ImVec2 mask_min = ImGui::GetItemRectMin();
-                    const ImVec2 mask_max = ImGui::GetItemRectMax();
-                    card_state.mask_picture = ScreenRect{mask_min.x, mask_min.y,
-                                                         mask_max.x - mask_min.x,
-                                                         mask_max.y - mask_min.y};
+                    card_state.mask_picture = item_rect();
                 } else if (card.pixels.valid()) {
                     ImGui::SameLine();
                     ImGui::TextDisabled("no mask");
                 }
+                // The layer under this one, as the canvas already shows the two of them. The bottom
+                // layer's card says so by dimming the button rather than by moving it.
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!card_state.can_merge);
+                if (ImGui::Button(kLabelMergeDown)) {
+                    commands.invoke("layer.merge", json{{"index", static_cast<int>(row)}});
+                }
+                ImGui::EndDisabled();
+                card_state.merge = item_rect();
+
                 // The two facts the composite reads and the layer does not hold: how much of it shows,
                 // and how it mixes with what is under it.
+                ImGui::NewLine();
                 float opacity = static_cast<float>(layer.opacity);
                 ImGui::PushItemWidth(kLayerOpacitySliderPx);
                 if (ImGui::SliderFloat("##opacity", &opacity, 0.0f, 1.0f, "%.2f") &&
@@ -851,14 +899,18 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
                                          {"opacity", static_cast<double>(opacity)}});
                 }
                 ImGui::PopItemWidth();
+                card_state.opacity = item_rect();
                 ImGui::SameLine();
                 // The items are `kBlendModes` in table order, so a mode added in core/blend appears
                 // here without this file being told about it.
                 const std::string_view mode_name = blend_mode_name(layer.mode);
-                ImGui::PushItemWidth(std::max(
-                    64.0f, card_px - kLayerOpacitySliderPx - ImGui::GetStyle().ItemSpacing.x * 3.0f));
-                if (ImGui::BeginCombo("##mode",
-                                      mode_name.empty() ? "no such mode" : mode_name.data(), 0)) {
+                // Measured inside the card: a width taken from the panel is wider than the card and puts
+                // the dropdown's arrow past the border.
+                ImGui::PushItemWidth(std::max(kLayerModeMinPx, ImGui::GetContentRegionAvail().x));
+                const bool opening_mode = ImGui::BeginCombo(
+                    "##mode", mode_name.empty() ? "no such mode" : mode_name.data(), 0);
+                card_state.mode = item_rect();
+                if (opening_mode) {
                     for (const BlendModeInfo& info : kBlendModes) {
                         const bool chosen = info.mode == layer.mode;
                         if (ImGui::Selectable(info.name, chosen)) {
@@ -930,6 +982,10 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
             ImGui::TextDisabled("nothing hidden");
         }
     }
+    // What the picture cache had to resample, published by the only code that holds it: the caching rule
+    // - opacity and order cost nothing, a write to the layer costs one - is then a number a driver can
+    // read instead of one a reader has to trust.
+    state.layer_thumb_rebuilds = thumbs.rebuilds;
     ImGui::End();
 }
 

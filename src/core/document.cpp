@@ -24,7 +24,9 @@ void Document::reset(std::vector<Layer> layers, std::optional<Mask> selection, s
     dirty_ = path_.empty();  // nothing on disk holds this document yet
     history_.clear();
     selection_ = std::move(selection);
-    changed_stack();
+    // Every layer here is a layer this document made just now, under an id no viewer has ever seen, so
+    // nothing of theirs is cached to invalidate.
+    changed_composite();
 }
 
 const std::string& Document::path() const { return path_; }
@@ -60,7 +62,7 @@ int Document::add_layer(std::string name, Rgba8 fill) {
     active_ = at;
     pending_ = Rect{0, 0, width(), height()};
     dirty_ = true;
-    changed_stack();
+    changed_composite();
     return at;
 }
 
@@ -93,7 +95,9 @@ int Document::add_layer_written(std::string name, Rect bounds,
     history_.end_step();
     pending_ = unite(pending_, touched);
     dirty_ = true;
-    changed_stack();
+    // The layer this call made holds the bytes it was given and its counter says so from its first
+    // picture; no other layer's content moved by adding one.
+    changed_composite();
     return at;
 }
 
@@ -113,6 +117,69 @@ void Document::retarget_active(std::uint64_t preferred) {
     }
 }
 
+bool Document::move_layer(int index, int to) {
+    const std::size_t count = layers_.size();
+    if (index < 0 || to < 0 || static_cast<std::size_t>(index) >= count ||
+        static_cast<std::size_t>(to) >= count) {
+        return false;
+    }
+    if (index == to) {
+        return true;
+    }
+    std::vector<std::uint64_t> before;
+    before.reserve(count);
+    for (const Layer& layer : layers_) {
+        before.push_back(layer.id);
+    }
+    Layer moved = std::move(layers_[static_cast<std::size_t>(index)]);
+    layers_.erase(layers_.begin() + static_cast<std::ptrdiff_t>(index));
+    layers_.insert(layers_.begin() + static_cast<std::ptrdiff_t>(to), std::move(moved));
+    active_ = to;
+    history_.begin_step();
+    history_.record_layer_order(std::move(before));
+    history_.end_step();
+    pending_ = Rect{0, 0, width(), height()};
+    dirty_ = true;
+    // The order is not content: each layer still holds exactly what it did, so a viewer of one layer -
+    // a thumbnail - has nothing to redo, while the composite is different everywhere.
+    changed_composite();
+    return true;
+}
+
+bool Document::merge_down(int index) {
+    if (index < 1 || static_cast<std::size_t>(index) >= layers_.size()) {
+        return false;
+    }
+    const std::size_t upper = static_cast<std::size_t>(index);
+    const std::size_t lower = upper - 1;
+    const Rect area{0, 0, width(), height()};
+    const Layer& top = layers_[upper];
+    const Image before = layers_[lower].pixels.region(area);
+    if (top.visible) {
+        const Image* source = &top.pixels;
+        if (top.mask && !top.mask->covers_all(area)) {
+            scale_by_coverage(*top.mask, area, top.pixels, masked_);
+            source = &masked_;
+        }
+        blend_layer(layers_[lower].pixels, *source, area, top.mode, top.opacity);
+    }
+    Layer gone = std::move(layers_[upper]);
+    history_.begin_step();
+    const std::span<const std::uint8_t> bytes = before.pixels();
+    history_.record(layers_[lower].id, LayerPlane::pixels, area,
+                    {bytes.begin(), bytes.end()});
+    history_.record_layer_removed(std::move(gone), static_cast<int>(upper));
+    history_.end_step();
+    layers_.erase(layers_.begin() + static_cast<std::ptrdiff_t>(upper));
+    active_ = static_cast<int>(lower);
+    pending_ = area;
+    dirty_ = true;
+    // Exactly one layer's content moved: the one that took the other's picture. The layer that went away
+    // needs no invalidation - a viewer of it has nothing left to look at, and `keep` releases its card.
+    changed_layer(layers_[lower]);
+    return true;
+}
+
 bool Document::remove_layer(int index) {
     if (index < 0 || static_cast<std::size_t>(index) >= layers_.size()) {
         return false;
@@ -129,7 +196,7 @@ bool Document::remove_layer(int index) {
     // Removing the top layer leaves the one below it active, at the index the removed one had.
     active_ = std::min(active_, static_cast<int>(layers_.size()) - 1);
     dirty_ = true;
-    changed_stack();
+    changed_composite();
     return true;
 }
 
@@ -352,7 +419,7 @@ Image Document::flatten_over(Rect bounds, std::size_t top_layer) const {
     return canvas.region(region);
 }
 
-void Document::changed_stack() {
+void Document::changed_all_layers() {
     ++revision_;
     for (Layer& layer : layers_) {
         ++layer.content_revision;
@@ -712,7 +779,7 @@ bool Document::undo() {
     if (moved->structure) {
         pending_ = Rect{0, 0, width(), height()};
     }
-    changed_stack();
+    changed_all_layers();
     return true;
 }
 
@@ -729,7 +796,7 @@ bool Document::redo() {
     if (moved->structure) {
         pending_ = Rect{0, 0, width(), height()};
     }
-    changed_stack();
+    changed_all_layers();
     return true;
 }
 bool Document::can_undo() const { return history_.can_undo(); }

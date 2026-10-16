@@ -90,9 +90,13 @@ coverage with verbs at the marked area, is next.
    `core/document.h` and `docs/ARCHITECTURE.md`.
 4. **The pointer says which tool it is.** Landed 2026-10-16, below: the host cursor takes the tool's
    shape and the canvas draws the dab's footprint, measured against the size the app reports.
-5. **Layers you can see.** Thumbnails and mask thumbnails, reorder, opacity, visibility, move and scale,
-   **Flatten** (`layer.merge`). The panel is always visible: it is where a person goes to understand what
-   an edit did.
+5. **Layers you can see.** Landed since 2026-10-17: thumbnails of the layer and its mask, one bordered card
+   per layer holding its own controls, visibility, opacity, blend mode, reorder (`Up`/`Down` on the card,
+   `layer.move`) and **Merge down** (`layer.merge`). What the slice owes: moving and scaling a layer's
+   picture, **Flatten** of the whole stack - under its own id, since `layer.merge` is merge-down now, and
+   with a history entry that restores the survivor's properties, which is the hard part (see the
+   2026-10-17 note) - and inline rename. The panel is always visible: it is where a person goes to
+   understand what an edit did.
 6. **Blend, and images as input.** Drop an image → its own layer → *Blend* with no prompt repaints it into
    the scene on that layer. Needs the third recipe scope, `region: layer`, whose source is the layer's
    pixels and whose coverage is its alpha. *Blend* with a prompt, then control images (openpose), come in
@@ -115,6 +119,53 @@ Seed is not a user-facing concept: **Retry** re-asks the same request with a dif
 another layer. Roles and recipes are ours to pin for now - the sets are in `assets/roles.json` and
 `assets/recipes/`, loaded from disk, and the plan is that a person edits those files, not a dialog, so
 nothing here needs a settings UI to be foreseen later.
+
+## 2026-10-17 - Moving a layer, and what a change to the stack actually carries
+
+A card holds the stack's own controls now: `Up` and `Down` on its title row, `Merge down` beside its
+pictures. Both are commands before they are buttons — `layer.move {index,to}`, `layer.merge {index}` — and
+both go through the same `Document` calls a click makes.
+
+**A reorder is one history entry holding no pixels.** `Kind::layer_order` carries the stack's ids in order;
+applying it puts the layers into that order and keeps the order it displaced, which is the same "an entry
+holds what is not current" rule a rectangle of pixels follows. A merge is the other direction of the same
+problem — a layer leaves the stack — so `layer_absent` carries the **whole** `Layer` rather than a name and
+a size, and undo gives back a layer with its pixels, mask, mode and opacity instead of an empty one wearing
+the right name. It is also the entry `remove_layer` never had: deleting a layer is now one call from being
+undoable the same way, and is not, because whether *that* belongs to the timeline is a separate decision.
+
+**Merge-down is canvas-invariant to within one step**, measured, not asserted: 12 px of 447 700 moved, each
+by exactly one step of 255, where the two strokes' soft edges meet. That is arithmetic rather than a bug —
+`blend_layer` rounds every channel to 8 bits, so compositing the pair once is not bit-identical to
+compositing each layer once — so the probe asserts a bound (no pixel by more than one step, fewer than one
+in a thousand moved) where a merge that dropped the mask, the mode or the opacity would move thousands by
+tens.
+
+**A thumbnail is a picture *of a layer*, so its cache key is the layer.** Cards were indexed by stack
+position, which forced two fictions: a row could only notice it now held a different layer by watching a
+counter, so `content_revision` had to move whenever any layer arrived, went or moved, and
+`Document::changed_stack` existed to bump every one at once. Reorder made the fiction visible — a card went
+on drawing the layer that had sat in that row, because two layers can hold the same revision number, and
+only the card *below the fold* was checked, so the probe had to reach it with the wheel to see it. So
+`LayerThumbs` is a `map` keyed by layer id, `keep(layers)` releases the pictures of layers that have gone
+(and releases the textures, which `card = Card{}` used to leak), and the three kinds of change are named for
+what they are: `changed_composite` (what the canvas shows), `changed_layer` (one layer's content),
+`changed_all_layers` (undo and redo, whose steps report rectangles rather than layers). A reorder therefore
+resamples nothing, which `app.state.layer_thumbs.rebuilds` says as a number and the probe reads: unchanged
+across an opacity drag and across a reorder, and up the moment a stroke writes.
+
+**Every control of a card reports its box, and the probe checks them against each other** — the invisible
+failure mode is in *Traps* below, and it is what made `Up` look dead for an afternoon. The title row now
+reserves the arrows' measured width instead of overlaying them, the blend dropdown measures what is left
+inside the card rather than a slice of the panel (its arrow sat past the border), and controls that cannot
+apply go through `BeginDisabled` rather than a hand-picked alpha plus a guard that threw the click away.
+
+**Owed, and why it is owed**: `layer.flatten`. Merging two layers keeps the survivor's identity, so the
+history entry only has to restore *pixels*. Flattening the stack into one layer changes the surviving
+layer's name, opacity, mode and mask as well, so it needs an entry that restores those properties too —
+`layer_absent` carries them for a layer that went away, and nothing yet carries them for a layer that
+stayed and became something else. Moving and scaling a layer's picture, and inline rename, are the rest of
+the slice.
 
 ## 2026-10-17 - A surface per layer, and its own picture on it
 
@@ -223,6 +274,9 @@ fine a minute before.
 | `app/verb_bar.cpp` (`verb.bar`) | the bar offers exactly the verbs whose recipe has `scope: selection`, hangs off the mark and clear of it, and presses the panel's command; where it drew itself is read back rather than remembered by the caller | `test_app`, `verb_bar_probe` |
 | `ai.intent` | the whole action surface (intents, values, price, aspect, style, seed, job, session) in one command; a refusal is recorded so the next read shows it; the handshake lives here too | `test_app`, the status line, `panel_aspect_probe` |
 | `ai/recipes` (`aspects`, `variants`) | a frame is offered only by a document-scope `from_words` recipe, and a variant is interchangeable with its head at the key it shares (operation, endpoint, `ask`, `aspects`) or the table does not load | `test_recipes` |
+| `layer.move`, `layer.merge` (`core/document` + `core/history`) | a reorder is one step that writes no pixel and repaints everything; a merge leaves the canvas as the blend already showed it, to within one 8-bit step at soft edges; undo returns a whole layer - pixels, mask, mode, opacity - not an empty one | `test_document`, `layer_panel_probe` |
+| `app/ui.cpp` layer cards | every control reports the box it was drawn in, no control lies outside its card and no two claim the same pixel, and a control that cannot apply does nothing at all when pressed | `layer_panel_probe` |
+| `app/layer_thumbs` | a picture is keyed to the layer it is a picture *of*: opacity, order and a layer arriving resample nothing, a write to the layer resamples one, and the count is on the wire | `layer_panel_probe` through `app.state.layer_thumbs.rebuilds` |
 | `pump_ai_landings` | a succeeded job lands itself at the first door that reads the queue; it never re-lands what undo removed; a job lands only in the `document_epoch` it was queued under | `test_app`, `wire_input` |
 | `tools/ai_job_probe.py` | every marked-area verb on the recordings in the order a person has it: bare press refused naming recipe and field → preview carries the typed words in the tier-1 field set → the row's command presses → the answer lands itself on a layer named for the verb and the job → no pixel outside the coverage claimed → undo byte-for-byte | `test_ai_job_probe` |
 | `tools/panel_aspect_probe.py` | the aspect and style dropdowns commit: a click pair changes `aspect` and the quoted size follows it (ratio held, one axis still full), a second pair changes which recipe the intent holds and what `ai.verbs` calls `active`, then the key runs that recipe and it lands | `test_panel_aspect_probe` |
@@ -249,6 +303,19 @@ which is the only way either fact could have been found.
 invariant) carry the rest. Suite: 37/37 with `test_verb_bar_probe` added.
 
 ## Traps the code cannot show
+* **ImGui gives a point to the item submitted *first*, not the one drawn on top.** A widget whose rect lies
+  inside an earlier, wider one - a 22 px button over a 300 px `Selectable` - draws, lights up under the
+  cursor and never fires, because `ItemHoverable` refuses the later item while `HoveredId` belongs to
+  another. `SetItemAllowOverlap` is not the fix: it lets *both* have the click, so the row selects and
+  presses. Reserve the width instead (a button is `CalcTextSize(label).x + FramePadding.x * 2`, which is
+  `ButtonEx`'s own formula, so the reservation is exact), report every control's box, and have a probe
+  demand that they are disjoint and inside their frame. Overlapping reported rects are a dead control, and
+  no screenshot shows it - the widget looks perfectly healthy.
+* **A counter that identifies one layer cannot key a cache of many.** `content_revision` is per layer, so
+  two layers reach the same number, and anything mapping *rows* - panel positions, which a reorder shifts -
+  onto layers by that number serves the wrong picture. Key such a cache by the thing it is a picture *of*;
+  the document is then free to say what a change really moved - this layer's content, or only how the
+  layers stack.
 * **`xvfb-run` clips pointer injection; the probes are run without it.** `wd.ensure_display` raises an
   Xvfb at the size the probe asks for and is what ctest uses, so motion reaches the whole window. Running
   a probe by hand under `xvfb-run -a` instead reuses *its* screen, and XTEST motion then stops arriving
@@ -349,9 +416,13 @@ disagrees with [PRODUCT.md](PRODUCT.md) or the code, it is the older text.
   (normal, multiply, screen, overlay, darken, lighten, color-dodge, color-burn for MVP;
   soft/hard-light, difference, exclusion, add in M5) —
   **visibility, opacity and the eight modes are implemented**: `kBlendModes` is the one table, the
-  panel has a dropdown per layer, `layer.set {mode}` sets one, and the composite applies it. Rename,
-  duplicate, drag-reorder and the M5 modes are not
-- merge down, flatten, crop-to-selection, new-layer-via-copy/clone
+  panel has a dropdown per layer, `layer.set {mode}` sets one, and the composite applies it. **Reorder is
+  implemented** as `Up`/`Down` on a card and `layer.move {index,to}`: one step, no pixel written, undone in
+  one. Dragging a card is not, nor are rename, duplicate and the M5 modes
+- **merge down implemented** (`layer.merge {index}`): the upper layer's mask, mode and opacity are applied
+  on the way down, the survivor keeps its identity, the canvas does not move to within one 8-bit step, and
+  one undo separates them again. Flatten (under its own id), crop-to-selection and
+  new-layer-via-copy/clone are not
 - **live**: a layer mask (`Layer::mask`) the composite honours, saved with the project, converting
   both ways with the selection (`mask.from_selection`, `select.from_mask`) - buttons for both in the
   Brush panel - and **paintable**: the Layers panel puts one on (`mask.add`), takes it off

@@ -562,9 +562,13 @@ panel`, "Regenerate with same params", kept variants) and nothing in the tree st
   storage granularity when partial texture uploads need them. Deleting a layer drops the entries
   naming it from both stacks: a change to a layer that is gone cannot be put back, and the
   unrelated steps around it are worth more than the half-restored one that would remain.
-  Structural commands (add/reorder/visibility/opacity/mask) are planned to store the inverse
-  command; today they are **not** undoable, and adding or deleting a layer, hiding one or fading
-  one does not enter the timeline.
+  Structural commands are planned to store the inverse command. Two are in the timeline today, as entries
+  of their own rather than as pixels: a reorder (`layer.move`) records the stack's ids in order and keeps
+  the order it displaced, because no pixel moved and what the composite shows changed everywhere; and a
+  merge down (`layer.merge`) records the **whole** layer that went away, so undo returns its pixels, mask,
+  mode and opacity rather than an empty layer wearing the right name. Adding or deleting a layer, hiding
+  one, fading one or changing its mode still does not enter the timeline - and deleting is now one entry
+  away, since the entry a merge needs is the entry deletion needs, which is a decision not yet taken.
 * Undo and redo are commands like any other (`edit.undo`, `edit.redo`, bound to `Ctrl+Z` and
   `Ctrl+Y`), so a driver can put the pixels back and compare checksums without a keyboard.
 * **(planned)** `history.jsonl` — append-only *journal*: every op with timestamp, params, prompt,

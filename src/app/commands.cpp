@@ -66,6 +66,10 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                                               state.layers_window.w,
                                                               state.layers_window.h})},
                                {"layer_cards", layer_cards_json(state)},
+                               // How often the panel had to resample a picture: the caching rule as a
+                               // number, so "dragging opacity rebuilds nothing" is a reading and not a
+                               // promise.
+                               {"layer_thumbs", json{{"rebuilds", state.layer_thumb_rebuilds}}},
                                // What the ant overlay drew, as much as what it was asked to draw:
                                // the rate is only checkable against the clock the frame used.
                                {"ants", json{{"phase_px", ant_drawn_phase(state.ants)},

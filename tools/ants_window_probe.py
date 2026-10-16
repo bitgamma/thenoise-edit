@@ -10,7 +10,7 @@ whole canvas puts dashes on the document's own edges, and those edges give the s
 every later rectangle is checked against. A `view.set` issued before the first fit is overridden by
 that fit, which is why this calibrates instead of trusting the reply.
 
-    timeout 600 xvfb-run -a python3 tools/ants_window_probe.py --bin build/noise-edit
+    timeout 600 env -u DISPLAY python3 tools/ants_window_probe.py --bin build/noise-edit
 """
 from __future__ import annotations
 

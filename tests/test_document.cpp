@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <span>
 #include <string>
 #include <vector>
@@ -27,6 +28,17 @@ std::vector<Layer> stack(std::vector<std::pair<std::string, Image>> contents) {
         layers.push_back(std::move(layer));
     }
     return layers;
+}
+
+// What each layer's own counter says, keyed by layer: the fact a viewer of one layer - a thumbnail -
+// caches against, seen from outside the document. Keyed rather than listed, because a reorder moves a
+// layer between indices, so a list taken by index cannot tell "unchanged" from "carried off with it".
+std::map<std::uint64_t, std::uint64_t> content_revisions(const Document& doc) {
+    std::map<std::uint64_t, std::uint64_t> out;
+    for (const Layer& layer : doc.layers()) {
+        out[layer.id] = layer.content_revision;
+    }
+    return out;
 }
 
 void paint_on(Document& doc, Rect rect, std::uint8_t grey) {
@@ -1254,14 +1266,129 @@ void test_what_a_layer_holds_and_what_the_composite_uses_are_two_counters() {
     CHECK(revs()[active] > before_mask[active]);
     CHECK(revs()[other] > before_mask[other]);
 
-    // A layer arriving is a stack change, which invalidates every card rather than pretending to know
-    // which ones a shift in the indices reaches. The new layer's own counter says nothing either way:
-    // a card is cached against the layer's id, and no card has ever been drawn for an id this call made.
+    // A layer arriving moves no other layer's content, and the compositing order is not content either:
+    // a card is a picture of one layer, keyed to that layer, so neither change makes an existing picture
+    // wrong. The new layer has no card yet, which is the only thing its own counter would be for.
     const std::vector<std::uint64_t> before_add = revs();
+    const std::uint64_t shown = doc.revision();
     CHECK(doc.add_layer("C", Rgba8{0, 0, 0, 0}) >= 0);
     CHECK_EQ(revs().size(), 3u);
-    CHECK_EQ(revs()[0], before_add[0] + 1);
-    CHECK_EQ(revs()[1], before_add[1] + 1);
+    CHECK(revs()[0] == before_add[0] && revs()[1] == before_add[1]);
+    CHECK(doc.revision() > shown);
+    // Nor is the order of the stack: the composite is made differently, and every layer is other than
+    // nothing - each still holds what its own counter says it holds.
+    const std::map<std::uint64_t, std::uint64_t> held = content_revisions(doc);
+    const std::uint64_t stacked = doc.revision();
+    CHECK(doc.move_layer(0, 2));
+    CHECK_EQ(content_revisions(doc), held);
+    CHECK(doc.revision() > stacked);
+}
+
+// A reorder is one edit, and the order it held is what comes back: the stack is put back rather than
+// painted back, since no pixel moved.
+void test_a_layer_moves_as_one_step_that_undoes_itself() {
+    Document doc;
+    doc.reset(stack({{"bottom", Image::filled(Extent{4, 4}, 40, 40, 40, 255)},
+                     {"middle", Image::filled(Extent{4, 4}, 80, 80, 80, 255)},
+                     {"top", Image::filled(Extent{4, 4}, 200, 200, 200, 255)}}),
+              std::nullopt, "x.noise");
+    const auto names = [&doc] {
+        std::string out;
+        for (const Layer& layer : doc.layers()) {
+            if (!out.empty()) {
+                out += ",";
+            }
+            out += layer.name;
+        }
+        return out;
+    };
+    const std::string whole = doc.checksum();
+    const std::string shown = doc.composite().checksum_hex();
+    const auto held = content_revisions(doc);
+
+    CHECK(doc.move_layer(0, 2));
+    // No layer's own content moved, so every card is still a true picture of the layer it belongs to -
+    // which is what lets a reorder cost no resample of any of them.
+    CHECK_EQ(content_revisions(doc), held);
+    CHECK_EQ(names(), std::string("middle,top,bottom"));
+    CHECK_EQ(doc.active(), 2);
+    CHECK(doc.dirty());
+    CHECK(doc.composite().checksum_hex() != shown);
+    CHECK_EQ(doc.history().undo_depth, 1);
+
+    CHECK(doc.undo());
+    CHECK_EQ(names(), std::string("bottom,middle,top"));
+    CHECK_EQ(doc.checksum(), whole);
+    CHECK_EQ(doc.composite().checksum_hex(), shown);
+
+    CHECK(doc.redo());
+    CHECK_EQ(names(), std::string("middle,top,bottom"));
+    CHECK(doc.undo());
+
+    // Where a layer already is, nothing moves: no step, no revision, nothing dirty.
+    Document still;
+    still.reset(stack({{"only", Image::filled(Extent{2, 2}, 0, 0, 0, 0)}}), std::nullopt,
+              "y.noise");
+    const std::uint64_t revision = still.revision();
+    CHECK(still.move_layer(0, 0));
+    CHECK_EQ(still.revision(), revision);
+    CHECK(!still.dirty());
+    CHECK(!still.move_layer(0, 1));
+    CHECK(!still.move_layer(-1, 0));
+}
+
+// The invariant a merge lives or dies by: what the canvas showed is what it shows afterwards, exactly -
+// the upper layer's mask, opacity and blend mode land on the way down. And undo has to give the layer
+// back as a layer, not as an empty one with the right name.
+void test_merging_down_shows_what_the_canvas_already_showed() {
+    Document doc;
+    doc.reset(stack({{"sky", Image::filled(Extent{4, 4}, 30, 60, 90, 255)},
+                     {"bird", Image::filled(Extent{4, 4}, 250, 250, 250, 255)}}),
+              std::nullopt, "x.noise");
+    Mask mask(Extent{4, 4});
+    mask.op(Rect{0, 0, 4, 2}, MaskOp::replace);
+    CHECK(doc.set_layer_mask(1, mask));
+    CHECK(doc.set_layer_opacity(1, 0.5));
+    CHECK(doc.set_layer_mode(1, BlendMode::multiply));
+
+    const std::string shown = doc.composite().checksum_hex();
+    const std::string bird_pixels = doc.layer(1).pixels.checksum_hex();
+    const std::string whole = doc.checksum();
+
+    CHECK(!doc.merge_down(0));
+    CHECK(doc.merge_down(1));
+    CHECK_EQ(doc.layers().size(), 1u);
+    CHECK_EQ(doc.composite().checksum_hex(), shown);
+    CHECK_EQ(doc.history().undo_depth, 1);
+
+    CHECK(doc.undo());
+    CHECK_EQ(doc.layers().size(), 2u);
+    CHECK_EQ(doc.layer(1).name, std::string("bird"));
+    CHECK(doc.layer(1).mask.has_value());
+    CHECK_EQ(doc.layer(1).pixels.checksum_hex(), bird_pixels);
+    CHECK_EQ(doc.composite().checksum_hex(), shown);
+    CHECK_EQ(doc.checksum(), whole);
+
+    CHECK(doc.redo());
+    CHECK_EQ(doc.layers().size(), 1u);
+    CHECK_EQ(doc.composite().checksum_hex(), shown);
+
+    // A layer nobody can see contributes nothing, so merging it takes the layer away without moving a
+    // pixel - and undo gives it back exactly as it was, hidden included: the merge is what changed, not
+    // the visibility that was already there.
+    Document hidden;
+    hidden.reset(stack({{"base", Image::filled(Extent{2, 2}, 10, 10, 10, 255)},
+                        {"ghost", Image::filled(Extent{2, 2}, 200, 0, 0, 255)}}),
+                 std::nullopt, "z.noise");
+    CHECK(hidden.set_layer_visible(1, false));
+    const std::string base_pixels = hidden.layer(0).pixels.checksum_hex();
+    CHECK(hidden.merge_down(1));
+    CHECK_EQ(hidden.layer(0).pixels.checksum_hex(), base_pixels);
+    const std::string ghost_pixels = hidden.layer(0).pixels.checksum_hex();
+    CHECK(hidden.undo());
+    CHECK_EQ(hidden.layers().size(), 2u);
+    CHECK(!hidden.layer(1).visible);
+    CHECK(hidden.layer(1).pixels.checksum_hex() != ghost_pixels);
 }
 
 // Both fences at once: the selection limits what a write may change, the layer mask limits what the
@@ -1348,5 +1475,7 @@ int main() {
     test_a_layer_mask_change_is_a_document_change();
     test_a_selection_and_a_mask_fence_different_things();
     test_what_a_layer_holds_and_what_the_composite_uses_are_two_counters();
+    test_a_layer_moves_as_one_step_that_undoes_itself();
+    test_merging_down_shows_what_the_canvas_already_showed();
     return noise::test::summary("document");
 }

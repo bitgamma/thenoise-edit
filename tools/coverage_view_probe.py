@@ -8,7 +8,7 @@ haze over the whole document, or a wash that misses the part of the mark away fr
 
 The ants are frozen at one phase first, so the only difference between the two captures is the wash.
 
-    timeout 600 xvfb-run -a python3 tools/coverage_view_probe.py --bin build/noise-edit
+    timeout 600 env -u DISPLAY python3 tools/coverage_view_probe.py --bin build/noise-edit
 """
 from __future__ import annotations
 

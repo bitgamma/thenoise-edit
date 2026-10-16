@@ -11,7 +11,7 @@ The ring is found by subtracting a capture with the overlay forced off from one 
 nothing but the overlay can account for a changed pixel. The pointer is moved with real motion events,
 which is also what puts the app's reported `pointer.at` under test.
 
-    timeout 600 xvfb-run -a python3 tools/pointer_probe.py --bin build/noise-edit
+    timeout 600 env -u DISPLAY python3 tools/pointer_probe.py --bin build/noise-edit
 """
 from __future__ import annotations
 

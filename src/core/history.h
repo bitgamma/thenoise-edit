@@ -45,6 +45,18 @@ public:
     // re-inserted layer the layer it was: a rectangle of the same step still has to fit it.
     void record_layer_created(std::uint64_t layer_id, std::string name, int index, Extent size);
 
+    // The stack's order, recorded as it stands. Applying the entry puts the layers into the order it
+    // holds and keeps the order it displaced, which is the same "an entry holds the state that is not
+    // current" rule as a rectangle of pixels. No pixel is touched, so the caller learns from
+    // `Applied.structure` that what the composite shows changed everywhere, not inside one rectangle.
+    void record_layer_order(std::vector<std::uint64_t> order);
+
+    // A layer this step **took away** - merged into the layer under it, say. `layer` is the whole of it,
+    // pixels and mask and name included, so undo puts the layer back as it was rather than as an empty
+    // one; `index` is where it sat. This is the entry `remove_layer` never had, which is why deleting a
+    // layer could only drop its history.
+    void record_layer_removed(Layer layer, int index);
+
     struct Applied {
         std::uint64_t layer;
         Rect rect;
@@ -84,6 +96,7 @@ private:
         pixels,
         layer_created,
         layer_absent,
+        layer_order,
     };
 
     struct Stacked {
@@ -97,8 +110,18 @@ private:
         std::string name;
         int index = 0;
         Extent size{};
+        // The stack's order, for `layer_order`.
+        std::vector<std::uint64_t> order;
+        // The whole layer, for `layer_absent`: what was there before it was taken away. A layer a step
+        // *created* comes back empty and gets its pixels from the pixel entries of the same step, so
+        // `whole` is empty for those.
+        Layer whole;
     };
 
+    // What an entry costs the budget: its bytes, plus the pixels and mask of a whole layer it carries.
+    static std::size_t held(const Stacked& entry);
+    static bool inserts(const Stacked& entry);
+    static bool names_layer(const Stacked& entry, std::uint64_t id);
     static void pop_step(std::vector<Stacked>& stack, std::vector<Stacked>& moved);
     static int steps_in(const std::vector<Stacked>& stack);
     std::optional<Applied> step_back(std::vector<Stacked>& from, std::vector<Stacked>& into,
@@ -117,6 +140,9 @@ private:
     // True when the entry can still be applied: a pixel rectangle has to fit the plane it names, and a
     // structural entry has to find its layer on the side the step is stepping away from.
     static bool fits(const Layer* layer, const Stacked& entry);
+    // True when an `layer_order` entry names exactly the layers in `layers`: a permutation of anything
+    // else is not an order this stack can be put into.
+    static bool fits_stack(const std::vector<Layer>& layers, const Stacked& entry);
 
     std::size_t budget_bytes_;
     std::vector<Stacked> undo_stack_;

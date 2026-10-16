@@ -2,7 +2,8 @@
 #pragma once
 
 #include <cstdint>
-#include <vector>
+#include <map>
+#include <span>
 
 #include "core/geom.h"
 #include "gfx/renderer.h"
@@ -28,25 +29,29 @@ inline constexpr std::uint8_t kThumbBackdrop = 38;
 // the hand lets go, which is when anyone looks at it.
 struct LayerThumbs {
     struct Card {
-        std::uint64_t layer = 0;
+        // Which layer these pictures are of, and which revision of it. A layer's own counter starts at 0
+        // and layer ids never do, so an unbuilt card cannot be mistaken for a built one.
+        std::uint64_t of = 0;
         std::uint64_t content = 0;
         gfx::Texture pixels{};
         gfx::Texture mask{};
         bool has_mask = false;
     };
 
-    // `index` is the stack index; the card keeps the layer id so a reorder re-uses the picture rather
-    // than rebuilding it.
-    Card& card(std::size_t index);
-    void sync(std::size_t index, const Layer& layer, bool live);
-    // The cards this frame are exactly the layers `count`, in stack order; anything else is a layer
-    // that has gone, and its textures go with it.
-    void resize(std::size_t count);
+    // Keyed by layer, never by row: `content_revision` counts one layer's writes, so two layers can hold
+    // the same number and a card that followed the stack would keep showing the picture of whoever sat in
+    // that row before it. A reorder therefore re-uses every picture, and a card cannot show a layer it is
+    // not the picture of.
+    Card& card(std::uint64_t layer_id);
+    void sync(const Layer& layer, bool live);
+    // The cards this frame are exactly `layers`; a layer that has left the stack has its textures
+    // released here, and nowhere else.
+    void keep(std::span<const Layer> layers);
     // Rebuilds since the run started, so a probe can tell a cache that holds from one that doesn't.
     std::uint64_t rebuilds = 0;
 
 private:
-    std::vector<Card> cards_;
+    std::map<std::uint64_t, Card> cards_;
 };
 
 // The box a layer of `size` is drawn into, keeping its proportions inside `kLayerThumbLongEdge`.

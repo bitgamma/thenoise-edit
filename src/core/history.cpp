@@ -56,7 +56,9 @@ void History::record(std::uint64_t layer_id, LayerPlane plane, Rect rect,
                                   .plane = plane,
                                   .name = {},
                                   .index = 0,
-                                  .size = {}});
+                                  .size = {},
+                                  .order = {},
+                                  .whole = {}});
     drop_oldest_until_within_budget();
 }
 
@@ -78,7 +80,66 @@ void History::record_layer_created(std::uint64_t layer_id, std::string name, int
                                   .plane = LayerPlane::pixels,
                                   .name = std::move(name),
                                   .index = index,
-                                  .size = size});
+                                  .size = size,
+                                  .order = {},
+                                  .whole = {}});
+    drop_oldest_until_within_budget();
+}
+
+std::size_t History::held(const Stacked& entry) {
+    std::size_t bytes = entry.bytes.size();
+    bytes += entry.whole.pixels.bytes();
+    if (entry.whole.mask) {
+        bytes += entry.whole.mask->plane().size();
+    }
+    return bytes;
+}
+
+// True for the entries that put a layer into the stack when applied, and so have to run before the
+// pixel entries of the same step look for it.
+bool History::inserts(const Stacked& entry) { return entry.kind == Kind::layer_absent; }
+
+bool History::names_layer(const Stacked& entry, std::uint64_t id) {
+    if (entry.kind == Kind::layer_order) {
+        return std::find(entry.order.begin(), entry.order.end(), id) != entry.order.end();
+    }
+    return entry.layer == id;
+}
+
+void History::record_layer_order(std::vector<std::uint64_t> order) {
+    redo_stack_.clear();
+    const int step = open_step_ != 0 ? open_step_ : ++next_step_;
+    // No bytes: an order is a list of ids, and the layers it names hold their own.
+    undo_stack_.push_back(Stacked{.layer = 0,
+                                  .rect = {},
+                                  .bytes = {},
+                                  .step = step,
+                                  .kind = Kind::layer_order,
+                                  .plane = LayerPlane::pixels,
+                                  .name = {},
+                                  .index = 0,
+                                  .size = {},
+                                  .order = std::move(order),
+                                  .whole = {}});
+    drop_oldest_until_within_budget();
+}
+
+void History::record_layer_removed(Layer layer, int index) {
+    redo_stack_.clear();
+    const int step = open_step_ != 0 ? open_step_ : ++next_step_;
+    Stacked entry{.layer = layer.id,
+                  .rect = {},
+                  .bytes = {},
+                  .step = step,
+                  .kind = Kind::layer_absent,
+                  .plane = LayerPlane::pixels,
+                  .name = layer.name,
+                  .index = index,
+                  .size = layer.pixels.size(),
+                  .order = {},
+                  .whole = std::move(layer)};
+    bytes_ += held(entry);
+    undo_stack_.push_back(std::move(entry));
     drop_oldest_until_within_budget();
 }
 
@@ -94,7 +155,10 @@ std::optional<History::Applied> History::redo(std::vector<Layer>& layers) {
 }
 
 void History::drop_layer(std::uint64_t layer_id) {
-    drop_entries([layer_id](const Stacked& entry) { return entry.layer == layer_id; });
+    // An entry naming a layer that no longer exists cannot be applied. That includes an order entry:
+    // the stack it describes is gone, and restoring half of it would be worse than losing the step.
+    drop_entries(
+        [layer_id](const Stacked& entry) { return names_layer(entry, layer_id); });
 }
 
 void History::drop_mask(std::uint64_t layer_id) {
@@ -107,7 +171,7 @@ void History::drop_entries(const std::function<bool(const Stacked&)>& names) {
     for (std::vector<Stacked>* stack : {&undo_stack_, &redo_stack_}) {
         for (std::size_t index = stack->size(); index-- > 0;) {
             if (names((*stack)[index])) {
-                bytes_ -= (*stack)[index].bytes.size();
+                bytes_ -= held((*stack)[index]);
                 stack->erase(stack->begin() + static_cast<std::ptrdiff_t>(index));
             }
         }
@@ -154,8 +218,31 @@ bool History::fits(const Layer* layer, const Stacked& entry) {
             // at least the layer the answer was made on, so re-inserting can never overflow a stack and
             // removing can never empty one.
             return layer == nullptr;
+        case Kind::layer_order:
+            // Checked against the whole stack by `fits_stack`.
+            return true;
     }
     return false;
+}
+
+bool History::fits_stack(const std::vector<Layer>& layers, const Stacked& entry) {
+    if (entry.kind != Kind::layer_order) {
+        return true;
+    }
+    // The entry has to name exactly the layers that are there: one missing or one invented and the
+    // order it would impose is not the order of anything, so the step is refused rather than a stack
+    // quietly losing a layer.
+    if (entry.order.size() != layers.size()) {
+        return false;
+    }
+    for (const std::uint64_t id : entry.order) {
+        const bool present = std::any_of(layers.begin(), layers.end(),
+                                         [id](const Layer& layer) { return layer.id == id; });
+        if (!present) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
@@ -169,7 +256,8 @@ void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
             layers.erase(layers.begin() + static_cast<std::ptrdiff_t>(at));
             entry.index = static_cast<int>(at);
             entry.size = gone.pixels.size();
-            entry.name = std::move(gone.name);
+            entry.name = gone.name;
+            entry.whole = std::move(gone);
             break;
         }
         entry.kind = Kind::layer_absent;
@@ -177,10 +265,35 @@ void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
         into.push_back(entry);
         return;
     }
+    if (entry.kind == Kind::layer_order) {
+        std::vector<std::uint64_t> displaced;
+        displaced.reserve(layers.size());
+        for (const Layer& layer : layers) {
+            displaced.push_back(layer.id);
+        }
+        std::vector<Layer> wanted;
+        wanted.reserve(entry.order.size());
+        for (const std::uint64_t id : entry.order) {
+            if (Layer* layer = layer_of(layers, id)) {
+                wanted.push_back(std::move(*layer));
+            }
+        }
+        entry.order = std::move(displaced);
+        layers = std::move(wanted);
+        entry.step = step;
+        into.push_back(std::move(entry));
+        return;
+    }
     Layer added;
-    added.id = entry.layer;
-    added.name = entry.name;
-    added.pixels = Image::filled(entry.size, 0, 0, 0, 0);
+    if (entry.whole.pixels.size().w > 0) {
+        // A layer that was taken away comes back as the whole thing it was: pixels, mask, opacity,
+        // blend mode. An empty stand-in would put a layer back and lose the edit that was made of it.
+        added = std::move(entry.whole);
+    } else {
+        added.id = entry.layer;
+        added.name = entry.name;
+        added.pixels = Image::filled(entry.size, 0, 0, 0, 0);
+    }
     const std::size_t at = entry.index < 0 ? 0
                                            : std::min(static_cast<std::size_t>(entry.index),
                                                       layers.size());
@@ -199,20 +312,26 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
     std::vector<Stacked> group;
     pop_step(from, group);
 
+
     // The order a step goes back in. Pixel entries are restored newest-first, as they came. A structural
     // entry goes **first when it re-inserts a layer** - the pixels of the same step need somewhere to
     // land - and **last when it removes one**, because those pixels have to be put back before the layer
     // that held them is taken away. Getting this backwards does not fail loudly: the pixel entry finds no
     // layer at all.
-    const bool structure_first = std::any_of(group.begin(), group.end(),
-                                             [](const Stacked& entry) {
-                                                 return entry.kind == Kind::layer_absent;
-                                             });
+    // Three passes, in the only order that can work: a layer the step puts back first, so the pixel
+    // entries of the same step have somewhere to land; then the pixels; then whatever takes a layer
+    // away, after its pixels have been put back. An order entry moves layers without touching a pixel, so
+    // it belongs in the last pass with the rest of the structure.
     std::vector<std::size_t> order;
     order.reserve(group.size());
-    for (const bool structural : {structure_first, !structure_first}) {
+    for (const int pass : {0, 1, 2}) {
         for (std::size_t index = group.size(); index-- > 0;) {
-            if ((group[index].kind != Kind::pixels) == structural) {
+            const Stacked& entry = group[index];
+            const bool mine = pass == 0
+                                  ? inserts(entry)
+                                  : (pass == 1 ? entry.kind == Kind::pixels
+                                               : entry.kind != Kind::pixels && !inserts(entry));
+            if (mine) {
                 order.push_back(index);
             }
         }
@@ -227,6 +346,13 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
     for (const std::size_t index : order) {
         const Stacked& entry = group[index];
         Layer* found = layer_of(layers, entry.layer);
+        if (entry.kind == Kind::layer_order) {
+            if (!fits_stack(layers, entry)) {
+                clear();
+                return std::nullopt;
+            }
+            continue;
+        }
         if (entry.kind == Kind::layer_absent) {
             if (!fits(found, entry)) {
                 clear();
@@ -264,12 +390,17 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
         touched.layer = entry.layer;
         touched.rect = unite(touched.rect, entry.rect);
         if (entry.kind != Kind::pixels) {
+            const std::size_t carried = held(entry);
             step_structure(entry, into, layers, step);
+            // A structural entry trades content with the stack, so what it costs the budget changes with
+            // the trade: a step that takes a layer away starts paying for it, and one that gives it back
+            // stops.
+            bytes_ += held(entry) - carried;
             touched.structure = true;
             continue;
         }
         Layer& layer = *layer_of(layers, entry.layer);
-        bytes_ -= entry.bytes.size();
+        bytes_ -= held(entry);
         // The bytes this step displaces are what makes the step repeatable, and they come from the
         // same plane the entry was recorded against.
         if (entry.plane == LayerPlane::pixels) {
@@ -282,7 +413,9 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
                                    .plane = entry.plane,
                                    .name = {},
                                    .index = 0,
-                                   .size = {}});
+                                   .size = {},
+                                   .order = {},
+                                   .whole = {}});
         } else {
             const Mask displaced = layer.mask->region(entry.rect);
             into.push_back(Stacked{.layer = entry.layer,
@@ -293,7 +426,9 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
                                    .plane = entry.plane,
                                    .name = {},
                                    .index = 0,
-                                   .size = {}});
+                                   .size = {},
+                                   .order = {},
+                                   .whole = {}});
         }
         bytes_ += into.back().bytes.size();
         if (entry.plane == LayerPlane::pixels) {
@@ -327,7 +462,7 @@ void History::drop_oldest_until_within_budget() {
     while (bytes_ > budget_bytes_ && !undo_stack_.empty()) {
         const int step = undo_stack_.front().step;
         while (!undo_stack_.empty() && undo_stack_.front().step == step) {
-            bytes_ -= undo_stack_.front().bytes.size();
+            bytes_ -= held(undo_stack_.front());
             undo_stack_.erase(undo_stack_.begin());
         }
     }

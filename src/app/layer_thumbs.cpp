@@ -142,35 +142,35 @@ Extent thumb_box(Extent size) {
                                                    kLayerThumbLongEdge / long_edge))};
 }
 
-LayerThumbs::Card& LayerThumbs::card(std::size_t index) { return cards_[index]; }
+LayerThumbs::Card& LayerThumbs::card(std::uint64_t layer_id) { return cards_[layer_id]; }
 
-void LayerThumbs::resize(std::size_t count) {
-    for (std::size_t index = count; index < cards_.size(); ++index) {
-        cards_[index].pixels.discard();
-        cards_[index].mask.discard();
+void LayerThumbs::keep(std::span<const Layer> layers) {
+    for (auto entry = cards_.begin(); entry != cards_.end();) {
+        const std::uint64_t id = entry->first;
+        if (std::any_of(layers.begin(), layers.end(),
+                        [id](const Layer& layer) { return layer.id == id; })) {
+            ++entry;
+            continue;
+        }
+        entry->second.pixels.discard();
+        entry->second.mask.discard();
+        entry = cards_.erase(entry);
     }
-    cards_.resize(count);
 }
 
-void LayerThumbs::sync(std::size_t index, const Layer& layer, bool live) {
-    if (index >= cards_.size()) {
+void LayerThumbs::sync(const Layer& layer, bool live) {
+    Card& card = cards_[layer.id];
+    if (card.of == layer.id && card.content == layer.content_revision) {
         return;
     }
-    Card& card = cards_[index];
-    if (card.layer == layer.id && card.content == layer.content_revision) {
-        return;
-    }
+    // A gesture moves the counter on every dab. The picture waits for the hand to lift; a card rebuilt
+    // per dab would resample the whole layer that many times. What it holds meanwhile is this layer's own
+    // older picture, because a card belongs to a layer and not to a row.
     if (live) {
-        // A gesture moves the counter on every dab. The picture waits for the hand to lift; a card
-        // rebuilt per dab would resample the whole layer that many times.
-        if (card.layer != layer.id) {
-            // A card this frame is showing a different layer's picture, so it must not be drawn at all.
-            card = Card{};
-        }
         return;
     }
     const Extent box = thumb_box(layer.pixels.size());
-    card.layer = layer.id;
+    card.of = layer.id;
     card.content = layer.content_revision;
     card.pixels.sync(fit(layer.pixels, box), layer.content_revision);
     card.has_mask = layer.mask.has_value();
