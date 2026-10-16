@@ -194,9 +194,9 @@ disagrees with [PRODUCT.md](PRODUCT.md) or the code, it is the older text.
 - **live**: a layer mask (`Layer::mask`) the composite honours, saved with the project, converting
   both ways with the selection (`mask.from_selection`, `select.from_mask`) - buttons for both in the
   Brush panel - and **paintable**: the Layers panel puts one on (`mask.add`), takes it off
-  (`mask.remove`), fills it (`mask.fill {to: show|hide}`), inverts it (`mask.invert`) and aims strokes
-  at it (`mask.target {plane: pixels|mask}`), so the brush reveals coverage and the eraser takes it
-  back, one drag per undo step. Still missing: enable/disable without deleting it, apply
+  (`mask.remove`), fills it (`mask.fill {to: show|hide}`) and inverts it (`mask.invert`), and `cover`
+  paints whichever coverage `coverage.target {to: marked|mask}` names - one editor over the marked area
+  and the saved mask, one drag per undo step. Still missing: enable/disable without deleting it, apply
   (destructive), alt-click to view the mask, and a mask thumbnail in the row
 
 **Selections**

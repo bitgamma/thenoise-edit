@@ -4,6 +4,7 @@
 #include "app/ai_intent.h"
 #include "app/ai_session.h"
 #include "app/ants.h"
+#include "app/coverage.h"
 #include "app/new_document.h"
 
 #include "core/brush.h"
@@ -48,6 +49,8 @@ struct PointerStroke {
     // rather than read per event because the held-aside bytes are one plane's: a target switched
     // mid-drag would otherwise leave a gesture writing coverage into a snapshot of colour.
     LayerPlane plane = LayerPlane::pixels;
+    // And, for a coverage press, which lifetime it was aimed at, for the same reason.
+    app::CoverageTarget coverage = app::CoverageTarget::marked;
 };
 
 // The gesture the pointer is making with the move tool. The snapshot is the active layer as it was
@@ -85,11 +88,10 @@ struct AppState {
     Brush brush = kBrushDefaults;
     Rgba8 color = kDefaultColor;
     std::string tool = kDefaultTool;
-    // Which plane of the active layer a stroke is aimed at. Read as the claim "the active layer's
-    // <plane>", with no reset policy of its own: a layer without that plane refuses the stroke, and
-    // the report says which plane and which layer, so nothing here has to shadow what the document
-    // looks like.
-    LayerPlane paint_target = LayerPlane::pixels;
+    // Which coverage a coverage-writing tool is aimed at. No reset policy of its own: the layer may
+    // have no mask, and then a stroke aimed at one is refused naming the layer, rather than quietly
+    // painting the marked area instead.
+    app::CoverageTarget coverage_target = app::CoverageTarget::marked;
     PointerStroke stroke;
     PointerMove move;
     PointerSelection select;
@@ -173,14 +175,12 @@ struct AppState {
     // Whether the active layer holds the plane a stroke is aimed at. The panel hides the affordance,
     // the commands refuse with this question, and the tool never starts a gesture it cannot hold - so
     // "there is no mask here" is answered in one place rather than guessed at three.
-    bool paint_target_held() const {
+    bool coverage_writable() const {
         if (doc.empty()) {
             return false;
         }
-        if (paint_target == LayerPlane::pixels) {
-            return true;
-        }
-        return active_layer().mask.has_value();
+        return coverage_target == app::CoverageTarget::marked ||
+               active_layer().mask.has_value();
     }
 
     // The layer a write, a mask or a refusal is about.

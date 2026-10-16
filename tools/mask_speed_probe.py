@@ -85,10 +85,11 @@ def run(args: argparse.Namespace) -> int:
         wire.call('tool.set', {'tool': 'brush', 'size': 300, 'hardness': 0.6, 'opacity': 0.8})
 
         print(f'{SIDE}x{SIDE} document, 300 px brush, {EVENTS} events per drag')
-        wire.call('mask.target', {'plane': 'pixels'})
+        wire.call('coverage.target', {'to': 'marked'})
         pixels = timed(wire, 'painting the layer', drag_events(wire, 300, 400, 8, 4))
         wire.call('edit.undo')
-        wire.call('mask.target', {'plane': 'mask'})
+        wire.call('tool.set', {'tool': 'cover', 'size': 300, 'hardness': 0.6, 'opacity': 0.8})
+        wire.call('coverage.target', {'to': 'mask'})
         masked = timed(wire, 'painting the layer mask', drag_events(wire, 300, 900, 8, 4))
         ratio = masked[1] / pixels[1]
         print(f'  a mask event costs {ratio:.2f}x a pixel event')
@@ -97,6 +98,9 @@ def run(args: argparse.Namespace) -> int:
 
         wire.call('select.clear')
         wire.call('tool.set', {'tool': 'select'})
+        # Back to the transient lifetime: aimed at the mask the same drag re-rasterises the mask and
+        # diffs the composite every event, which is a different claim and a different number.
+        wire.call('coverage.target', {'to': 'marked'})
         marquee = timed(wire, 'dragging a marquee', drag_events(wire, 200, 200, 10, 6))
         ratio = marquee[1] / pixels[1]
         print(f'  a marquee event costs {ratio:.2f}x a pixel event')

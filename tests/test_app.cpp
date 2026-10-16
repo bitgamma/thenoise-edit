@@ -1611,22 +1611,24 @@ void test_a_selection_holds_a_stroke_inside_it() {
 
 // The two conversions, which are the reason a selection and a mask are the same type: each is a
 // copy, so neither can shift by a pixel or lose partial coverage on the way across.
-// Which plane a stroke writes is a setting the wire can read, aim and refuse against. A stroke aimed
-// at a mask the layer does not have is refused by name rather than quietly painting colour, because a
-// panel that says "mask" while colour moves is the one lie this seam could tell.
-void test_the_paint_target_decides_where_a_stroke_lands() {
+// Which coverage a stroke writes is a setting the wire can read, aim and refuse against; the aim
+// outlives the switch, because a gesture holds the lifetime it was pressed on. A stroke aimed at a mask
+// the layer does not have is refused by name rather than quietly marking something else.
+void test_the_coverage_target_decides_where_a_stroke_lands() {
     Harness h;
     h.value("doc.new", json{{"width", 24}, {"height", 12}, {"fill", json::array({20, 20, 20, 255})}});
-    h.value("tool.set", json{{"tool", "brush"}, {"size", 8.0}, {"hardness", 1.0}, {"opacity", 1.0}});
+    h.value("tool.set", json{{"tool", "cover"}, {"size", 8.0}, {"hardness", 1.0}, {"opacity", 1.0}});
     const json points = json::array({json::array({6.0, 6.0}), json::array({14.0, 6.0})});
 
-    CHECK_EQ(h.value("app.state", json::object())["brush"]["paint_target"].get<std::string>(),
-             std::string("pixels"));
-    CHECK_EQ(h.value("mask.get", json::object())["target"].get<std::string>(), std::string("pixels"));
+    CHECK_EQ(h.value("app.state", json::object())["brush"]["coverage_target"].get<std::string>(),
+             std::string("marked"));
+    // The marked area is always writable; the mask half says so only once the layer has one.
+    CHECK(h.value("coverage.target", json::object())["writable"].get<bool>());
     CHECK(h.value("mask.get", json::object())["mask"].is_null());
 
-    CHECK_EQ(h.value("mask.target", json{{"plane", "mask"}})["paint_target"].get<std::string>(),
-             std::string("mask"));
+    const json aimed = h.value("coverage.target", json{{"to", "mask"}});
+    CHECK_EQ(aimed["target"].get<std::string>(), std::string("mask"));
+    CHECK(!aimed["writable"].get<bool>());
     const CommandResult nowhere = h.run("tool.stroke", json{{"points", points}});
     CHECK(!nowhere.ok);
     CHECK(nowhere.error.find("has none") != std::string::npos);
@@ -1659,7 +1661,7 @@ void test_the_paint_target_decides_where_a_stroke_lands() {
     // says so: the layer is opaque, so anywhere the mask still reads zero the canvas below it shows.
     const std::string layer_bytes = h.value("layer.list", json::object())["layers"][0]["checksum"].get<std::string>();
     const json stroke = h.value("tool.stroke", json{{"points", points}});
-    CHECK_EQ(stroke["plane"].get<std::string>(), std::string("mask"));
+    CHECK_EQ(stroke["coverage"].get<std::string>(), std::string("mask"));
     const json facts = h.value("mask.get", json::object())["mask"];
     CHECK(facts["covered"].get<std::int64_t>() > 0);
     CHECK(facts["covered"].get<std::int64_t>() < 24 * 12);
@@ -1680,22 +1682,65 @@ void test_the_paint_target_decides_where_a_stroke_lands() {
     h.value("edit.redo", json::object());
     CHECK_EQ(h.value("doc.get", json::object())["checksum"].get<std::string>(), painted);
 
-    // A live gesture reports the plane it has been writing since the press, which is the target as it
-    // was then: aiming elsewhere mid-drag cannot split one gesture across two planes.
+    // A live gesture reports the lifetime it has been writing since the press: aiming elsewhere
+    // mid-drag cannot split one gesture across two homes for the same coverage.
     h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({4.0, 4.0})}});
-    CHECK_EQ(h.value("app.state", json::object())["stroke"]["plane"].get<std::string>(), std::string("mask"));
-    h.value("mask.target", json{{"plane", "pixels"}});
+    CHECK_EQ(h.value("app.state", json::object())["stroke"]["coverage"].get<std::string>(),
+             std::string("mask"));
+    h.value("coverage.target", json{{"to", "marked"}});
     h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({8.0, 4.0})}});
-    CHECK_EQ(h.value("app.state", json::object())["stroke"]["plane"].get<std::string>(), std::string("mask"));
+    CHECK_EQ(h.value("app.state", json::object())["stroke"]["coverage"].get<std::string>(),
+             std::string("mask"));
     h.value("tool.pointer", json{{"phase", "release"}, {"at", json::array({8.0, 4.0})}});
-    CHECK_EQ(h.value("mask.get", json::object())["target"].get<std::string>(), std::string("pixels"));
+    CHECK_EQ(h.value("coverage.target", json::object())["target"].get<std::string>(),
+             std::string("marked"));
 
-    // Aimed at colour again, the same stroke moves colour and leaves the mask alone.
+    // The same gesture over the other lifetime marks the area instead: the layer's own bytes and its
+    // mask both stay where they were, and no undo step is spent, because putting paint on a mark is
+    // not a change to the picture — the same reason the marquee is not one either.
     const std::string coverage = h.value("mask.get", json::object())["mask"].dump();
     const std::string before = h.value("layer.list", json::object())["layers"][0]["checksum"].get<std::string>();
+    const int undo_before = h.value("doc.get", json::object())["history"]["undo_depth"].get<int>();
+    h.value("tool.stroke", json{{"points", points}});
+    CHECK_EQ(h.value("layer.list", json::object())["layers"][0]["checksum"].get<std::string>(), before);
+    CHECK_EQ(h.value("mask.get", json::object())["mask"].dump(), coverage);
+    CHECK(h.value("select.get", json::object())["covered"].get<std::int64_t>() > 0);
+    CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), undo_before);
+
+    // Colour is a tool, not a target: aimed at the mask, the brush still moves colour and leaves the
+    // coverage alone, because the switch decides where *coverage* goes and nothing else.
+    h.value("coverage.target", json{{"to", "mask"}});
+    h.value("tool.set", json{{"tool", "brush"}});
     h.value("tool.stroke", json{{"points", points}});
     CHECK_NE(h.value("layer.list", json::object())["layers"][0]["checksum"].get<std::string>(), before);
     CHECK_EQ(h.value("mask.get", json::object())["mask"].dump(), coverage);
+}
+
+// The marquee is the other half of the same editor: aimed at the mask it puts its shape there, aimed at
+// the marked area it puts it there, and it never needs a second tool to do the other job.
+void test_the_marquee_lands_on_whichever_coverage_is_named() {
+    Harness h;
+    h.value("doc.new", json{{"width", 32}, {"height", 16}, {"fill", json::array({9, 9, 9, 255})}});
+    h.value("tool.set", json{{"tool", "select"}});
+    h.value("mask.add", json::object());
+    h.value("mask.fill", json{{"to", "hide"}});
+
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({4.0, 4.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({12.0, 12.0})}});
+    h.value("tool.pointer", json{{"phase", "release"}});
+    CHECK(h.value("select.get", json::object())["active"].get<bool>());
+    CHECK(h.value("mask.get", json::object())["mask"]["covered"].get<std::int64_t>() == 0);
+
+    // The mark from the first drag is still the fence on every write, so put it down first: the mask
+    // half of this test is about where the shape lands, not about the fence (which has its own test).
+    h.value("select.clear", json::object());
+    h.value("coverage.target", json{{"to", "mask"}});
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({20.0, 4.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({28.0, 12.0})}});
+    h.value("tool.pointer", json{{"phase", "release"}});
+    const json masked = h.value("mask.get", json::object())["mask"];
+    CHECK(masked["covered"].get<std::int64_t>() > 0);
+    CHECK_EQ(masked["bounds"][0].get<int>(), 20);
 }
 
 // The selection fences every write, and a mask stroke is a write: what the brush did to coverage
@@ -1708,7 +1753,8 @@ void test_a_selection_limits_a_mask_stroke() {
     h.value("mask.fill", json{{"to", "hide"}});
     h.value("select.rect", json{{"rect", json::array({10, 0, 4, 12})}, {"mode", "replace"}});
 
-    h.value("mask.target", json{{"plane", "mask"}});
+    h.value("tool.set", json{{"tool", "cover"}, {"size", 6.0}, {"hardness", 1.0}, {"opacity", 1.0}});
+    h.value("coverage.target", json{{"to", "mask"}});
     h.value("tool.stroke", json{{"points", json::array({json::array({2.0, 6.0}), json::array({22.0, 6.0})})}});
     const json facts = h.value("mask.get", json::object())["mask"];
     const json bounds = facts["bounds"];
@@ -1747,8 +1793,8 @@ void test_the_mask_controls_name_the_layer_they_refused() {
 
     // Vocabulary refusals name the words they accept.
     CHECK(h.run("mask.fill", json{{"to", "bright"}}).error.find("show") != std::string::npos);
-    CHECK(h.run("mask.target", json{{"plane", "colour"}}).error.find("pixels") != std::string::npos);
-    CHECK(h.run("mask.target", json{{"plane", "colour"}}).error.find("mask") != std::string::npos);
+    CHECK(h.run("coverage.target", json{{"to", "colour"}}).error.find("marked") != std::string::npos);
+    CHECK(h.run("coverage.target", json{{"to", "colour"}}).error.find("mask") != std::string::npos);
     CHECK(h.run("mask.fill", json::object()).error.find("'to'") != std::string::npos);
 
     // A mask belongs to exactly one layer: the active row gained one and the row beside it says it
@@ -3405,7 +3451,8 @@ int main() {
     test_the_ellipse_command_selects_the_curve_and_not_its_box();
     test_the_ellipse_marquee_draws_the_shape_of_its_own_tool_row();
     test_the_select_gesture_draws_and_puts_down_the_selection();
-    test_the_paint_target_decides_where_a_stroke_lands();
+    test_the_coverage_target_decides_where_a_stroke_lands();
+    test_the_marquee_lands_on_whichever_coverage_is_named();
     test_a_selection_limits_a_mask_stroke();
     test_the_mask_controls_name_the_layer_they_refused();
     test_a_selection_becomes_a_mask_and_a_mask_becomes_a_selection();

@@ -288,25 +288,54 @@ void draw_tool_panel(AppState& state, CommandTable& commands, const json& intent
     // The selection, because the tool above is the one that draws it. Every control here is a
     // `select.*` command, so the keyboard, the wire and a click cannot disagree about what
     // deselecting means.
-    ImGui::SeparatorText("selection");
-    const json selection = selection_json(state);
-    if (selection["active"].get<bool>()) {
-        const json& bounds = selection["bounds"];
-        ImGui::TextDisabled("%d x %d, %d px", bounds[2].get<int>(), bounds[3].get<int>(),
-                            static_cast<int>(selection["covered"].get<std::int64_t>()));
-    } else {
-        ImGui::TextDisabled("the whole canvas");
+    // Coverage is one thing with two lifetimes, so there is one editor and one switch: the brush, the
+    // marquee and the maths write whichever coverage this names, and what differs is only whether it is
+    // put down at the end or saved with the layer. The mask half is dimmed where the layer has none, so
+    // the reason a stroke would do nothing is on the screen rather than in a canvas that refused to move.
+    ImGui::SeparatorText("coverage");
+    const bool has_mask = !state.doc.empty() && state.active_layer().mask.has_value();
+    if (ImGui::RadioButton("marked area", state.coverage_target == CoverageTarget::marked)) {
+        commands.invoke("coverage.target", json{{"to", "marked"}});
     }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!has_mask);
+    if (ImGui::RadioButton("layer mask", state.coverage_target == CoverageTarget::mask)) {
+        commands.invoke("coverage.target", json{{"to", "mask"}});
+    }
+    ImGui::EndDisabled();
+
+    const bool at_mask = state.coverage_target == CoverageTarget::mask;
+    const json selection = selection_json(state);
+    const json mask_facts =
+        at_mask ? commands.invoke("mask.get", json::object()).value["mask"] : json(nullptr);
+    if (at_mask && mask_facts.is_null()) {
+        ImGui::TextDisabled("this layer has no mask to paint");
+    } else {
+        const json& shown = at_mask ? mask_facts : selection;
+        const bool present = at_mask || selection["active"].get<bool>();
+        if (present) {
+            const json& bounds = shown["bounds"];
+            ImGui::TextDisabled("%d x %d at %d,%d, %d px", bounds[2].get<int>(), bounds[3].get<int>(),
+                                bounds[0].get<int>(), bounds[1].get<int>(),
+                                static_cast<int>(shown["covered"].get<std::int64_t>()));
+        } else {
+            ImGui::TextDisabled("the whole canvas");
+        }
+    }
+    // Three operations, each run against whichever coverage is named: the marked area has its commands
+    // and the mask has its own, and the panel holds no third version of either.
     if (ImGui::Button("All")) {
-        commands.invoke("select.all", json::object());
+        commands.invoke(at_mask ? "mask.fill" : "select.all",
+                        at_mask ? json{{"to", "show"}} : json::object());
     }
     ImGui::SameLine();
     if (ImGui::Button("None")) {
-        commands.invoke("select.clear", json::object());
+        commands.invoke(at_mask ? "mask.fill" : "select.clear",
+                        at_mask ? json{{"to", "hide"}} : json::object());
     }
     ImGui::SameLine();
     if (ImGui::Button("Invert")) {
-        commands.invoke("select.invert", json::object());
+        commands.invoke(at_mask ? "mask.invert" : "select.invert", json::object());
     }
 
     // The two directions between the selection and the active layer's mask. They are here rather
@@ -779,19 +808,6 @@ void draw_layers_panel(AppState& state, CommandTable& commands) {
             ImGui::SameLine();
             ImGui::TextDisabled("nothing hidden");
         }
-        // Two buttons, not a checkbox: which plane a stroke lands on is the question being answered.
-        // `paint: mask` is disabled where there is no mask, so the reason a stroke would do nothing
-        // is on the screen instead of in a canvas that refused to move.
-        const bool aimed_at_mask = state.paint_target == LayerPlane::mask;
-        if (ImGui::RadioButton("paint: layer", !aimed_at_mask)) {
-            commands.invoke("mask.target", json{{"plane", "pixels"}});
-        }
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!active.mask.has_value());
-        if (ImGui::RadioButton("paint: mask", aimed_at_mask)) {
-            commands.invoke("mask.target", json{{"plane", "mask"}});
-        }
-        ImGui::EndDisabled();
         ImGui::TextDisabled("%d x %d  %.1f%%", state.doc.width(), state.doc.height(),
                             state.view.scale * 100.0);
     }

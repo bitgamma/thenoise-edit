@@ -165,29 +165,13 @@ void register_mask_commands(AppState& state, CommandTable& table) {
         return command_ok(layer_mask_json(state.doc.layer(static_cast<std::size_t>(state.doc.active()))));
     });
 
-    table.add("mask.target", "Choose the plane a stroke writes: 'pixels' or 'mask'", {}, {"plane"},
-              [&state](const json& args) -> CommandResult {
-        if (!args.contains("plane") || !args.at("plane").is_string()) {
-            return fail("mask.target",
-                        "'plane' must be one of " + layer_plane_names() + ", in mask.target");
-        }
-        const std::optional<LayerPlane> plane = layer_plane_from_name(args.at("plane").get<std::string>());
-        if (!plane) {
-            return fail("mask.target", "unknown plane '" + args.at("plane").get<std::string>() +
-                                           "' (" + layer_plane_names() + ")");
-        }
-        state.paint_target = *plane;
-        return command_ok(brush_json(state));
-    });
-
-    table.add("mask.get", "Report where strokes go and what the active layer's mask holds", {}, {},
+    table.add("mask.get", "Report the active layer's mask", {}, {},
               [&state](const json&) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
             return guard;
         }
-        return command_ok(json{{"target", layer_plane_name(state.paint_target)},
-                               {"mask", layer_mask_json(state.doc.layer(
+        return command_ok(json{{"mask", layer_mask_json(state.doc.layer(
                                             static_cast<std::size_t>(state.doc.active())))}});
     });
 }

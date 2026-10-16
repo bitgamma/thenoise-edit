@@ -184,6 +184,8 @@ src/
                        owns no verb list, no keymap and no copy of the words; it draws `ai.verbs` and
                        `ai.intent` and writes back through them
     select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
+    coverage.cpp        the two lifetimes coverage has (`marked`, `mask`): one id, one title each
+    coverage_commands.cpp `coverage.target`, read and set, answering with what the target can do
     ai_commands.cpp     `ai.compose` (land a result file), `ai.roles`, `ai.recipes`, `ai.preview`
                        (the compiled request, unsent) and `ai.run` (queue it): each reports what the
                        policy and the coverage resolved to
@@ -216,9 +218,10 @@ src/
                        what its recipe does - including a variant that would stand in at the key and mean
                        a different verb. What a press runs is `pressed_recipe`: the row's recipe, or the
                        family member the intent holds
-    mask_commands.cpp mask.from_selection, mask.add/remove/fill/invert, mask.target and mask.get -
+    mask_commands.cpp mask.from_selection, mask.add/remove/fill/invert and mask.get -
                        the two directions between a selection and the active layer's mask (both copies
-                       of one `Mask`), the mask's own life cycle, and where strokes are aimed at
+                       of one `Mask`) and the mask's own life cycle; which coverage a stroke writes is
+                       `coverage.target`, since the marked area is as much a target as the mask
   ai/
     profile.{h,cpp}    what `/models` and `/health` say: a model's labels, recipe, whether it is
                        downloaded, its `image_defaults` (steps, cfg, size). Discovery parsing only -
@@ -497,11 +500,14 @@ and taking a mask off drops the steps that name its coverage, because restoring 
 without one would replace the whole canvas with a mask nobody painted. `mask.add` and `mask.remove` are
 therefore not steps, while `mask.fill` and `mask.invert` are: they write coverage through the same door
 a brush does.
-* **`paint_target` is a claim, not a shadow of the document.** Strokes go to the active layer's
-  `pixels` or `mask`; nothing resets it when the layer changes or the mask goes away, because a reset
-  policy would be a second fact to keep true. A stroke aimed at a plane the layer lacks is refused
-  naming the layer and the plane, `app.state` reports the aim and `stroke.plane` the plane the press is
-  holding, and `mask.get` answers whether that plane is there at all.
+* **`coverage.target` is a claim, not a shadow of the document.** It names which lifetime of one
+  coverage a stroke writes — the marked area, or the active layer's mask — and nothing resets it when
+  the layer changes or the mask goes away, because a reset policy would be a second fact to keep true.
+  `cover` aimed at a mask the layer lacks is refused naming the layer, `app.state` reports the aim and
+  `stroke.coverage` the lifetime the press is holding (a gesture keeps the one it was pressed on, so
+  switching mid-drag cannot split it across two homes), and `coverage.target` answers with `writable`
+  whether that lifetime exists here at all. Colour is a tool and not a target: the brush paints colour
+  whichever way this is aimed.
 * **`select.from_mask` and `mask.from_selection` are copies**, which is why a selection and a layer
   mask are one type rather than two with an adapter between them: an adapter needs rules, and rules
   are where "the mask moved by a pixel" and "the partial coverage got rounded" come from. Converting
@@ -1392,10 +1398,10 @@ up: for a rectangle they are equal, for an anti-aliased curve `area` is what the
 the box the select tool is drawing, live, and `marquee_shape`, which of them it is: the only way to
 tell a marquee that tracks the pointer from one that appears on release, and the only way to see which
 tool row a gesture was started with. The mask is reported the same way a selection is - `layer.list`
-rows carry `mask` (`covered`, `area`, `bounds`, or `null` for none), `mask.get` adds `target`, and
-`brush.paint_target` says where the next stroke goes - so a driver can tell a mask that hides
-everything from a layer that has no mask, and a stroke that painted colour from one that painted
-coverage. Enough for a driver to place an image rect on screen, wait
+rows carry `mask` (`covered`, `area`, `bounds`, or `null` for none), `mask.get` answers with the mask
+itself, and `brush.coverage_target` with `writable` says which lifetime the next stroke writes - so a
+driver can tell a mask that hides everything from a layer that has no mask, and a stroke that painted
+colour from one that painted coverage. Enough for a driver to place an image rect on screen, wait
 for the frame that drew it, and tell a stroke from an undo. `doc.get` is the call that hashes
 the pixels and answers with a checksum; `app.state` deliberately does not, because a driver
 polls it every frame. `fit_pending` is true while a fit waits for a

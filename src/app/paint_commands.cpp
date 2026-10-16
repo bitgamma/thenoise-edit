@@ -5,7 +5,9 @@
 #include "app/command_args.h"
 
 #include "core/brush.h"
+#include "app/coverage.h"
 #include "app/tools/brush.h"
+#include "app/tools/cover.h"
 #include "app/tools/move.h"
 #include "app/tools/select.h"
 #include "core/log.h"
@@ -163,15 +165,26 @@ void register_paint_commands(AppState& state, CommandTable& table) {
                                    {"touched", json::array()},
                                    {"revision", state.doc.revision()}});
         }
-        if (state.paint_target == LayerPlane::mask && !state.paint_target_held()) {
-            return fail("tool.stroke", "the paint target is 'mask' and layer '" +
-                                           state.active_layer().name + "' has none (mask.add)");
+        const bool coverage_stroke = tool_action(tool) == ToolAction::coverage;
+        if (coverage_stroke && !state.coverage_writable()) {
+            return fail("tool.stroke", "the coverage target is '" +
+                                           std::string(coverage_target_name(state.coverage_target)) +
+                                           "' and layer '" + state.active_layer().name +
+                                           "' has none (mask.add)");
         }
         std::optional<Rect> touched;
-        if (state.paint_target == LayerPlane::mask) {
+        if (coverage_stroke && state.coverage_target == CoverageTarget::mask) {
             state.doc.paint_mask(bounds, [&](Mask& mask) {
                 touched = paint_stroke_mask(mask, path, brush, mode);
             });
+        } else if (coverage_stroke) {
+            // The marked area takes the same stroke through the same mask, and stays outside history
+            // because a mark is not a change to the picture — putting it down is not undoable today
+            // either, so a freehand mark and a marquee behave alike.
+            Mask marked = state.doc.selection().has_value() ? *state.doc.selection()
+                                                            : Mask(state.doc.size());
+            touched = paint_stroke_mask(marked, path, brush, mode);
+            state.doc.set_selection(marked);
         } else {
             state.doc.paint(bounds, PaintFence::selection, [&](Image& image) {
                 touched = paint_stroke(image, path, brush, color, mode);
@@ -184,7 +197,7 @@ void register_paint_commands(AppState& state, CommandTable& table) {
         // across it, and a caller that wants one asks `doc.get`.
         return command_ok(json{{"tool", tool},
                                {"dabs", dabs},
-                               {"plane", layer_plane_name(state.paint_target)},
+                               {"coverage", coverage_target_name(state.coverage_target)},
                                {"touched",
                                 json::array({touched->x, touched->y, touched->w, touched->h})},
                                {"revision", state.doc.revision()}});
@@ -209,13 +222,27 @@ void register_paint_commands(AppState& state, CommandTable& table) {
                                             tool_names() + ")");
         }
         switch (*action) {
-            case ToolAction::paint:
-                if (phase == "press" && !state.paint_target_held()) {
-                    return fail("tool.pointer", "the paint target is '" +
-                                                    std::string(layer_plane_name(state.paint_target)) +
+            case ToolAction::coverage: {
+                if (phase == "press" && !state.coverage_writable()) {
+                    return fail("tool.pointer", "the coverage target is '" +
+                                                    std::string(coverage_target_name(
+                                                        state.coverage_target)) +
                                                     "' and layer '" + state.active_layer().name +
                                                     "' has none (mask.add)");
                 }
+                if (phase == "press") {
+                    cover_press(state, point);
+                } else if (phase == "drag") {
+                    cover_drag(state, point);
+                } else if (phase == "release") {
+                    cover_release(state);
+                } else {
+                    return fail("tool.pointer", "unknown phase '" + phase +
+                                                    "' (press, drag, release)");
+                }
+                break;
+            }
+            case ToolAction::paint:
                 if (phase == "press") {
                     brush_press(state, point);
                 } else if (phase == "drag") {

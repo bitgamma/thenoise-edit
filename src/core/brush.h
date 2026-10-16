@@ -42,9 +42,10 @@ enum class PaintMode {
 // What the pointer does while a tool has the button. A new tool adds a row to `kTools` and a case to
 // the dispatch, and nothing anywhere compares a tool's name.
 enum class ToolAction {
-    paint,   // coverage into the active layer
-    move,    // the active layer's pixels slide
-    select,  // the marquee becomes the document's selection
+    paint,    // colour into the active layer
+    coverage, // coverage into whichever lifetime the target names
+    move,     // the active layer's pixels slide
+    select,   // the marquee, aimed at whichever lifetime the target names
 };
 
 // One tool per row: the id a request carries, what it does to the pixels, and the key

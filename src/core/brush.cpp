@@ -16,6 +16,10 @@ const std::vector<ToolInfo> kTools{
     {"brush", ToolAction::paint, PaintMode::Over, std::nullopt, "B", "Paint with the brush tool"},
     {"eraser", ToolAction::paint, PaintMode::Erase, std::nullopt, "E",
      "Paint with the eraser tool"},
+    // The dab's alpha is the coverage, and the target says which coverage: a rough circle around a
+    // hand and a hole punched in a layer mask are the same gesture over one Mask.
+    {"cover", ToolAction::coverage, PaintMode::Over, std::nullopt, "K",
+     "Paint coverage with the pointer"},
     {"move", ToolAction::move, std::nullopt, std::nullopt, "V",
      "Move the active layer with the pointer"},
     {"select", ToolAction::select, std::nullopt, MaskShape::rect, "M",

@@ -3,6 +3,7 @@
 
 #include "app/state.h"
 
+#include "app/coverage.h"
 #include "core/brush.h"
 #include "core/log.h"
 
@@ -21,9 +22,18 @@ Rect marquee(Vec2 from, Vec2 to, Extent canvas) {
 
 namespace {
 
-// The marquee as a selection of the document's own size. Replaced rather than added to: the gesture
-// draws one shape, and the modes that combine shapes are the command's (`select.rect`).
+// One shape, replaced rather than added to - the modes that combine shapes are the commands'. Which
+// coverage it lands on is the target's: the same drag marks the area or punches a layer mask, and the
+// gesture is not two tools.
 void apply_marquee(AppState& state) {
+    if (state.coverage_target == CoverageTarget::mask) {
+        state.doc.paint_mask(Rect{0, 0, state.doc.size().w, state.doc.size().h},
+                             [&](Mask& mask) {
+                                 op_shape(mask, state.select.shape, state.select.rect,
+                                          MaskOp::replace);
+                             });
+        return;
+    }
     Mask selection(state.doc.size());
     op_shape(selection, state.select.shape, state.select.rect, MaskOp::replace);
     state.doc.set_selection(selection);
@@ -69,7 +79,14 @@ void select_release(AppState& state) {
         return;
     }
     if (state.select.rect.empty()) {
-        state.doc.set_selection(std::nullopt);
+        if (state.coverage_target == CoverageTarget::mask) {
+            // An empty drag clears the mask it was aimed at rather than reaching past it for the
+            // marked area: a gesture does not change what it was pointed at on the way out.
+            state.doc.paint_mask(Rect{0, 0, state.doc.size().w, state.doc.size().h},
+                                 [](Mask& mask) { mask.fill(0); });
+        } else {
+            state.doc.set_selection(std::nullopt);
+        }
     } else {
         apply_marquee(state);
     }

@@ -32,17 +32,6 @@ void add_dabs(AppState& state, const std::vector<Vec2>& path) {
     const Rect touched = scratch_stamp(state.stroke.scratch, dabs, state.brush, state.doc.size());
     state.doc.begin_provisional(touched, state.stroke.plane);
     state.stroke.dabs += dabs.size();
-    if (state.stroke.plane == LayerPlane::mask) {
-        // The dab's alpha is the ink: a soft edge reveals coverage softly, and the eraser takes it
-        // away. Everything else - the selection fence, the repair rectangle, the one undo step - is
-        // the document door's, and is the same machinery a colour stroke runs through.
-        state.doc.repaint_provisional_mask(touched, [&state](Mask& mask, Rect region) {
-            mask.paint(region,
-                       scratch_coverage(state.stroke.scratch, region, state.brush.opacity),
-                       mask_ink(mode_of(state)));
-        });
-        return;
-    }
     state.doc.repaint_provisional(touched, [&state](Image& image, Rect region) {
         scratch_composite(image, state.stroke.scratch, state.color, state.brush, mode_of(state),
                           region);
@@ -55,13 +44,8 @@ void brush_press(AppState& state, Vec2 document_point) {
     if (state.doc.empty() || state.stroke.active) {
         return;
     }
-    if (!state.paint_target_held()) {
-        // Nothing to write to: the mask target needs a mask on the active layer. The command that got
-        // here says why; starting a gesture that could only fail would leave the app mid-stroke.
-        return;
-    }
     state.stroke = PointerStroke{};
-    state.stroke.plane = state.paint_target;
+    state.stroke.plane = LayerPlane::pixels;
     state.stroke.active = true;
     state.stroke.last = document_point;
     // The held-aside pixels are taken by `add_dabs`, over the rectangle the dabs actually

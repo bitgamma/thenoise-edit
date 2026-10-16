@@ -289,6 +289,8 @@ json stroke_json(const AppState& state) {
                 // Which plane this press has been writing since the button went down, which is the
                 // target as it was then rather than as it is now.
                 {"plane", layer_plane_name(state.stroke.plane)},
+                // And, for a coverage press, the lifetime it was aimed at when the button went down.
+                {"coverage", coverage_target_name(state.stroke.coverage)},
                 // Where a move gesture has got to. Zero for a paint gesture, so one reply shape
                 // serves both and a client reading `dabs` is unaffected.
                 {"dx", state.move.dx},
@@ -313,7 +315,7 @@ json brush_json(const AppState& state) {
                 // Which plane of the active layer the next stroke writes. `mask.get` says whether that
                 // plane is there; a target aimed at a plane the layer lacks refuses strokes rather
                 // than silently painting colour.
-                {"paint_target", layer_plane_name(state.paint_target)},
+                {"coverage_target", coverage_target_name(state.coverage_target)},
                 {"color", json::array({state.color.r, state.color.g, state.color.b,
                                        state.color.a})},
                 {"size", state.brush.size},
