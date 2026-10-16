@@ -60,6 +60,12 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                {"stroke", stroke_json(state)},
                                {"view", view_json(state)},
                                {"pointer", pointer_json(state)},
+                               // Where the layer cards are, so a driver presses the one it means.
+                               {"layers_window", json::array({state.layers_window.x,
+                                                              state.layers_window.y,
+                                                              state.layers_window.w,
+                                                              state.layers_window.h})},
+                               {"layer_cards", layer_cards_json(state)},
                                // What the ant overlay drew, as much as what it was asked to draw:
                                // the rate is only checkable against the clock the frame used.
                                {"ants", json{{"phase_px", ant_drawn_phase(state.ants)},

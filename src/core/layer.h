@@ -60,6 +60,7 @@ struct Layer {
     std::string name;
     Image pixels;
 
+
     // Neither changes a pixel, so neither enters history: they change what the composite is made
     // of. `opacity` is applied there and never baked into `pixels`, so a layer shown at 30 % is
     // still painted on and edited at full strength.
@@ -72,6 +73,12 @@ struct Layer {
     // shows, not what exists. `nullopt` is no mask; a sized one is the layer's size, and coverage
     // outside it is 0, which is a mask that hides the layer rather than a layer with no mask.
     std::optional<Mask> mask;
+
+    // Bumped by every write to this layer's pixels or mask, and by any change to the stack. A viewer of
+    // one layer - a thumbnail - caches against it, which is why a layer's visibility, opacity and blend
+    // mode leave it alone: those change what the composite is made of, not what this layer holds, and a
+    // slider that invalidated every thumbnail would re-sample the stack on every frame it is dragged.
+    std::uint64_t content_revision = 0;
 };
 
 }  // namespace noise

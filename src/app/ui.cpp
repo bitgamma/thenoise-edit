@@ -3,6 +3,7 @@
 
 #include "app/ants.h"
 #include "app/coverage_tint.h"
+#include "app/layer_thumbs.h"
 #include "app/brush_steps.h"
 #include "app/command_args.h"
 #include "app/verb_bar.h"
@@ -51,6 +52,14 @@ constexpr float kToolPanelFraction = 0.64f;
 // the name keeps a slice of its own so a narrow panel still shows which layer is which. The mode
 // dropdown is the width of the name slice, so the two lines read as one record.
 constexpr float kLayerOpacitySliderPx = 88.0f;
+// Each layer is one bordered card, because a checkbox, a slider and a dropdown that float in a list
+// belong to whichever name they happen to sit near. The active card's border is the accent so which
+// layer the controls answer to is a fact about the frame, not about proximity.
+constexpr ImU32 kCardBorder = IM_COL32(70, 70, 82, 255);
+constexpr ImU32 kCardActiveBorder = IM_COL32(120, 170, 255, 255);
+constexpr ImU32 kCardBg = IM_COL32(32, 32, 38, 255);
+constexpr ImU32 kCardActiveBg = IM_COL32(42, 46, 60, 255);
+constexpr ImU32 kCardShadow = IM_COL32(0, 0, 0, 0);
 constexpr ImU32 kAntLight = IM_COL32(255, 255, 255, 255);
 constexpr ImU32 kAntDark = IM_COL32(20, 20, 20, 255);
 // The footprint ring has to read on a black pixel and on a white one, so it is drawn twice. The dark
@@ -750,65 +759,128 @@ void draw_ai_status_line(AppState& state, CommandTable& commands, const json& vi
     }
 }
 
-void draw_layers_panel(AppState& state, CommandTable& commands) {
+// The box a layer's picture is drawn into: the long edge is the thumbnail size, the other follows the
+// layer's own proportions, so a wide document's card does not show its picture stretched.
+ImVec2 thumb_draw_size(Extent size) {
+    const int long_edge = std::max(1, std::max(size.w, size.h));
+    const float scale = static_cast<float>(kLayerThumbLongEdge) / static_cast<float>(long_edge);
+    return ImVec2(std::max(1.0f, static_cast<float>(size.w) * scale),
+                  std::max(1.0f, static_cast<float>(size.h) * scale));
+}
+
+void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thumbs) {
     ImGui::Begin(kWindowLayers);
+    state.layer_cards.clear();
+    const ImVec2 panel_pos = ImGui::GetWindowPos();
+    const ImVec2 panel_size = ImGui::GetWindowSize();
+    state.layers_window = ScreenRect{panel_pos.x, panel_pos.y, panel_size.x, panel_size.y};
     if (state.doc.empty()) {
         ImGui::TextUnformatted("no document");
     } else {
-        // Top layer first, which is how every layer list shows them; the document is
-        // bottom-first, so the rows run against the indices.
+        // Top layer first, which is how every layer list shows them; the document is bottom-first, so
+        // the rows run against the indices.
         const std::span<const Layer> layers = state.doc.layers();
-        const float row_px = ImGui::GetContentRegionAvail().x;
+        const bool live = state.doc.in_provisional();
+        thumbs.resize(layers.size());
+        const float card_px = ImGui::GetContentRegionAvail().x;
         const float name_px = std::max(
             kLayerNameMinPx,
-            row_px - (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x * 2.0f +
-                      kLayerOpacitySliderPx));
+            card_px - (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x * 2.0f));
         for (std::size_t row = layers.size(); row-- > 0;) {
             const Layer& layer = layers[row];
+            thumbs.sync(row, layer, live);
+            const bool active = static_cast<int>(row) == state.doc.active();
             ImGui::PushID(static_cast<int>(row));
-            bool visible = layer.visible;
-            if (ImGui::Checkbox("##visible", &visible)) {
-                commands.invoke("layer.set",
-                                json{{"index", static_cast<int>(row)}, {"visible", visible}});
-            }
-            ImGui::SameLine();
-            // Sized, because a Selectable spans the row and would leave no room for the slider.
-            if (ImGui::Selectable(layer.name.c_str(), static_cast<int>(row) == state.doc.active(),
-                                  0, ImVec2(name_px, 0.0f))) {
-                commands.invoke("layer.select", json{{"index", static_cast<int>(row)}});
-            }
-            ImGui::SameLine();
-            float opacity = static_cast<float>(layer.opacity);
-            ImGui::PushItemWidth(kLayerOpacitySliderPx);
-            if (ImGui::SliderFloat("##opacity", &opacity, 0.0f, 1.0f, "%.2f") &&
-                static_cast<double>(opacity) != layer.opacity) {
-                commands.invoke("layer.set",
-                                json{{"index", static_cast<int>(row)},
-                                     {"opacity", static_cast<double>(opacity)}});
-            }
-            ImGui::PopItemWidth();
-            // The blend mode on a line of its own: eight names will not share a row with a name
-            // field and a slider in a panel a third of the window wide, and a dropdown clipped to
-            // three characters is not a control. The items are `kBlendModes` in table order, so a
-            // mode added in core/blend appears here without this file being told about it.
-            const std::string_view mode_name = blend_mode_name(layer.mode);
-            ImGui::PushItemWidth(std::max(64.0f, name_px));
-            if (ImGui::BeginCombo("##mode",
-                                  mode_name.empty() ? "no such mode" : mode_name.data(), 0)) {
-                for (const BlendModeInfo& info : kBlendModes) {
-                    const bool chosen = info.mode == layer.mode;
-                    if (ImGui::Selectable(info.name, chosen)) {
-                        commands.invoke(
-                            "layer.set",
-                            json{{"index", static_cast<int>(row)}, {"mode", info.name}});
-                    }
-                    if (chosen) {
-                        ImGui::SetItemDefaultFocus();
-                    }
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, active ? kCardActiveBg : kCardBg);
+            ImGui::PushStyleColor(ImGuiCol_Border, active ? kCardActiveBorder : kCardBorder);
+            ImGui::PushStyleColor(ImGuiCol_BorderShadow, kCardShadow);
+            LayerCard card_state;
+            card_state.index = static_cast<int>(row);
+            card_state.name = layer.name;
+            card_state.active = active;
+            card_state.visible = layer.visible;
+            if (ImGui::BeginChild("card", ImVec2(0.0f, 0.0f),
+                                  ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY)) {
+                bool visible = layer.visible;
+                if (ImGui::Checkbox("##visible", &visible)) {
+                    commands.invoke("layer.set", json{{"index", static_cast<int>(row)},
+                                                      {"visible", visible}});
                 }
-                ImGui::EndCombo();
+                const ImVec2 box_toggle_min = ImGui::GetItemRectMin();
+                const ImVec2 box_toggle_max = ImGui::GetItemRectMax();
+                card_state.visibility = ScreenRect{box_toggle_min.x, box_toggle_min.y,
+                                                   box_toggle_max.x - box_toggle_min.x,
+                                                   box_toggle_max.y - box_toggle_min.y};
+                ImGui::SameLine();
+                if (ImGui::Selectable(layer.name.c_str(), active, 0, ImVec2(name_px, 0.0f))) {
+                    commands.invoke("layer.select", json{{"index", static_cast<int>(row)}});
+                }
+                // The layer's own pictures: what it holds, and the coverage that hides part of it. Both
+                // are inside this border because both belong to the name above them.
+                const LayerThumbs::Card& card = thumbs.card(row);
+                if (card.pixels.valid()) {
+                    ImGui::Image(simgui_imtextureid(card.pixels.view),
+                                 thumb_draw_size(layer.pixels.size()));
+                    const ImVec2 picture_min = ImGui::GetItemRectMin();
+                    const ImVec2 picture_max = ImGui::GetItemRectMax();
+                    card_state.picture = ScreenRect{picture_min.x, picture_min.y,
+                                                    picture_max.x - picture_min.x,
+                                                    picture_max.y - picture_min.y};
+                }
+                if (card.has_mask && card.mask.valid()) {
+                    ImGui::SameLine();
+                    ImGui::Image(simgui_imtextureid(card.mask.view),
+                                 thumb_draw_size(layer.mask->size()));
+                    const ImVec2 mask_min = ImGui::GetItemRectMin();
+                    const ImVec2 mask_max = ImGui::GetItemRectMax();
+                    card_state.mask_picture = ScreenRect{mask_min.x, mask_min.y,
+                                                         mask_max.x - mask_min.x,
+                                                         mask_max.y - mask_min.y};
+                } else if (card.pixels.valid()) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("no mask");
+                }
+                // The two facts the composite reads and the layer does not hold: how much of it shows,
+                // and how it mixes with what is under it.
+                float opacity = static_cast<float>(layer.opacity);
+                ImGui::PushItemWidth(kLayerOpacitySliderPx);
+                if (ImGui::SliderFloat("##opacity", &opacity, 0.0f, 1.0f, "%.2f") &&
+                    static_cast<double>(opacity) != layer.opacity) {
+                    commands.invoke("layer.set",
+                                    json{{"index", static_cast<int>(row)},
+                                         {"opacity", static_cast<double>(opacity)}});
+                }
+                ImGui::PopItemWidth();
+                ImGui::SameLine();
+                // The items are `kBlendModes` in table order, so a mode added in core/blend appears
+                // here without this file being told about it.
+                const std::string_view mode_name = blend_mode_name(layer.mode);
+                ImGui::PushItemWidth(std::max(
+                    64.0f, card_px - kLayerOpacitySliderPx - ImGui::GetStyle().ItemSpacing.x * 3.0f));
+                if (ImGui::BeginCombo("##mode",
+                                      mode_name.empty() ? "no such mode" : mode_name.data(), 0)) {
+                    for (const BlendModeInfo& info : kBlendModes) {
+                        const bool chosen = info.mode == layer.mode;
+                        if (ImGui::Selectable(info.name, chosen)) {
+                            commands.invoke(
+                                "layer.set",
+                                json{{"index", static_cast<int>(row)}, {"mode", info.name}});
+                        }
+                        if (chosen) {
+                            ImGui::SetItemDefaultFocus();
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::PopItemWidth();
             }
-            ImGui::PopItemWidth();
+            ImGui::EndChild();
+            const ImVec2 card_min = ImGui::GetItemRectMin();
+            const ImVec2 card_max = ImGui::GetItemRectMax();
+            card_state.box = ScreenRect{card_min.x, card_min.y, card_max.x - card_min.x,
+                                        card_max.y - card_min.y};
+            state.layer_cards.push_back(std::move(card_state));
+            ImGui::PopStyleColor(3);
             ImGui::PopID();
         }
         if (ImGui::Button("Add layer")) {
@@ -1139,7 +1211,7 @@ void draw_quit_guard(AppState& state, CommandTable& commands) {
 }
 
 void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
-             const gfx::Checker& checker, CoverageTint& tint) {
+             const gfx::Checker& checker, CoverageTint& tint, LayerThumbs& thumbs) {
     // The door is opened here, before the menu bar is drawn, because a menu item's callback is the
     // frame that sets it — and `OpenPopup` from inside a menu attaches the popup to a menu window that
     // closes at the end of that same frame, which is an ImGui assertion rather than a dialog. One
@@ -1160,7 +1232,7 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
     // change in half a frame.
     const json ai_view = commands.invoke("ai.intent", json::object()).value;
     draw_tool_panel(state, commands, ai_view);
-    draw_layers_panel(state, commands);
+    draw_layers_panel(state, commands, thumbs);
     draw_log_panel();
     // Last, so the bar sits above the canvas it is anchored to and above the panels it mirrors.
     draw_verb_bar(state, commands);

@@ -116,6 +116,34 @@ another layer. Roles and recipes are ours to pin for now - the sets are in `asse
 `assets/recipes/`, loaded from disk, and the plan is that a person edits those files, not a dialog, so
 nothing here needs a settings UI to be foreseen later.
 
+## 2026-10-17 - A surface per layer, and its own picture on it
+
+The panel put a checkbox, a name, a slider and a dropdown in a row and moved on to the next layer, so
+which layer any of them belonged to was a guess from proximity. Each layer is now a bordered card - its
+own visibility, name, colour thumbnail, mask thumbnail, opacity and blend mode inside one frame, the
+active card's border in the accent, so ownership is a fact about the frame rather than about where the eye
+landed.
+
+The thumbnails needed a cache key and the document had one revision for the whole stack. So
+`Layer::content_revision`: bumped by every write to that layer's pixels or mask, and by any change to the
+stack - deliberately **not** by visibility, opacity or blend mode, because those change what the composite
+is made of and not what the layer holds, and a slider that invalidated every card would resample the whole
+stack on every frame it is dragged. `Document` funnels every change through `changed_stack` /
+`changed_layer` / `changed_composite`, so the two facts cannot drift apart, and `test_document` holds both
+directions: a counter that misses a write shows pixels that are not there, and one that over-fires is a
+cliff nobody notices until someone opens a 2048² document.
+
+A stroke moves the counter on every dab, so a card is rebuilt when the hand lifts (`live` in
+`LayerThumbs::sync`) rather than per dab. Sampling is a box average in **premultiplied** space with the
+backdrop composited in afterwards: averaging unpremultiplied colours drags every semi-transparent edge
+towards whatever happened to be under it.
+
+`app.state.layer_cards` reports each card's box, its checkbox's box and where its two pictures were drawn,
+so `layer_panel_probe` presses and measures what the app reports instead of remembering a layout. It checks
+the three things a checkbox cannot: that a picture is the layer's own content (two layers' thumbnails
+differ), that an **opacity change leaves it byte-identical** - the caching rule, proven with pixels - and
+that painting into the layer does change it.
+
 ## 2026-10-16 - Coverage you can see
 
 Marked coverage was a boundary and nothing else: `cover` and `un-cover` looked identical while you did
@@ -221,6 +249,13 @@ which is the only way either fact could have been found.
 invariant) carry the rest. Suite: 37/37 with `test_verb_bar_probe` added.
 
 ## Traps the code cannot show
+* **`xvfb-run` clips pointer injection; the probes are run without it.** `wd.ensure_display` raises an
+  Xvfb at the size the probe asks for and is what ctest uses, so motion reaches the whole window. Running
+  a probe by hand under `xvfb-run -a` instead reuses *its* screen, and XTEST motion then stops arriving
+  around x≈640 - which looks exactly like a dead widget in the right-hand panels. Two claims were nearly
+  chased as app bugs over it and one passed vacuously because the click had never landed. Run by hand as
+  `env -u DISPLAY python3 tools/<probe>.py`, and check that a click changed some state before believing
+  that it could.
 * **A hidden mouse cursor is yours until you show it again.** `sapp_show_mouse(false)` is sticky:
   sokol_imgui re-applies the cursor *shape* from ImGui at new-frame and never re-asserts visibility. A
   canvas that hides the cursor to draw a brush footprint in its place must state visibility every frame,

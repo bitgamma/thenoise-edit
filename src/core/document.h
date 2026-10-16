@@ -187,6 +187,15 @@ private:
         std::variant<Image, Mask> held;
     };
 
+    // Every change to the document leaves through one of these three, so "what the canvas shows moved"
+    // and "which layer's own content moved" cannot drift apart. The second is what a viewer of a single
+    // layer caches against: a thumbnail rebuilt on the first would re-sample the whole stack on every
+    // frame of an opacity drag, which moves nobody's content.
+    void changed_stack();
+    void changed_layer(Layer& layer);
+    void changed_composite();
+
+    Layer* layer_of(std::uint64_t id);
     Image* layer_pixels(std::uint64_t id);
     Mask* layer_mask(std::uint64_t id);
     // `dst_at` and `src_at` say where each image sits in document coordinates.

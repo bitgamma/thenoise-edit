@@ -24,7 +24,7 @@ void Document::reset(std::vector<Layer> layers, std::optional<Mask> selection, s
     dirty_ = path_.empty();  // nothing on disk holds this document yet
     history_.clear();
     selection_ = std::move(selection);
-    ++revision_;
+    changed_stack();
 }
 
 const std::string& Document::path() const { return path_; }
@@ -60,7 +60,7 @@ int Document::add_layer(std::string name, Rgba8 fill) {
     active_ = at;
     pending_ = Rect{0, 0, width(), height()};
     dirty_ = true;
-    ++revision_;
+    changed_stack();
     return at;
 }
 
@@ -93,7 +93,7 @@ int Document::add_layer_written(std::string name, Rect bounds,
     history_.end_step();
     pending_ = unite(pending_, touched);
     dirty_ = true;
-    ++revision_;
+    changed_stack();
     return at;
 }
 
@@ -129,7 +129,7 @@ bool Document::remove_layer(int index) {
     // Removing the top layer leaves the one below it active, at the index the removed one had.
     active_ = std::min(active_, static_cast<int>(layers_.size()) - 1);
     dirty_ = true;
-    ++revision_;
+    changed_stack();
     return true;
 }
 
@@ -154,7 +154,7 @@ bool Document::set_layer_visible(int index, bool visible) {
     // was even built while this layer was hidden.
     pending_ = Rect{0, 0, width(), height()};
     dirty_ = true;
-    ++revision_;
+    changed_composite();
     return true;
 }
 
@@ -184,7 +184,7 @@ bool Document::set_layer_mask(int index, std::optional<Mask> mask) {
     pending_ = Rect{0, 0, width(), height()};
     layer.mask = std::move(mask);
     dirty_ = true;
-    ++revision_;
+    changed_layer(layer);
     return true;
 }
 
@@ -199,7 +199,7 @@ bool Document::set_layer_mode(int index, BlendMode mode) {
     layer.mode = mode;
     pending_ = Rect{0, 0, width(), height()};
     dirty_ = true;
-    ++revision_;
+    changed_composite();
     return true;
 }
 
@@ -217,7 +217,7 @@ bool Document::set_layer_opacity(int index, double opacity) {
     layer.opacity = opacity;
     pending_ = Rect{0, 0, width(), height()};
     dirty_ = true;
-    ++revision_;
+    changed_composite();
     return true;
 }
 
@@ -352,6 +352,22 @@ Image Document::flatten_over(Rect bounds, std::size_t top_layer) const {
     return canvas.region(region);
 }
 
+void Document::changed_stack() {
+    ++revision_;
+    for (Layer& layer : layers_) {
+        ++layer.content_revision;
+    }
+}
+
+void Document::changed_layer(Layer& layer) {
+    ++revision_;
+    ++layer.content_revision;
+}
+
+void Document::changed_composite() {
+    ++revision_;
+}
+
 std::uint64_t Document::revision() const { return revision_; }
 
 void Document::paint(Rect bounds, PaintFence fence, const std::function<void(Image&)>& edit) {
@@ -379,7 +395,7 @@ void Document::paint(Rect bounds, PaintFence fence, const std::function<void(Ima
                     {bytes.begin(), bytes.end()});
     pending_ = unite(pending_, touched);
     dirty_ = true;
-    ++revision_;
+    changed_layer(layers_[static_cast<std::size_t>(active_)]);
 }
 
 bool Document::paint_mask(Rect bounds, const std::function<void(Mask&)>& edit) {
@@ -407,7 +423,7 @@ bool Document::paint_mask(Rect bounds, const std::function<void(Mask&)>& edit) {
     history_.record(target.id, LayerPlane::mask, touched, before.plane());
     pending_ = unite(pending_, touched);
     dirty_ = true;
-    ++revision_;
+    changed_layer(target);
     return true;
 }
 
@@ -536,7 +552,7 @@ void Document::repaint_provisional(Rect dirty, const std::function<void(Image&, 
     }
     painted_ = unite(painted_, area);
     pending_ = unite(pending_, area);
-    ++revision_;
+    changed_layer(*layer_of(provisional_->layer));
 }
 
 void Document::repaint_provisional_mask(Rect dirty,
@@ -568,7 +584,7 @@ void Document::repaint_provisional_mask(Rect dirty,
     }
     painted_ = unite(painted_, area);
     pending_ = unite(pending_, area);
-    ++revision_;
+    changed_layer(*layer_of(provisional_->layer));
 }
 
 void Document::commit_provisional() {
@@ -617,13 +633,13 @@ void Document::discard_provisional() {
             copy_rows(*target, whole(*target), std::get<Image>(provisional_->held),
                       provisional_->rect, painted_);
             pending_ = unite(pending_, painted_);
-            ++revision_;
+            changed_layer(*layer_of(provisional_->layer));
         }
     } else if (Mask* target = layer_mask(provisional_->layer)) {
         copy_coverage_rows(*target, Rect{0, 0, target->size().w, target->size().h},
                            std::get<Mask>(provisional_->held), provisional_->rect, painted_);
         pending_ = unite(pending_, painted_);
-        ++revision_;
+        changed_layer(*layer_of(provisional_->layer));
     }
     provisional_.reset();
     painted_ = Rect{};
@@ -634,21 +650,22 @@ bool Document::in_provisional() const { return provisional_.has_value(); }
 Rect Document::provisional_area() const { return provisional_ ? provisional_->rect : Rect{}; }
 
 Mask* Document::layer_mask(std::uint64_t id) {
+    Layer* const layer = layer_of(id);
+    return layer && layer->mask ? &*layer->mask : nullptr;
+}
+
+Layer* Document::layer_of(std::uint64_t id) {
     for (Layer& layer : layers_) {
         if (layer.id == id) {
-            return layer.mask ? &*layer.mask : nullptr;
+            return &layer;
         }
     }
     return nullptr;
 }
 
 Image* Document::layer_pixels(std::uint64_t id) {
-    for (Layer& layer : layers_) {
-        if (layer.id == id) {
-            return &layer.pixels;
-        }
-    }
-    return nullptr;
+    Layer* const layer = layer_of(id);
+    return layer ? &layer->pixels : nullptr;
 }
 
 // A row copy between images that each index from their own corner: `dst_at` and `src_at` say
@@ -695,7 +712,7 @@ bool Document::undo() {
     if (moved->structure) {
         pending_ = Rect{0, 0, width(), height()};
     }
-    ++revision_;
+    changed_stack();
     return true;
 }
 
@@ -712,7 +729,7 @@ bool Document::redo() {
     if (moved->structure) {
         pending_ = Rect{0, 0, width(), height()};
     }
-    ++revision_;
+    changed_stack();
     return true;
 }
 bool Document::can_undo() const { return history_.can_undo(); }

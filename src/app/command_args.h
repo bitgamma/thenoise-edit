@@ -48,6 +48,8 @@ json history_json(const Document& doc);
 // A layer's mask as `layer.list` reports it: null for no mask, otherwise what it covers.
 json layer_mask_json(const Layer& layer);
 json layers_json(const AppState& state);
+// Where the panel drew each layer card, for a driver that has to press one.
+json layer_cards_json(const AppState& state);
 // The same rows with what each layer holds. Only the diagnostic that asks for it pays; hashing a
 // stack to answer a click costs a document-sized SHA-256 per event.
 json layers_json_with_checksums(const AppState& state);

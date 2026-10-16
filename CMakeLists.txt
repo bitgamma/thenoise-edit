@@ -187,7 +187,8 @@ add_library(noise_ui STATIC
     src/app/shortcuts.cpp
     src/app/ui.cpp
     src/app/verb_bar_draw.cpp
-    src/app/coverage_tint.cpp)
+    src/app/coverage_tint.cpp
+    src/app/layer_thumbs.cpp)
 target_include_directories(noise_ui PUBLIC src)
 target_link_libraries(noise_ui PUBLIC noise_app noise_gfx imgui sokol)
 

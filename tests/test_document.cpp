@@ -1207,6 +1207,63 @@ void test_a_layer_mask_change_is_a_document_change() {
     CHECK_EQ(doc.layer(0).pixels.checksum_hex(), before_untouched);
 }
 
+// A viewer of one layer - a thumbnail - caches against `content_revision`, so that counter has to move
+// when the layer's own content moves and not when the composite merely looks different. Both directions
+// are load-bearing: a counter that misses a write leaves a stale thumbnail on screen claiming pixels
+// that are not there, and one that moves for a visibility click re-samples every layer on every frame of
+// an opacity drag.
+void test_what_a_layer_holds_and_what_the_composite_uses_are_two_counters() {
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(Extent{8, 8}, 0, 0, 0, 0)},
+                     {"B", Image::filled(Extent{8, 8}, 0, 0, 0, 0)}}),
+              std::nullopt, "x.noise");
+    const auto revs = [&doc] {
+        std::vector<std::uint64_t> out;
+        for (const Layer& layer : doc.layers()) {
+            out.push_back(layer.content_revision);
+        }
+        return out;
+    };
+    const std::vector<std::uint64_t> start = revs();
+    const std::size_t active = static_cast<std::size_t>(doc.active());
+    const std::size_t other = 1 - active;
+
+    // The three facts the composite reads and no layer holds: the canvas changes, and no card does.
+    CHECK(doc.set_layer_visible(0, false));
+    CHECK(doc.set_layer_opacity(0, 0.5));
+    CHECK(doc.set_layer_mode(0, BlendMode::multiply));
+    CHECK(doc.revision() > 0);
+    CHECK(revs() == start);
+
+    // A write touches the layer it was made on.
+    paint_on(doc, Rect{2, 2, 2, 2}, 200);
+    CHECK_EQ(revs()[active], start[active] + 1);
+    CHECK_EQ(revs()[other], start[other]);
+
+    // Coverage is content a card draws, so a mask counts as a write to its own layer - and only that one.
+    Mask mask(Extent{8, 8});
+    mask.op(Rect{0, 0, 2, 2}, MaskOp::replace);
+    const std::vector<std::uint64_t> before_mask = revs();
+    CHECK(doc.set_layer_mask(1, mask));
+    CHECK_EQ(revs()[1], before_mask[1] + 1);
+    CHECK_EQ(revs()[0], before_mask[0]);
+
+    // Undo answers a step that could have moved the stack by invalidating every card: the truth rather
+    // than a guess about which layers it touched.
+    CHECK(doc.undo());
+    CHECK(revs()[active] > before_mask[active]);
+    CHECK(revs()[other] > before_mask[other]);
+
+    // A layer arriving is a stack change, which invalidates every card rather than pretending to know
+    // which ones a shift in the indices reaches. The new layer's own counter says nothing either way:
+    // a card is cached against the layer's id, and no card has ever been drawn for an id this call made.
+    const std::vector<std::uint64_t> before_add = revs();
+    CHECK(doc.add_layer("C", Rgba8{0, 0, 0, 0}) >= 0);
+    CHECK_EQ(revs().size(), 3u);
+    CHECK_EQ(revs()[0], before_add[0] + 1);
+    CHECK_EQ(revs()[1], before_add[1] + 1);
+}
+
 // Both fences at once: the selection limits what a write may change, the layer mask limits what the
 // canvas shows of what was changed. A stroke under a masked-out area is real - it is on the layer -
 // and simply is not visible until the mask moves.
@@ -1290,5 +1347,6 @@ int main() {
     test_a_layer_mask_of_another_size_is_refused();
     test_a_layer_mask_change_is_a_document_change();
     test_a_selection_and_a_mask_fence_different_things();
+    test_what_a_layer_holds_and_what_the_composite_uses_are_two_counters();
     return noise::test::summary("document");
 }

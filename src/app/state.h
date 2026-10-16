@@ -52,6 +52,21 @@ struct ScreenRect {
 // The gesture the pointer is making, if any. The walk carries the dab spacing across events
 // and the scratch holds the stroke's coverage, which is what lets a gesture painted frame by
 // frame land on the same bytes as the same path painted in one go.
+// One layer's card in the panel: the bordered box that owns its controls, and the control a driver is
+// most likely to press.
+struct LayerCard {
+    int index = 0;
+    std::string name;
+    bool active = false;
+    bool visible = true;
+    ScreenRect box{};
+    ScreenRect visibility{};
+    // The layer's own pictures, where the card drew them. Empty when there was nothing to draw, which
+    // is what makes "the thumbnail is the layer" a claim a driver can check rather than assume.
+    ScreenRect picture{};
+    ScreenRect mask_picture{};
+};
+
 struct PointerStroke {
     bool active = false;
     Vec2 last{};
@@ -145,6 +160,11 @@ struct AppState {
     // mark to anchor it to. Published for the wire: a driver clicks the bar by reading this back
     // rather than by measuring a screenshot.
     ScreenRect verb_bar{};
+    // Where the layers panel drew this frame: the panel's own box and one card per layer, top card
+    // first, each with the box its visibility control occupies. A driver clicks what the app reports
+    // rather than a coordinate it remembered from a screenshot.
+    ScreenRect layers_window{};
+    std::vector<LayerCard> layer_cards{};
     // And the same for the phrase box the bar opens, so a driver can read the box's own rect rather
     // than deriving it from the bar's.
     ScreenRect verb_ask{};

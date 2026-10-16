@@ -172,6 +172,27 @@ json view_json(const AppState& state) {
                 {"coverage", coverage_view_name(state.coverage_view)}};
 }
 
+namespace {
+json screen_json(const ScreenRect& rect) {
+    return json::array({rect.x, rect.y, rect.w, rect.h});
+}
+}  // namespace
+
+json layer_cards_json(const AppState& state) {
+    json cards = json::array();
+    for (const LayerCard& card : state.layer_cards) {
+        cards.push_back({{"index", card.index},
+                         {"name", card.name},
+                         {"active", card.active},
+                         {"visible", card.visible},
+                         {"box", screen_json(card.box)},
+                         {"visibility", screen_json(card.visibility)},
+                         {"picture", screen_json(card.picture)},
+                         {"mask_picture", screen_json(card.mask_picture)}});
+    }
+    return cards;
+}
+
 json image_json(const Image& image, const std::string& label) {
     return json{{"label", label},
                 {"width", image.size().w},
