@@ -17,6 +17,7 @@ void register_paint_commands(AppState& state, CommandTable& table);
 void register_layer_commands(AppState& state, CommandTable& table);
 void register_select_commands(AppState& state, CommandTable& table);
 void register_coverage_commands(AppState& state, CommandTable& table);
+void register_verb_bar_commands(AppState& state, CommandTable& table);
 void register_mask_commands(AppState& state, CommandTable& table);
 void register_view_commands(AppState& state, CommandTable& table);
 void register_file_commands(AppState& state, CommandTable& table);

@@ -36,6 +36,17 @@ inline constexpr ViewPolicy kViewPolicy{0.05, 64.0, 1.10, 16, 48};
 inline constexpr const char* kAppVersion = "0.0.0-m0";
 inline constexpr const char* kWindowTitle = "noise-edit";
 
+// A rectangle in framebuffer pixels. Not `Rect`: that one counts document pixels, and these two are
+// compared against different things all day.
+struct ScreenRect {
+    float x = 0.0f;
+    float y = 0.0f;
+    float w = 0.0f;
+    float h = 0.0f;
+
+    bool empty() const { return w <= 0.0f || h <= 0.0f; }
+};
+
 // The gesture the pointer is making, if any. The walk carries the dab spacing across events
 // and the scratch holds the stroke's coverage, which is what lets a gesture painted frame by
 // frame land on the same bytes as the same path painted in one go.
@@ -117,6 +128,10 @@ struct AppState {
     // Top-left of the canvas content area inside the framebuffer. View coordinates are
     // relative to it, so a capture needs it to place an image rect on screen.
     Vec2 canvas_origin{};
+    // Where the verb bar was drawn this frame, in framebuffer pixels, width zero when there was no
+    // mark to anchor it to. Published for the wire: a driver clicks the bar by reading this back
+    // rather than by measuring a screenshot.
+    ScreenRect verb_bar{};
     std::uint16_t wire_port = 0;
     // Bumped once per presented frame: a wire client waits on it so captures and
     // assertions land on a frame the app actually drew.

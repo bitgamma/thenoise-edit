@@ -4,6 +4,7 @@
 #include "app/ants.h"
 #include "app/brush_steps.h"
 #include "app/command_args.h"
+#include "app/verb_bar.h"
 
 #include "core/log.h"
 #include "gfx/checker.h"
@@ -305,22 +306,11 @@ void draw_tool_panel(AppState& state, CommandTable& commands, const json& intent
     ImGui::EndDisabled();
 
     const bool at_mask = state.coverage_target == CoverageTarget::mask;
+    // The measure of the coverage lives in the status line, not here: the panel would be a second
+    // place to keep the same numbers, and every line it spends is a line the verbs below do not get.
     const json selection = selection_json(state);
-    const json mask_facts =
-        at_mask ? commands.invoke("mask.get", json::object()).value["mask"] : json(nullptr);
-    if (at_mask && mask_facts.is_null()) {
-        ImGui::TextDisabled("this layer has no mask to paint");
-    } else {
-        const json& shown = at_mask ? mask_facts : selection;
-        const bool present = at_mask || selection["active"].get<bool>();
-        if (present) {
-            const json& bounds = shown["bounds"];
-            ImGui::TextDisabled("%d x %d at %d,%d, %d px", bounds[2].get<int>(), bounds[3].get<int>(),
-                                bounds[0].get<int>(), bounds[1].get<int>(),
-                                static_cast<int>(shown["covered"].get<std::int64_t>()));
-        } else {
-            ImGui::TextDisabled("the whole canvas");
-        }
+    if (at_mask && commands.invoke("mask.get", json::object()).value["mask"].is_null()) {
+        ImGui::TextDisabled("no mask on this layer yet - Add mask in the Layers panel");
     }
     // Three operations, each run against whichever coverage is named: the marked area has its commands
     // and the mask has its own, and the panel holds no third version of either.
@@ -1101,6 +1091,8 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
     draw_tool_panel(state, commands, ai_view);
     draw_layers_panel(state, commands);
     draw_log_panel();
+    // Last, so the bar sits above the canvas it is anchored to and above the panels it mirrors.
+    draw_verb_bar(state, commands);
 
     ImGui::Begin(kWindowStatus, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);

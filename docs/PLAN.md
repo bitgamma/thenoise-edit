@@ -64,11 +64,13 @@ coverage with verbs at the marked area, is next.
 2. **New image from an idea.** The New dialog's prompt, kind (a recipe family's `variants`) and size -
    preset ratios plus explicit pixels - and the dialog **quoting the price** the way the status line does.
    OK generates into the document's first layer. Progress, coarse or indefinite, plus Cancel.
-3. **One coverage, verbs at the marked area.** Selection and layer mask share the coverage editor, the
-   shape language and the maths, with the target switch saying which lifetime the brush is painting.
-   **Fix**, **Insert**, **Edit**, **Erase** as three-plus separate buttons (decided: not one button with a
-   mode) in a bar attached to the marked area, the panel keeping the full controls. Local `heal` lands
-   here, because *Fix* on a small area should not pay for a round trip.
+3. **One coverage, verbs at the marked area.** Done: `coverage.target {to: marked|mask}` and `cover`
+   (`K`) make one editor over the two lifetimes, and the marquee follows the same switch; the bar is on
+   the canvas, holding a separate button for each verb whose recipe reads the marked area - **Heal**,
+   **Remove**, **Fill**, **Change** - with the panel keeping the full controls beside it.
+   Remaining: the bar's labels are the recipe labels today, and whether they should read **Fix / Insert /
+   Edit / Erase** is an open product call; and local `heal` (in-process Telea/Chan, owed below) still has
+   to land, because *Heal* on a small area should not pay for a round trip.
 4. **Layers you can see.** Thumbnails and mask thumbnails, reorder, opacity, visibility, move and scale,
    **Flatten** (`layer.merge`). The panel is always visible: it is where a person goes to understand what
    an edit did.
@@ -105,13 +107,36 @@ nothing here needs a settings UI to be foreseen later.
 | `ai/provider` | the field policy is the only place a field can be added; tier-2 and unknown fields refused by name; `image_url` / `mask_url` are never sent | `test_provider` |
 | `ai/queue` | one worker, cancellable, in-memory; a job's timeout is predicted when it is queued so it cannot change under it; **a re-ask is another request** | `test_backend` |
 | `ai/server` | latency EMA per `(model, w×h, steps)` → ETA and `timeout_request`; a reply inside 1 s is the box's own answer and never a sample | `test_backend`, `docs/probes/` |
-| `app::kVerbs` + `ai.verbs` | four verbs bound to recipes; a row whose recipe contradicts it — wrong operation, an `ask` that grew, two verbs on one recipe — makes the row not-ready at session open | `test_app`, `ai.verbs` |
+| `app::kVerbs` + `ai.verbs` | five verbs bound to recipes; a row whose recipe contradicts it — wrong operation, an `ask` that grew, two verbs on one recipe — makes the row not-ready at session open | `test_app`, `ai.verbs` |
+| `app/coverage.h` (`coverage.target`) | one coverage, two lifetimes: `cover` and the marquee write whichever `marked`/`mask` says, a gesture keeps the lifetime it was pressed on, marking costs no pixel write and no undo step, and colour stays a tool rather than a target | `test_app`, `wire_input`, `mask_speed_probe` |
+| `app/verb_bar.cpp` (`verb.bar`) | the bar offers exactly the verbs whose recipe has `scope: selection`, hangs off the mark and clear of it, and presses the panel's command; where it drew itself is read back rather than remembered by the caller | `test_app`, `verb_bar_probe` |
 | `ai.intent` | the whole action surface (intents, values, price, aspect, style, seed, job, session) in one command; a refusal is recorded so the next read shows it; the handshake lives here too | `test_app`, the status line, `panel_aspect_probe` |
 | `ai/recipes` (`aspects`, `variants`) | a frame is offered only by a document-scope `from_words` recipe, and a variant is interchangeable with its head at the key it shares (operation, endpoint, `ask`, `aspects`) or the table does not load | `test_recipes` |
 | `pump_ai_landings` | a succeeded job lands itself at the first door that reads the queue; it never re-lands what undo removed; a job lands only in the `document_epoch` it was queued under | `test_app`, `wire_input` |
 | `tools/ai_job_probe.py` | every marked-area verb on the recordings in the order a person has it: bare press refused naming recipe and field → preview carries the typed words in the tier-1 field set → the row's command presses → the answer lands itself on a layer named for the verb and the job → no pixel outside the coverage claimed → undo byte-for-byte | `test_ai_job_probe` |
 | `tools/panel_words_probe.py` | the panel's own door: injected keys into a box found by sweeping the dock, then the verb's real key → a job whose prompt carries the typed marker → the layer named for it. A bare key with nothing typed starts nothing | `test_panel_words` |
 | `tools/panel_aspect_probe.py` | the aspect and style dropdowns commit: a click pair changes `aspect` and the quoted size follows it (ratio held, one axis still full), a second pair changes which recipe the intent holds and what `ai.verbs` calls `active`, then the key runs that recipe and it lands | `test_panel_aspect_probe` |
+
+## 2026-10-16 - One coverage, and the verbs that come to it
+
+Slice 3, first two steps. **Coverage**: `select`/`Mask` were already one type, so `coverage.target
+{to: marked|mask}` and the `cover` tool (`K`) moved the *editing* onto that fact — brush scratch and
+fence shared, marquee following the switch, `PointerStroke` keeping the lifetime it was pressed on.
+Colour stopped being a target: the Layers panel's `paint: layer | paint: mask` radios are gone and the
+brush paints colour whichever way the switch is aimed, which is what makes `cover` aimed at a missing
+mask a refusal rather than a surprise.
+
+**The bar**: `verb.bar` reports the verbs whose recipe has `scope: selection` and where the bar drew
+itself, and the window presses the `ai.<verb>` commands it names — `Heal` is a new verb row (`Ctrl+H`)
+over the existing `heal` recipe, so *Fix* exists without inventing a mode. Two measured notes: the
+panel is a fixed fraction and the coverage block pushed the generate row's **style** dropdown under the
+fold at 900 px, so the coverage measures moved to the status line, which already had them; and a window
+submitted after the canvas is still drawn under it, so the bar calls
+`BringWindowToDisplayFront` — `verb_bar_probe` presses the bar at the coordinates the app reported,
+which is the only way either fact could have been found.
+
+`docs/PLAN.md` above and `docs/ARCHITECTURE.md` (seam table, source tree, the `coverage.target`
+invariant) carry the rest. Suite: 37/37 with `test_verb_bar_probe` added.
 
 ## Traps the code cannot show
 

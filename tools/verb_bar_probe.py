@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""Put a mark on the canvas and press the verbs that appear beside it.
+
+`verb.bar` and the panel both press `ai.<verb>`, so the commands are covered elsewhere; what only this
+can see is the bar itself — that it is drawn where the mark is rather than where a remembered constant
+says it should be, that it stays out of the mark it is anchored to, and that a click on one of its
+buttons is a real press of that verb and lands an answer.
+
+The buttons are found by reading the app's own report of where it drew them, so a bar that moved,
+resized or reordered is still pressed; a bar that was never drawn fails the claim instead of clicking
+through empty canvas.
+
+Runs against the committed recordings: no request leaves the machine.
+
+    python3 tools/verb_bar_probe.py --bin build/noise-edit
+"""
+from __future__ import annotations
+
+import argparse
+import pathlib
+import sys
+import tempfile
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import wire_drive as wd  # noqa: E402
+import wire_input as wi  # noqa: E402
+
+WIDTH, HEIGHT = 1100, 900
+MARK = [120, 100, 200, 140]
+EXPECTED = ["ai.heal", "ai.remove", "ai.fill", "ai.change"]
+
+
+class Probe:
+    def __init__(self) -> None:
+        self.failed = 0
+
+    def check(self, ok: bool, claim: str, detail: str = "") -> bool:
+        print(("  ok   " if ok else "  FAIL ") + claim + (f"  {detail}" if detail else ""))
+        if not ok:
+            self.failed += 1
+        return ok
+
+
+def click(inj: wi.Injector, x: float, y: float) -> None:
+    inj.move(int(x), int(y))
+    inj.button(1, True)
+    inj.button(1, False)
+    inj.move(int(x), int(y))
+
+
+def mark_screen(state: dict) -> tuple[float, float, float, float]:
+    """`MARK` projected through the same view the app drew with."""
+    left, top, right, bottom = wd.document_screen_rect(state)
+    scale = state["view"]["scale"]
+    return left + MARK[0] * scale, top + MARK[1] * scale, left + (MARK[0] + MARK[2]) * scale, top + (
+        MARK[1] + MARK[3]) * scale
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bin", required=True)
+    args = parser.parse_args()
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="verb-bar-"))
+    runtime = tmp / "runtime"
+    runtime.mkdir()
+    p = Probe()
+    print("the verbs that come to the marked area")
+    skip = wd.display_skip()
+    if skip:
+        print(f"SKIP: {skip}")
+        return 0
+    display = wd.ensure_display(WIDTH, HEIGHT)
+    proc = wd.start_app(args, runtime, WIDTH, HEIGHT, None, open(tmp / "app.stderr", "wb"),
+                        {"NOISE_AI_FIXTURES": str(root / "tests" / "fixtures" / "http"),
+                         "THENOISE_URL": None, "THENOISE_API_KEY": None},
+                        start_dialog=False)
+    wire = None
+    try:
+        wire = wd.Wire(wd.wire_port(runtime, proc, 60.0), timeout=120)
+        inj = wi.Injector(display)
+        wire.call("doc.new", {"width": 512, "height": 512})
+        wire.call("server.connect")
+        wd.settle(wire)
+
+        empty = wire.call("verb.bar")
+        p.check(empty["shown"] is False and empty["buttons"] == [],
+                "an unmarked canvas offers no bar", str(empty["mark"]))
+
+        blank_checksum = wire.call("doc.get")["checksum"]
+        wire.call("select.rect", {"rect": MARK})
+        wd.settle(wire)
+        bar = wire.call("verb.bar")
+        p.check(bar["shown"] is True, "the mark brings the bar")
+        p.check(bar["mark"] == MARK, "and it hangs off the mark the app holds", str(bar["mark"]))
+        p.check([b["command"] for b in bar["buttons"]] == EXPECTED,
+                "the buttons are the verbs whose recipe reads the marked area",
+                str([b["label"] for b in bar["buttons"]]))
+        p.check(all(b["ready"] for b in bar["buttons"]), "and a server means they all run",
+                str([b["reason"] for b in bar["buttons"] if not b["ready"]]))
+
+        bx, by, bw, bh = bar["screen"]
+        ml, mt, mr, mb = mark_screen(wire.call("app.state"))
+        p.check(bw > 0 and bh > 0 and bx >= 0 and by >= 0 and bx + bw <= WIDTH and by + bh <= HEIGHT,
+                "the bar is inside the window", str(bar["screen"]))
+        p.check(by + bh <= mt + 2 or by >= mb - 2, "and clear of the mark it is anchored to",
+                f"bar y {by:.0f}..{by + bh:.0f}, mark y {mt:.0f}..{mb:.0f}")
+        p.check(ml <= bx + bw / 2 <= mr, "centred over it",
+                f"bar centre {bx + bw / 2:.0f}, mark x {ml:.0f}..{mr:.0f}")
+
+        # The first button, pressed where the app says it drew it. `Remove` is the one whose recording
+        # is committed, so the answer comes back without a network.
+        remove = next(b for b in bar["buttons"] if b["command"] == "ai.remove")
+        index = bar["buttons"].index(remove)
+        step = bw / len(bar["buttons"])
+        jobs_before = len(wire.call("job.list")["jobs"])
+        click(inj, bx + step * (index + 0.5), by + bh / 2)
+        wd.settle(wire, 2)
+        started = wire.call("job.list")["jobs"]
+        p.check(len(started) == jobs_before + 1, "the bar's button started a job",
+                f"{jobs_before} -> {len(started)}")
+        if started:
+            done = wire.call("job.wait", {"id": started[-1]["id"], "timeout": 120})
+            p.check(done["state"] == "succeeded", "and it finished",
+                    str(done.get("job", {}).get("error", "")))
+            # The canvas was blank, so the answer *is* the canvas: one empty layer and an answer above
+            # it is a stack nobody asked for. The pixels are the claim, not the layer count.
+            landed = wire.call("layer.list")["layers"]
+            p.check(len(landed) == 1, "and it arrived on the blank canvas, not over it",
+                    f"{len(landed)} layers")
+            p.check(wire.call("doc.get")["checksum"] != blank_checksum,
+                    "and the canvas changed")
+
+        # With the mark gone the bar is gone, and the pixels where it used to be are only canvas: a
+        # click there starts nothing rather than pressing an invisible button.
+        wire.call("select.clear")
+        wd.settle(wire)
+        p.check(wire.call("verb.bar")["shown"] is False, "clearing the mark takes the bar away")
+        jobs_now = len(wire.call("job.list")["jobs"])
+        click(inj, bx + step * (index + 0.5), by + bh / 2)
+        wd.settle(wire, 2)
+        p.check(len(wire.call("job.list")["jobs"]) == jobs_now, "and nothing is left to press")
+    except wd.WireError as why:
+        print(f"  FAIL wire: {why}")
+        p.failed += 1
+    finally:
+        wd.shutdown(proc, wire)
+    print(("FAILURES " if p.failed else "all claims held ") + f"({tmp})")
+    return 1 if p.failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -177,6 +177,17 @@ if(Python3_Interpreter_FOUND)
                          TIMEOUT 420
                          DEPENDS noise-edit)
 
+    # The bar that comes to a marked area: where it drew itself, what it offered, and whether a click
+    # on one of its buttons is a press of that verb. Only the window can answer this, and `verb.bar`
+    # exists so the probe presses the bar rather than a remembered coordinate.
+    add_test(NAME test_verb_bar_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/verb_bar_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_verb_bar_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 420
+                         DEPENDS noise-edit)
+
     # Whether the desktop will hand this window a file at all, and whether a driver can do what a drop
     # does. The drag itself needs a second program and a real pointer, so these are the two halves that
     # are observable headless.

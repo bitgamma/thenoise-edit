@@ -186,6 +186,8 @@ src/
     select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
     coverage.cpp        the two lifetimes coverage has (`marked`, `mask`): one id, one title each
     coverage_commands.cpp `coverage.target`, read and set, answering with what the target can do
+    verb_bar.cpp          the verbs the mark is an instruction for, and where the bar drew itself
+
     ai_commands.cpp     `ai.compose` (land a result file), `ai.roles`, `ai.recipes`, `ai.preview`
                        (the compiled request, unsent) and `ai.run` (queue it): each reports what the
                        policy and the coverage resolved to

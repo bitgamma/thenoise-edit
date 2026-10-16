@@ -3004,8 +3004,18 @@ void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
     h.value("select.rect", json{{"rect", json::array({20, 12, 36, 24})}});
     const json verbs = h.value("ai.verbs", json::object());
     CHECK(verbs["error"].get<std::string>().empty());
-    REQUIRE(verbs["verbs"].size() == std::size_t(4));
-    const json& remove = verbs["verbs"][0];
+    REQUIRE(verbs["verbs"].size() == std::size_t(5));
+    // Rows are named, not counted from the top: the order is what a person meets, and a row added at
+    // the front is not a reason for every assertion below to move.
+    const auto row_of = [&verbs](const char* id) {
+        for (const json& row : verbs["verbs"]) {
+            if (row["id"].get<std::string>() == id) {
+                return row;
+            }
+        }
+        return json(nullptr);
+    };
+    const json remove = row_of("remove");
     CHECK_EQ(remove["id"].get<std::string>(), std::string("remove"));
     CHECK_EQ(remove["command"].get<std::string>(), std::string("ai.remove"));
     CHECK_EQ(remove["recipe"].get<std::string>(), std::string("inpaint-remove"));
@@ -3015,14 +3025,37 @@ void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
     CHECK(remove["ask"].empty());
     CHECK_EQ(h.table.shortcuts_for("ai.remove"), std::vector<std::string>{"Ctrl+Backspace"});
     CHECK_EQ(remove["key"].get<std::string>(), std::string("Ctrl+Backspace"));
-    // The rest of the surface, in the order a person meets it.
-    CHECK_EQ(verbs["verbs"][1]["id"].get<std::string>(), std::string("fill"));
-    CHECK_EQ(verbs["verbs"][1]["ask"], (std::vector<std::string>{"prompt"}));
-    CHECK_EQ(verbs["verbs"][2]["label"].get<std::string>(), std::string("Change"));
-    CHECK_EQ(verbs["verbs"][3]["scope"].get<std::string>(), std::string("document"));
+    CHECK_EQ(row_of("fill")["ask"], (std::vector<std::string>{"prompt"}));
+    CHECK_EQ(row_of("change")["label"].get<std::string>(), std::string("Change"));
+    CHECK_EQ(row_of("generate")["scope"].get<std::string>(), std::string("document"));
+    // Heal is a verb of the marked area: no words asked, and the row the Fix button mirrors.
+    CHECK_EQ(row_of("heal")["recipe"].get<std::string>(), std::string("heal"));
+    CHECK(row_of("heal")["ask"].empty());
+    CHECK_EQ(h.table.shortcuts_for("ai.heal"), std::vector<std::string>{"Ctrl+H"});
+    // The bar's rule in one number: every row whose recipe reads the marked area is on it, and the one
+    // that makes pixels from words is not.
+    int on_the_bar = 0;
+    for (const json& row : verbs["verbs"]) {
+        on_the_bar += row["scope"].get<std::string>() == "selection" ? 1 : 0;
+    }
+    CHECK_EQ(on_the_bar, 4);
     for (const json& row : verbs["verbs"]) {
         CHECK(row["ready"].get<bool>());
     }
+
+    // The bar hangs off the mark, and has no opinion about geometry the frame has not drawn yet.
+    const json bar = h.value("verb.bar", json::object());
+    CHECK(bar["shown"].get<bool>());
+    CHECK_EQ(bar["mark"], json::array({20, 12, 36, 24}));
+    CHECK_EQ(bar["buttons"].size(), std::size_t(4));
+    CHECK_EQ(bar["buttons"][0]["command"].get<std::string>(), std::string("ai.heal"));
+    CHECK_EQ(bar["screen"], json::array({0, 0, 0, 0}));
+    h.value("select.clear", json::object());
+    const json nothing = h.value("verb.bar", json::object());
+    CHECK(!nothing["shown"].get<bool>());
+    CHECK(nothing["mark"].is_null());
+    CHECK(nothing["buttons"].empty());
+    h.value("select.rect", json{{"rect", json::array({20, 12, 36, 24})}});
 
     const std::string before = checksum_of(h);
     const json ran = h.value("ai.remove", json{{"seed", 7}});

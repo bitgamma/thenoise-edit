@@ -22,6 +22,7 @@ namespace noise::app {
 // `extend` and `upscale` are deliberately absent: the canvas does not grow and the document does not
 // resize yet, so a row here would be a key that promises a mechanism which does not exist.
 enum class VerbId {
+    heal,      // the marked area is repaired into its surroundings, nothing is asked
     remove,    // the marked content goes, nothing is asked
     fill,      // the marked area is destroyed and filled with what one field describes
     change,    // the marked content is edited in place, the pixels being the reference

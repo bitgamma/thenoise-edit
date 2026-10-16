@@ -170,6 +170,7 @@ add_library(noise_app STATIC
     src/app/mask_commands.cpp
     src/app/coverage.cpp
     src/app/coverage_commands.cpp
+    src/app/verb_bar.cpp
     src/app/tools/brush.cpp
     src/app/tools/cover.cpp
     src/app/tools/move.cpp
@@ -182,7 +183,8 @@ target_link_libraries(noise_app PUBLIC noise_ai noise_dbg noise_core noise_io no
 # translation builds with this target and not with the windowless command table.
 add_library(noise_ui STATIC
     src/app/shortcuts.cpp
-    src/app/ui.cpp)
+    src/app/ui.cpp
+    src/app/verb_bar_draw.cpp)
 target_include_directories(noise_ui PUBLIC src)
 target_link_libraries(noise_ui PUBLIC noise_app noise_gfx imgui sokol)
 

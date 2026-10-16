@@ -14,6 +14,7 @@ namespace noise::app {
 using nlohmann::json;
 
 const std::vector<VerbInfo> kVerbs{
+    {VerbId::heal, "heal", "Ctrl+H"},
     {VerbId::remove, "inpaint-remove", "Ctrl+Backspace"},
     {VerbId::fill, "region-fill", "Ctrl+Shift+F"},
     {VerbId::change, "inpaint-replace", "Ctrl+Shift+C"},
@@ -26,6 +27,9 @@ namespace {
 // same statement as a predicate: one list, two shapes, so the sentence and the rule cannot drift.
 std::string expectation(VerbId id) {
     switch (id) {
+        case VerbId::heal:
+            return "a 'reconstruct' that asks for nothing - the marked area is healed into what is "
+                   "around it";
         case VerbId::remove:
             return "a 'reconstruct' that asks for nothing - the marked area is the instruction";
         case VerbId::fill:
@@ -42,6 +46,8 @@ std::string expectation(VerbId id) {
 
 const char* verb_name(VerbId id) {
     switch (id) {
+        case VerbId::heal:
+            return "heal";
         case VerbId::remove:
             return "remove";
         case VerbId::fill:
@@ -102,6 +108,7 @@ const ai::Recipe* pressed_recipe(noise::AppState& state, const VerbInfo& verb) {
 
 bool verb_matches(const VerbInfo& verb, const ai::Recipe& recipe) {
     switch (verb.id) {
+        case VerbId::heal:
         case VerbId::remove:
             return recipe.operation == ai::Operation::reconstruct && recipe.ask.empty();
         case VerbId::fill:
