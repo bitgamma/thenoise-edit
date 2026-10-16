@@ -263,7 +263,9 @@ def main() -> int:
             print("FAIL: undo left the answer's pixels behind")
             fail += 1
 
-        wire.call("app.quit")
+        # Forced: this document is scratch, and holding a quit that discards it is the guard working
+        # as designed - a probe that means to leave says so.
+        wire.call("app.quit", {"force": True})
         proc.wait(timeout=20)
     finally:
         if proc.poll() is None:

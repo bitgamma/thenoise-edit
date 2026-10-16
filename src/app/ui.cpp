@@ -853,7 +853,6 @@ void build_default_dock(ImGuiID dockspace, const ImVec2& size) {
 // The menu and the front door both ask for a path and act on the answer later: a native dialog is
 // asynchronous by design, so the click that opened it and the document it produced cannot share a
 // frame. This remembers which door the open picker is behind.
-std::string pending_pick;
 char front_door_prompt[kVerbFieldChars] = "";
 // Which box the keyboard has, by name, taken after the widget drew: the same rule the verb fields use, so
 // the form can fill a box a driver wrote to without rewriting one a hand is typing into.
@@ -863,35 +862,7 @@ bool front_door_drawn = false;
 // The file set is what is remembered, not a bespoke action word: the answer goes back through
 // `file.answer` under the same name it came in with, so a picker and a probe cannot mean different things.
 void start_pick(CommandTable& commands, const char* set, const char* title) {
-    pending_pick = set;
     commands.invoke("file.pick", json{{"for", set}, {"title", title}});
-}
-
-// The pick is applied here rather than where it was started, because the menu is gone by the time a
-// person has typed a filename.
-void apply_finished_pick(CommandTable& commands) {
-    if (pending_pick.empty()) {
-        return;
-    }
-    const json pick = commands.invoke("file.pick.state", json::object()).value;
-    if (pick.value("running", false)) {
-        return;
-    }
-    const std::string action = pending_pick;
-    pending_pick.clear();
-    const json paths = pick.value("paths", json::array());
-    if (paths.empty()) {
-        const std::string error = pick.value("error", std::string());
-        if (!error.empty()) {
-            log::error("file pick: " + error);
-        }
-        return;
-    }
-    const CommandResult done = commands.invoke(
-        "file.answer", json{{"for", action}, {"path", paths.front().get<std::string>()}});
-    if (!done.ok) {
-        log::error("file answer: " + done.error);
-    }
 }
 
 // Files first, in the panel rather than in a menu bar: `BeginMainMenuBar()` asserts in this frame
@@ -1079,11 +1050,14 @@ void draw_quit_guard(AppState& state, CommandTable& commands) {
     if (!state.quit_pending) {
         return;
     }
+    static bool shown = false;
     if (!ImGui::IsPopupOpen("Discard unsaved changes?")) {
         ImGui::OpenPopup("Discard unsaved changes?");
     }
+    bool open_now = false;
     if (ImGui::BeginPopupModal("Discard unsaved changes?", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        open_now = true;
         if (state.doc.path().empty()) {
             ImGui::TextUnformatted("This picture has unsaved changes.");
         } else {
@@ -1098,6 +1072,13 @@ void draw_quit_guard(AppState& state, CommandTable& commands) {
         }
         ImGui::EndPopup();
     }
+    // `Escape` closes a modal before the key reaches anyone, so the popup closing on its own is the
+    // answer: the question is withdrawn rather than re-opened the next frame, which is what a person
+    // pressing Escape means.
+    if (shown && !open_now) {
+        state.quit_pending = false;
+    }
+    shown = open_now;
 }
 
 void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
@@ -1108,7 +1089,6 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
     // frame later the menu is gone and the popup has somewhere to live.
     draw_front_door(state, commands);
     draw_quit_guard(state, commands);
-    apply_finished_pick(commands);
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImGuiID dockspace = ImGui::DockSpaceOverViewport(0, viewport);
     static bool layout_built = false;
@@ -1138,6 +1118,12 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
         ImGui::TextUnformatted(state.doc.path().c_str());
     } else {
         ImGui::TextDisabled("unsaved");
+    }
+    // A dialog that was answered badly is the one failure a person can be left holding: the picker is
+    // gone by the time the command refuses, and the reason has to be where they are looking.
+    if (!state.pick_note.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", state.pick_note.c_str());
     }
     ImGui::SameLine();
     // What a stroke would paint now, and how far back the pixels can go: enough to read a

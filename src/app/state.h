@@ -183,6 +183,12 @@ struct AppState {
     bool pick_running = false;
     std::string pick_title;
     std::optional<platform::PickResult> pick_answer;
+    // Which file set an open pick belongs to, whether its answer still needs routing, and what to say
+    // about it where the buttons are. The pick's own record rather than the widget's, so a pick asked
+    // for over the wire is not silently dropped.
+    std::string pick_set;
+    bool pick_needs_route = false;
+    std::string pick_note;
     // Joined when the state goes away, so nothing can free it under a worker still writing the answer.
     std::thread pick_worker;
 

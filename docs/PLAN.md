@@ -156,6 +156,20 @@ invariant) carry the rest. Suite: 37/37 with `test_verb_bar_probe` added.
 
 ## Traps the code cannot show
 
+* **A held quit has to be cancelled with the host.** `SAPP_EVENTTYPE_QUIT_REQUESTED` only asks: sokol
+  quits unless the app calls `sapp_cancel_quit()` (in the Linux loop, the `quit_requested &&
+  !quit_ordered` block). `app.quit` answers the ask and the host cancels when the answer is
+  `quitting:false`; setting `quit_pending` alone closed the window with its own dialog still unsaid,
+  which is exactly what it did the first time. Covered through the key path by `wire_input`; the
+  close-button path is read from sokol, not probed - a synthetic `WM_DELETE_WINDOW` probe hung in X11
+  window traversal and was removed rather than committed half-finished, so pressing the close button
+  on unsaved work is still a human observation waiting to happen.
+* **A dialog that answers a command must be routed by the command layer.** While the pick's routing was
+  a static in the widget, an answer to a picker started over the wire was applied by nobody - the path
+  reached `file.pick.state` and stopped. `pump_picked_files` is the host's per-frame door, and a refusal
+  it produces lands in `pick_note`, on the status line where the person is, not only in the log panel
+  they have not opened.
+
 * **A words box that has focus keeps every shortcut.** In this ImGui build `Tab` does *not* move focus
   out of an `InputText` — measured, text keeps appending — so a verb key pressed with a box active is
   correctly swallowed until `Enter` / `Escape` / a click elsewhere. `WantCaptureKeyboard` being true

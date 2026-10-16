@@ -747,16 +747,29 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
                 if len(after) != len(layers) - 1:
                     fails.append("Ctrl+Z did not take the answer's layer away")
 
-    # Escape is bound to app.quit, so the app must actually leave: the last thing a driver
-    # can check this way, and the one that proves quitting runs through the table.
+    # Escape is bound to app.quit, and unsaved work now holds it. Three claims, in the order a person
+    # meets them: the key leaves the app running with the question standing, a second Escape withdraws
+    # it, and only the forced answer - what the dialog's `Discard` presses - ends the run.
     inj.key(KEY_ESCAPE)
+    wd.settle(wire)
+    if wire.call("app.state")["quit_pending"] is not True:
+        fails.append("Escape over unsaved work did not hold the quit")
+    else:
+        print("Escape over unsaved work: held, quit_pending true")
+    inj.key(KEY_ESCAPE)
+    wd.settle(wire)
+    if wire.call("app.state")["quit_pending"] is not False:
+        fails.append("a second Escape left the quit pending")
+    else:
+        print("Escape again: withdrawn, still running")
+    wire.call("app.quit", {"force": True})
     deadline = time.monotonic() + 10.0
     while proc.poll() is None and time.monotonic() < deadline:
         time.sleep(0.05)
     if proc.poll() is None:
-        fails.append("Escape did not quit the app")
+        fails.append("a forced app.quit did not end the app")
     else:
-        print("Escape: the app quit through app.quit")
+        print("app.quit {force}: the app left through the table")
     return fails
 
 

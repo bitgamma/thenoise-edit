@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/ai_session.h"
 #include "app/commands.h"
+#include "app/file_commands.h"
 #include "app/shortcuts.h"
 #include "app/state.h"
 #include "app/ui.h"
@@ -210,6 +211,9 @@ void frame(void) {
     frame_desc.dpi_scale = sapp_dpi_scale();
     simgui_new_frame(&frame_desc);
 
+    // A desktop dialog answers whenever the person finishes with it, on its own thread; this is where
+    // its answer becomes an editing command.
+    app::pump_picked_files(g.state, g.commands);
     app::draw_ui(g.state, g.commands, g.canvas_texture, g.checker);
     // The UI has now measured the canvas for this frame, so a fit that was waiting for a
     // real viewport can be applied before the commands this frame's wire poll serves.
@@ -276,7 +280,16 @@ void event(const sapp_event* ev) {
         return;
     }
     if (ev->type == SAPP_EVENTTYPE_QUIT_REQUESTED) {
-        invoke_command("app.quit", json::object(), "quit request");
+        const CommandResult asked = g.commands.invoke("app.quit", json::object());
+        if (!asked.ok) {
+            log::error("quit request (app.quit): " + asked.error);
+        }
+        // sokol quits unless the app tells it otherwise: `QUIT_REQUESTED` only asks, and if the guard
+        // held the answer back, the host has to be cancelled or the window closes with the question
+        // still on the screen.
+        if (!asked.ok || !asked.value.value("quitting", false)) {
+            sapp_cancel_quit();
+        }
         return;
     }
     // Escape answers the dialog in front of the person rather than the application: at the front door
@@ -284,6 +297,13 @@ void event(const sapp_event* ev) {
     if (ev->type == SAPP_EVENTTYPE_KEY_DOWN && ev->key_code == SAPP_KEYCODE_ESCAPE) {
         if (g.state.ask_verb) {
             invoke_command("verb.ask", json{{"show", "close"}}, "close the phrase box");
+            return;
+        }
+        if (g.state.quit_pending) {
+            // The question on the screen gets the safe answer from the same key that asked it: the
+            // modal has the input by then, so this is the only route by which Escape can mean
+            // "never mind" rather than nothing.
+            invoke_command("app.quit", json::object(), "withdraw the quit");
             return;
         }
         if (g.state.front_door != app::FrontDoor::closed) {

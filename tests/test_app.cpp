@@ -5,6 +5,7 @@
 #include "app/ai_session.h"
 #include "app/ai_verbs.h"
 #include "app/commands.h"
+#include "app/file_commands.h"
 #include "app/tools/select.h"
 #include "app/state.h"
 #include "core/image.h"
@@ -19,8 +20,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include <sys/stat.h>
+
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
+#include <thread>
 #include <map>
 #include <filesystem>
 #include <string>
@@ -3446,6 +3453,62 @@ void test_unsaved_work_holds_a_quit() {
     CHECK_EQ(h.quits, 2);
 }
 
+// The dialog is a detour; the path it hands back is the action. A pick asked for over the wire has to
+// be applied by the same pump a click relies on, or the answer lands in `file.pick.state` and nowhere
+// else - which is what happened while the routing lived in the widget that opened the dialog.
+void test_a_picked_path_is_applied_whatever_asked_for_the_dialog() {
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "noise-app-pick-test";
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path script = dir / "answer.sh";
+    {
+        std::ofstream out(script);
+        out << "#!/bin/sh\nprintf '%s\\n' \"$NOISE_PICK_ANSWER\"\n";
+    }
+    ::chmod(script.c_str(), 0755);
+    const std::filesystem::path target = dir / "picked.noise";
+    std::filesystem::remove(target);
+    ::setenv("NOISE_PICKER_PROGRAM", script.c_str(), 1);
+    ::setenv("NOISE_PICK_ANSWER", target.string().c_str(), 1);
+
+    Harness h;
+    h.value("doc.new", json{{"width", 8}, {"height", 8}});
+    h.value("file.pick", json{{"for", "project"}, {"title", "Save document"}});
+    for (int i = 0; i < 400 && h.state.pick_running; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    app::pump_picked_files(h.state, h.table);
+    ::unsetenv("NOISE_PICKER_PROGRAM");
+    ::unsetenv("NOISE_PICK_ANSWER");
+    CHECK_EQ(h.state.doc.path(), target.string());
+    CHECK(!h.state.doc.dirty());
+    CHECK(std::filesystem::exists(target));
+    CHECK(h.state.pick_note.empty());
+    // Routed once: the pump does not save the same path again on the next frame.
+    const std::string saved = h.value("doc.get", json::object())["checksum"].get<std::string>();
+    app::pump_picked_files(h.state, h.table);
+    CHECK_EQ(h.value("doc.get", json::object())["checksum"].get<std::string>(), saved);
+}
+
+// The project dialog's only format is the project format, so a name without the extension means the
+// same file. Refusing it left a person pressing Save a second time to get what the dialog asked for.
+void test_a_save_name_without_an_extension_gets_the_project_one() {
+    Harness h;
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "noise-app-savename-test";
+    std::filesystem::create_directories(dir);
+    h.value("doc.new", json{{"width", 8}, {"height", 8}});
+    const std::filesystem::path bare = dir / "typed-a-name";
+    std::filesystem::remove(bare);
+    std::filesystem::remove(bare.string() + ".noise");
+    h.value("doc.save", json{{"path", bare.string()}});
+    CHECK(std::filesystem::exists(bare.string() + ".noise"));
+    CHECK_EQ(h.state.doc.path(), bare.string() + ".noise");
+
+    // A different format is another command, and the refusal says which one.
+    const CommandResult wrong = h.run("doc.save", json{{"path", (dir / "wrong.png").string()}});
+    CHECK(!wrong.ok);
+    CHECK(wrong.error.find("doc.export") != std::string::npos);
+}
+
 void test_the_front_door_is_a_state_the_wire_can_open_and_shut() {
     Harness harness;
     CHECK_EQ(harness.value("app.state", json::object())["front_door"]["front_door"].get<std::string>(),
@@ -3604,6 +3667,8 @@ int main() {
     test_a_shorter_image_stays_centred_under_panning();
     test_view_navigation_keeps_the_image_reachable();
     test_unsaved_work_holds_a_quit();
+    test_a_picked_path_is_applied_whatever_asked_for_the_dialog();
+    test_a_save_name_without_an_extension_gets_the_project_one();
     test_the_front_door_is_a_state_the_wire_can_open_and_shut();
     test_the_new_document_form_offers_the_sizes_and_refuses_the_impossible();
     test_the_recent_files_are_the_documents_this_app_touched();

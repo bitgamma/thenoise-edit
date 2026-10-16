@@ -37,4 +37,8 @@ std::vector<platform::FileFilter> file_filters(FileSet set);
 // same words for it.
 json front_door_json(const AppState& state);
 
+// Apply a finished file pick to the file set it was asked for, once. The host calls it each frame so
+// that the answer is routed whoever asked for the dialog.
+void pump_picked_files(AppState& state, CommandTable& table);
+
 }  // namespace noise::app

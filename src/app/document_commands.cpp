@@ -131,6 +131,13 @@ void register_document_commands(AppState& state, CommandTable& table) {
         if (path.empty()) {
             return fail("doc.save", "document has no path and none was given");
         }
+        // A save dialog whose only filter is the project format hands back a name, and whether the
+        // extension is on it is the dialog's mood rather than the person's choice. A *different*
+        // extension is still refused: that is another format, and another command.
+        if (io::extension_of(path).empty()) {
+            path += ".";
+            path += io::kProjectExtension;
+        }
         if (io::extension_of(path) != io::kProjectExtension) {
             return fail("doc.save",
                         "doc.save writes ." + std::string(io::kProjectExtension) +

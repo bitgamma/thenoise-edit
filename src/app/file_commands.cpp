@@ -3,6 +3,7 @@
 
 #include "app/command_args.h"
 #include "app/command_groups.h"
+#include "core/log.h"
 #include "io/config.h"
 #include "io/flat.h"
 #include "io/project.h"
@@ -159,10 +160,17 @@ std::vector<platform::FileFilter> file_filters(FileSet set) {
             // The reader sniffs bytes, so what it can put into a layer is exactly what the codecs
             // write — no separate list to keep honest, and no `.noise` in an insert dialog.
             return {{"Images", images}, {"All files", {"*"}}};
-        case FileSet::open:
-            return {{"Images", images},
+        case FileSet::open: {
+            // A dialog shows its first filter, and someone opening a file has not decided which of the
+            // two kinds they are after - `doc.open` reads the bytes, so both are the same action. A
+            // combined filter first is the difference between the file being there and not.
+            std::vector<std::string> supported{io::kProjectExtension};
+            supported.insert(supported.end(), images.begin(), images.end());
+            return {{"All supported", supported},
                     {"noise document", {io::kProjectExtension}},
+                    {"Images", images},
                     {"All files", {"*"}}};
+        }
         case FileSet::project:
             return {{"noise document", {io::kProjectExtension}}};
         case FileSet::flat:
@@ -226,6 +234,9 @@ void register_file_commands(AppState& state, CommandTable& table) {
                       state.pick_running = true;
                       state.pick_title = request.title;
                       state.pick_answer = std::nullopt;
+                      state.pick_set = file_set_name(*set);
+                      state.pick_needs_route = true;
+                      state.pick_note.clear();
                   }
                   if (state.pick_worker.joinable()) {
                       state.pick_worker.join();
@@ -350,7 +361,10 @@ void register_file_commands(AppState& state, CommandTable& table) {
     table.add("file.pick.state", "What the last file pick answered", {}, {},
               [&state](const json&) -> CommandResult {
                   std::lock_guard lock(state.pick_mutex);
-                  json out{{"running", state.pick_running}, {"title", state.pick_title}};
+                  json out{{"running", state.pick_running},
+                           {"title", state.pick_title},
+                           {"for", state.pick_set},
+                           {"note", state.pick_note}};
                   if (state.pick_answer.has_value()) {
                       out["cancelled"] = state.pick_answer->cancelled;
                       out["paths"] = state.pick_answer->paths;
@@ -401,6 +415,44 @@ void register_file_commands(AppState& state, CommandTable& table) {
                                            {"at", json::array({state.doc.width() / 2,
                                                                state.doc.height() / 2})}});
               });
+}
+
+// The frame that opens a picker and the frame that receives its answer are minutes apart, and the
+// answer arrives on a worker. Routing it here rather than in whichever widget asked means a pick asked
+// for over the wire does the same thing as one clicked: the answer is applied once, a refusal is left
+// where the buttons are, and a cancelled dialog stays silent because "no" is an ordinary answer.
+void pump_picked_files(AppState& state, CommandTable& table) {
+    std::string set;
+    std::string path;
+    {
+        std::lock_guard lock(state.pick_mutex);
+        if (!state.pick_needs_route || state.pick_running || !state.pick_answer.has_value()) {
+            return;
+        }
+        state.pick_needs_route = false;
+        set = state.pick_set;
+        const platform::PickResult answer = *state.pick_answer;
+        if (answer.cancelled) {
+            state.pick_note.clear();
+            return;
+        }
+        if (!answer.error.empty()) {
+            state.pick_note = "picker: " + answer.error;
+            return;
+        }
+        if (answer.paths.empty()) {
+            state.pick_note = "picker: no path came back";
+            return;
+        }
+        path = answer.paths.front();
+    }
+    const CommandResult done = table.invoke("file.answer", json{{"for", set}, {"path", path}});
+    if (done.ok) {
+        state.pick_note.clear();
+    } else {
+        state.pick_note = done.error;
+        log::error("file answer: " + done.error);
+    }
 }
 
 }  // namespace noise::app
