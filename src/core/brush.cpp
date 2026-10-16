@@ -13,24 +13,58 @@
 namespace noise {
 
 const std::vector<ToolInfo> kTools{
-    {"brush", ToolAction::paint, PaintMode::Over, std::nullopt, "B", "Paint with the brush tool"},
+    {"brush", ToolAction::paint, PaintMode::Over, std::nullopt, "B",
+     "Paint with the brush tool", PointerShape::brush},
     {"eraser", ToolAction::paint, PaintMode::Erase, std::nullopt, "E",
-     "Paint with the eraser tool"},
+     "Paint with the eraser tool", PointerShape::brush},
     // The dab's alpha is the coverage, and the target says which coverage: a rough circle around a
     // hand and a hole punched in a layer mask are the same gesture over one Mask.
     {"cover", ToolAction::coverage, PaintMode::Over, std::nullopt, "K",
-     "Paint coverage with the pointer"},
+     "Paint coverage with the pointer", PointerShape::brush},
     // The same dab at the other end of the coverage scale: marking an area is only useful if the
     // mistake can be rubbed out without starting again.
     {"un-cover", ToolAction::coverage, PaintMode::Erase, std::nullopt, "Shift+K",
-     "Take coverage away with the pointer"},
+     "Take coverage away with the pointer", PointerShape::brush},
     {"move", ToolAction::move, std::nullopt, std::nullopt, "V",
-     "Move the active layer with the pointer"},
+     "Move the active layer with the pointer", PointerShape::move},
     {"select", ToolAction::select, std::nullopt, MaskShape::rect, "M",
-     "Select a rectangle with the pointer"},
+     "Select a rectangle with the pointer", PointerShape::crosshair},
     {"select_ellipse", ToolAction::select, std::nullopt, MaskShape::ellipse, "Shift+M",
-     "Select an ellipse with the pointer"},
+     "Select an ellipse with the pointer", PointerShape::crosshair},
 };
+
+const char* pointer_shape_name(PointerShape shape) {
+    switch (shape) {
+        case PointerShape::arrow:
+            return "arrow";
+        case PointerShape::crosshair:
+            return "crosshair";
+        case PointerShape::brush:
+            return "brush";
+        case PointerShape::move:
+            return "move";
+    }
+    return "arrow";
+}
+
+std::optional<PointerShape> pointer_shape_from_name(std::string_view name) {
+    for (const PointerShape shape : {PointerShape::arrow, PointerShape::crosshair,
+                                     PointerShape::brush, PointerShape::move}) {
+        if (name == pointer_shape_name(shape)) {
+            return shape;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<PointerShape> tool_cursor(const std::string& id) {
+    for (const ToolInfo& tool : kTools) {
+        if (id == tool.id) {
+            return tool.cursor;
+        }
+    }
+    return std::nullopt;
+}
 
 std::string tool_names() {
     std::string names;

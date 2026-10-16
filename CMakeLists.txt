@@ -176,7 +176,8 @@ add_library(noise_app STATIC
     src/app/tools/cover.cpp
     src/app/tools/move.cpp
     src/app/tools/select.cpp
-    src/app/view_commands.cpp)
+    src/app/view_commands.cpp
+    src/app/pointer.cpp)
 target_include_directories(noise_app PUBLIC src)
 target_link_libraries(noise_app PUBLIC noise_ai noise_dbg noise_core noise_io noise_platform)
 

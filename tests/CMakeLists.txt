@@ -191,6 +191,16 @@ if(Python3_Interpreter_FOUND)
                          TIMEOUT 420
                          DEPENDS noise-edit)
 
+    # That the ring on the canvas is the brush: measured off a capture against the size and zoom the app
+    # reports, because a cursor that cannot show its own size is a tool nobody can aim.
+    add_test(NAME test_pointer_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/pointer_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_pointer_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 420
+                         DEPENDS noise-edit)
+
     # Whether the desktop will hand this window a file at all, and whether a driver can do what a drop
     # does. The drag itself needs a second program and a real pointer, so these are the two halves that
     # are observable headless.

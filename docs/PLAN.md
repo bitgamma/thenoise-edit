@@ -88,28 +88,8 @@ coverage with verbs at the marked area, is next.
    (it is saved), the marquee committing once on release with the drag provisional until then. The claims
    to flip are the ones made this week that marking costs no undo step, plus the invariant bullets in
    `core/document.h` and `docs/ARCHITECTURE.md`.
-4. **The pointer says which tool it is.** The cursor is the desktop arrow whatever tool is selected,
-   which makes a brush unusable: nothing on screen says how wide it is, and `cover` - the tool whose
-   whole point is what it changed - looks exactly like the tool that moves things. Two halves, and only
-   the second is the hard one:
-
-   - **Shape per tool.** ImGui's mouse-cursor request, which `simgui_handle_event` forwards to the host.
-     Crosshair for `select`, `cover`, `un-cover`; arrow elsewhere; a resize glyph while a layer-move drag
-     owns the pointer. One row per tool next to the tool table, so adding a tool breaks the build until
-     its cursor is named. The OS cursor can say shape and nothing else.
-   - **The brush's footprint, drawn on the canvas.** A ring of `radius * view.scale` at the pointer, with
-     the hardness falloff as a second ring, because size, zoom and hardness all move it and no OS cursor
-     can follow. The OS cursor is hidden over the canvas while a paint tool is under it, otherwise the
-     ring and the arrow disagree about where the paint lands. This is the half that answers "what size is
-     my brush", which today is answerable only by pressing `[` and watching a number change.
-   - **Wire.** `app.state` reports what the frame drew (`pointer.shape`, `pointer.footprint_px`) and
-     `pointer.footprint {show: true|false}` forces it, so one capture can show a 4 px brush and a 90 px
-     one and a probe can measure the ring's diameter instead of trusting the state that drew it. Same
-     per-frame draw-list pass as the coverage wash: a view of state, nothing uploaded, no new GPU
-     resource.
-
-   The shape is an afternoon and makes the difference obvious; the footprint is the fix. Both belong
-   before layer thumbnails, because a tool you cannot aim is worse than a panel you cannot read.
+4. **The pointer says which tool it is.** Landed 2026-10-16, below: the host cursor takes the tool's
+   shape and the canvas draws the dab's footprint, measured against the size the app reports.
 5. **Layers you can see.** Thumbnails and mask thumbnails, reorder, opacity, visibility, move and scale,
    **Flatten** (`layer.merge`). The panel is always visible: it is where a person goes to understand what
    an edit did.
@@ -160,7 +140,44 @@ painted is a layer mask, which the composite already half-shows; the question to
 a mask being painted should wash in a different hue, which is a second `CoverageTint` instance and not a
 new mechanism.
 
-## The seams, and how you see them
+## 2026-10-16 - The pointer says which tool it is
+
+The cursor was the desktop arrow whatever was selected, so a brush's width was unreadable and `cover` was
+indistinguishable from the tool that moves layers. Two mechanisms, because the two halves need different
+ones.
+
+**Shape** comes from the host: `sapp_set_mouse_cursor` has a crosshair (`XC_crosshair` on X11,
+`crosshairCursor` on macOS) and a four-way move glyph, and the tool's row in `kTools` names its
+`PointerShape`, so a new tool does not build until it names a cursor. **ImGui cannot ask for this**: its
+cursor enum has no crosshair, and `sokol_imgui` applies whatever ImGui wants at `simgui_new_frame` -
+*before* the canvas has decided anything. So the UI records the frame's decision in `AppState::pointer`
+and `main.cpp` sets the cursor after `draw_ui`, which is the frame's last word. Only over the canvas:
+off it, the host is left alone and a panel's text field keeps its I-beam, a button its hand.
+
+**Size** cannot come from the host at all. A dab's footprint moves with the brush, the zoom and the
+hardness, so the canvas draws it: `brush.size * view.scale` (`Brush::size` is a diameter in document
+pixels, so the zoom enters in exactly one place), a light ring at the rim and a dark circle *inside* it -
+inside, because the rim is what a person aims with and the overlay's outer edge has to be that rim. The
+OS cursor stands down only while that ring is on screen; with the ring forced off a paint tool gets a
+crosshair instead, because a hidden cursor and no ring is a tool you cannot see at all.
+
+`pointer.footprint {show: true|false|null}` exists because a wire client has no pointer: forcing is how a
+capture gets the ring where no hand is, and how it proves the tool alone would not have drawn it.
+`app.state.pointer` reports `shape`, `cursor`, `over_canvas`, `at`, `footprint_px`, `core_px` and
+`forced`, so a report can name what a frame drew.
+
+`pointer_probe` measures the ring instead of trusting that number: **45.3 px against 43.2 px expected at
+2.16x, and 166.9 against 164.8 with a wider brush** - the same +2 px at both sizes, which is the one-pixel
+line straddling the rim plus the antialiasing that keeps it visible, and not drift. Its first version
+failed at +4 px, because the dark outline was drawn *outside* the rim, which put the overlay's outer edge
+two pixels past the size it was claiming; that is what the measurement was for.
+
+*Trap*: `AppState` is `noise::AppState`, not `noise::app::AppState`. A forward declaration of it inside
+`noise::app` - the obvious thing to write in a new app-level header - shadows the real type in every
+`noise::app` translation unit, and the errors are "invalid use of incomplete type" in files that compiled
+fine a minute before.
+
+
 
 | seam | what it guarantees | how it is seen |
 |---|---|---|

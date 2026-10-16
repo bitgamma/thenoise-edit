@@ -216,6 +216,30 @@ void frame(void) {
     // its answer becomes an editing command.
     app::pump_picked_files(g.state, g.commands);
     app::draw_ui(g.state, g.commands, g.canvas_texture, g.checker, g.coverage_tint);
+    // sokol_imgui applies ImGui's own cursor request at new-frame, before the canvas has decided what
+    // it needs, so this is the frame's last word - and only over the canvas, so a text field in a panel
+    // keeps its I-beam and a button keeps its hand.
+    switch (app::pointer_request(g.state.pointer)) {
+        case app::PointerRequest::leave_alone:
+            break;
+        case app::PointerRequest::arrow:
+            sapp_show_mouse(true);
+            sapp_set_mouse_cursor(SAPP_MOUSECURSOR_ARROW);
+            break;
+        case app::PointerRequest::crosshair:
+            sapp_show_mouse(true);
+            sapp_set_mouse_cursor(SAPP_MOUSECURSOR_CROSSHAIR);
+            break;
+        case app::PointerRequest::move:
+            sapp_show_mouse(true);
+            sapp_set_mouse_cursor(SAPP_MOUSECURSOR_RESIZE_ALL);
+            break;
+        case app::PointerRequest::hidden:
+            // The footprint ring is on screen where the cursor was: two markers of the landing point
+            // disagree by the height of an arrow.
+            sapp_show_mouse(false);
+            break;
+    }
     // The UI has now measured the canvas for this frame, so a fit that was waiting for a
     // real viewport can be applied before the commands this frame's wire poll serves.
     g.state.viewport_published = true;

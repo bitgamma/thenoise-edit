@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "core/geom.h"
@@ -51,6 +52,16 @@ enum class ToolAction {
 // One tool per row: the id a request carries, what it does to the pixels, and the key
 // that selects it. The command table, the pointer and the panels all read this, so a tool
 // that is not here does not exist.
+// What the pointer says about the tool under it. `brush` is the shape no OS cursor can carry: a dab's
+// footprint moves with the brush, the zoom and the picture, so the canvas draws it and the OS cursor
+// stands down. The others are host cursors, requested once per frame.
+enum class PointerShape {
+    arrow,
+    crosshair,
+    brush,
+    move,
+};
+
 struct ToolInfo {
     const char* id;
     ToolAction action;
@@ -62,6 +73,7 @@ struct ToolInfo {
     std::optional<MaskShape> marquee;
     const char* select_key;
     const char* title;
+    PointerShape cursor;
 };
 extern const std::vector<ToolInfo> kTools;
 
@@ -74,6 +86,10 @@ std::optional<ToolAction> tool_action(const std::string& id);
 
 // The shape a select tool draws, or nullopt for a tool that draws no marquee.
 std::optional<MaskShape> tool_marquee(const std::string& id);
+std::optional<PointerShape> tool_cursor(const std::string& id);
+
+const char* pointer_shape_name(PointerShape shape);
+std::optional<PointerShape> pointer_shape_from_name(std::string_view name);
 
 // "brush, eraser" - the tool list as an error message wants it, from the same table.
 std::string tool_names();

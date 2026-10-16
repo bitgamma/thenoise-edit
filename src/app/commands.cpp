@@ -33,6 +33,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
     register_coverage_commands(state, table);
     register_verb_bar_commands(state, table);
     register_mask_commands(state, table);
+    register_pointer_commands(state, table);
     register_view_commands(state, table);
     register_file_commands(state, table);
 
@@ -58,6 +59,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                {"brush", brush_json(state)},
                                {"stroke", stroke_json(state)},
                                {"view", view_json(state)},
+                               {"pointer", pointer_json(state)},
                                // What the ant overlay drew, as much as what it was asked to draw:
                                // the rate is only checkable against the clock the frame used.
                                {"ants", json{{"phase_px", ant_drawn_phase(state.ants)},

@@ -53,6 +53,11 @@ constexpr float kToolPanelFraction = 0.64f;
 constexpr float kLayerOpacitySliderPx = 88.0f;
 constexpr ImU32 kAntLight = IM_COL32(255, 255, 255, 255);
 constexpr ImU32 kAntDark = IM_COL32(20, 20, 20, 255);
+// The footprint ring has to read on a black pixel and on a white one, so it is drawn twice. The dark
+// circle goes *inside* the light one, because the rim is what a person aims with and the overlay's
+// outer edge has to be that rim rather than a pixel past it.
+constexpr ImU32 kFootprint = IM_COL32(255, 255, 255, 235);
+constexpr float kFootprintOutlinePx = 1.0f;
 constexpr float kLayerNameMinPx = 40.0f;
 // What the swap confirmation is about, remembered between the frame that opened the popup and the one
 // whose button answers it: the verb row is gone by then, and a modal that re-read the table would ask
@@ -186,6 +191,20 @@ void draw_selection(ImDrawList* list, AppState& state, const ImVec2& origin, Cov
     draw_ants_phases(list, state, origin, state.ants.phases);
 }
 
+// The dab's footprint where the paint will land: a light ring at the rim, a dark one inside the
+// hardness falloff. The rim is what a person is aiming with, so it is drawn to the screen pixel rather
+// than filled; the core ring says how much of it is full strength.
+void draw_footprint(ImDrawList* list, const ImVec2& at, double footprint_px, double core_px) {
+    const float radius = static_cast<float>(footprint_px) * 0.5f;
+    list->AddCircle(at, radius, kFootprint, 0, 1.0f);
+    if (radius > kFootprintOutlinePx) {
+        list->AddCircle(at, radius - kFootprintOutlinePx, kAntDark, 0, 1.0f);
+    }
+    if (core_px + 1.0 < footprint_px) {
+        list->AddCircle(at, static_cast<float>(core_px) * 0.5f, kAntDark, 0, 1.0f);
+    }
+}
+
 void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
                  const gfx::Checker& checker, CoverageTint& tint) {
     if (!ImGui::Begin(kWindowCanvas)) {
@@ -232,6 +251,17 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
         }
         list->AddRect(canvas_min, canvas_max, kCanvasBorder);
         draw_selection(list, state, origin, tint);
+        // The overlay reads the pointer the host reported, so a driver that moves the real pointer and
+        // a hand doing the same thing land on one code path.
+        const std::optional<Vec2> over_canvas =
+            hovered ? std::optional<Vec2>(state.view.view_to_world(
+                          {io.MousePos.x - origin.x, io.MousePos.y - origin.y}))
+                    : std::nullopt;
+        state.pointer = resolve_pointer(state, over_canvas, state.footprint_forced);
+        if (state.pointer.drawn) {
+            draw_footprint(list, ImVec2(io.MousePos.x, io.MousePos.y),
+                           state.pointer.footprint_px, state.pointer.core_px);
+        }
         if (state.select.active && !state.select.rect.empty()) {
             // The marquee is the selection during the gesture, and drawing it on top is what tells
             // the user the second corner follows the pointer rather than the first.

@@ -3526,6 +3526,64 @@ void test_how_coverage_is_drawn_is_a_choice_the_wire_can_make() {
     CHECK(h.state.coverage_view == app::CoverageView::overlay);
 }
 
+// The pointer overlay is a view of state, so the rules that matter are checkable without a window: the
+// ring is the brush's diameter at the zoom in force, the OS cursor stands down exactly when the ring is
+// on screen to replace it, and a probe can put the ring where no pointer is.
+void test_the_pointer_says_which_tool_it_is_and_hows_the_brush() {
+    Harness h;
+    h.value("doc.new", json{{"width", 64}, {"height", 48}});
+    const std::optional<Vec2> over = Vec2{10, 10};
+
+    h.value("tool.select", json::object());
+    const app::PointerView marking = app::resolve_pointer(h.state, over, std::nullopt);
+    CHECK(marking.shape == PointerShape::crosshair);
+    // A marquee has no size to show, and a ring around it would be a lie about a future dab.
+    CHECK(!marking.drawn);
+    CHECK(app::pointer_request(marking) == app::PointerRequest::crosshair);
+
+    h.value("tool.brush", json::object());
+    const double scale = h.state.view.scale;
+    h.state.brush.size = 4.0;
+    const app::PointerView small = app::resolve_pointer(h.state, over, std::nullopt);
+    CHECK(std::abs(small.footprint_px - 4.0 * scale) < 1e-9);
+    CHECK(small.drawn);
+    CHECK(app::pointer_request(small) == app::PointerRequest::hidden);
+
+    h.state.brush.size = 64.0;
+    const app::PointerView large = app::resolve_pointer(h.state, over, std::nullopt);
+    CHECK(std::abs(large.footprint_px / small.footprint_px - 16.0) < 1e-9);
+    // The hardness core never exceeds the rim: it is the part painted at full strength.
+    CHECK(large.core_px <= large.footprint_px);
+    h.state.brush.hardness = 1.0;
+    CHECK(std::abs(app::resolve_pointer(h.state, over, std::nullopt).core_px -
+                   large.footprint_px) < 1e-9);
+    h.state.brush.hardness = 0.5;
+
+    // A ring can be forced on where no dab tool is, and off where one is - and off must not leave the
+    // person without a marker for where the paint lands.
+    h.value("tool.move", json::object());
+    CHECK(app::resolve_pointer(h.state, over, true).drawn);
+    const app::PointerView unhinted = app::resolve_pointer(h.state, over, std::nullopt);
+    CHECK(!unhinted.drawn);
+    CHECK(app::pointer_request(unhinted) == app::PointerRequest::move);
+    h.value("tool.brush", json::object());
+    CHECK(app::pointer_request(app::resolve_pointer(h.state, over, false)) ==
+          app::PointerRequest::crosshair);
+
+    // Off the canvas the panels keep whatever cursor ImGui asked for: a text field's I-beam is not the
+    // canvas's business.
+    CHECK(app::pointer_request(app::resolve_pointer(h.state, std::nullopt, true)) ==
+          app::PointerRequest::leave_alone);
+
+    const CommandResult bad = h.run("pointer.footprint", json{{"show", "yes"}});
+    CHECK(!bad.ok);
+    CHECK(bad.error.find("show") != std::string::npos);
+    h.value("pointer.footprint", json{{"show", true}});
+    CHECK_EQ(h.value("pointer.footprint", json::object())["forced"], true);
+    h.value("pointer.footprint", json{{"show", nullptr}});
+    CHECK(h.value("pointer.footprint", json::object())["forced"].is_null());
+}
+
 void test_the_front_door_is_a_state_the_wire_can_open_and_shut() {
     Harness harness;
     CHECK_EQ(harness.value("app.state", json::object())["front_door"]["front_door"].get<std::string>(),
@@ -3687,6 +3745,7 @@ int main() {
     test_a_picked_path_is_applied_whatever_asked_for_the_dialog();
     test_a_save_name_without_an_extension_gets_the_project_one();
     test_how_coverage_is_drawn_is_a_choice_the_wire_can_make();
+    test_the_pointer_says_which_tool_it_is_and_hows_the_brush();
     test_the_front_door_is_a_state_the_wire_can_open_and_shut();
     test_the_new_document_form_offers_the_sizes_and_refuses_the_impossible();
     test_the_recent_files_are_the_documents_this_app_touched();
