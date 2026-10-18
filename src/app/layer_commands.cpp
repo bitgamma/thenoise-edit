@@ -4,6 +4,8 @@
 #include "app/command_args.h"
 
 #include "core/layer.h"
+
+#include <cstdio>
 #include "core/log.h"
 #include "io/flat.h"
 
@@ -16,6 +18,14 @@
 
 namespace noise::app {
 namespace {
+
+// A factor as a person writes it. `std::to_string` gives six decimals, which turns an error message into
+// a core dump and makes "1.16" into "1.160000".
+std::string number_text(double value) {
+    char text[32] = {};
+    std::snprintf(text, sizeof(text), "%g", value);
+    return text;
+}
 
 // A dropped file has to be named somewhere, and the name a person gave it is the only one they
 // recognise: `streetlight.png` becomes the layer `streetlight`.
@@ -344,6 +354,49 @@ void register_layer_commands(AppState& state, CommandTable& table) {
             return fail("layer.merge", "the document refused to merge the layer down");
         }
         return command_ok(layers_json(state));
+    });
+
+    // A layer's picture, and the coverage that hides it, scaled about the middle of what the picture
+    // holds. A factor rather than a percentage because it is the same number the panel's field sends and
+    // the same number the document works in: 2 is twice as big, 0.5 is half.
+    //
+    // A factor that would push the picture past a canvas edge is refused with the largest one that fits,
+    // because "it did not fit" without a number is a second job for the person asking.
+    table.add("layer.scale", "Scale a layer's picture and its coverage about their middle", {},
+              {"index", "factor"}, [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        int index = state.doc.active();
+        if (args.contains("index") && !want_int(args, "index", index)) {
+            return fail("layer.scale", "'index' must be an integer");
+        }
+        const std::size_t count = state.doc.layers().size();
+        if (index < 0 || static_cast<std::size_t>(index) >= count) {
+            return fail("layer.scale", range_error("layer.scale", index, count));
+        }
+        double factor = 0.0;
+        if (!args.contains("factor") || !want_number(args, "factor", factor)) {
+            return fail("layer.scale",
+                        "expected a number 'factor': 2 is twice as big, 0.5 is half");
+        }
+        const LayerScale scaled = state.doc.scale_layer(index, factor);
+        const std::string name = state.doc.layer(static_cast<std::size_t>(index)).name;
+        if (!scaled.done) {
+            if (scaled.max_factor <= 0.0) {
+                return fail("layer.scale",
+                            "'" + name + "' holds nothing to scale: every pixel of it is transparent");
+            }
+            return fail("layer.scale", "'" + name + "' at factor " + number_text(factor) +
+                                            " would leave the canvas: the largest factor that fits is " +
+                                            number_text(scaled.max_factor));
+        }
+        return command_ok(json{{"layers", layers_json(state)},
+                               {"picture", json::array({scaled.picture.x, scaled.picture.y,
+                                                        scaled.picture.w, scaled.picture.h})},
+                               {"factor", factor},
+                               {"max_factor", scaled.max_factor}});
     });
 }
 

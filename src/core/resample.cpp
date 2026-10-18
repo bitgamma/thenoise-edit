@@ -180,4 +180,49 @@ Image resample_lanczos3(const Image& src, Extent size) {
     return out;
 }
 
+Mask resample_coverage_lanczos3(const Mask& src, Extent size) {
+    if (!src.sized() || size.w <= 0 || size.h <= 0) {
+        return Mask{};
+    }
+    const Axis horizontal = build_axis(src.size().w, size.w);
+    const Axis vertical = build_axis(src.size().h, size.h);
+    const std::size_t taps_x = static_cast<std::size_t>(horizontal.taps);
+
+    std::vector<float> across(static_cast<std::size_t>(src.size().h) *
+                              static_cast<std::size_t>(size.w),
+                              0.0f);
+    for (int y = 0; y < src.size().h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            const float* weight =
+                horizontal.weights.data() + static_cast<std::size_t>(x) * taps_x;
+            const int from = horizontal.from[static_cast<std::size_t>(x)];
+            float sum = 0.0f;
+            for (int t = 0; t < horizontal.taps; ++t) {
+                sum += weight[static_cast<std::size_t>(t)] *
+                       static_cast<float>(src.coverage(from + t, y));
+            }
+            across[static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) +
+                   static_cast<std::size_t>(x)] = sum;
+        }
+    }
+
+    Mask out(size);
+    for (int y = 0; y < size.h; ++y) {
+        const int from = vertical.from[static_cast<std::size_t>(y)];
+        const float* weight = vertical.weights.data() +
+                              static_cast<std::size_t>(y) * static_cast<std::size_t>(vertical.taps);
+        for (int x = 0; x < size.w; ++x) {
+            float sum = 0.0f;
+            for (int t = 0; t < vertical.taps; ++t) {
+                sum += weight[static_cast<std::size_t>(t)] *
+                       across[static_cast<std::size_t>(from + t) *
+                                   static_cast<std::size_t>(size.w) +
+                               static_cast<std::size_t>(x)];
+            }
+            out.row(y)[static_cast<std::size_t>(x)] = byte_from_unit(sum);
+        }
+    }
+    return out;
+}
+
 }  // namespace noise

@@ -72,19 +72,27 @@ struct LayerCard {
     ScreenRect merge{};
     ScreenRect opacity{};
     ScreenRect mode{};
+    // `Scale` on the card's own row, or the field it becomes while a factor is being typed into it. There
+    // is no `can_scale`: whether a factor fits is a question about the picture's bounds, and answering it
+    // per card per frame would scan every layer's pixels to light a button. The command answers it, with
+    // the largest factor that does fit, when the number is offered.
+    ScreenRect scale{};
     bool can_move_up = false;
     bool can_move_down = false;
     bool can_merge = false;
     // The card's name is being typed rather than shown. The field stands in place of the name, so the box
     // alone cannot tell a driver whether the card is showing a name or waiting for one.
     bool renaming = false;
+    // And the same for the factor: the button and the field share one box.
+    bool scaling = false;
 };
 
-// The card whose name is being typed, if any. The text is the panel's rather than the document's: a name
-// reaches `Document` through `layer.rename` when `Enter` confirms it, so nothing half-typed can be saved,
-// counted as a step, or painted into a card.
-struct LayerRenaming {
-    std::uint64_t layer = 0;  // 0: nobody is typing a name
+// A card's inline field: which card holds one, and what has been typed into it so far. The text is the
+// panel's rather than the document's, because neither a half-typed name nor a half-typed factor is a fact
+// about the document - each reaches it through its own command, on `Enter`. Sized by the longest thing a
+// card is asked to type, which is a layer's name.
+struct InlineField {
+    std::uint64_t layer = 0;  // 0: no card holds a field
     bool just_opened = false;
     std::array<char, kLayerNameMaxChars + 1> text{};
 };
@@ -206,7 +214,8 @@ struct AppState {
     std::uint64_t layer_thumb_rebuilds = 0;
     std::vector<LayerCard> layer_cards{};
     LayerPanelControls layer_panel{};
-    LayerRenaming renaming{};
+    InlineField renaming{};
+    InlineField scaling{};
     // And the same for the phrase box the bar opens, so a driver can read the box's own rect rather
     // than deriving it from the bar's.
     ScreenRect verb_ask{};
@@ -288,20 +297,50 @@ struct AppState {
     }
 };
 
-// Put the name field on `index`'s card, seeded with what the layer is called. The card's double-click and
-// `layer.rename.begin` - so `F2`, so the wire - both come through here, because two doors that each decided
-// what the field starts with would disagree about a name nobody has typed yet. No document, or an index
-// outside the stack, closes the field rather than opening one on the wrong card.
-inline void begin_layer_rename(AppState& state, int index) {
-    state.renaming = LayerRenaming{};
+// Whether a card is holding a field someone is typing into. ImGui's own "capture the keyboard" flag is
+// one frame behind on the frame a field is re-armed - which is the frame a person presses Escape on after
+// a refusal - and a key that slips past this gate is the app's quit key while a name or a factor is half
+// typed. Both gates are asked, because either one alone lets the key through.
+inline bool typing_in_layer_field(const AppState& state) {
+    return state.renaming.layer != 0 || state.scaling.layer != 0;
+}
+
+// Open `field` on `index`'s card with `seed` in it, and close it rather than opening it on a card that is
+// not in the stack. One seeding rule, because two doors that each decided what a field starts with would
+// disagree about a value nobody has typed yet.
+inline void begin_layer_field(InlineField& field, const Layer& layer, const char* seed) {
+    field.layer = layer.id;
+    field.just_opened = true;
+    std::snprintf(field.text.data(), field.text.size(), "%s", seed);
+}
+
+// The layer `index` means in the open document, or nothing when there is no document or the index is
+// outside the stack: a field that opened on a card that is not there would rename, or scale, the wrong
+// picture.
+inline const Layer* card_layer(const AppState& state, int index) {
     if (state.doc.empty() || index < 0 ||
         static_cast<std::size_t>(index) >= state.doc.layers().size()) {
-        return;
+        return nullptr;
     }
-    const Layer& layer = state.doc.layer(static_cast<std::size_t>(index));
-    state.renaming.layer = layer.id;
-    state.renaming.just_opened = true;
-    std::snprintf(state.renaming.text.data(), state.renaming.text.size(), "%s", layer.name.c_str());
+    return &state.doc.layer(static_cast<std::size_t>(index));
+}
+
+// Put the name field on `index`'s card, seeded with what the layer is called. The card's double-click and
+// `layer.rename.begin` - so `F2`, so the wire - both come through here.
+inline void begin_layer_rename(AppState& state, int index) {
+    state.renaming = InlineField{};
+    if (const Layer* const layer = card_layer(state, index)) {
+        begin_layer_field(state.renaming, *layer, layer->name.c_str());
+    }
+}
+
+// Put the factor field on `index`'s card, seeded with the size the picture already is. The `Scale` button
+// is the only door into it: a factor is a number, and `F2` belongs to the name.
+inline void begin_layer_scale(AppState& state, int index) {
+    state.scaling = InlineField{};
+    if (const Layer* const layer = card_layer(state, index)) {
+        begin_layer_field(state.scaling, *layer, "1");
+    }
 }
 
 }

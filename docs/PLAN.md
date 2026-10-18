@@ -209,9 +209,68 @@ true of the thing the probe did.
 **Verified**: `test_document` 3760 checks, `test_history` 254, `test_project` 216 (the new reader cases are
 13 of them), `ctest` 39/39, `tools/layer_panel_probe.py` 65 claims green, `sweep_procs.py` clean.
 
-**Owed from here**: moving and scaling a layer's picture, `layer.remove` in the timeline
-(`layer_absent` is the entry deletion always needed; the decision is whether deleting belongs in the
-timeline at all), and the coverage-undo decision further up, which is still the bigger of the two.
+**Owed from here**: `layer.remove` in the timeline (`layer_absent` is the entry deletion always needed;
+the decision is whether deleting belongs in the timeline at all), and the coverage-undo decision further
+up, which is still the bigger of the two.
+
+## 2026-10-17 - A layer's picture is resized by a number, typed on the card
+
+The half of slice 5's "move or scale a layer's picture" that was missing was scaling: the move tool had
+long since been dragging a layer's *content* around, because `src/app/tools/move.h` insists that whole-pixel
+movement and resampling are different features with different undo semantics. Scaling is now a command with
+those semantics of its own, and a field on the card to type it into.
+
+**What is scaled is the picture, and the picture is `Image::content_bounds`.** A layer stays the size of the
+canvas - every blend, mask, thumbnail and `Document::checksum` assumes a stack of congruent rectangles - so
+scaling means resampling what the layer *holds* and leaving the rest transparent. `content_bounds` used to be
+a static inside the move tool; it is on `Image` now, so a drag and a scale cannot disagree about which part
+of a layer "it" is. The anchor is the middle of those bounds, not the canvas origin and not the layer's
+top-left: on the app a stroke spanning x 68..168 halved to x 93..143, middle 118 before and after.
+
+**The coverage plane goes through the same map, because it is a claim about the same pixels.** Scale the
+colour and not the mask and the layer shows parts it was hiding and hides parts it was showing. So both
+planes take one factor, about one anchor, in one history step - and they take it through `core/resample`
+twice rather than through a filter twice: a coverage plane has no colour to premultiply and must never be
+renormalised by weights that sum to less than one, or an in-outside boundary starts claiming coverage it was
+asserting the opposite of (`resample_coverage_lanczos3`, clamped at the edge, never renormalised). Two cases
+are kept out of the filter on purpose: a plane that covers everything is the same plane at any size, so
+filtering it would spend a pass putting ringing where there was none; and a plane that reaches a canvas edge
+*limits how far the picture may grow*, which is why the fit test is taken over the union of the two bounds.
+
+**A factor that will not fit is refused with the largest one that will**, because someone who meant "bigger"
+wants that number rather than a shrug: `LayerScale::max_factor` comes back on the refusal, in the command's
+error and in the log, and the refusal writes nothing - no pixel, no revision, no step. The same is true of a
+layer that holds nothing and of a factor that is not a finite positive number, and `factor == 1` is refused
+as the no-op it is rather than recorded as a change. The probe's own instance: a layer whose stroke spans the
+canvas is resized at 1.00147 at best, so `layer.scale {factor: 2}` on it says so.
+
+**A factor is a number, so the door is a field, and it stands where the button was.** The card's `Scale`
+button opens it in the button's own box (`layer_cards[].scale`, with `scaling` saying which of the two the
+box currently is) so a card cannot grow wider than the panel; `Enter` sends `layer.scale`, `Escape` puts the
+button back, and nothing reaches the document except through the command - so a half-typed factor cannot move
+a pixel, cost a step, or be saved.
+
+**Two ImGui facts that cost the debugging time, both of them found by looking at the canvas.** A single-line
+`InputText` gives up focus when Enter is pressed whether or not `EnterReturnsTrue` is set, so a refused value
+closed the field - and the next key a person reaches for after a refusal is `Escape`, which with no field
+holding the keyboard is the app's quit key. Its save prompt then dimmed the canvas, and the probe's next four
+claims were about a dialog rather than a scale. The field now re-arms itself on a refusal; and because
+`io.WantCaptureKeyboard` is one frame stale on the frame a field is re-armed on, `main.cpp`'s shortcut gate
+asks `typing_in_layer_field(state)` next to ImGui's flag, since either one alone lets the quit key through.
+The observation that gave this away was a canvas diff with a bbox covering the whole image, which is what
+`pixels.compare` and a capture are for: an assertion about the field alone would have gone green.
+
+**Verified**: `test_document` 3815 checks, `test_resample` 766 (the coverage resampler's own invariants:
+1:1 byte-identical, all-in stays all-in, all-out stays all-out, area held within the filter's tolerance),
+`test_history` 254, `ctest` 39/39, `tools/layer_panel_probe.py` 79 claims green - including that a word where
+a factor belongs is not sent and the field keeps it, that `Escape` was the field's key and not the app's,
+that half the factor visibly shrinks the picture and costs one thumbnail resample (27 to 28), that one undo
+gives the canvas back byte for byte, and that a refusal moves nothing.
+`sweep_procs.py` clean.
+
+**Owed from here**: a gesture for the same command - a handle on the selected layer's picture driving
+`layer.scale`, which is what the command existing on its own was for - `layer.remove` in the timeline, and
+the coverage-undo decision further up.
 
 ## 2026-10-16 - Moving a layer, and what a change to the stack actually carries
 

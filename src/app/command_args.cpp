@@ -195,10 +195,12 @@ json layer_cards_json(const AppState& state) {
                          {"merge", screen_json(card.merge)},
                          {"opacity", screen_json(card.opacity)},
                          {"mode", screen_json(card.mode)},
+                         {"scale", screen_json(card.scale)},
                          {"can_move_up", card.can_move_up},
                          {"can_move_down", card.can_move_down},
                          {"can_merge", card.can_merge},
-                         {"renaming", card.renaming}});
+                         {"renaming", card.renaming},
+                         {"scaling", card.scaling}});
     }
     return cards;
 }

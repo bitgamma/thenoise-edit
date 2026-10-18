@@ -34,6 +34,17 @@ enum class PaintFence {
     own_coverage,
 };
 
+// What asking a layer's picture to change size answered.
+struct LayerScale {
+    bool done = false;
+    // The largest factor that fits this layer's picture and coverage inside the canvas: the number to put
+    // in the refusal, so a rejected scale comes with the next one to try. 0 when there was no picture to
+    // scale at all.
+    double max_factor = 0.0;
+    // Where the picture sits afterwards, or where it stands when the scale was refused.
+    Rect picture{};
+};
+
 // The open document: a stack of layers, and the history of what changed in them. Pixels change
 // only through `paint`, a provisional gesture or undo/redo, so every visible change can be put
 // back exactly - within one layer, which is what a step is recorded against.
@@ -96,6 +107,23 @@ public:
     // mode and unmasked - not for tidiness: those are the facts that let the composite be the layer, so the
     // canvas cannot re-blend what was just baked. False when there is nothing to flatten.
     bool flatten_layers();
+
+    // The layer's picture, and the coverage that hides part of it, scaled about the middle of what the
+    // picture holds. A layer is the size of the canvas and always will be, so scaling a layer scales what
+    // it holds *inside* that rectangle: everything outside the scaled picture comes out transparent, and a
+    // scale that would push the picture past a canvas edge is refused rather than clipped - losing the
+    // part of someone's drawing that fell off the edge is not a reversible reading of "twice as big", and
+    // the refusal carries the largest factor that does fit.
+    //
+    // The mask goes with the picture under the same map, because it is a claim about the same pixels:
+    // scaling one without the other would hide parts that were shown and show parts that were hidden. A
+    // mask that covers everything, or nothing, is the same mask at any size and is left alone - filtering
+    // it would spend a pass putting ringing where there was none.
+    //
+    // Like a merge this is not a paint, so the selection fences nothing: it changes which pixels of the
+    // layer exist at all, not what was written into them. One undo step, holding the rectangle both planes
+    // moved over, and a scale that fits its own box exactly (factor 1) records nothing.
+    LayerScale scale_layer(int index, double factor);
 
     // The layer at `index` onto the one under it, exactly as the canvas shows them: the upper layer's
     // mask, blend mode and opacity are applied on the way down, and it leaves the stack while the layer

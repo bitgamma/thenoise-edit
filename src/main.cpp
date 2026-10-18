@@ -343,9 +343,10 @@ void event(const sapp_event* ev) {
             return;
         }
     }
-    // A widget that owns the keyboard (text entry, later) keeps the key: a shortcut fired
-    // through it would move the canvas while the user types.
-    if (ImGui::GetIO().WantCaptureKeyboard) {
+    // A widget that owns the keyboard keeps the key: a shortcut fired through it would move the
+    // canvas while the user types. `typing_in_layer_field` is asked alongside ImGui's flag because
+    // ImGui's is one frame stale on the frame a card's field is re-armed.
+    if (ImGui::GetIO().WantCaptureKeyboard || typing_in_layer_field(g.state)) {
         return;
     }
     const std::optional<std::string> shortcut = app::shortcut_of(*ev);

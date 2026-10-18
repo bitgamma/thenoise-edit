@@ -8,7 +8,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cmath>
 #include <cstring>
+#include <limits>
 #include <functional>
 #include <map>
 #include <span>
@@ -63,6 +65,20 @@ std::map<std::uint64_t, std::uint64_t> content_revisions(const Document& doc) {
         out[layer.id] = layer.content_revision;
     }
     return out;
+}
+
+// A canvas with one rectangle of solid grey on it: the picture a scale is aimed at, with everything
+// around it transparent so "nothing else moved" is checkable.
+Image block(Extent canvas, Rect on, std::uint8_t grey) {
+    Image image = Image::filled(canvas, 0, 0, 0, 0);
+    const std::uint8_t rgba[4] = {grey, grey, grey, 255};
+    image.fill_rect(on, rgba);
+    return image;
+}
+
+std::string rect_text(Rect r) {
+    return std::to_string(r.x) + "," + std::to_string(r.y) + "," + std::to_string(r.w) + "x" +
+           std::to_string(r.h);
 }
 
 void paint_on(Document& doc, Rect rect, std::uint8_t grey) {
@@ -1503,6 +1519,155 @@ void test_flattening_leaves_one_layer_that_shows_what_the_stack_showed() {
 // A name is what a person calls a layer afterwards, so it is saved, it is undone, and losing one in a
 // round trip is data loss like losing a `visible` flag. It is not a pixel: nothing the renderer uploads,
 // and nothing a card's picture shows, may move over it.
+// A layer is the size of the canvas and stays that way, so scaling one scales what it *holds*, about the
+// middle of that, and leaves the rest of its rectangle transparent. Every claim here is one a wrong anchor,
+// a filter that spread past the picture, or a half-restored undo would break.
+void test_a_layers_picture_scales_about_the_middle_of_what_it_holds() {
+    Document doc;
+    doc.reset(stack({{"under", Image::filled(Extent{48, 32}, 9, 9, 9, 255)},
+                     {"sky", block(Extent{48, 32}, Rect{16, 12, 12, 8}, 128)}}),
+              std::nullopt, "x.noise");
+    const std::string before_layer = doc.layer(1).pixels.checksum_hex();
+    const std::string before_under = doc.layer(0).pixels.checksum_hex();
+    const int steps = doc.history().undo_depth;
+
+    // The block spans x 16..28, y 12..20, so its middle is the document point (22, 16) and twice the size
+    // it lands x 10..34, y 8..24. An anchor a pixel off, or a size measured from a corner, fails here.
+    const LayerScale grown = doc.scale_layer(1, 2.0);
+    CHECK(grown.done);
+    CHECK_EQ(rect_text(grown.picture), std::string("10,8,24x16"));
+    CHECK(doc.dirty());
+    CHECK_EQ(doc.history().undo_depth, steps + 1);
+
+    // The middle is still the middle, and a flat opaque field well inside the picture is still that field:
+    // Lanczos is zero at every integer offset but its own.
+    const Image& grown_pixels = doc.layer(1).pixels;
+    CHECK_EQ(grown_pixels.at(22, 16)[0], 128);
+    CHECK_EQ(grown_pixels.at(22, 16)[3], 255);
+    CHECK_EQ(grown_pixels.at(0, 0)[3], 0);   // the filter's ring stays near the picture
+    CHECK_EQ(grown_pixels.at(47, 31)[3], 0);
+    CHECK_EQ(doc.layer(0).pixels.checksum_hex(), before_under);  // one layer scaled, not the stack
+
+    // What the layer holds afterwards is exactly the box the command reported - the ring the filter throws
+    // past an edge is cut at that edge. This is what lets a second scale be aimed at the same picture
+    // rather than at the picture plus a halo, which is how chained scales would otherwise creep.
+    CHECK_EQ(rect_text(grown_pixels.content_bounds()), std::string("10,8,24x16"));
+
+    // Halving goes back through the same middle: twice as big, then half, is the box that went in.
+    const LayerScale shrunk = doc.scale_layer(1, 0.5);
+    CHECK(shrunk.done);
+    CHECK_EQ(rect_text(shrunk.picture), std::string("16,12,12x8"));
+
+    // And the whole thing comes back as bytes. Two steps out, two steps back, and the layer is the layer
+    // that went in - whole-layer equality, because a scale reaches all of a picture and a sampled point
+    // would miss the edge of it.
+    CHECK(doc.undo());
+    CHECK(doc.undo());
+    CHECK_EQ(doc.layer(1).pixels.checksum_hex(), before_layer);
+    CHECK(doc.redo());
+    CHECK(doc.redo());
+    CHECK(doc.layer(1).pixels.checksum_hex() != before_layer);
+    CHECK_EQ(rect_text(doc.layer(1).pixels.content_bounds()), std::string("16,12,12x8"));
+}
+
+// A layer that fills the canvas has nowhere to grow. The refusal carries the largest factor that does fit,
+// and that factor is quoted because it works: "it did not fit" without a number is a second job.
+void test_a_scale_that_does_not_fit_names_the_largest_one_that_does() {
+    Document doc;
+    doc.reset(stack({{"sky", Image::filled(Extent{12, 8}, 200, 200, 200, 255)}}), std::nullopt,
+              "x.noise");
+    const std::string whole = doc.layer(0).pixels.checksum_hex();
+    const int steps = doc.history().undo_depth;
+
+    const LayerScale refused = doc.scale_layer(0, 1.5);
+    CHECK(!refused.done);
+    CHECK(refused.max_factor >= 1.0);
+    CHECK(refused.max_factor < 1.1);
+    CHECK_EQ(doc.layer(0).pixels.checksum_hex(), whole);  // a refusal moves no pixel
+    CHECK_EQ(doc.history().undo_depth, steps);            // and costs no step
+    CHECK(!doc.can_undo());
+
+    CHECK(doc.scale_layer(0, refused.max_factor).done);
+}
+
+// A layer holding nothing, an index out of the stack and a factor that is no size are all refused without
+// touching the document; and twice the size it already is is a copy that records nothing.
+void test_a_scale_that_means_nothing_is_refused_and_costs_nothing() {
+    Document doc;
+    doc.reset(stack({{"sky", block(Extent{24, 16}, Rect{8, 4, 8, 8}, 40)},
+                     {"blank", Image::filled(Extent{24, 16}, 0, 0, 0, 0)}}),
+              std::nullopt, "x.noise");
+    const int steps = doc.history().undo_depth;
+    const bool dirty_before = doc.dirty();
+
+    CHECK(!doc.scale_layer(1, 2.0).done);  // nothing to scale about: every pixel of it is transparent
+    CHECK(!doc.scale_layer(2, 1.5).done);  // out of the stack
+    CHECK(!doc.scale_layer(-1, 1.5).done);
+    CHECK(!doc.scale_layer(0, 0.0).done);  // no size at all
+    CHECK(!doc.scale_layer(0, -3.0).done);
+    CHECK(!doc.scale_layer(0, std::numeric_limits<double>::quiet_NaN()).done);
+    CHECK(!doc.scale_layer(0, std::numeric_limits<double>::infinity()).done);
+    CHECK_EQ(doc.history().undo_depth, steps);
+    CHECK_EQ(doc.dirty(), dirty_before);
+
+    CHECK(doc.scale_layer(0, 2.0).done);
+    const std::uint64_t revision = doc.revision();
+    const int after_grow = doc.history().undo_depth;
+    // The same size again lands exactly where it stood, so there is nothing to undo - and no fit question
+    // either, because a copy of what already fits fits.
+    CHECK(doc.scale_layer(0, 1.0).done);
+    CHECK_EQ(doc.revision(), revision);
+    CHECK_EQ(doc.history().undo_depth, after_grow);
+}
+
+// A layer's mask is a claim about the same pixels as its picture, so both go through the same map: scaling
+// one without the other would hide parts that were shown and show parts that were hidden. A mask that
+// covers everything says the same thing at any size, and one that reaches a canvas edge bounds how much
+// the picture may grow.
+void test_a_scale_takes_the_coverage_with_the_picture() {
+    Document doc;
+    doc.reset(stack({{"sky", block(Extent{48, 32}, Rect{16, 12, 12, 8}, 160)}}), std::nullopt,
+              "x.noise");
+    Mask middle(Extent{48, 32});
+    middle.op(Rect{12, 8, 20, 16}, MaskOp::replace);  // a window narrower than the picture on the left
+    CHECK(doc.set_layer_mask(0, middle));
+    const std::string mask_before(doc.layer(0).mask->plane().begin(),
+                                  doc.layer(0).mask->plane().end());
+    const std::string pixels_before = doc.layer(0).pixels.checksum_hex();
+    const int steps = doc.history().undo_depth;
+
+    const LayerScale grown = doc.scale_layer(0, 1.5);
+    CHECK(grown.done);
+    // The coverage grew about the picture's middle, so its left edge moved left and its right edge right.
+    CHECK(doc.layer(0).mask->bounds().x < 12);
+    CHECK(doc.layer(0).mask->bounds().right() > 32);
+    // Both planes of one layer under one map is one thing a person did: one step, not two.
+    CHECK_EQ(doc.history().undo_depth, steps + 1);
+
+    CHECK(doc.undo());
+    CHECK_EQ(doc.layer(0).pixels.checksum_hex(), pixels_before);
+    CHECK_EQ(std::string(doc.layer(0).mask->plane().begin(), doc.layer(0).mask->plane().end()),
+             mask_before);
+    CHECK_EQ(doc.layer(0).mask->bounds().x, 12);
+    CHECK_EQ(doc.layer(0).mask->bounds().right(), 32);
+
+    // The window is what limits the growth here, not the picture: the mask has less room than the block it
+    // hides, and the refusal says the number its own edges allow.
+    const double mask_limited = doc.scale_layer(0, 4.0).max_factor;
+    CHECK(!doc.scale_layer(0, 4.0).done);
+    CHECK(mask_limited > 2.0);
+    CHECK(mask_limited < 2.1);
+
+    // A mask that hides nothing anywhere is the same mask at any size: filtering a flat plane would spend
+    // a pass putting ringing where there was none, so it is left byte for byte as it was.
+    Mask whole(Extent{48, 32});
+    whole.op(Rect{0, 0, 48, 32}, MaskOp::replace);
+    CHECK(doc.set_layer_mask(0, whole));
+    const std::string flat(doc.layer(0).mask->plane().begin(), doc.layer(0).mask->plane().end());
+    CHECK(doc.scale_layer(0, 1.25).done);
+    CHECK_EQ(std::string(doc.layer(0).mask->plane().begin(), doc.layer(0).mask->plane().end()), flat);
+}
+
 void test_a_layer_takes_a_name_and_gives_the_old_one_back() {
     Document doc;
     doc.reset(stack({{"sky", Image::filled(Extent{4, 4}, 10, 20, 30, 255)},
@@ -1634,6 +1799,10 @@ int main() {
     test_a_layer_mask_of_another_size_is_refused();
     test_a_layer_mask_change_is_a_document_change();
     test_a_selection_and_a_mask_fence_different_things();
+    test_a_layers_picture_scales_about_the_middle_of_what_it_holds();
+    test_a_scale_that_does_not_fit_names_the_largest_one_that_does();
+    test_a_scale_that_means_nothing_is_refused_and_costs_nothing();
+    test_a_scale_takes_the_coverage_with_the_picture();
     test_a_layer_takes_a_name_and_gives_the_old_one_back();
     test_what_a_layer_holds_and_what_the_composite_uses_are_two_counters();
     test_a_layer_moves_as_one_step_that_undoes_itself();

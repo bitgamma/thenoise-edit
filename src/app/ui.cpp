@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <string_view>
@@ -72,6 +73,10 @@ constexpr float kLayerNameMinPx = 40.0f;
 constexpr const char* kLabelMoveUp = "Up";
 constexpr const char* kLabelMoveDown = "Down";
 constexpr const char* kLabelMergeDown = "Merge down";
+constexpr const char* kLabelScale = "Scale";
+// A factor is short - "0.5", "1.5", "12" - and the row it lives on is not wide, so the field takes about
+// as much room as the button it replaces.
+constexpr float kLayerScaleFieldPx = 64.0f;
 // What the swap confirmation is about, remembered between the frame that opened the popup and the one
 // whose button answers it: the verb row is gone by then, and a modal that re-read the table would ask
 // about whatever the table said next rather than what was pressed.
@@ -772,6 +777,25 @@ ImVec2 thumb_draw_size(Extent size) {
                   std::max(1.0f, static_cast<float>(size.h) * scale));
 }
 
+// A factor off the field's text: a whole number, a decimal, either sign rejected downstream. Anything
+// else - "big", "1.5x", empty - is not a factor, and the field keeps what was typed rather than sending a
+// zero the command would have to guess about.
+bool reads_factor(const char* text, double& factor) {
+    char* end = nullptr;
+    const double parsed = std::strtod(text, &end);
+    if (end == text) {
+        return false;
+    }
+    while (end != nullptr && *end != '\0' && (*end == ' ' || *end == '\t')) {
+        ++end;
+    }
+    if (*end != '\0' || !std::isfinite(parsed) || parsed <= 0.0) {
+        return false;
+    }
+    factor = parsed;
+    return true;
+}
+
 // The box of the item just submitted, in screen coordinates - the same box the hit test used.
 ScreenRect item_rect() {
     const ImVec2 from = ImGui::GetItemRectMin();
@@ -801,13 +825,15 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
         const std::span<const Layer> layers = state.doc.layers();
         const bool live = state.doc.in_provisional();
         thumbs.keep(layers);
-        if (state.renaming.layer != 0) {
-            const std::uint64_t typing = state.renaming.layer;
-            if (std::find_if(layers.begin(), layers.end(),
-                             [typing](const Layer& layer) { return layer.id == typing; }) ==
-                layers.end()) {
-                state.renaming.layer = 0;  // a card that left the stack is not being typed into
-            }
+        const auto gone_from_stack = [&layers](std::uint64_t id) {
+            return std::find_if(layers.begin(), layers.end(),
+                                [id](const Layer& layer) { return layer.id == id; }) == layers.end();
+        };
+        if (state.renaming.layer != 0 && gone_from_stack(state.renaming.layer)) {
+            state.renaming = InlineField{};  // a card that left the stack is not being typed into
+        }
+        if (state.scaling.layer != 0 && gone_from_stack(state.scaling.layer)) {
+            state.scaling = InlineField{};
         }
         // Both arrows take the right end of every title row, so their width is known before the first
         // name of the stack is measured.
@@ -940,6 +966,53 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
                     }
                     ImGui::EndDisabled();
                     card_state.merge = item_rect();
+
+                    // The picture can be made bigger or smaller without touching the canvas it sits in,
+                    // and the way to say by how much is a number: the button opens a field in its own
+                    // place, `Enter` sends it to `layer.scale`, and a factor that will not fit is refused
+                    // by the command with the largest one that does.
+                    ImGui::SameLine();
+                    if (state.scaling.layer == layer.id) {
+                        const bool opening = state.scaling.just_opened;
+                        if (opening) {
+                            state.scaling.just_opened = false;
+                            ImGui::SetKeyboardFocusHere();
+                        }
+                        ImGui::PushItemWidth(kLayerScaleFieldPx);
+                        const bool confirmed = ImGui::InputText(
+                            "##scale", state.scaling.text.data(), state.scaling.text.size() - 1,
+                            ImGuiInputTextFlags_EnterReturnsTrue);
+                        ImGui::PopItemWidth();
+                        card_state.scale = item_rect();
+                        card_state.scaling = true;
+                        const bool escaping =
+                            ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+                        double factor = 0.0;
+                        if (confirmed && reads_factor(state.scaling.text.data(), factor)) {
+                            commands.invoke("layer.scale", json{{"index", static_cast<int>(row)},
+                                                                {"factor", factor}});
+                            state.scaling = InlineField{};
+                        } else if (confirmed) {
+                            // Re-armed rather than let go: a single-line InputText gives up focus on Enter
+                            // whether or not the flag asked it to, and the key a person reaches for after
+                            // a refusal is Escape - which with no field holding the keyboard is the app's
+                            // quit key. The word they typed stays where they typed it.
+                            log::warn("scale: '" + std::string(state.scaling.text.data()) +
+                                      "' is not a factor: 2 is twice as big, 0.5 is half");
+                            state.scaling.just_opened = true;
+                        } else if (escaping) {
+                            state.scaling = InlineField{};
+                        } else if (!opening && !ImGui::IsItemActive()) {
+                            // The frame the field opens on, focus has not arrived yet: closing a field for
+                            // its own first frame would close one nobody saw.
+                            state.scaling = InlineField{};
+                        }
+                    } else {
+                        if (ImGui::Button(kLabelScale)) {
+                            begin_layer_scale(state, static_cast<int>(row));
+                        }
+                        card_state.scale = item_rect();
+                    }
 
                     // The two facts the composite reads and the layer does not hold: how much of it shows,
                     // and how it mixes with what is under it.

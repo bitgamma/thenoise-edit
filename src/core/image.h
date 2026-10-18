@@ -58,6 +58,13 @@ public:
     void fill_rect(Rect r, const std::uint8_t rgba[4]);
     std::string checksum_hex() const;
 
+    // The smallest rectangle holding every pixel with coverage, empty when there is none. A store is a
+    // rectangle and content is not, and everything aimed at *the picture* rather than at the canvas -
+    // moving it, scaling it, undoing either inside the right bounds - needs that difference. Without it a
+    // drag of a 40 px sketch across a 2048² layer calls the whole canvas dirty and holds a whole canvas
+    // aside for undo.
+    Rect content_bounds() const;
+
 private:
     Extent size_{};
     std::vector<std::uint8_t> px_;

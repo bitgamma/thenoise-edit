@@ -242,7 +242,8 @@ def main() -> int:
         # presses - which no screenshot shows, and which is why the reported rects are checked against
         # each other and not just against the card.
         got = cards(wire)
-        CONTROLS = ("visibility", "title", "move_up", "move_down", "merge", "opacity", "mode")
+        CONTROLS = ("visibility", "title", "move_up", "move_down", "merge", "opacity", "mode",
+                    "scale")
         astray = [f"layer {card['index']}.{name}={[round(v) for v in card[name]]} in "
                   f"box={[round(v) for v in card['box']]}"
                   for card in got for name in CONTROLS if not inside_box(card[name], card["box"])]
@@ -493,6 +494,93 @@ def main() -> int:
                     "Escape drops a half-typed name instead of saving it",
                     wire.call("layer.list")["layers"][named]["name"])
             p.check(len(cards(wire)) == 3, "and the same key left the app running, three cards deep")
+
+        # Scaling a layer's picture is a number, so the door is a field. The card's `Scale` button opens it
+        # in the button's own place; `Enter` sends the factor to `layer.scale`; what is not a factor is
+        # refused by the field rather than sent as a zero; and a factor that would push the picture past the
+        # canvas is refused with the largest one that fits. The geometry itself - about the middle of the
+        # picture, both planes together, exact under undo - is `test_document`'s; what is claimed here is
+        # that the panel's door reaches it and that a wrong answer through that door moves nothing.
+        wire.call("layer.select", {"index": 1})
+        wd.settle(wire)
+        scaled_layer = card_at(cards(wire), 1)
+        canvas_before_scale = canvas_shot(wire, "before-scale")
+        sampled_scale = rebuilds(wire)
+        click(inj, *centre(scaled_layer["scale"]))
+        wd.settle(wire)
+        open_field = card_at(cards(wire), 1)
+        opened_scale = p.check(open_field["scaling"],
+                               "the card's Scale button opens a field in its own place",
+                               f"scale={[round(v) for v in open_field['scale']]} "
+                               f"button={[round(v) for v in scaled_layer['scale']]}")
+        if not opened_scale:
+            p.check(False, "the claims after it need the field open, so they were not attempted")
+        else:
+            p.check(inside_box(open_field["scale"], open_field["box"]),
+                    "and the field is inside the card it belongs to",
+                    str([round(v) for v in open_field["scale"]]))
+            p.check(not [c for c in cards(wire) if c["index"] != 1 and c["scaling"]],
+                    "and one card at a time holds a field")
+            p.check(ImageChops.difference(canvas_before_scale,
+                                          canvas_shot(wire, "field-open")).getbbox() is None,
+                    "opening the field has not scaled anything yet")
+            type_text(inj, "big")
+            inj.key(KEY_RETURN)
+            wd.settle(wire)
+            stuck = card_at(cards(wire), 1)
+            p.check(stuck["scaling"],
+                    "a word where a factor belongs is not sent, and the field keeps it to fix",
+                    f"scaling={stuck['scaling']}")
+            p.check(ImageChops.difference(canvas_before_scale,
+                                          canvas_shot(wire, "word-typed")).getbbox() is None,
+                    "and the canvas is exactly as it was")
+            # Only press on while the field still holds the keyboard: with it gone, Escape would be the
+            # app's quit key and every claim after it would be about a dialog.
+            if stuck["scaling"]:
+                inj.key(wi.KEY_ESCAPE)
+                wd.settle(wire)
+            escaped = card_at(cards(wire), 1)
+            p.check(not escaped["scaling"], "Escape puts the button back",
+                    f"scaling={escaped['scaling']}")
+            p.check(ImageChops.difference(canvas_before_scale,
+                                          canvas_shot(wire, "after-escape")).getbbox() is None,
+                    "and that key was the field's, not the app's: same canvas, app still answering")
+
+            # Half as big always has room, however far the picture reaches. Twice as big is the refusal,
+            # and it is the same picture - the layer this probe painted spans the canvas, so there is
+            # nowhere for it to grow.
+            click(inj, *centre(card_at(cards(wire), 1)["scale"]))
+            wd.settle(wire)
+            inj.modified_key(ord("a"), wi.KEY_CTRL_L)  # so the seed cannot be left glued to the number
+            type_text(inj, "0.5")
+            inj.key(KEY_RETURN)
+            wd.settle(wire)
+            doubled = card_at(cards(wire), 1)
+            p.check(not doubled["scaling"], "a factor typed and confirmed closes the field")
+            canvas_after_scale = canvas_shot(wire, "after-scale")
+            p.check(ImageChops.difference(canvas_before_scale, canvas_after_scale).getbbox() is not None,
+                    "and half the factor has visibly shrunk the picture")
+            p.check(rebuilds(wire) > sampled_scale,
+                    "the card re-sampled, because the layer's own bytes moved",
+                    f"{sampled_scale} to {rebuilds(wire)}")
+            wire.call("edit.undo", {})
+            wd.settle(wire)
+            p.check(ImageChops.difference(canvas_before_scale,
+                                          canvas_shot(wire, "after-undo-scale")).getbbox() is None,
+                    "one undo gives the picture back exactly",
+                    str(ImageChops.difference(canvas_before_scale,
+                                              canvas_shot(wire, "after-undo-scale")).getbbox()))
+
+            try:
+                wire.call("layer.scale", {"index": 1, "factor": 2.0})
+                too_big = "accepted"
+            except wd.WireError as exc:
+                too_big = str(exc)
+            p.check("largest factor that fits" in too_big and "2" in too_big,
+                    "a factor that leaves the canvas is refused with the largest that fits", too_big)
+            p.check(ImageChops.difference(canvas_before_scale,
+                                          canvas_shot(wire, "after-refusal")).getbbox() is None,
+                    "and a refusal has moved no pixel")
 
         # A card's title row selects its layer - and about the awkward one, which is the last card down:
         # three of them do not fit a panel this tall, so the wheel is how a person reaches it, and the
