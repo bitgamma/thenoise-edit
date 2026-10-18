@@ -91,7 +91,8 @@ void History::record_layer_created(std::uint64_t layer_id, std::string name, int
 }
 
 std::size_t History::held(const Stacked& entry) {
-    std::size_t bytes = entry.bytes.size();
+    // The name a `layer_renamed` entry is the whole of, and a small part of a layer that came whole.
+    std::size_t bytes = entry.bytes.size() + entry.name.size();
     bytes += entry.whole.pixels.bytes();
     if (entry.whole.mask) {
         bytes += entry.whole.mask->plane().size();
@@ -118,6 +119,18 @@ bool History::names_layer(const Stacked& entry, const std::uint64_t id) {
         return std::find(entry.order.begin(), entry.order.end(), id) != entry.order.end();
     }
     return entry.kind != Kind::stack_replaced && entry.layer == id;
+}
+
+void History::record_layer_renamed(std::uint64_t layer_id, std::string previous_name) {
+    redo_stack_.clear();
+    Stacked entry;
+    entry.layer = layer_id;
+    entry.kind = Kind::layer_renamed;
+    entry.step = open_step_ != 0 ? open_step_ : ++next_step_;
+    entry.name = std::move(previous_name);
+    bytes_ += held(entry);
+    undo_stack_.push_back(std::move(entry));
+    drop_oldest_until_within_budget();
 }
 
 void History::record_stack_replaced(std::vector<Layer> stack) {
@@ -263,6 +276,8 @@ bool History::fits(const Layer* layer, const Stacked& entry) {
         case Kind::layer_order:
             // Checked against the whole stack by `fits_stack`.
             return true;
+        case Kind::layer_renamed:
+            return layer != nullptr;
         case Kind::stack_replaced:
             // Nothing to check: it supplies every layer rather than reading one.
             return true;
@@ -296,6 +311,14 @@ void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
         // The entry leaves holding the stack that is current now, which is what the other direction
         // needs: undo and redo are the same swap, so a layer cannot come back in the wrong place.
         std::swap(layers, entry.stack);
+        entry.step = step;
+        into.push_back(std::move(entry));
+        return;
+    }
+    if (entry.kind == Kind::layer_renamed) {
+        // One field holds the name that is not current, so this is the whole of both directions. The
+        // layer is there because the pass above checked it.
+        std::swap(layer_of(layers, entry.layer)->name, entry.name);
         entry.step = step;
         into.push_back(std::move(entry));
         return;
@@ -408,6 +431,13 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
         }
         if (entry.kind == Kind::stack_replaced) {
             continue;  // it replaces every layer, so there is nothing about this stack to check
+        }
+        if (entry.kind == Kind::layer_renamed) {
+            if (found == nullptr) {  // the layer this would rename is not in the stack
+                clear();
+                return std::nullopt;
+            }
+            continue;
         }
         if (entry.kind == Kind::layer_absent) {
             if (!fits(found, entry)) {

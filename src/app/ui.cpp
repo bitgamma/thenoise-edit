@@ -801,142 +801,239 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
         const std::span<const Layer> layers = state.doc.layers();
         const bool live = state.doc.in_provisional();
         thumbs.keep(layers);
+        if (state.renaming.layer != 0) {
+            const std::uint64_t typing = state.renaming.layer;
+            if (std::find_if(layers.begin(), layers.end(),
+                             [typing](const Layer& layer) { return layer.id == typing; }) ==
+                layers.end()) {
+                state.renaming.layer = 0;  // a card that left the stack is not being typed into
+            }
+        }
         // Both arrows take the right end of every title row, so their width is known before the first
         // name of the stack is measured.
         const float arrows_px = button_px(kLabelMoveUp) + ImGui::GetStyle().ItemSpacing.x +
                                 button_px(kLabelMoveDown);
-        for (std::size_t row = layers.size(); row-- > 0;) {
-            const Layer& layer = layers[row];
-            thumbs.sync(layer, live);
-            const bool active = static_cast<int>(row) == state.doc.active();
-            ImGui::PushID(static_cast<int>(row));
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, active ? kCardActiveBg : kCardBg);
-            ImGui::PushStyleColor(ImGuiCol_Border, active ? kCardActiveBorder : kCardBorder);
-            ImGui::PushStyleColor(ImGuiCol_BorderShadow, kCardShadow);
-            LayerCard card_state;
-            card_state.index = static_cast<int>(row);
-            card_state.name = layer.name;
-            card_state.active = active;
-            card_state.visible = layer.visible;
-            if (ImGui::BeginChild("card", ImVec2(0.0f, 0.0f),
-                                  ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY)) {
-                bool visible = layer.visible;
-                if (ImGui::Checkbox("##visible", &visible)) {
-                    commands.invoke("layer.set", json{{"index", static_cast<int>(row)},
-                                                      {"visible", visible}});
-                }
-                card_state.visibility = item_rect();
-                ImGui::SameLine();
-                // The name stops where the arrows begin, so no pixel belongs to two controls. Its floor is
-                // the one thing that can lay them over each other again, in a card too narrow for the
-                // arrows and a name nobody could read anyway.
-                const float name_px = std::max(
-                    kLayerNameMinPx,
-                    ImGui::GetContentRegionAvail().x - arrows_px - ImGui::GetStyle().ItemSpacing.x);
-                if (ImGui::Selectable(layer.name.c_str(), active, 0, ImVec2(name_px, 0.0f))) {
-                    commands.invoke("layer.select", json{{"index", static_cast<int>(row)}});
-                }
-                card_state.title = item_rect();
-                // "Up" is towards the top of the picture, which in a bottom-first stack is the next index
-                // up. An arrow that cannot apply stays where it is and disabled, so every card has the
-                // same shape and the same coordinates mean the same thing.
-                const int stack_count = static_cast<int>(layers.size());
-                card_state.can_move_up = card_state.index + 1 < stack_count;
-                card_state.can_move_down = card_state.index > 0;
-                card_state.can_merge = card_state.index > 0;
-                ImGui::SameLine();
-                ImGui::BeginDisabled(!card_state.can_move_up);
-                if (ImGui::Button(kLabelMoveUp)) {
-                    commands.invoke("layer.move", json{{"index", static_cast<int>(row)},
-                                                       {"to", static_cast<int>(row) + 1}});
-                }
-                ImGui::EndDisabled();
-                card_state.move_up = item_rect();
-                ImGui::SameLine();
-                ImGui::BeginDisabled(!card_state.can_move_down);
-                if (ImGui::Button(kLabelMoveDown)) {
-                    commands.invoke("layer.move", json{{"index", static_cast<int>(row)},
-                                                       {"to", static_cast<int>(row) - 1}});
-                }
-                ImGui::EndDisabled();
-                card_state.move_down = item_rect();
-                ImGui::NewLine();
-                // The layer's own pictures: what it holds, and the coverage that hides part of it. Both
-                // are inside this border because both belong to the name above them.
-                const LayerThumbs::Card& card = thumbs.card(layer.id);
-                if (card.pixels.valid()) {
-                    ImGui::Image(simgui_imtextureid(card.pixels.view),
-                                 thumb_draw_size(layer.pixels.size()));
-                    card_state.picture = item_rect();
-                }
-                if (card.has_mask && card.mask.valid()) {
+        // The stack's own verbs are pinned under the list rather than being its last entry: with three
+        // layers they fell past the panel's bottom edge - reported at y=926 in a window ending at 800 -
+        // controls for the whole stack, drawn nowhere and reachable only by scrolling to them. What the
+        // panel has left after one button row is the list's, and a row is a frame tall plus the gap above
+        // it, both from the style; the list carries no padding of its own, so the cards are the width they
+        // were.
+        const float pinned_row_px = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y;
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{0.0f, 0.0f});
+        ImGui::BeginChild("layer-list", ImVec2(0.0f, -pinned_row_px));
+            for (std::size_t row = layers.size(); row-- > 0;) {
+                const Layer& layer = layers[row];
+                thumbs.sync(layer, live);
+                const bool active = static_cast<int>(row) == state.doc.active();
+                ImGui::PushID(static_cast<int>(row));
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, active ? kCardActiveBg : kCardBg);
+                ImGui::PushStyleColor(ImGuiCol_Border, active ? kCardActiveBorder : kCardBorder);
+                ImGui::PushStyleColor(ImGuiCol_BorderShadow, kCardShadow);
+                LayerCard card_state;
+                card_state.index = static_cast<int>(row);
+                card_state.name = layer.name;
+                card_state.active = active;
+                card_state.visible = layer.visible;
+                if (ImGui::BeginChild("card", ImVec2(0.0f, 0.0f),
+                                      ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY)) {
+                    bool visible = layer.visible;
+                    if (ImGui::Checkbox("##visible", &visible)) {
+                        commands.invoke("layer.set", json{{"index", static_cast<int>(row)},
+                                                          {"visible", visible}});
+                    }
+                    card_state.visibility = item_rect();
                     ImGui::SameLine();
-                    ImGui::Image(simgui_imtextureid(card.mask.view),
-                                 thumb_draw_size(layer.mask->size()));
-                    card_state.mask_picture = item_rect();
-                } else if (card.pixels.valid()) {
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("no mask");
-                }
-                // The layer under this one, as the canvas already shows the two of them. The bottom
-                // layer's card says so by dimming the button rather than by moving it.
-                ImGui::SameLine();
-                ImGui::BeginDisabled(!card_state.can_merge);
-                if (ImGui::Button(kLabelMergeDown)) {
-                    commands.invoke("layer.merge", json{{"index", static_cast<int>(row)}});
-                }
-                ImGui::EndDisabled();
-                card_state.merge = item_rect();
-
-                // The two facts the composite reads and the layer does not hold: how much of it shows,
-                // and how it mixes with what is under it.
-                ImGui::NewLine();
-                float opacity = static_cast<float>(layer.opacity);
-                ImGui::PushItemWidth(kLayerOpacitySliderPx);
-                if (ImGui::SliderFloat("##opacity", &opacity, 0.0f, 1.0f, "%.2f") &&
-                    static_cast<double>(opacity) != layer.opacity) {
-                    commands.invoke("layer.set",
-                                    json{{"index", static_cast<int>(row)},
-                                         {"opacity", static_cast<double>(opacity)}});
-                }
-                ImGui::PopItemWidth();
-                card_state.opacity = item_rect();
-                ImGui::SameLine();
-                // The items are `kBlendModes` in table order, so a mode added in core/blend appears
-                // here without this file being told about it.
-                const std::string_view mode_name = blend_mode_name(layer.mode);
-                // Measured inside the card: a width taken from the panel is wider than the card and puts
-                // the dropdown's arrow past the border.
-                ImGui::PushItemWidth(std::max(kLayerModeMinPx, ImGui::GetContentRegionAvail().x));
-                const bool opening_mode = ImGui::BeginCombo(
-                    "##mode", mode_name.empty() ? "no such mode" : mode_name.data(), 0);
-                card_state.mode = item_rect();
-                if (opening_mode) {
-                    for (const BlendModeInfo& info : kBlendModes) {
-                        const bool chosen = info.mode == layer.mode;
-                        if (ImGui::Selectable(info.name, chosen)) {
-                            commands.invoke(
-                                "layer.set",
-                                json{{"index", static_cast<int>(row)}, {"mode", info.name}});
+                    // The name stops where the arrows begin, so no pixel belongs to two controls. Its floor is
+                    // the one thing that can lay them over each other again, in a card too narrow for the
+                    // arrows and a name nobody could read anyway.
+                    const float name_px = std::max(
+                        kLayerNameMinPx,
+                        ImGui::GetContentRegionAvail().x - arrows_px - ImGui::GetStyle().ItemSpacing.x);
+                    if (state.renaming.layer == layer.id) {
+                        // The field takes the name's place rather than sitting over it: two items claiming
+                        // one box and the point goes to whichever was submitted first. `Enter` commits and
+                        // anything else drops it, so a name that was never confirmed cannot end up in the
+                        // file - and while the field holds the keyboard, `Escape` is the field's to
+                        // cancel with rather than `app.quit`'s to leave with.
+                        const bool opening = state.renaming.just_opened;
+                        if (opening) {
+                            ImGui::SetKeyboardFocusHere(0);
+                            state.renaming.just_opened = false;
                         }
-                        if (chosen) {
-                            ImGui::SetItemDefaultFocus();
+                        ImGui::SetNextItemWidth(name_px);
+                        const bool confirmed = ImGui::InputText(
+                            "##name", state.renaming.text.data(), state.renaming.text.size() - 1,
+                            ImGuiInputTextFlags_EnterReturnsTrue);
+                        card_state.title = item_rect();
+                        card_state.renaming = true;
+                        const bool escaping =
+                            ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+                        if (confirmed) {
+                            commands.invoke("layer.rename",
+                                            json{{"index", static_cast<int>(row)},
+                                                 {"name", state.renaming.text.data()}});
+                            state.renaming.layer = 0;
+                        } else if (escaping) {
+                            state.renaming.layer = 0;
+                        } else if (!opening && !ImGui::IsItemActive()) {
+                            // The frame the field opens on, focus has not arrived yet: dropping the edit
+                            // for its own first frame would close a field nobody ever saw.
+                            state.renaming.layer = 0;
+                        }
+                    } else {
+                        if (ImGui::Selectable(layer.name.c_str(), active, 0, ImVec2(name_px, 0.0f))) {
+                            commands.invoke("layer.select", json{{"index", static_cast<int>(row)}});
+                        }
+                        card_state.title = item_rect();
+                        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                            begin_layer_rename(state, static_cast<int>(row));
                         }
                     }
-                    ImGui::EndCombo();
+                    // "Up" is towards the top of the picture, which in a bottom-first stack is the next index
+                    // up. An arrow that cannot apply stays where it is and disabled, so every card has the
+                    // same shape and the same coordinates mean the same thing.
+                    const int stack_count = static_cast<int>(layers.size());
+                    card_state.can_move_up = card_state.index + 1 < stack_count;
+                    card_state.can_move_down = card_state.index > 0;
+                    card_state.can_merge = card_state.index > 0;
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(!card_state.can_move_up);
+                    if (ImGui::Button(kLabelMoveUp)) {
+                        commands.invoke("layer.move", json{{"index", static_cast<int>(row)},
+                                                           {"to", static_cast<int>(row) + 1}});
+                    }
+                    ImGui::EndDisabled();
+                    card_state.move_up = item_rect();
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(!card_state.can_move_down);
+                    if (ImGui::Button(kLabelMoveDown)) {
+                        commands.invoke("layer.move", json{{"index", static_cast<int>(row)},
+                                                           {"to", static_cast<int>(row) - 1}});
+                    }
+                    ImGui::EndDisabled();
+                    card_state.move_down = item_rect();
+                    ImGui::NewLine();
+                    // The layer's own pictures: what it holds, and the coverage that hides part of it. Both
+                    // are inside this border because both belong to the name above them.
+                    const LayerThumbs::Card& card = thumbs.card(layer.id);
+                    if (card.pixels.valid()) {
+                        ImGui::Image(simgui_imtextureid(card.pixels.view),
+                                     thumb_draw_size(layer.pixels.size()));
+                        card_state.picture = item_rect();
+                    }
+                    if (card.has_mask && card.mask.valid()) {
+                        ImGui::SameLine();
+                        ImGui::Image(simgui_imtextureid(card.mask.view),
+                                     thumb_draw_size(layer.mask->size()));
+                        card_state.mask_picture = item_rect();
+                    } else if (card.pixels.valid()) {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("no mask");
+                    }
+                    // The layer under this one, as the canvas already shows the two of them. The bottom
+                    // layer's card says so by dimming the button rather than by moving it.
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(!card_state.can_merge);
+                    if (ImGui::Button(kLabelMergeDown)) {
+                        commands.invoke("layer.merge", json{{"index", static_cast<int>(row)}});
+                    }
+                    ImGui::EndDisabled();
+                    card_state.merge = item_rect();
+
+                    // The two facts the composite reads and the layer does not hold: how much of it shows,
+                    // and how it mixes with what is under it.
+                    ImGui::NewLine();
+                    float opacity = static_cast<float>(layer.opacity);
+                    ImGui::PushItemWidth(kLayerOpacitySliderPx);
+                    if (ImGui::SliderFloat("##opacity", &opacity, 0.0f, 1.0f, "%.2f") &&
+                        static_cast<double>(opacity) != layer.opacity) {
+                        commands.invoke("layer.set",
+                                        json{{"index", static_cast<int>(row)},
+                                             {"opacity", static_cast<double>(opacity)}});
+                    }
+                    ImGui::PopItemWidth();
+                    card_state.opacity = item_rect();
+                    ImGui::SameLine();
+                    // The items are `kBlendModes` in table order, so a mode added in core/blend appears
+                    // here without this file being told about it.
+                    const std::string_view mode_name = blend_mode_name(layer.mode);
+                    // Measured inside the card: a width taken from the panel is wider than the card and puts
+                    // the dropdown's arrow past the border.
+                    ImGui::PushItemWidth(std::max(kLayerModeMinPx, ImGui::GetContentRegionAvail().x));
+                    const bool opening_mode = ImGui::BeginCombo(
+                        "##mode", mode_name.empty() ? "no such mode" : mode_name.data(), 0);
+                    card_state.mode = item_rect();
+                    if (opening_mode) {
+                        for (const BlendModeInfo& info : kBlendModes) {
+                            const bool chosen = info.mode == layer.mode;
+                            if (ImGui::Selectable(info.name, chosen)) {
+                                commands.invoke(
+                                    "layer.set",
+                                    json{{"index", static_cast<int>(row)}, {"mode", info.name}});
+                            }
+                            if (chosen) {
+                                ImGui::SetItemDefaultFocus();
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::PopItemWidth();
                 }
-                ImGui::PopItemWidth();
+                ImGui::EndChild();
+                const ImVec2 card_min = ImGui::GetItemRectMin();
+                const ImVec2 card_max = ImGui::GetItemRectMax();
+                card_state.box = ScreenRect{card_min.x, card_min.y, card_max.x - card_min.x,
+                                            card_max.y - card_min.y};
+                state.layer_cards.push_back(std::move(card_state));
+                ImGui::PopStyleColor(3);
+                ImGui::PopID();
             }
-            ImGui::EndChild();
-            const ImVec2 card_min = ImGui::GetItemRectMin();
-            const ImVec2 card_max = ImGui::GetItemRectMax();
-            card_state.box = ScreenRect{card_min.x, card_min.y, card_max.x - card_min.x,
-                                        card_max.y - card_min.y};
-            state.layer_cards.push_back(std::move(card_state));
-            ImGui::PopStyleColor(3);
-            ImGui::PopID();
-        }
-        // The whole stack's own controls, under the cards rather than on any one of them.
+            // The active layer's mask, and which plane of it strokes write. Every control is a `mask.*`
+            // command, so a click, the wire and a scripted test cannot disagree about what "Hide all"
+            // means, and none of them has to know whether a mask is a plane, a channel or a claim.
+            const Layer& active = state.doc.layer(static_cast<std::size_t>(state.doc.active()));
+            ImGui::SeparatorText("mask");
+            if (active.mask) {
+                if (ImGui::Button("Remove")) {
+                    commands.invoke("mask.remove", json::object());
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Show all")) {
+                    commands.invoke("mask.fill", json{{"to", "show"}});
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Hide all")) {
+                    commands.invoke("mask.fill", json{{"to", "hide"}});
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Invert")) {
+                    commands.invoke("mask.invert", json::object());
+                }
+                const json facts = layer_mask_json(active);
+                const json& bounds = facts["bounds"];
+                // Two lines, because one of them clipped mid-word in a panel a third of the window.
+                // "Touched" and "shown" are the two counts a coverage plane has - how many pixels it
+                // reached, and how much of them it shows - and an anti-aliased edge makes them differ, so
+                // a painter who read only one would misjudge what the brush did.
+                ImGui::TextDisabled("%d px touched, %.1f px shown",
+                                    static_cast<int>(facts["covered"].get<std::int64_t>()),
+                                    facts["area"].get<double>());
+                ImGui::TextDisabled("%d x %d at %d,%d", bounds[2].get<int>(), bounds[3].get<int>(),
+                                    bounds[0].get<int>(), bounds[1].get<int>());
+            } else {
+                if (ImGui::Button("Add mask")) {
+                    commands.invoke("mask.add", json::object());
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("nothing hidden");
+            }
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+        // The scrolling region: what a card has to be inside to be on screen, and where the pinned row
+        // of stack controls begins.
+        state.layer_panel.list = item_rect();
+        // The stack's own controls, pinned below the list rather than at the end of it.
         if (ImGui::Button("Add layer")) {
             commands.invoke("layer.add", json::object());
         }
@@ -956,45 +1053,6 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
         }
         ImGui::EndDisabled();
         state.layer_panel.flatten = item_rect();
-        // The active layer's mask, and which plane of it strokes write. Every control is a `mask.*`
-        // command, so a click, the wire and a scripted test cannot disagree about what "Hide all"
-        // means, and none of them has to know whether a mask is a plane, a channel or a claim.
-        const Layer& active = state.doc.layer(static_cast<std::size_t>(state.doc.active()));
-        ImGui::SeparatorText("mask");
-        if (active.mask) {
-            if (ImGui::Button("Remove")) {
-                commands.invoke("mask.remove", json::object());
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Show all")) {
-                commands.invoke("mask.fill", json{{"to", "show"}});
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Hide all")) {
-                commands.invoke("mask.fill", json{{"to", "hide"}});
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Invert")) {
-                commands.invoke("mask.invert", json::object());
-            }
-            const json facts = layer_mask_json(active);
-            const json& bounds = facts["bounds"];
-            // Two lines, because one of them clipped mid-word in a panel a third of the window.
-            // "Touched" and "shown" are the two counts a coverage plane has - how many pixels it
-            // reached, and how much of them it shows - and an anti-aliased edge makes them differ, so
-            // a painter who read only one would misjudge what the brush did.
-            ImGui::TextDisabled("%d px touched, %.1f px shown",
-                                static_cast<int>(facts["covered"].get<std::int64_t>()),
-                                facts["area"].get<double>());
-            ImGui::TextDisabled("%d x %d at %d,%d", bounds[2].get<int>(), bounds[3].get<int>(),
-                                bounds[0].get<int>(), bounds[1].get<int>());
-        } else {
-            if (ImGui::Button("Add mask")) {
-                commands.invoke("mask.add", json::object());
-            }
-            ImGui::SameLine();
-            ImGui::TextDisabled("nothing hidden");
-        }
     }
     // What the picture cache had to resample, published by the only code that holds it: the caching rule
     // - opacity and order cost nothing, a write to the layer costs one - is then a number a driver can

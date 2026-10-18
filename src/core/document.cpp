@@ -295,6 +295,26 @@ bool Document::set_layer_mode(int index, BlendMode mode) {
     return true;
 }
 
+bool Document::rename_layer(int index, std::string name) {
+    if (index < 0 || static_cast<std::size_t>(index) >= layers_.size()) {
+        return false;
+    }
+    const std::optional<std::string> wanted = normalize_layer_name(name);
+    if (!wanted) {
+        return false;
+    }
+    Layer& layer = layers_[static_cast<std::size_t>(index)];
+    if (layer.name == *wanted) {
+        return true;
+    }
+    history_.record_layer_renamed(layer.id, std::move(layer.name));
+    layer.name = std::move(*wanted);
+    // The name is in the file and in the panel, and in nothing the renderer draws: no revision, no
+    // pending rectangle and no content revision, so no card resamples its picture over a rename.
+    dirty_ = true;
+    return true;
+}
+
 bool Document::set_layer_opacity(int index, double opacity) {
     if (index < 0 || static_cast<std::size_t>(index) >= layers_.size()) {
         return false;
@@ -320,6 +340,11 @@ std::string Document::checksum() const {
         // different documents, whatever their flattened pixels happen to look like, and a
         // round-trip check that could not see a lost `visible` flag would pass on data loss.
         seed += layer.visible ? 'v' : 'h';
+        // The name too, and its length first: names are free text, so without a bound between them a
+        // rename that dropped a character, or moved one into the field after it, would hash the same.
+        seed += std::to_string(layer.name.size());
+        seed += ':';
+        seed += layer.name;
         const char* raw = reinterpret_cast<const char*>(&layer.opacity);
         seed.append(raw, sizeof(layer.opacity));  // the bytes, so two opacities never collide
         seed += blend_mode_name(layer.mode);
@@ -799,6 +824,9 @@ bool Document::undo() {
     if (!moved) {
         return false;
     }
+    // Stepping back is a change: what the document holds now is not what the file holds, and a quit guard
+    // that read this as clean would discard the step it just took.
+    dirty_ = true;
     retarget_active(was);
     pending_ = unite(pending_, moved->rect);
     if (moved->structure) {
@@ -816,6 +844,7 @@ bool Document::redo() {
     if (!moved) {
         return false;
     }
+    dirty_ = true;  // as for undo: the document has moved away from the file
     retarget_active(was);
     pending_ = unite(pending_, moved->rect);
     if (moved->structure) {

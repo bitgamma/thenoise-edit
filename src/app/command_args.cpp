@@ -197,14 +197,16 @@ json layer_cards_json(const AppState& state) {
                          {"mode", screen_json(card.mode)},
                          {"can_move_up", card.can_move_up},
                          {"can_move_down", card.can_move_down},
-                         {"can_merge", card.can_merge}});
+                         {"can_merge", card.can_merge},
+                         {"renaming", card.renaming}});
     }
     return cards;
 }
 
 json layer_panel_json(const AppState& state) {
     const LayerPanelControls& controls = state.layer_panel;
-    return json{{"add", screen_json(controls.add)},
+    return json{{"list", screen_json(controls.list)},
+                {"add", screen_json(controls.add)},
                 {"remove", screen_json(controls.remove)},
                 {"flatten", screen_json(controls.flatten)},
                 {"can_flatten", controls.can_flatten}};

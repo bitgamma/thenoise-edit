@@ -16,6 +16,8 @@
 #include "core/image.h"
 #include "platform/file_dialog.h"
 
+#include <array>
+#include <cstdio>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -73,12 +75,26 @@ struct LayerCard {
     bool can_move_up = false;
     bool can_move_down = false;
     bool can_merge = false;
+    // The card's name is being typed rather than shown. The field stands in place of the name, so the box
+    // alone cannot tell a driver whether the card is showing a name or waiting for one.
+    bool renaming = false;
 };
 
-// The row of controls under the cards: the ones that answer to the stack rather than to a layer. Their
-// boxes are reported so a driver presses the button instead of the command it stands in for - the claim
-// being that the panel works, not that the command table does.
+// The card whose name is being typed, if any. The text is the panel's rather than the document's: a name
+// reaches `Document` through `layer.rename` when `Enter` confirms it, so nothing half-typed can be saved,
+// counted as a step, or painted into a card.
+struct LayerRenaming {
+    std::uint64_t layer = 0;  // 0: nobody is typing a name
+    bool just_opened = false;
+    std::array<char, kLayerNameMaxChars + 1> text{};
+};
+
+// The row of controls pinned below the cards: the ones that answer to the stack rather than to a layer.
+// Their boxes are reported so a driver presses the button instead of the command it stands in for - the
+// claim being that the panel works, not that the command table does. `list` is the scrolling region they
+// are pinned against: a card outside it is a card a person has to wheel to.
 struct LayerPanelControls {
+    ScreenRect list{};
     ScreenRect add{};
     ScreenRect remove{};
     ScreenRect flatten{};
@@ -190,6 +206,7 @@ struct AppState {
     std::uint64_t layer_thumb_rebuilds = 0;
     std::vector<LayerCard> layer_cards{};
     LayerPanelControls layer_panel{};
+    LayerRenaming renaming{};
     // And the same for the phrase box the bar opens, so a driver can read the box's own rect rather
     // than deriving it from the bar's.
     ScreenRect verb_ask{};
@@ -270,5 +287,21 @@ struct AppState {
         return doc.layer(static_cast<std::size_t>(doc.active()));
     }
 };
+
+// Put the name field on `index`'s card, seeded with what the layer is called. The card's double-click and
+// `layer.rename.begin` - so `F2`, so the wire - both come through here, because two doors that each decided
+// what the field starts with would disagree about a name nobody has typed yet. No document, or an index
+// outside the stack, closes the field rather than opening one on the wrong card.
+inline void begin_layer_rename(AppState& state, int index) {
+    state.renaming = LayerRenaming{};
+    if (state.doc.empty() || index < 0 ||
+        static_cast<std::size_t>(index) >= state.doc.layers().size()) {
+        return;
+    }
+    const Layer& layer = state.doc.layer(static_cast<std::size_t>(index));
+    state.renaming.layer = layer.id;
+    state.renaming.just_opened = true;
+    std::snprintf(state.renaming.text.data(), state.renaming.text.size(), "%s", layer.name.c_str());
+}
 
 }

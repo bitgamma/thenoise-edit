@@ -127,6 +127,14 @@ public:
     // otherwise keep showing a layer that is meant to be gone - and all three mark the document
     // dirty. None enters history, nor does adding or removing a layer. `opacity` is 0..1, and out
     // of range is false rather than a clamped value.
+
+    // A layer's name: what the panel shows, what an error message points at and what the container
+    // stores. `normalize_layer_name` is what decides whether the name is one, and a name that is not is
+    // false rather than a quietly shortened one. No pixel moves and no layer's content changes, so a
+    // card's thumbnail is untouched - and it is one undo step, because a mistyped name is not a reason to
+    // lose the stroke under it.
+    bool rename_layer(int index, std::string name);
+
     // The layer's mask: what the composite hides. A mask must be the size of the canvas, and a
     // different size is false rather than a resized mask - a mask that quietly shifted would hide
     // pixels nobody asked about. Like visibility it changes no pixel and enters no undo step, but it

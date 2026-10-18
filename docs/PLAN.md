@@ -93,10 +93,11 @@ coverage with verbs at the marked area, is next.
 5. **Layers you can see.** Landed since 2026-10-16: thumbnails of the layer and its mask, one bordered card
    per layer holding its own controls, visibility, opacity, blend mode, reorder (`Up`/`Down` on the card,
    `layer.move`), **Merge down** (`layer.merge`) and **Flatten** of the whole stack (`layer.flatten`, whose
-   history entry is the replaced stack itself - see *The stack becomes one layer* below). What the slice
-   owes: moving and scaling a layer's picture, inline rename, and the panel's own row of buttons pinned
-   clear of the scrolling card list. The panel is always visible: it is where a person goes to understand
-   what an edit did.
+   history entry is the replaced stack itself - see *The stack becomes one layer* below), the panel's own row
+   of buttons pinned clear of the scrolling card list, and a name typed on the card itself (`F2`,
+   `layer.rename` - see *A layer's name is typed where the layer is shown* below). What the slice owes:
+   moving and scaling a layer's picture. The panel is always visible: it is where a person goes to
+   understand what an edit did.
 6. **Blend, and images as input.** Drop an image → its own layer → *Blend* with no prompt repaints it into
    the scene on that layer. Needs the third recipe scope, `region: layer`, whose source is the layer's
    pixels and whose coverage is its alpha. *Blend* with a prompt, then control images (openpose), come in
@@ -159,13 +160,58 @@ the depth on each lap.
 `Flatten`) and the mask section are submitted after the cards *in the panel's own scroll region*, so on three
 layers that row starts past the window's bottom edge - `app.state` reported it at y=926 in a window ending
 at 800: drawn nowhere, unreachable until scrolled. The probe wheels to it and then presses where the app
-says it is, the rule the last card is already held to. **Not yet decided**: whether that row is pinned
-outside the scrolling list, so the buttons for the whole stack are where they always are rather than at the
-bottom of a scroll.
+says it is, the rule the last card is already held to. The next note is the decision: the row is pinned.
 
 **Owed from here**: moving and scaling a layer's picture, inline rename, and `layer.remove` in the timeline
 (`layer_absent` is the entry deletion always needed; the decision is whether deleting belongs in the
 timeline at all). The coverage-undo decision further up is still the bigger of the two.
+
+## 2026-10-17 - A layer's name is typed where the layer is shown
+
+Two things slice 5 owed that turned out to be about the panel rather than the pixels: the row of
+stack-wide controls moved out of the scroll, and a layer's name became something a person types.
+
+**The stack's own buttons are pinned, not scrolled.** The cards now live in a `layer-list` child sized to
+leave room under it, and `Add layer` / `Delete layer` / `Flatten` are submitted after that child, so the
+buttons that act on the whole stack are where they always are instead of at the bottom of a scroll. What it
+bought in observability is the important half: `app.state.layer_panel.list` is the scroll region, so a probe
+wheels *inside the list* rather than over the buttons, and the claims are that three cards deep the row is
+already on screen, that the three buttons claim no pixel twice, and that every card sits inside the list.
+
+**A name is document data that moves no pixel.** `F2`, or a double-click on the card, puts a field in the
+card's title row; `Enter` commits it through `layer.rename`, `Escape` throws it away. The card says which
+state it is in (`layer_cards[].renaming`), and the host's existing shortcut gate is what makes `Escape` the
+field's rather than the app's quit key - which the probe checks with a real key, because on the wire the
+question does not exist. A rename marks the document dirty and enters `checksum()` - it is saved, so it is
+data - while bumping neither the document revision nor any layer's `content_revision`: the probe asserts 0
+canvas px moved and 24 thumbnails still 24 resamples.
+
+**`Kind::layer_renamed` holds the name that is not current**, and applying it swaps: the same shape as the
+stack swap above, one field instead of a stack, and the only property of a layer with a step of its own.
+Hiding, fading or re-modding a layer stays out of the timeline deliberately - those are states checked by
+looking, not mistakes undone.
+
+**What a layer may be called is one fact in one file.** The rule was being restated in three places: the
+document trimmed and capped, `layer.rename` re-typed the same sentence in its error (with the limit spelled
+out a second time), and the container reader accepted whatever the file said - a 4 kB name or none. They are
+`normalize_layer_name` and `layer_name_rule` in `core/layer`, asked by all three doors. The reader now
+refuses a name a layer cannot carry, quoting the row and the offending text and listing the limit, and
+defaults only where the file has no `name` at all, which is a different fact rather than the same failure.
+
+**A double-click cannot be driven on this box, and a probe that claimed to would be lying.** Measured: two
+injected presses reach ImGui ~0.5 s apart (presses 200 frames apart) however the driver spaces them - the
+app renders ~340 fps idle and a wire call costs 3 ms, so it is XTEST-to-app delivery, not the app being
+slow. ImGui counts a pair inside `io.MouseDoubleClickTime` (0.3 s), so every variant of the burst failed the
+same way. `layer.rename.begin` is the door the key and the double-click share, so the probe drives that and
+`F2`, and the double-click stays for the hand that produces it - unclaimed, because the claim would not be
+true of the thing the probe did.
+
+**Verified**: `test_document` 3760 checks, `test_history` 254, `test_project` 216 (the new reader cases are
+13 of them), `ctest` 39/39, `tools/layer_panel_probe.py` 65 claims green, `sweep_procs.py` clean.
+
+**Owed from here**: moving and scaling a layer's picture, `layer.remove` in the timeline
+(`layer_absent` is the entry deletion always needed; the decision is whether deleting belongs in the
+timeline at all), and the coverage-undo decision further up, which is still the bigger of the two.
 
 ## 2026-10-16 - Moving a layer, and what a change to the stack actually carries
 
@@ -374,6 +420,12 @@ invariant) carry the rest. Suite: 37/37 with `test_verb_bar_probe` added.
   onto layers by that number serves the wrong picture. Key such a cache by the thing it is a picture *of*;
   the document is then free to say what a change really moved - this layer's content, or only how the
   layers stack.
+* **An injected double-click is not a double click on this box.** Two injected presses reach ImGui ~0.5 s
+  apart - 200 frames apart at the ~340 fps this app idles at - however tightly the driver sends them, and
+  ImGui counts a pair only inside `io.MouseDoubleClickTime` (0.3 s), so the second press starts a new click.
+  Raising the threshold would tune the app to the harness. Drive the command the gesture uses, and give the
+  feature the key it deserves anyway (`F2`): `layer.rename.begin` opens the field the double-click opens, so
+  the probe checks the door instead of claiming a gesture it never performed.
 * **`xvfb-run` clips pointer injection; the probes are run without it.** `wd.ensure_display` raises an
   Xvfb at the size the probe asks for and is what ctest uses, so motion reaches the whole window. Running
   a probe by hand under `xvfb-run -a` instead reuses *its* screen, and XTEST motion then stops arriving

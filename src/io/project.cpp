@@ -175,10 +175,27 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
             return false;
         }
 
+        // A row with no name is a layer this app never named, so it gets this app's name. A row that names
+        // itself nothing, or 4 kB of something, is refused: the panel would show a row that identifies no
+        // layer, and every later error about it would have nothing to quote.
+        std::string layer_name = default_layer_name(index);
+        if (layer.contains("name")) {
+            if (!layer.at("name").is_string()) {
+                error = "layer " + std::to_string(index) + " has a 'name' that is not a string in " + path;
+                return false;
+            }
+            const std::optional<std::string> named = normalize_layer_name(layer.at("name").get<std::string>());
+            if (!named) {
+                error = "layer " + std::to_string(index) + " has name '" +
+                        layer.at("name").get<std::string>() + "', which is not a name a layer can carry: " +
+                        layer_name_rule() + " in " + path;
+                return false;
+            }
+            layer_name = *named;
+        }
+
         Layer loaded_layer{0,
-                           layer.contains("name") && layer.at("name").is_string()
-                               ? layer.at("name").get<std::string>()
-                               : default_layer_name(index),
+                           std::move(layer_name),
                            std::move(pixels),
                            visible,
                            opacity,

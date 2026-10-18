@@ -1500,6 +1500,57 @@ void test_flattening_leaves_one_layer_that_shows_what_the_stack_showed() {
     CHECK_EQ(doc.history().undo_depth, 2);
 }
 
+// A name is what a person calls a layer afterwards, so it is saved, it is undone, and losing one in a
+// round trip is data loss like losing a `visible` flag. It is not a pixel: nothing the renderer uploads,
+// and nothing a card's picture shows, may move over it.
+void test_a_layer_takes_a_name_and_gives_the_old_one_back() {
+    Document doc;
+    doc.reset(stack({{"sky", Image::filled(Extent{4, 4}, 10, 20, 30, 255)},
+                     {"bird", Image::filled(Extent{4, 4}, 200, 200, 200, 128)}}),
+              std::nullopt, "x.noise");
+    const std::string whole = doc.checksum();
+    const std::string shown = doc.composite().checksum_hex();
+    const std::string ids = layer_ids(doc);
+    const std::map<std::uint64_t, std::uint64_t> held = content_revisions(doc);
+    const std::uint64_t revision = doc.revision();
+
+    CHECK(!doc.rename_layer(2, "out of the stack"));
+    CHECK(!doc.rename_layer(-1, "below the bottom"));
+    // Nothing to point at by name, and a name nobody could read to the end: both are refused rather than
+    // quietly stored as something else.
+    CHECK(!doc.rename_layer(0, "   \t \n"));
+    CHECK(!doc.rename_layer(0, std::string(kLayerNameMaxChars + 1, 'x')));
+
+    // The space around a name is not part of it.
+    CHECK(doc.rename_layer(1, "  the bird  "));
+    CHECK_EQ(doc.layer(1).name, std::string("the bird"));
+    CHECK(doc.dirty());
+    CHECK_EQ(layer_ids(doc), ids);  // the same layers renamed, not new ones wearing the name
+    CHECK_EQ(doc.composite().checksum_hex(), shown);
+    CHECK_EQ(doc.revision(), revision);      // nothing for a renderer to re-upload
+    CHECK(content_revisions(doc) == held);   // and no card has to resample a picture
+    CHECK(doc.checksum() != whole);          // the name is part of what the document is
+    CHECK_EQ(doc.history().undo_depth, 1);
+
+    CHECK(doc.undo());
+    CHECK_EQ(doc.layer(1).name, std::string("bird"));
+    CHECK_EQ(doc.checksum(), whole);
+    CHECK(doc.redo());
+    CHECK_EQ(doc.layer(1).name, std::string("the bird"));
+
+    // A rename rides with the layer through a step about the stack: the survivor keeps its own name, and
+    // undo returns the renamed layer renamed rather than back to what it was called before.
+    CHECK(doc.rename_layer(0, "the sky"));
+    const std::string renamed = doc.checksum();
+    CHECK(renamed != whole);
+    CHECK(doc.merge_down(1));
+    CHECK_EQ(doc.layers().size(), 1u);
+    CHECK_EQ(doc.layer(0).name, std::string("the sky"));
+    CHECK(doc.undo());
+    CHECK_EQ(layer_names(doc), std::string("the sky,the bird"));
+    CHECK_EQ(doc.checksum(), renamed);
+}
+
 // Both fences at once: the selection limits what a write may change, the layer mask limits what the
 // canvas shows of what was changed. A stroke under a masked-out area is real - it is on the layer -
 // and simply is not visible until the mask moves.
@@ -1583,6 +1634,7 @@ int main() {
     test_a_layer_mask_of_another_size_is_refused();
     test_a_layer_mask_change_is_a_document_change();
     test_a_selection_and_a_mask_fence_different_things();
+    test_a_layer_takes_a_name_and_gives_the_old_one_back();
     test_what_a_layer_holds_and_what_the_composite_uses_are_two_counters();
     test_a_layer_moves_as_one_step_that_undoes_itself();
     test_merging_down_shows_what_the_canvas_already_showed();

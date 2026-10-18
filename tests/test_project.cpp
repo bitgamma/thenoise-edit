@@ -312,6 +312,57 @@ void test_an_impossible_layer_state_is_refused() {
     std::filesystem::remove(mode_path);
 }
 
+// A name is the one layer field a person types, so the file has to hold the line the panel's field holds.
+// A reader that accepted anything would open a project whose layers the panel cannot rename without
+// "fixing" names the file was happy with.
+void test_a_name_a_layer_cannot_carry_is_refused() {
+    const Image image = checker(Extent{6, 6});
+    io::Project loaded;
+    std::string error;
+
+    for (const json& unusable : {json("   "), json(""), json(std::string(65, 'n'))}) {
+        json row = layer_rows(1);
+        row[0]["name"] = unusable;
+        const std::string path = temp("name.noise");
+        write_archive(path, members_with_rows(image, row, io::kFormatVersion));
+        CHECK(!io::load_project(path, loaded, error));
+        CHECK(error.find("not a name a layer can carry") != std::string::npos);
+        // The refusal says which layer and what the file said, because the file may have come from elsewhere
+        // and the person opening it has no idea which row to go and fix.
+        CHECK(error.find("layer 0") != std::string::npos);
+        CHECK(error.find(std::to_string(kLayerNameMaxChars)) != std::string::npos);
+        std::filesystem::remove(path);
+    }
+
+    json not_text = layer_rows(1);
+    not_text[0]["name"] = 12;
+    const std::string number_path = temp("name-number.noise");
+    write_archive(number_path, members_with_rows(image, not_text, io::kFormatVersion));
+    CHECK(!io::load_project(number_path, loaded, error));
+    CHECK(error.find("'name' that is not a string") != std::string::npos);
+    std::filesystem::remove(number_path);
+
+    // A name with room around it is the same name: the file keeps what the document would have stored,
+    // because the document stores it trimmed and the reader must not disagree with it.
+    json padded = layer_rows(1);
+    padded[0]["name"] = "  Sketch  ";
+    const std::string padded_path = temp("name-padded.noise");
+    write_archive(padded_path, members_with_rows(image, padded, io::kFormatVersion));
+    CHECK(io::load_project(padded_path, loaded, error));
+    CHECK_EQ(loaded.layers.size(), std::size_t{1});
+    CHECK_EQ(loaded.layers[0].name, std::string("Sketch"));
+    std::filesystem::remove(padded_path);
+
+    // No name at all is a file from somewhere that does not name layers, which is not the same failure.
+    json nameless = layer_rows(1);
+    nameless[0].erase("name");
+    const std::string nameless_path = temp("name-missing.noise");
+    write_archive(nameless_path, members_with_rows(image, nameless, io::kFormatVersion));
+    CHECK(io::load_project(nameless_path, loaded, error));
+    CHECK_EQ(loaded.layers[0].name, default_layer_name(0));
+    std::filesystem::remove(nameless_path);
+}
+
 // Members this build does not define are kept and written back: opening a file from a newer
 // build must not delete what the app cannot show.
 void test_unknown_members_are_carried_through_a_save() {
@@ -733,6 +784,7 @@ int main() {
     test_another_format_is_refused_by_name();
     test_a_layer_that_omits_its_state_is_refused();
     test_an_impossible_layer_state_is_refused();
+    test_a_name_a_layer_cannot_carry_is_refused();
     test_unknown_members_are_carried_through_a_save();
     test_layers_keep_their_order_and_names_through_a_save();
     test_a_layer_of_another_size_is_refused();

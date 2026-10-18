@@ -58,6 +58,11 @@ public:
     // layer goes back into, and putting one layer back cannot shift another.
     void record_layer_removed(Layer layer, int index);
 
+    // A layer's **name** - the one edit to a layer that is worth a step of its own, because a mistyped
+    // name should not cost the person the stroke under it. One field holds the name that is not current,
+    // so undo and redo are the same swap; no pixel and no other property of the layer is involved.
+    void record_layer_renamed(std::uint64_t layer_id, std::string previous_name);
+
     // A step that replaced the **whole stack** with layers none of the old ones can become - flattening
     // is the case. The entry holds the stack that is not current and applying it swaps the two, so undo
     // and redo are the same operation and every layer returns to the place it came from; encoding the
@@ -107,6 +112,7 @@ private:
         layer_created,
         layer_absent,
         layer_order,
+        layer_renamed,
         stack_replaced,
     };
 
