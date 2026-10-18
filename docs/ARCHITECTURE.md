@@ -601,10 +601,11 @@ panel`, "Regenerate with same params", kept variants) and nothing in the tree st
   button) is the one operation that rewrites a layer's pixels *and* its coverage as a single step: what it
   resamples is the picture - `Image::content_bounds`, not the layer's canvas-sized rectangle - about the
   middle of that picture, with a mask that covers something but not everything going through the same
-  factor so the two keep covering the same part of the document. Chained scales are resamples rather than
-  an identity: doubled then halved, a hard-edged stroke came back the same 100x62 box it started in with
-  4411 px of it differing by up to 112 - which is why undo, not the arithmetic of round factors, is what is
-  exact. A layer that holds nothing, a factor that
+  factor so the two keep covering the same part of the document. Chained scales are two resamples rather
+  than an identity: doubled then halved, a hard-edged stroke came back in the box it started, flat inside
+  and differing along a one-pixel rim (measured: 4411 px, worst 112 of 255, no byte changed anywhere else).
+  A round trip of round factors is therefore not a way to lose nothing, and undo is what is exact.
+  A layer that holds nothing, a factor that
   is not a finite positive number, and a factor that would push either plane off the canvas are all refused
   without a step, the last of those quoting the largest factor that does fit. A factor of exactly 1 changes
   nothing, records nothing and costs no revision. Adding or deleting a layer still does not enter the timeline - and
