@@ -25,8 +25,7 @@ include(FetchContent)
 # Pinned: sokol master 2026-10-07 (resource API rewrite in progress -> must stay pinned).
 FetchContent_Declare(sokol
     GIT_REPOSITORY https://github.com/floooh/sokol
-    GIT_TAG        401f21f8b7039258c35fef75c11d9a8a0e616771
-    GIT_SHALLOW    TRUE)
+    GIT_TAG        401f21f8b7039258c35fef75c11d9a8a0e616771)
 # Dear ImGui, docking branch.
 FetchContent_Declare(imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui
