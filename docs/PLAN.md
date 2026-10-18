@@ -454,6 +454,19 @@ which is the only way either fact could have been found.
 invariant) carry the rest. Suite: 37/37 with `test_verb_bar_probe` added.
 
 ## Traps the code cannot show
+* **A resampled picture carries its filter's throw.** Lanczos reaches about three pixels past an edge and
+  the throw has alpha, so a result left at the filter's natural size holds a *picture* bigger than the thing
+  in it - and `content_bounds`, which is what the next scale, move or crop is aimed at, grows by the reach
+  every time round. Cut the output at the box that was asked for; `resample_margin_px` is about the input
+  side, where the window must not run off the data.
+* **A field that refuses a value has to take the keyboard back, and ImGui will not warn you that it let
+  go.** A single-line `InputText` deactivates when Enter is pressed whether or not `EnterReturnsTrue` is
+  set, so rejecting an input closes the thing the person is typing into - and the key they reach for next
+  is `Escape`, which with nothing holding the keyboard is the app's quit key. The symptom is not a broken
+  field but a save prompt over the canvas and every screenshot claim after it describing a dialog. Re-arm
+  the field on a refusal, and remember that `io.WantCaptureKeyboard` describes the frame that just ended:
+  on the frame a field is re-armed it is stale, which is why the host's shortcut gate asks
+  `typing_in_layer_field` beside it rather than trusting either one alone.
 * **A position recorded while a stack shrinks is not a position for putting it back.** Undo re-inserts the
   layers a step removed in the order it removed them, each into a stack that is *growing*, while the index
   each carries was read off a stack that was *shrinking*. One removal per step and the two frames coincide;
