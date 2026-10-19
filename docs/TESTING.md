@@ -30,6 +30,10 @@ approximate image count. Behaviour:
 
 * absent env ⇒ `skip` with a loud reason, never `fail`, never silently green;
 * present env ⇒ they run, and their failures are as real as anyone else's;
+* a live run loads the model the role resolves to when the box is running another — the swap refusal is a
+  guard for a hand on a key, and a driver that refuses every verb is a green run of nothing — and puts
+  back whatever was resident when it started, including after a failure. Say how many images a run spent;
+  `--max-images` is what bounds it, and a spent budget skips the rest rather than passing them;
 * they assert **contract and invariants, never model output**: roles resolve, output dims satisfy
   `size_policy`, **pixel-lock outside the coverage holds** (that part is ours, so it is exact whatever the
   model produced), error shapes and status codes, cancel works;

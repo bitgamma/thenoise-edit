@@ -315,6 +315,9 @@ def generate_cell(p: Probe, wire: wd.Wire, live: bool, args: argparse.Namespace,
     p.check(bool(row["ready"]), "generate: the verb row says it could run", str(row.get("reason")))
     p.check(row["scope"] == "document", "generate: works on the document, not a marked area",
             str(row["scope"]))
+    # The same rule as the edit role: the swap refusal guards a hand on a key, and this run intends it.
+    if live and row.get("swap") and row.get("model"):
+        wire.call("server.load", {"model": row["model"], "pinned": False})
     aspects = list(row.get("aspects") or [])
     p.check(len(aspects) > 0, "generate: the recipe offers frames to choose from", str(aspects))
     press_refuses_without_the_words(p, wire, row)
@@ -449,6 +452,14 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
         # The box is shared and holds one image model, so whatever was resident when the probe started
         # goes back there whether or not the checks below pass.
         resident_before = str(connected.get("model_loaded") or "")
+        # The refusal that asks before swapping a model is for a hand on a key: it protects someone from
+        # a tens-of-seconds load they did not mean to cause. A probe means it, so it loads the role's own
+        # model here, names that it did, and the `finally` below puts the box back - the alternative is a
+        # live tier that refuses on every verb and reports a green run of nothing.
+        if live and edit["model"] != resident_before:
+            loaded = wire.call("server.load", {"model": edit["model"], "pinned": False})
+            p.check(bool(loaded.get("ok", True)), "the box loaded the model the edit role resolves to",
+                    f"{resident_before} -> {edit['model']}")
 
         before = export(wire, tmp / "before.png")
         spent = 0

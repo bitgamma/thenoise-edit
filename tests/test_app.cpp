@@ -2683,6 +2683,21 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(0));
     CHECK_EQ(checksum_of(h), before);
 
+    // And the free refusal comes first. With a swap pending *and* an asked-for field blank, the person
+    // is told about the field: `confirm` cannot buy a request that has no words in it, and a swap that
+    // loads a model to send nothing is the worst possible outcome of a bare key press. The recorded
+    // server always has the right model resident, so only the live box could find this - and it did.
+    h.value("ai.intent", json{{"recipe", "inpaint-replace"}});
+    const CommandResult blank_with_swap = h.run("ai.intent", json{{"run", true}});
+    CHECK(!blank_with_swap.ok);
+    CHECK(blank_with_swap.error.find("'instruction'") != std::string::npos);
+    CHECK(blank_with_swap.error.find("confirm") == std::string::npos);
+    const CommandResult confirmed_blank = h.run("ai.intent", json{{"run", true}, {"confirm", true}});
+    CHECK(!confirmed_blank.ok);
+    CHECK(confirmed_blank.error.find("'instruction'") != std::string::npos);
+    CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(0));
+    h.value("ai.intent", json{{"recipe", "inpaint-remove"}});
+
     // The confirmed press, then the answer landed the way the panel's Apply lands it.
     const json started = h.value("ai.intent", json{{"run", true}, {"confirm", true}});
     const std::string id = started["job"]["id"].get<std::string>();

@@ -139,6 +139,14 @@ CommandResult start_intent(AppState& state, CommandTable& table, const ai::Recip
         return fail("ai.intent", "cannot run '" + id + "': " + readiness.reason +
                                      (readiness.fix.empty() ? "" : " - " + readiness.fix));
     }
+    // Rendered before the swap is priced, because the swap is the expensive refusal and this one is
+    // free: a request with no words in it must never ask a shared box to load a model first. The dev
+    // box found the reverse order - a bare *Generate* refused for the resident model, which read as if
+    // loading Flux would have made the button work.
+    std::string words_error;
+    if (!ai::build_prompt(*recipe, state.ai_intent.given, words_error).has_value()) {
+        return fail("ai.intent", words_error);
+    }
     if (needs_swap(state, readiness) && !confirm) {
         return fail("ai.intent",
                     "'" + id + "' needs " + readiness.model + " and the server is running " +

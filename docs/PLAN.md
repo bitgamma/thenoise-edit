@@ -116,6 +116,46 @@ another layer. Roles and recipes are ours to pin for now - the sets are in `asse
 `assets/recipes/`, loaded from disk, and the plan is that a person edits those files, not a dialog, so
 nothing here needs a settings UI to be foreseen later.
 
+## 2026-10-19 - The live tier ran for the first time, and it found two things the recordings cannot
+
+`$THENOISE_URL` / `$THENOISE_API_KEY` are exported, so `cmake -B build -DNOISE_LIVE_TESTS=ON` and
+`ctest -L live` are available. First run: `tn_probe_live` passed and taught the box's contract again
+(`2026.42.1`, one model per class, explicit size honoured, 512² in 25.6 s cold and 1024² in 8.6 s warm);
+`ai_job_probe_live` and its `generate` sibling **failed**, and both failures were real.
+
+**The expensive refusal was winning the cheap one.** A bare *Generate* with no words answered
+`'new-image' needs Flux-2-Klein-9B-TheNoise and the server is running Flux-…` — a model-swap
+confirmation, for a request that could never have been built. In the recordings the resident model always
+matches the role, so the swap branch is never reached and the blank-field refusal inside `build_prompt`
+was the only one anyone ever saw. `start_intent` now renders the prompt *before* pricing a swap: a
+request with no words in it must not ask a shared box to load 32 GB first, and `confirm` cannot buy its
+way past a blank field either. The hermetic test is the ordering itself — swap pending *and*
+`instruction` blank → the error names `'instruction'` and does **not** contain `confirm` — because that
+is the half the fixtures are structurally unable to show.
+
+**A live probe that refuses is a green run of nothing.** Every verb then went through the same swap
+refusal, which is a guard for a hand on a key, not for a driver that intends the work: the probe now
+loads the model the role resolves to, says it did (`Flux-2-Klein-4B-TheNoise → Qwen-Image-2.1-INT8`), and
+the existing `finally` puts back what was resident (`the model the box was running is back`). After that
+the remove cell passed against a real answer: 2 images, the answer landed itself as `Remove j0001`,
+`0 pixels beyond [134, 88, 152, 136]`, colour ratio 1.04 against the band, and undo byte-for-byte.
+
+**What was not a bug, and what both of them were.** The first run resolved `edit` to
+`Flux-2-Klein-9B-TheNoise`, the second to `Qwen-Image-2.1-INT8`, and the obvious reading — a resolution
+that moves on its own — was wrong: `assets/roles.json` was edited in the working tree *between the two
+runs*, by a hand that is not mine, and `git status` still carries it uncommitted. The preference list
+moved, so the answer moved. Two things follow. The live tier reads `assets/roles.json` from the working
+tree, so on a shared box a run's meaning can change under it while it is in flight — which is why the
+`ai_job_probe` output prints the resolved model rather than assuming it, and why that print stayed. And
+`tools/tn_probe.py` answers "which model?" with its own "smallest edit-capable" rule instead of asking
+the registry, so the same question has two answers in this repo; the probe's is a cost rule about the
+box and the registry's is the app's assignment, and anyone reading one report needs to know whose answer
+they are looking at.
+
+Not fixed here: the duplicated rule in `tn_probe.py`, because the probe deliberately spends the cheap
+model while probing a shared box, and making it agree with the registry would make it swap models to
+probe a contract. The fix is to label its answer, which is a docs-and-print change, not a rule change.
+
 ## 2026-10-19 - A layer's arrival and departure are steps, and the timeline stops invalidating things
 
 `layer.remove` used to call `History::drop_layer`, and `layer.add` recorded nothing at all. Both are steps
