@@ -246,7 +246,7 @@ void test_each_layer_undoes_independently_and_in_order() {
     fill(doc, Rect{0, 0, 4, 4}, 240);  // Top
     CHECK(doc.select_layer(0));
     fill(doc, Rect{8, 8, 4, 4}, 10);  // bottom
-    CHECK_EQ(doc.history().undo_depth, 2);
+    CHECK_EQ(doc.history().undo_depth, 3);  // the arrival, then one step per layer
 
     CHECK(doc.undo());  // the bottom layer's change
     CHECK_EQ(doc.layer(0).pixels.checksum_hex(),
@@ -256,30 +256,81 @@ void test_each_layer_undoes_independently_and_in_order() {
     CHECK(doc.undo());  // Top's change
     CHECK_EQ(doc.layer(1).pixels.checksum_hex(),
              Image::filled(Extent{16, 16}, 0, 0, 0, 0).checksum_hex());
+    CHECK_EQ(doc.layers().size(), 2u);  // the layer is still there, empty
+    CHECK(doc.undo());                  // and then Top's arrival, which takes it away
+    CHECK_EQ(doc.layers().size(), 1u);
     CHECK(!doc.can_undo());
 }
 
-// A change to a layer that no longer exists cannot be put back; the rest of the timeline can,
-// so only the entries naming the deleted layer leave the stacks.
-void test_deleting_a_layer_drops_only_its_own_steps() {
+// Deleting a layer is one step that hands the whole layer back: the id a panel card is keyed to, the
+// name, the blend mode, the opacity, the mask and the picture. And the steps written on it are still
+// underneath, waiting - a recorded departure leaves nothing to invalidate, which is the whole reason
+// `History` no longer drops entries by layer id.
+void test_deleting_a_layer_is_one_step_that_gives_it_back_whole() {
     Document doc;
     doc.reset(one_layer(make_pattern(Extent{16, 16})), std::nullopt, "pattern.png");
     doc.add_layer("Temp", Rgba8{0, 0, 0, 0});
     fill(doc, Rect{0, 0, 4, 4}, 200);  // Temp
     CHECK(doc.select_layer(0));
     fill(doc, Rect{4, 4, 4, 4}, 60);  // bottom, still there
-    CHECK_EQ(doc.history().undo_depth, 2);
+    Mask hidden(Extent{16, 16});
+    hidden.fill(kMaskOut);
+    CHECK(doc.set_layer_mask(1, hidden));
+    CHECK(doc.set_layer_opacity(1, 0.4));
+    CHECK(doc.set_layer_mode(1, BlendMode::multiply));
+    const std::uint64_t temp_id = doc.layer(1).id;
+    const std::string temp_pixels = doc.layer(1).pixels.checksum_hex();
+    const std::string bottom_pixels = doc.layer(0).pixels.checksum_hex();
+    CHECK_EQ(doc.history().undo_depth, 4);  // arrival, Temp's paint, bottom's paint, the mask
 
     CHECK(doc.remove_layer(1));
     CHECK_EQ(doc.layers().size(), 1u);
-    CHECK_EQ(doc.history().undo_depth, 1);
+    CHECK_EQ(doc.history().undo_depth, 5);
+
     CHECK(doc.undo());
+    REQUIRE(doc.layers().size() == 2u);
+    CHECK_EQ(doc.layer(1).id, temp_id);      // the same layer, not a lookalike
+    CHECK_EQ(doc.layer(1).name, std::string("Temp"));
+    CHECK(doc.layer(1).mode == BlendMode::multiply);
+    CHECK(doc.layer(1).opacity == 0.4);
+    REQUIRE(doc.layer(1).mask.has_value());
+    CHECK_EQ(doc.layer(1).mask->covered(), 0u);
+    CHECK_EQ(doc.layer(1).pixels.checksum_hex(), temp_pixels);
+    CHECK_EQ(doc.layer(0).pixels.checksum_hex(), bottom_pixels);  // the other layer did not move
+
+    // The layer's own steps come back with it: undo reaches the paint on Temp and the mask through the
+    // step that deleted the layer they were made on.
+    CHECK(doc.undo());  // Temp's mask, put down
+    CHECK(!doc.layer(1).mask.has_value());
+    CHECK(doc.undo());  // the bottom's paint
     CHECK_EQ(doc.layer(0).pixels.checksum_hex(), make_pattern(Extent{16, 16}).checksum_hex());
+    CHECK(doc.undo());  // Temp's paint
+    CHECK_EQ(doc.layer(1).pixels.checksum_hex(),
+             Image::filled(Extent{16, 16}, 0, 0, 0, 0).checksum_hex());
+    CHECK(doc.undo());  // Temp's arrival
+    CHECK_EQ(doc.layers().size(), 1u);
     CHECK(!doc.can_undo());
+
+    // And forward again: the layer returns with its picture, then its mask, then the deletion.
+    CHECK(doc.redo());
+    CHECK_EQ(doc.layers().size(), 2u);
+    CHECK_EQ(doc.layer(1).pixels.checksum_hex(),
+             Image::filled(Extent{16, 16}, 0, 0, 0, 0).checksum_hex());
+    CHECK(doc.redo());  // Temp's paint
+    CHECK_EQ(doc.layer(1).pixels.checksum_hex(), temp_pixels);
+    CHECK(doc.redo());  // the bottom's paint, on the other layer
+    CHECK_EQ(doc.layer(0).pixels.checksum_hex(), bottom_pixels);
+    CHECK(doc.redo());  // Temp's mask
+    REQUIRE(doc.layer(1).mask.has_value());
+    CHECK_EQ(doc.layer(1).mask->covered(), 0u);
+    CHECK(doc.redo());  // and the deletion
+    CHECK_EQ(doc.layers().size(), 1u);
+    CHECK(!doc.can_redo());
 }
 
-// A history naming a layer that was lost without `drop_layer` is a lie about where bytes go:
-// it is dropped whole rather than written somewhere plausible.
+// A history naming a layer that went missing without a recorded departure is a lie about where bytes
+// go: it is dropped whole rather than written somewhere plausible. Nothing in the editor can do this on
+// purpose now that every departure is a step - it is the fence under the timeline, not a workflow.
 // An entry names a plane as well as a rectangle: coverage goes back to the mask and not to the
 // pixels, and the plane it did not name is left byte for byte as it stands.
 void test_a_coverage_step_restores_the_mask_and_not_the_pixels() {
@@ -563,7 +614,6 @@ void test_two_removals_in_one_step_are_not_a_step() {
 // or going has anything to do with it.
 void test_a_marked_coverage_step_swaps_and_survives_the_stack() {
     std::vector<Layer> layers = one_layer(Image::filled(Extent{4, 4}, 0, 0, 0, 0));
-    const std::uint64_t only = layers.front().id;
     History history(1u << 20);
     std::optional<Mask> marked;
 
@@ -592,14 +642,12 @@ void test_a_marked_coverage_step_swaps_and_survives_the_stack() {
     CHECK_EQ(marked->covered(), 4u);
     CHECK_EQ(history.stats().bytes, 0u);
 
-    // A second mark, holding the first. Deleting the layer the document happens to have does not
-    // reach either: the area was marked over the stack, not on one layer, and a step that names no
-    // layer is dropped by nothing.
+    // A second mark, holding the first. Neither entry names a layer, so nothing a stack does - a layer
+    // arriving, going, being reordered - can make either one inapplicable.
     history.record_coverage(marked);
     Mask strip(Extent{4, 4});
     strip.op(Rect{0, 0, 4, 1}, MaskOp::replace);
     marked = strip;
-    history.drop_layer(only);
     CHECK_EQ(history.stats().undo_depth, 2);
     history.undo(layers, marked);
     REQUIRE(marked.has_value());
@@ -630,7 +678,7 @@ int main() {
     test_a_coverage_step_that_no_longer_fits_drops_the_timeline();
     test_undo_restores_one_layer_and_leaves_the_others_alone();
     test_each_layer_undoes_independently_and_in_order();
-    test_deleting_a_layer_drops_only_its_own_steps();
+    test_deleting_a_layer_is_one_step_that_gives_it_back_whole();
     test_a_history_that_no_longer_fits_its_layers_is_dropped();
     test_a_replaced_stack_walks_back_and_forward_unchanged();
     test_two_removals_in_one_step_are_not_a_step();

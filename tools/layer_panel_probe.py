@@ -417,6 +417,64 @@ def main() -> int:
         active = [card["index"] for card in cards(wire) if card["active"]]
         p.check(active == [bottom["index"]], "and its title row makes that layer the active one",
                 str(active))
+
+        # Deleting a layer is a step, so the panel's own button can be taken back. The claim is about the
+        # card rather than the list: a card is cached against its layer's id and its picture released when
+        # the layer goes, so a layer coming back has to be re-sampled - a blank card would leave the list,
+        # the names and the canvas all looking right. The victim is the top card with the list scrolled to
+        # the top, which is the one place its box does not depend on where the wheel left it.
+        def to_top() -> None:
+            for _ in range(12):
+                inj.wheel(3)
+                wd.settle(wire)
+
+        to_top()
+        victim = max(card["index"] for card in cards(wire))
+        wire.call("layer.select", {"index": victim})
+        wd.settle(wire)
+        facts = wire.call("layer.list")["layers"][victim]
+        place = card_at(cards(wire), victim)["picture"]
+        victim_thumb = grab(wire, place, "before-delete-thumb")
+        shown_before_delete = wire.call("doc.get")["checksum"]
+        canvas_before_delete = canvas_shot(wire, "before-delete")
+
+        for _ in range(12):
+            if inside_box(wire.call("app.state")["layer_panel"]["remove"], window):
+                break
+            inj.wheel(-3)
+            wd.settle(wire)
+        click(inj, *centre(wire.call("app.state")["layer_panel"]["remove"]))
+        wd.settle(wire)
+        deleted = wire.call("layer.list")["layers"]
+        p.check(len(deleted) == len(stack_before) - 1,
+                "the panel's Delete layer takes one card away",
+                f"{[l['name'] for l in deleted]} from {stack_before}")
+        p.check(facts["name"] not in [l["name"] for l in deleted],
+                "and it is the layer that was selected", str([l["name"] for l in deleted]))
+
+        inj.modified_key(wi.KEY_Z, wi.KEY_CTRL_L)
+        wd.settle(wire)
+        to_top()
+        restored = wire.call("layer.list")["layers"]
+        p.check(len(restored) == len(stack_before), "and Ctrl+Z puts the layer back in the cards",
+                str([l["name"] for l in restored]))
+        p.check(restored[victim]["name"] == facts["name"] and
+                restored[victim]["checksum"] == facts["checksum"],
+                "under the same name, with the picture of its own it had",
+                f"{restored[victim]['name']} {restored[victim]['checksum'][:8]} vs "
+                f"{facts['name']} {facts['checksum'][:8]}")
+        p.check(wire.call("doc.get")["checksum"] == shown_before_delete,
+                "and the document byte for byte")
+        canvas_restored = canvas_shot(wire, "after-delete-undo")
+        p.check(ImageChops.difference(canvas_before_delete, canvas_restored).getbbox() is None,
+                "the canvas as it was before the press", apart(canvas_before_delete, canvas_restored))
+        back_at = card_at(cards(wire), victim)["picture"]
+        p.check([round(v) for v in back_at] == [round(v) for v in place],
+                "and its card sitting in the same pixels again", f"{back_at} from {place}")
+        p.check(ImageChops.difference(victim_thumb,
+                                      grab(wire, back_at, "after-delete-thumb")).getbbox() is None,
+                "holding the picture again, not the blank a brand-new layer would show")
+
     finally:
         wd.shutdown(proc, wire)
         shutil.rmtree(runtime, ignore_errors=True)

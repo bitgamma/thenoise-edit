@@ -70,15 +70,19 @@ public:
     // An empty `name` gets the next generated one. The new layer goes directly above the active
     // layer, which is where a painter expects it, and becomes active. Returns its index, or -1
     // when there is no canvas to size it from.
+    // One step, like the layer an answer lands on - and the arrival is the whole of it: undo hands the
+    // layer, wearing whatever `fill` gave it, to the redo side, so a fill costs no bytes beside the step.
     int add_layer(std::string name, Rgba8 fill);
-    // A new layer that **undo takes away again**: its creation and everything `write` puts into it are one
-    // undo step, so an AI answer is a single edit - `Ctrl+Z` removes the result together with the layer it
+    // A new layer where the creation and everything `write` puts into it are one step, rather than the
+    // arrival alone as `add_layer` records, so an AI answer is a single edit - `Ctrl+Z` removes the result together with the layer it
     // arrived on, instead of leaving an empty one named after a job. The layer is transparent, goes
     // directly above the active one and becomes active. `write` gets the layer's own pixels; a `false`
     // means it refused, and then nothing is added and nothing is recorded. Returns the new index, or -1.
     int add_layer_written(std::string name, Rect bounds,
                           const std::function<bool(Image&)>& write);
-    // False when `index` is out of range or it is the last layer standing.
+    // False when `index` is out of range or it is the last layer standing. The step holds the whole
+    // layer, so undo returns its picture, mask, mode and opacity as well as its name - and the steps
+    // written on it stay reachable underneath, which is why nothing invalidates them.
     bool remove_layer(int index);
 
     // The layer at `index` to `to`, both stack indices, bottom-first, with the moved layer left active.

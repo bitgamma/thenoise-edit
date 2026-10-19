@@ -81,8 +81,9 @@ coverage with verbs at the marked area, is next.
    Invert, and `select.from_mask` — and a pixel write carries no coverage with it, because it did not
    move any. The other half landed in the note after it: a layer mask **appearing or going** (`mask.add`,
    `mask.remove`, `mask.from_selection` onto a layer that has none) is `Kind::mask_replaced`, so the rule
-   now holds for every coverage change. What is left outside the timeline is a layer's arrival and
-   deletion, and its visibility, opacity and blend mode.
+   now holds for every coverage change. A layer's own arrival and deletion landed with the note after that
+   one, which also deleted the invalidation `History` used to keep; what is left outside the timeline is a
+   layer's visibility, opacity and blend mode.
 4. **The pointer says which tool it is.** Landed 2026-10-16, below: the host cursor takes the tool's
    shape and the canvas draws the dab's footprint, measured against the size the app reports.
 5. **Layers you can see.** Landed since 2026-10-16: thumbnails of the layer and its mask, one bordered card
@@ -114,6 +115,59 @@ Seed is not a user-facing concept: **Retry** re-asks the same request with a dif
 another layer. Roles and recipes are ours to pin for now - the sets are in `assets/roles.json` and
 `assets/recipes/`, loaded from disk, and the plan is that a person edits those files, not a dialog, so
 nothing here needs a settings UI to be foreseen later.
+
+## 2026-10-19 - A layer's arrival and departure are steps, and the timeline stops invalidating things
+
+`layer.remove` used to call `History::drop_layer`, and `layer.add` recorded nothing at all. Both are steps
+now: the departure files the **whole** layer under the entry `layer.merge` already had, and the arrival files
+one `layer_created` - nothing beside it, for the reason below.
+
+**What a step that takes a layer away actually carries.** The header said a creation "comes back empty and
+gets its pixels from the pixel entries of the same step", so the first version of this change recorded the
+`fill` beside the arrival — a whole canvas of bytes per Add, and wrong twice over. Undoing a creation moves
+the **live layer** into the entry, and `record_layer_removed` files one the same way, so every
+`layer_absent` re-inserts the layer it was handed: `layer.add` with `fill: [9,8,7,255]` undone and redone
+returns the opaque layer with nothing recorded but the arrival. `add_layer_written` still records the answer
+beside its arrival, because an answer is a *write* whose `before` has to exist for the step to be undone in
+order — not because the shell needs filling. The command-level test reads the bytes back after the redo,
+because "the layer came back" is a claim an empty shell would also satisfy, and it is that test which said
+the comment was wrong rather than the code.
+
+What fell out of it: `step_structure`'s empty-shell branch, `Stacked::name` and `record_layer_created`'s
+`name` argument. Every entry that brings a layer back carries the layer, so a name stored beside it was a
+second representation of a fact already in the thing — and a branch that no road reaches is not a safety
+net, it is a place where a wrong layer can be manufactured quietly.
+
+**What recording the departure made unnecessary.** `History::drop_layer`, `drop_entries`, `drop_where` and
+`names_layer` are **gone** — four functions and the rule they carried, that a step naming a layer which is
+not there must be thrown away with the unrelated steps around it. They were only ever right because a
+departure was irreversible. Recorded, a departure is a step *above* the layer's own paint, so undoing it
+first hands that paint a layer to land on: `test_deleting_a_layer_is_one_step_that_gives_it_back_whole`
+walks five steps back and five forward through a deletion and lands every one of them, and the panel probe
+clicks `Delete layer`, presses `Ctrl+Z`, and finds the card in the same pixels holding the same picture —
+the thumbnail is keyed to the layer's id, which the deletion released and the undo re-used.
+
+`step_back`'s validation stays, and its meaning changed: it is no longer a workflow (`delete a layer, then
+try to undo its paint`) but the fence under the timeline — a layer that went missing *without* a recorded
+departure drops the history whole rather than writing bytes into a layer that is not there. Same for a
+plane of another canvas.
+
+**Half a rule is worse than none, which is why `layer.add` is in this change and not a later one.** With
+the departure recorded and the arrival not, `Ctrl+Z` after Add would silently undo the *previous* edit —
+the surprise is worse than the missing step, and it is the same surprise the coverage rule was written to
+remove.
+
+**Observed, first run with a display.** `Xvfb` is installed, so the whole suite ran including the
+app-over-the-wire tier: **40 tests, 0 failed, 0 skipped** (322 s), and the two coverage commits landed
+earlier today passed over the wire for the first time. The panel probe's new claim was itself wrong on its
+first run and taught something: a card's `picture` box is clipped by the panel's viewport, so a thumbnail
+grabbed after the wheel moved the list is a *different region* (44×29 against 44×25) and comparing the two
+pixels is comparing nothing. The claim now pins the reported box before and after, so the measurement fails
+loudly if the layout moved instead of quietly comparing two different pictures.
+
+**Owed from here**: nothing in the history rule except a layer's visibility, opacity and blend mode — and
+that is a decision about whether those belong in a timeline at all, not a missing entry. The next slice is
+6, *Blend*, whose seam is `region: layer`.
 
 ## 2026-10-19 - A mask plane is a step, and the coverage rule has no exception left
 
@@ -148,11 +202,11 @@ pixel of any layer, but it changes what the composite shows everywhere the layer
 Reusing it is a fact, not a fudge: `Applied::coverage` says "no texture was repainted", which is exactly
 false for a mask.
 
-**What is left outside the timeline is now one thing, not a family.** Adding and deleting a layer,
-visibility, opacity and blend mode still enter no step; deleting is still one entry away from landing (the
-merge entry is the deletion entry), and the three properties are composite state the stack carries, which
-undo restores only as part of a layer that arrives, goes or is replaced. ARCHITECTURE §Undo states the
-boundary that way now: the *coverage* rule is closed, the *layer and its properties* half is the open one.
+**What is left outside the timeline is now one thing, not a family.** A layer's arrival and deletion landed
+in the note above this one; visibility, opacity and blend mode are the remainder — composite state the stack
+carries, which undo restores only as part of a layer that arrives, goes or is replaced. ARCHITECTURE §Undo
+states the boundary that way: the *coverage* rule and the *stack* rule are closed, the properties are the
+open half.
 
 **On this box**: as the note below — no `Xvfb`, no root, so the wire tier skipped and `wire_input`'s
 `mask.from_selection` claim was rewritten to the new rule without being run. `ctest --test-dir build`: 40
@@ -413,7 +467,7 @@ fine a minute before.
 | `app/verb_bar.cpp` (`verb.bar`) | the bar offers exactly the verbs whose recipe has `scope: selection`, hangs off the mark and clear of it, and presses the panel's command; where it drew itself is read back rather than remembered by the caller | `test_app`, `verb_bar_probe` |
 | `ai.intent` | the whole action surface (intents, values, price, aspect, style, seed, job, session) in one command; a refusal is recorded so the next read shows it; the handshake lives here too | `test_app`, the status line, `panel_aspect_probe` |
 | `ai/recipes` (`aspects`, `variants`) | a frame is offered only by a document-scope `from_words` recipe, and a variant is interchangeable with its head at the key it shares (operation, endpoint, `ask`, `aspects`) or the table does not load | `test_recipes` |
-| `layer.move`, `layer.merge` (`core/document` + `core/history`) | a reorder is one step that writes no pixel and repaints everything; a merge leaves the canvas as the blend already showed it, to within one 8-bit step at soft edges; undo returns a whole layer - pixels, mask, mode, opacity - not an empty one | `test_document`, `layer_panel_probe` |
+| `layer.add`, `layer.move`, `layer.merge`, `layer.remove` (`core/document` + `core/history`) | a reorder is one step that writes no pixel and repaints everything; a merge leaves the canvas as the blend already showed it, to within one 8-bit step at soft edges; a layer arriving and a layer departing are each one step, and undo returns a whole layer - pixels, mask, mode, opacity, name - not an empty one; nothing in `History` invalidates steps by layer id | `test_document`, `test_history`, `test_app`, `layer_panel_probe` |
 | `app/ui.cpp` layer cards | every control reports the box it was drawn in, no control lies outside its card and no two claim the same pixel, and a control that cannot apply does nothing at all when pressed | `layer_panel_probe` |
 | `app/layer_thumbs` | a picture is keyed to the layer it is a picture *of*: opacity, order and a layer arriving resample nothing, a write to the layer resamples one, and the count is on the wire | `layer_panel_probe` through `app.state.layer_thumbs.rebuilds` |
 | `pump_ai_landings` | a succeeded job lands itself at the first door that reads the queue; it never re-lands what undo removed; a job lands only in the `document_epoch` it was queued under | `test_app`, `wire_input` |

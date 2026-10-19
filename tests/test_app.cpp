@@ -908,11 +908,25 @@ void test_the_layer_stack_is_edited_through_the_command_table() {
 
     // A new layer goes directly above the active one - which the previous steps left at the
     // bottom - and takes the selection with it.
+    const int made = undo_depth(h);
     const json named = h.value("layer.add", json{{"name", "Ink"},
                                                  {"fill", json::array({9, 8, 7, 255})}});
     CHECK_EQ(named["layers"].size(), 3u);
     CHECK_EQ(named["layers"][1]["name"].get<std::string>(), std::string("Ink"));
     CHECK_EQ(named["active"].get<int>(), 1);
+
+    // Making a layer is one step, and redo of it brings the layer back **as it was made** - a Ctrl+Z
+    // that took the layer away and a redo that gave back an empty shell would be two different pictures,
+    // which is why the fill travels with the arrival.
+    CHECK_EQ(undo_depth(h), made + 1);
+    h.value("edit.undo", json::object());
+    CHECK_EQ(h.value("layer.list", json::object())["layers"].size(), 2u);
+    h.value("edit.redo", json::object());
+    const json remade = h.value("layer.list", json::object());
+    CHECK_EQ(remade["layers"].size(), 3u);
+    CHECK_EQ(remade["layers"][1]["name"].get<std::string>(), std::string("Ink"));
+    CHECK_EQ(static_cast<int>(h.state.doc.layer(1).pixels.at(0, 0)[0]), 9);
+    CHECK_EQ(static_cast<int>(h.state.doc.layer(1).pixels.at(0, 0)[3]), 255);
 
     const CommandResult out_of_range = h.run("layer.select", json{{"index", 9}});
     CHECK(!out_of_range.ok);
@@ -925,13 +939,40 @@ void test_the_layer_stack_is_edited_through_the_command_table() {
     CHECK(!no_index.ok);
     CHECK(no_index.error.find("index") != std::string::npos);
 
-    // Down to one layer and no further: removing the last one would leave no canvas to draw on.
+    // Deleting a layer is one step too, and what comes back is the layer - its place in the stack, its
+    // name, its blend state and its own picture - rather than an empty one wearing the right name.
+    const std::string ink_name = h.state.doc.layer(1).name;
+    const json ink_row = h.value("layer.list", json::object())["layers"][1];
+    const std::string ink_picture = ink_row["checksum"].get<std::string>();
+    const std::string ink_mode = ink_row["mode"].get<std::string>();
+    const double ink_opacity = ink_row["opacity"].get<double>();
+    const int deleted = undo_depth(h);
     CHECK_OK(h.run("layer.remove", json{{"index", 1}}));
+    CHECK_EQ(undo_depth(h), deleted + 1);
+    h.value("edit.undo", json::object());
+    const json restored = h.value("layer.list", json::object());
+    CHECK_EQ(restored["layers"].size(), 3u);
+    CHECK_EQ(restored["layers"][1]["name"].get<std::string>(), ink_name);
+    CHECK_EQ(restored["layers"][1]["checksum"].get<std::string>(), ink_picture);
+    CHECK_EQ(restored["layers"][1]["mode"].get<std::string>(), ink_mode);
+    CHECK_EQ(restored["layers"][1]["opacity"].get<double>(), ink_opacity);
+    h.value("edit.redo", json::object());
+    CHECK_EQ(h.value("layer.list", json::object())["layers"].size(), 2u);
+
+    // Down to one layer and no further: removing the last one would leave no canvas to draw on - and
+    // undoing it all the way back gives the stack of three, each layer still itself.
     CHECK_OK(h.run("layer.remove", json{{"index", 1}}));
     const CommandResult last = h.run("layer.remove", json{{"index", 0}});
     CHECK(!last.ok);
     CHECK(last.error.find("last layer") != std::string::npos);
     CHECK_EQ(h.value("layer.list", json::object())["layers"].size(), 1u);
+
+    h.value("edit.undo", json::object());
+    h.value("edit.undo", json::object());
+    const json back = h.value("layer.list", json::object());
+    CHECK_EQ(back["layers"].size(), 3u);
+    CHECK_EQ(back["layers"][1]["name"].get<std::string>(), ink_name);
+    CHECK_EQ(back["layers"][1]["checksum"].get<std::string>(), ink_picture);
 }
 
 // A blend mode is layer state, so it travels the same route visibility does: `layer.set` in,

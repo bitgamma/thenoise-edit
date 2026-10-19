@@ -3,7 +3,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <optional>
 #include <vector>
 
@@ -40,10 +39,12 @@ public:
     void begin_step();
     void end_step();
 
-    // A layer this step created. Undo takes the layer away; redo re-inserts it, empty, at `index`, and
-    // the pixels it received arrive with it as the pixel entries of the same step. `size` is what makes a
-    // re-inserted layer the layer it was: a rectangle of the same step still has to fit it.
-    void record_layer_created(std::uint64_t layer_id, std::string name, int index, Extent size);
+    // A layer this step created. Undo takes the layer away and puts it, whole, on the redo side, so redo
+    // re-inserts it at `index` wearing whatever it held when the step was undone - which is why a layer
+    // created with a fill needs no pixel entry beside this one, while a layer created *and written*
+    // records that write as the pixel entries of the same step. `size` is what makes a re-inserted layer
+    // the layer it was: a rectangle of the same step still has to fit it.
+    void record_layer_created(std::uint64_t layer_id, int index, Extent size);
 
     // The stack's order, recorded as it stands. Applying the entry puts the layers into the order it
     // holds and keeps the order it displaced, which is the same "an entry holds the state that is not
@@ -53,9 +54,10 @@ public:
 
     // A layer this step **took away** - merged into the layer under it, say. `layer` is the whole of it,
     // pixels and mask and name included, so undo puts the layer back as it was rather than as an empty
-    // one; `index` is where it sat. This is the entry `remove_layer` never had, which is why deleting a
-    // layer could only drop its history. One removal per step: `index` is read against the stack the
-    // layer goes back into, and putting one layer back cannot shift another.
+    // one; `index` is where it sat. `Document::remove_layer` files its departure under this entry, which
+    // is why nothing in `History` invalidates steps by layer id: a step naming a layer that is not there
+    // for the moment is one undo away from being applicable, not a lie. One removal per step: `index` is
+    // read against the stack the layer goes back into, and putting one layer back cannot shift another.
     void record_layer_removed(Layer layer, int index);
 
     // A step that replaced the **whole stack** with layers none of the old ones can become - flattening
@@ -70,8 +72,8 @@ public:
     // The document's **marked coverage** - the area it marks, which is a document property that is
     // saved and belongs to no layer. The entry holds the coverage that is not current and applying it
     // swaps the two, so undo and redo are the same operation; like `stack_replaced` it names no layer,
-    // which is why `drop_layer` leaves it alone. A canvas-sized plane per step is the price, and it is
-    // a quarter of what a full-canvas pixel step costs.
+    // so no change to the stack can make it inapplicable. A canvas-sized plane per step is the price,
+    // and it is a quarter of what a full-canvas pixel step costs.
     void record_coverage(std::optional<Mask> marked);
 
     // A layer's **mask plane** - a mask put on a layer that had none, or taken off one that had it. The
@@ -103,12 +105,6 @@ public:
     std::optional<Applied> undo(std::vector<Layer>& layers, std::optional<Mask>& marked);
     std::optional<Applied> redo(std::vector<Layer>& layers, std::optional<Mask>& marked);
 
-    // A change to a layer that has been deleted cannot be put back. The entries naming that
-    // layer leave both stacks; the rest of the timeline, including other layers of the same
-    // step, stays, because losing an unrelated layer's undo is worse than losing one that is
-    // impossible.
-    void drop_layer(std::uint64_t layer_id);
-
     bool can_undo() const;
     bool can_redo() const;
     void clear();
@@ -136,15 +132,14 @@ private:
         int step;  // entries sharing it are undone and redone together
         Kind kind = Kind::pixels;
         LayerPlane plane = LayerPlane::pixels;
-        // Structural entries only: where the layer sat, what it was called, how big it was.
-        std::string name;
+        // Structural entries only: where the layer sat, how big it was. Its name travels inside `whole`.
         int index = 0;
         Extent size{};
         // The stack's order, for `layer_order`.
         std::vector<std::uint64_t> order;
-        // The whole layer, for `layer_absent`: what was there before it was taken away. A layer a step
-        // *created* comes back empty and gets its pixels from the pixel entries of the same step, so
-        // `whole` is empty for those.
+        // The whole layer, for `layer_absent`: what was there before it was taken away. Both roads that
+        // produce one carry the layer itself - `record_layer_removed` files it, and undoing a creation
+        // moves the live layer into the entry - so nothing has to be guessed back.
         Layer whole;
         // The stack on the far side, for `stack_replaced`.
         std::vector<Layer> stack;
@@ -159,16 +154,11 @@ private:
     // What an entry costs the budget: its bytes, plus the pixels and mask of a whole layer it carries.
     static std::size_t held(const Stacked& entry);
     static bool inserts(const Stacked& entry);
-    static bool names_layer(const Stacked& entry, std::uint64_t id);
     static void pop_step(std::vector<Stacked>& stack, std::vector<Stacked>& moved);
     static int steps_in(const std::vector<Stacked>& stack);
     std::optional<Applied> step_back(std::vector<Stacked>& from, std::vector<Stacked>& into,
                                      std::vector<Layer>& layers, std::optional<Mask>& marked);
     void drop_oldest_until_within_budget();
-    // Both stacks, entries the predicate names. Whole steps are dropped by
-    // `drop_oldest_until_within_budget`, not by this: what is removed here cannot be restored at all.
-    void drop_entries(const std::function<bool(const Stacked&)>& names);
-    void drop_where(std::vector<Layer>& nothing, const std::function<bool(const Stacked&)>& names);
 
     // Remove the layer a `layer_created` entry names, or re-insert the one a `layer_absent` entry names,
     // pushing the opposite kind onto `into` under `step` so the pair stays one undoable step.

@@ -539,7 +539,8 @@ a brush does.
 layer additions, selection moves, undo, redo, a deletion, a hidden layer and a faded one, the
 incrementally repaired composite equals one built from scratch, byte for byte. Hiding and fading
 are in that list because they change what the composite is made of without changing a pixel, and
-they are not in history: like adding and removing a layer, they enter no undo step.
+they are not in history, the one kind of change the timeline does not carry: a layer arriving, going,
+reordering or having its mask put on or taken off is a step, a visibility click is not.
 
 Two ways out if a document gets big enough for the whole-texture upload to dominate, cheapest
 first: a dirty-rect upload (the composite already knows which rectangles changed; the backend
@@ -570,34 +571,43 @@ panel`, "Regenerate with same params", kept variants) and nothing in the tree st
   displaces to the redo stack instead of keeping a second copy. Budget by stored bytes
   (`kHistoryBudgetBytes`, 128 MB) dropping **whole steps oldest-first**: losing an old step is
   a shorter history, losing part of a step would be a half-restored edit. Tiles become the
-  storage granularity when partial texture uploads need them. Deleting a layer drops the entries
-  naming it from both stacks: a change to a layer that is gone cannot be put back, and the
-  unrelated steps around it are worth more than the half-restored one that would remain.
-  Structural commands are planned to store the inverse command. Five are in the timeline today, as entries
+  storage granularity when partial texture uploads need them.
+  Structural commands are planned to store the inverse command. Six are in the timeline today, as entries
   of their own rather than as pixels: a reorder (`layer.move`) records the stack's ids in order and keeps
-  the order it displaced, because no pixel moved and what the composite shows changed everywhere; a merge
-  down (`layer.merge`) records the **whole** layer that went away, so undo returns its pixels, mask, mode
-  and opacity rather than an empty layer wearing the right name; a flatten (`layer.flatten`) records the
-  **whole stack** and applies it as a swap, so undo and redo are the same operation - the only encoding that
-  needs no position for a layer, since a removal sees a stack shrinking while an insert needs one growing;
-  changing the **marked coverage** records the coverage that is not current; and changing **which plane a
-  layer has** (`Kind::mask_replaced`) records its mask, `nullopt` included, so a mask put on is taken off
-  by undo and a mask taken off comes back with the coverage it was hiding. The last two are applied by
-  swapping, as a replaced stack is: the entry holds the state that is not current, so the two directions are
-  one operation and neither has to assert where the thing went.
+  the order it displaced, because no pixel moved and what the composite shows changed everywhere; a
+  **layer arriving** (`layer.add`, and the layer an answer lands on) records the arrival alone - the entry
+  that takes the layer away carries the whole layer, so what it arrived wearing comes back with it, and a
+  layer created *and then written* records that write beside it because the write has a `before` of its own;
+  a **layer departing** (`layer.remove`, `layer.merge`) records the whole
+  layer that went away, so undo returns its pixels, mask, mode, opacity and name rather than an empty layer
+  wearing the right name; a flatten (`layer.flatten`) records the **whole stack** and applies it as a swap,
+  so undo and redo are the same operation - the only encoding that needs no position for a layer, since a
+  removal sees a stack shrinking while an insert needs one growing; changing the **marked coverage** records
+  the coverage that is not current; and changing **which plane a layer has** (`Kind::mask_replaced`) records
+  its mask, `nullopt` included, so a mask put on is taken off by undo and a mask taken off comes back with
+  the coverage it was hiding. The last three are applied by swapping, as a replaced stack is: the entry holds
+  the state that is not current, so the two directions are one operation and neither has to assert where the
+  thing went.
   A flatten carries every pixel of both sides and therefore records nothing else, and neither it nor a
-  coverage entry names a layer: deleting a layer leaves both alone, because the stack and the mark outlive
-  any one layer. A mask entry does name one, so it goes with the layer. A coverage entry is not `structure`
-  either — it puts coverage back and no pixel, so undoing one re-uploads no texture and resamples no
-  thumbnail, which is why `History::undo` is handed the marked coverage next to the stack and reports
+  coverage entry names a layer, because the stack and the mark outlive any one layer. A coverage entry is not
+  `structure` either — it puts coverage back and no pixel, so undoing one re-uploads no texture and resamples
+  no thumbnail, which is why `History::undo` is handed the marked coverage next to the stack and reports
   `Applied::coverage`; a mask entry *is* `structure`, because what a mask hides is everywhere the layer
   composites, not only inside the mask's bounds.
-  Steps written into a mask before it went stay in the timeline, which is what the swap makes coherent: they
-  are reached by undoing the plane's step first, and that returns the mask with the coverage the writes
-  ended on. This is why `History` has no `drop_mask`: a plane that can come back leaves nothing to invalidate.
-  Adding or deleting a layer, hiding one, fading one or changing its mode still does not enter the
-  timeline - and deleting is now one entry away, since the entry a merge needs is the entry deletion
-  needs, which is a decision not yet taken.
+* **Nothing is invalidated by layer id, and that is what recording the departure bought.** `History` has no
+  `drop_layer` and no `drop_mask`: they existed because a layer or a mask that could only go forever made
+  every step naming it unrestorable, and dropping the unrelated steps around it was the least bad answer.
+  With every arrival, departure and plane change recorded, a step naming a layer that is not there *for the
+  moment* is one undo away from being applicable rather than a lie - the paint on a deleted layer is
+  reached by undoing the deletion first, and the layer comes back to be painted on. The fence that remains
+  is the one nothing can reach by editing: `step_back` validates every entry against the stack it is about
+  to walk, and a layer that went missing **without** a recorded departure drops the timeline whole rather
+  than writing bytes into a layer that is not there (`test_a_history_that_no_longer_fits_its_layers_is_dropped`).
+  Steps written into a mask before it went stay in the timeline for the same reason: they are reached by
+  undoing the plane's step first, which returns the mask with the coverage the writes ended on.
+* What a layer *is*, as opposed to what it holds or where it sits, still enters no step: visibility,
+  opacity and blend mode are composite state the stack carries, restored only as part of a layer that
+  arrives, goes or is replaced. That is the whole of what is outside the timeline now.
 * **The boundary of the coverage rule is therefore one gesture, not one kind of coverage.** Coverage
   written *into* a layer's mask is a pixel entry against that plane (`mask.fill`, `mask.invert`, a `cover`
   stroke, a marquee aimed at the mask); the plane arriving or going is the plane entry above; the mark on

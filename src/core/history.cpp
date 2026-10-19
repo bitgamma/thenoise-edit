@@ -56,7 +56,6 @@ void History::record(std::uint64_t layer_id, LayerPlane plane, Rect rect,
                                   .step = step,
                                   .kind = Kind::pixels,
                                   .plane = plane,
-                                  .name = {},
                                   .index = 0,
                                   .size = {},
                                   .order = {},
@@ -71,8 +70,7 @@ void History::begin_step() { open_step_ = ++next_step_; }
 
 void History::end_step() { open_step_ = 0; }
 
-void History::record_layer_created(std::uint64_t layer_id, std::string name, int index,
-                                   Extent size) {
+void History::record_layer_created(std::uint64_t layer_id, int index, Extent size) {
     redo_stack_.clear();
     const int step = open_step_ != 0 ? open_step_ : ++next_step_;
     // No `bytes_`: the layer's own pixels are held by the pixel entries recorded alongside this one, and
@@ -83,7 +81,6 @@ void History::record_layer_created(std::uint64_t layer_id, std::string name, int
                                   .step = step,
                                   .kind = Kind::layer_created,
                                   .plane = LayerPlane::pixels,
-                                  .name = std::move(name),
                                   .index = index,
                                   .size = size,
                                   .order = {},
@@ -120,19 +117,6 @@ std::size_t History::held(const Stacked& entry) {
 // True for the entries that put a layer into the stack when applied, and so have to run before the
 // pixel entries of the same step look for it.
 bool History::inserts(const Stacked& entry) { return entry.kind == Kind::layer_absent; }
-
-bool History::names_layer(const Stacked& entry, const std::uint64_t id) {
-    // A `stack_replaced` entry is not matched: it holds a stack instead of naming a layer, and a layer
-    // deleted after the swap is a later step, undone before this one is reached. Nor is a `coverage`
-    // entry: the marked area outlives every layer it was marked over.
-    if (entry.kind == Kind::layer_order) {
-        return std::find(entry.order.begin(), entry.order.end(), id) != entry.order.end();
-    }
-    if (entry.kind == Kind::stack_replaced || entry.kind == Kind::coverage) {
-        return false;
-    }
-    return entry.layer == id;
-}
 
 void History::record_coverage(std::optional<Mask> marked) {
     redo_stack_.clear();
@@ -179,7 +163,6 @@ void History::record_layer_order(std::vector<std::uint64_t> order) {
                                   .step = step,
                                   .kind = Kind::layer_order,
                                   .plane = LayerPlane::pixels,
-                                  .name = {},
                                   .index = 0,
                                   .size = {},
                                   .order = std::move(order),
@@ -214,7 +197,6 @@ void History::record_layer_removed(Layer layer, int index) {
                   .step = step,
                   .kind = Kind::layer_absent,
                   .plane = LayerPlane::pixels,
-                  .name = layer.name,
                   .index = index,
                   .size = layer.pixels.size(),
                   .order = {},
@@ -238,24 +220,6 @@ std::optional<History::Applied> History::undo(std::vector<Layer>& layers,
 std::optional<History::Applied> History::redo(std::vector<Layer>& layers,
                                              std::optional<Mask>& marked) {
     return step_back(redo_stack_, undo_stack_, layers, marked);
-}
-
-void History::drop_layer(std::uint64_t layer_id) {
-    // An entry naming a layer that no longer exists cannot be applied. That includes an order entry:
-    // the stack it describes is gone, and restoring half of it would be worse than losing the step.
-    drop_entries(
-        [layer_id](const Stacked& entry) { return names_layer(entry, layer_id); });
-}
-
-void History::drop_entries(const std::function<bool(const Stacked&)>& names) {
-    for (std::vector<Stacked>* stack : {&undo_stack_, &redo_stack_}) {
-        for (std::size_t index = stack->size(); index-- > 0;) {
-            if (names((*stack)[index])) {
-                bytes_ -= held((*stack)[index]);
-                stack->erase(stack->begin() + static_cast<std::ptrdiff_t>(index));
-            }
-        }
-    }
 }
 
 void History::clear() {
@@ -386,7 +350,6 @@ void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
             layers.erase(layers.begin() + static_cast<std::ptrdiff_t>(at));
             entry.index = static_cast<int>(at);
             entry.size = gone.pixels.size();
-            entry.name = gone.name;
             entry.whole = std::move(gone);
             break;
         }
@@ -414,16 +377,11 @@ void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
         into.push_back(std::move(entry));
         return;
     }
-    Layer added;
-    if (entry.whole.pixels.size().w > 0) {
-        // A layer that was taken away comes back as the whole thing it was: pixels, mask, opacity,
-        // blend mode. An empty stand-in would put a layer back and lose the edit that was made of it.
-        added = std::move(entry.whole);
-    } else {
-        added.id = entry.layer;
-        added.name = entry.name;
-        added.pixels = Image::filled(entry.size, 0, 0, 0, 0);
-    }
+    // A layer comes back as the whole thing it was: pixels, mask, opacity, blend mode, and the id a
+    // panel card is keyed to. Both roads reach here carrying it - `record_layer_removed` files the layer
+    // it took, and undoing a creation moves the live layer into the entry - so an empty stand-in would
+    // not be a fallback but a lost edit, and the fill a layer arrived wearing needs no entry of its own.
+    Layer added = std::move(entry.whole);
     const std::size_t at = entry.index < 0 ? 0
                                            : std::min(static_cast<std::size_t>(entry.index),
                                                       layers.size());
@@ -561,8 +519,7 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
                                    .step = step,
                                    .kind = entry.kind,
                                    .plane = entry.plane,
-                                   .name = {},
-                                   .index = 0,
+                                    .index = 0,
                                    .size = {},
                                    .order = {},
                                    .whole = {},
@@ -577,8 +534,7 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
                                    .step = step,
                                    .kind = entry.kind,
                                    .plane = entry.plane,
-                                   .name = {},
-                                   .index = 0,
+                                    .index = 0,
                                    .size = {},
                                    .order = {},
                                    .whole = {},

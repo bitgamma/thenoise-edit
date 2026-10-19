@@ -61,8 +61,14 @@ int Document::add_layer(std::string name, Rgba8 fill) {
     added.id = next_layer_id_++;
     added.name = name.empty() ? default_layer_name(layers_.size()) : std::move(name);
     added.pixels = Image::filled(size(), fill.r, fill.g, fill.b, fill.a);
+    const std::uint64_t id = added.id;
     layers_.insert(layers_.begin() + at, std::move(added));
     active_ = at;
+    // The arrival alone is the step: undoing it hands the whole layer - whatever it is wearing by then,
+    // this `fill` or a painting - to the redo side, so the fill costs no bytes of its own.
+    // `add_layer_written` records beside its arrival because an answer is a write with a `before`, not
+    // because a layer needs something to arrive in.
+    history_.record_layer_created(id, at, size());
     pending_ = Rect{0, 0, width(), height()};
     dirty_ = true;
     changed_composite();
@@ -90,7 +96,7 @@ int Document::add_layer_written(std::string name, Rect bounds,
     active_ = at;
     const std::uint64_t id = layers_[static_cast<std::size_t>(at)].id;
     history_.begin_step();
-    history_.record_layer_created(id, layers_[static_cast<std::size_t>(at)].name, at, size());
+    history_.record_layer_created(id, at, size());
     if (!touched.empty()) {
         history_.record(id, LayerPlane::pixels, touched,
                         {before.pixels().begin(), before.pixels().end()});
@@ -215,7 +221,12 @@ bool Document::remove_layer(int index) {
     if (layers_.size() == kMinLayers) {
         return false;
     }
-    history_.drop_layer(layers_[static_cast<std::size_t>(index)].id);
+    // The whole layer goes into the step, the way a merge down files the layer it took: undo puts back
+    // the pixels, mask, name, mode and opacity rather than an empty layer wearing the right name. This is
+    // why `History` no longer invalidates anything by layer id - with every departure recorded, a step
+    // naming a layer that is not there for the moment is one step away from being applicable, not a lie.
+    Layer gone = std::move(layers_[static_cast<std::size_t>(index)]);
+    history_.record_layer_removed(std::move(gone), index);
     layers_.erase(layers_.begin() + index);
     pending_ = Rect{0, 0, width(), height()};
     if (index < active_) {
