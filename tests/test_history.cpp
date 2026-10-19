@@ -309,27 +309,80 @@ void test_a_coverage_step_restores_the_mask_and_not_the_pixels() {
     CHECK_EQ(layer.pixels.checksum_hex(), pixels_before);
 }
 
-// Taking a mask off leaves nothing for a coverage entry to restore, so those entries go - and the
-// colour steps of the same layer stay, because losing an unrelated undo is worse.
-void test_taking_a_mask_off_drops_only_its_coverage_steps() {
+// A mask plane arriving or going is one entry that swaps the plane, so the coverage a layer was hidden
+// by comes back rather than a fresh one - and the coverage written into the mask before it went stays
+// undoable, because undoing the swap hands that step its mask back first.
+void test_a_mask_plane_comes_back_with_the_coverage_it_had() {
     std::vector<Layer> layers = one_layer_masked(kMaskIn);
     Layer& layer = layers.front();
     const std::uint64_t only = layer.id;
+    const std::string pixels_before = layer.pixels.checksum_hex();
+    const Mask pristine = *layer.mask;
     History history(1u << 20);
     std::optional<Mask> unmarked;
 
-    history.record(only, LayerPlane::pixels, Rect{0, 0, 2, 2},
-                   std::vector<std::uint8_t>(2u * 2u * 4u, 7));
-    history.record(only, LayerPlane::mask, Rect{4, 4, 2, 2},
-                   std::vector<std::uint8_t>(4, kMaskIn));
-    CHECK_EQ(history.stats().undo_depth, 2);
-
-    history.drop_mask(only);
-    CHECK_EQ(history.stats().undo_depth, 1);
+    // Coverage into the mask, the mask taken off, a fresh one put down in its place: three steps, and
+    // the last two are the plane's rather than pixels'.
+    history.record(only, LayerPlane::mask, Rect{2, 2, 4, 4}, std::vector<std::uint8_t>(16, kMaskIn));
+    layer.mask->op(Rect{2, 2, 4, 4}, MaskOp::subtract);
+    CHECK_EQ(layer.mask->coverage(2, 2), kMaskOut);
+    history.record_layer_mask(only, layer.mask);
     layer.mask = std::nullopt;
-    // The colour step still works: it was never about the mask.
-    CHECK(history.undo(layers, unmarked).has_value());
+    Mask fresh(layer.pixels.size());
+    fresh.fill(kMaskIn);
+    history.record_layer_mask(only, std::nullopt);
+    layer.mask = fresh;
+    CHECK_EQ(history.stats().undo_depth, 3);
+    // A swap trades payload with the document, so what the timeline costs cannot change by walking it:
+    // pricing the wrong side of the swap underflows `bytes_`, and the budget then drops every step (see
+    // the flatten note). The byte count says why the depth below would go wrong.
+    const std::size_t priced = history.stats().bytes;
+
+    const History::Applied took_off = history.undo(layers, unmarked).value();
+    CHECK(!layer.mask.has_value());
+    CHECK(took_off.structure);
+    CHECK(!took_off.coverage);
+    // The load-bearing byte: what comes back is the mask that was hidden by, not a new one.
+    const History::Applied brought_back = history.undo(layers, unmarked).value();
+    CHECK(layer.mask.has_value());
+    CHECK_EQ(layer.mask->coverage(2, 2), kMaskOut);
+    CHECK_EQ(differing_coverage(*layer.mask, pristine), 16u);
+    CHECK(brought_back.structure);
+    // And the step written into it before it went is still there to be undone.
+    history.undo(layers, unmarked);
+    CHECK_EQ(differing_coverage(*layer.mask, pristine), 0u);
+    CHECK_EQ(layer.pixels.checksum_hex(), pixels_before);
+
+    CHECK(history.redo(layers, unmarked).has_value());
+    CHECK_EQ(layer.mask->coverage(2, 2), kMaskOut);
+    CHECK(history.redo(layers, unmarked).has_value());
+    CHECK(!layer.mask.has_value());
+    CHECK(history.redo(layers, unmarked).has_value());
+    CHECK_EQ(layer.mask->coverage(2, 2), kMaskIn);  // the fresh one, put back as it was made
+    CHECK_EQ(layer.pixels.checksum_hex(), pixels_before);
+    CHECK_EQ(history.stats().bytes, priced);
+
+    history.undo(layers, unmarked);
+    history.undo(layers, unmarked);
+    history.undo(layers, unmarked);
+    CHECK_EQ(history.stats().bytes, priced);
+}
+
+// A plane of another canvas would hide pixels that are not there, so the step is refused and the
+// timeline goes rather than a layer ending up wearing a mask that does not fit it.
+void test_a_mask_plane_that_no_longer_fits_drops_the_timeline() {
+    std::vector<Layer> layers = one_layer_masked(kMaskIn);
+    const std::uint64_t only = layers.front().id;
+    History history(1u << 20);
+    std::optional<Mask> unmarked;
+
+    Mask wrong_size(Extent{4, 4});
+    wrong_size.fill(kMaskIn);
+    history.record_layer_mask(only, std::move(wrong_size));
+    CHECK(!history.undo(layers, unmarked).has_value());
     CHECK_EQ(history.stats().undo_depth, 0);
+    CHECK_EQ(history.stats().redo_depth, 0);
+    CHECK_EQ(history.stats().bytes, 0u);
 }
 
 // A coverage entry whose rectangle no longer fits is the same class of lie as a resized layer: the
@@ -572,7 +625,8 @@ int main() {
     test_the_revision_moves_with_every_undoable_change();
     test_the_budget_drops_whole_steps_oldest_first();
     test_a_coverage_step_restores_the_mask_and_not_the_pixels();
-    test_taking_a_mask_off_drops_only_its_coverage_steps();
+    test_a_mask_plane_comes_back_with_the_coverage_it_had();
+    test_a_mask_plane_that_no_longer_fits_drops_the_timeline();
     test_a_coverage_step_that_no_longer_fits_drops_the_timeline();
     test_undo_restores_one_layer_and_leaves_the_others_alone();
     test_each_layer_undoes_independently_and_in_order();

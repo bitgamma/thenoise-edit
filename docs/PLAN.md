@@ -79,10 +79,10 @@ coverage with verbs at the marked area, is next.
    **Landed 2026-10-19, below**: coverage edits enter the history. The rule holds — *one gesture that
    changes coverage is one undo step*: marquee press to release, `cover` and `un-cover`, All / None /
    Invert, and `select.from_mask` — and a pixel write carries no coverage with it, because it did not
-   move any. The one exception left is a layer mask **appearing or going** (`mask.add`, `mask.remove`,
-   `mask.from_selection` onto a layer that has none): that is coverage changing shape rather than
-   coverage being written, and it wants the `layer_created`/`layer_absent` pair restated for a plane.
-   ARCHITECTURE §Undo states it as the boundary of the rule rather than leaving the rule as a promise.
+   move any. The other half landed in the note after it: a layer mask **appearing or going** (`mask.add`,
+   `mask.remove`, `mask.from_selection` onto a layer that has none) is `Kind::mask_replaced`, so the rule
+   now holds for every coverage change. What is left outside the timeline is a layer's arrival and
+   deletion, and its visibility, opacity and blend mode.
 4. **The pointer says which tool it is.** Landed 2026-10-16, below: the host cursor takes the tool's
    shape and the canvas draws the dab's footprint, measured against the size the app reports.
 5. **Layers you can see.** Landed since 2026-10-16: thumbnails of the layer and its mask, one bordered card
@@ -114,6 +114,49 @@ Seed is not a user-facing concept: **Retry** re-asks the same request with a dif
 another layer. Roles and recipes are ours to pin for now - the sets are in `assets/roles.json` and
 `assets/recipes/`, loaded from disk, and the plan is that a person edits those files, not a dialog, so
 nothing here needs a settings UI to be foreseen later.
+
+## 2026-10-19 - A mask plane is a step, and the coverage rule has no exception left
+
+The note below left one hole: `mask.add`, `mask.remove` and `mask.from_selection` onto a bare layer moved
+coverage and entered nothing. They are in the timeline now as `Kind::mask_replaced`, which holds the layer's
+mask that is *not* current — `nullopt` being one of the two states it carries — and applies it by swapping,
+the third entry built that way after `stack_replaced` and `coverage`. The rule it was checked against is
+not "does undo move the pixels back" but "does undo bring back **the** mask, with the coverage it was
+hiding": `mask.add` over a layer whose mask had a corner hidden, then undo, returns that corner, which an
+entry recording "a mask exists" cannot promise.
+
+**Two things the entry does not need, and one it must not lose.** It wants no `layer_created`/
+`layer_absent` twin: those two exist because a *layer* has a position in a stack and the frames of a
+removal and an insert disagree (see the flatten note). A plane has no position — it is a field of one
+layer — so one kind swapping `optional<Mask>` covers both directions and the pair would be two encodings
+of one fact. And `History::drop_mask` is **gone**, not kept: it existed because a plane that could only go
+forever made every coverage step underneath it unrestorable. Once the removal is a step, those steps are
+reachable again by undoing the removal first, and `test_taking_the_mask_off_ends_the_gesture_and_is_itself_undoable`
+walks the removal, the colour step and the plane's arrival in one timeline to show nothing was thrown away.
+
+**What it catches by construction.** `fits` asks two questions of a plane entry — the layer is there, and
+the plane is the size of that layer's picture — and `step_back` validates in the same order it applies, so
+a mask of another canvas clears the timeline instead of draping a layer with coverage that does not fit it.
+The interaction that was worth the walk is the one between kinds: `layer.merge` puts a layer back and the
+step *underneath* it names that layer's mask, so undo hands the mask off to a layer the merge had just
+re-inserted, and redo takes it back off. `test_merging_down_shows_what_the_canvas_already_showed` and
+`test_flattening_leaves_one_layer_that_shows_what_the_stack_showed` now walk through it, both directions.
+
+**`Applied::structure` is the right flag here, and `coverage` is the wrong one.** A mask change moves no
+pixel of any layer, but it changes what the composite shows everywhere the layer reaches — which is what
+`structure` already means, and what makes `Document::undo` widen the pending region to the whole canvas.
+Reusing it is a fact, not a fudge: `Applied::coverage` says "no texture was repainted", which is exactly
+false for a mask.
+
+**What is left outside the timeline is now one thing, not a family.** Adding and deleting a layer,
+visibility, opacity and blend mode still enter no step; deleting is still one entry away from landing (the
+merge entry is the deletion entry), and the three properties are composite state the stack carries, which
+undo restores only as part of a layer that arrives, goes or is replaced. ARCHITECTURE §Undo states the
+boundary that way now: the *coverage* rule is closed, the *layer and its properties* half is the open one.
+
+**On this box**: as the note below — no `Xvfb`, no root, so the wire tier skipped and `wire_input`'s
+`mask.from_selection` claim was rewritten to the new rule without being run. `ctest --test-dir build`: 40
+tests, 0 failed, 15 skipped.
 
 ## 2026-10-19 - One gesture that changes coverage is one undo step
 
@@ -153,9 +196,8 @@ layer's `content_revision` unchanged across a mark's undo and redo.
 edit already holds a layer's plane and `begin_provisional` refuses the other way round, naming what is
 held. One gesture, one set of held-aside bytes; the alternative is a commit that restores neither.
 
-**Owed.** A mask appearing or going is still coverage that cannot be undone, because the entry it wants is
-the `layer_created`/`layer_absent` pair restated for a *plane*, with `drop_mask` as the invalidation that
-follows it. Everything else in the rule landed.
+**Owed, and landed the same day below.** A mask appearing or going was still coverage that could not be
+undone, because the entry it wants is the pair restated for a *plane*. That is the next note.
 
 **What it changes for the next slice.** Slice 6 gives a recipe a third scope, `region: layer`, whose
 coverage is the layer's own alpha. Coverage that a person *edits* is now undoable per gesture; coverage
@@ -366,6 +408,7 @@ fine a minute before.
 | `ai/server` | latency EMA per `(model, w×h, steps)` → ETA and `timeout_request`; a reply inside 1 s is the box's own answer and never a sample | `test_backend`, `docs/probes/` |
 | `app::kVerbs` + `ai.verbs` | five verbs bound to recipes; a row whose recipe contradicts it — wrong operation, an `ask` that grew, two verbs on one recipe — makes the row not-ready at session open | `test_app`, `ai.verbs` |
 | `app/coverage.h` (`coverage.target`) | one coverage, two lifetimes: `cover` and the marquee write whichever `marked`/`mask` says, a gesture keeps the lifetime it was pressed on, marking writes no pixel byte and costs one undo step per gesture, and colour stays a tool rather than a target | `test_app`, `wire_input`, `mask_speed_probe` |
+| `Document::set_layer_mask` + `Kind::mask_replaced` | a layer's mask plane has one write door: putting one on, taking one off and replacing one are each one step that *swaps* the plane, so the coverage the layer was hidden by comes back rather than a fresh mask, the writes underneath it stay reachable, and `History` needs no `drop_mask` | `test_document`, `test_history`, `test_app` |
 | `Document::set_selection` + `begin_marked` | the marked area is one write door and one step per gesture: the marquee from press to release and a `cover` stroke commit once, in one coat, and undoing a mark puts coverage back without moving a pixel, a revision or a thumbnail | `test_document`, `test_history`, `test_app` |
 | `app/verb_bar.cpp` (`verb.bar`) | the bar offers exactly the verbs whose recipe has `scope: selection`, hangs off the mark and clear of it, and presses the panel's command; where it drew itself is read back rather than remembered by the caller | `test_app`, `verb_bar_probe` |
 | `ai.intent` | the whole action surface (intents, values, price, aspect, style, seed, job, session) in one command; a refusal is recorded so the next read shows it; the handshake lives here too | `test_app`, the status line, `panel_aspect_probe` |

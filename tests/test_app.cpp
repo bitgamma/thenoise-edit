@@ -1662,18 +1662,25 @@ void test_the_coverage_target_decides_where_a_stroke_lands() {
     CHECK(no_press.error.find("mask") != std::string::npos);
     CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), 0);
 
+    const std::string before_plane = h.value("doc.get", json::object())["checksum"].get<std::string>();
     const json added = h.value("mask.add", json::object());
     CHECK_EQ(added["covered"].get<std::int64_t>(), 24 * 12);
     CHECK_NEAR(added["area"].get<double>(), 24 * 12.0, 1e-9);
-    // A mask that shows everything hides nothing, so the canvas is as it was and putting one down is
-    // not a step the timeline has to carry.
-    CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), 0);
+    // A mask that shows everything hides nothing, so the canvas is as it was - but the plane is in the
+    // document, so putting one down is a step, and undoing it takes the mask off rather than moving a
+    // pixel.
+    CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), 1);
+    h.value("edit.undo", json::object());
+    CHECK(h.value("mask.get", json::object())["mask"].is_null());
+    CHECK_EQ(h.value("doc.get", json::object())["checksum"].get<std::string>(), before_plane);
+    h.value("edit.redo", json::object());
+    CHECK_EQ(h.value("mask.get", json::object())["mask"]["covered"].get<std::int64_t>(), 24 * 12);
 
     // A fill of the whole mask is a write: one step, and undo puts the coverage back exactly.
     const std::string shown = h.value("doc.get", json::object())["checksum"].get<std::string>();
     const json hidden = h.value("mask.fill", json{{"to", "hide"}});
     CHECK_EQ(hidden["covered"].get<std::int64_t>(), 0);
-    CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), 1);
+    CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), 2);
     const std::string filled = h.value("doc.get", json::object())["checksum"].get<std::string>();
     CHECK_NE(filled, shown);
     h.value("edit.undo", json::object());
@@ -1700,7 +1707,7 @@ void test_the_coverage_target_decides_where_a_stroke_lands() {
              layer_bytes);  // coverage only: the layer's own bytes did not move
 
     const std::string painted = h.value("doc.get", json::object())["checksum"].get<std::string>();
-    CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), 2);
+    CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), 3);
     h.value("edit.undo", json::object());
     CHECK_EQ(h.value("doc.get", json::object())["checksum"].get<std::string>(), filled);
     h.value("edit.redo", json::object());
@@ -2001,9 +2008,10 @@ void test_a_selection_becomes_a_mask_and_a_mask_becomes_a_selection() {
     CHECK_EQ(back["covered"].get<std::int64_t>(), 0);
 }
 
-// A layer mask is composite state: it must reach the canvas through the command table, and it must
-// not be an undo step, exactly like the eye and the opacity slider.
-void test_a_layer_mask_costs_no_undo_step_and_reaches_the_file() {
+// A layer mask is composite state: it reaches the canvas and the file through the command table, and
+// the plane arriving is the step that owns it - undoing that takes the mask off, which is what the eye
+// and the opacity slider are not.
+void test_a_layer_mask_is_one_step_and_reaches_the_file() {
     constexpr int kWidth = 24;
     constexpr int kHeight = 16;
     Harness h;
@@ -2012,8 +2020,16 @@ void test_a_layer_mask_costs_no_undo_step_and_reaches_the_file() {
     h.value("select.rect", json{{"rect", json::array({2, 2, 6, 6})}});
     const int steps = undo_depth(h);
     h.value("mask.from_selection", json::object());
-    CHECK_EQ(undo_depth(h), steps);
+    CHECK_EQ(undo_depth(h), steps + 1);
     CHECK(h.state.doc.dirty());
+    // The step holds the plane, not the picture: undo takes the mask off and leaves the layer's own
+    // bytes where they were, which is the difference between masking and erasing.
+    const std::string layer_bytes = h.state.doc.layer(0).pixels.checksum_hex();
+    h.value("edit.undo", json::object());
+    CHECK(!h.state.doc.layer(0).mask.has_value());
+    CHECK_EQ(h.state.doc.layer(0).pixels.checksum_hex(), layer_bytes);
+    h.value("edit.redo", json::object());
+    CHECK(h.state.doc.layer(0).mask.has_value());
 
     const std::string path = h.temp("masked.noise");
     h.value("doc.save", json{{"path", path}});
@@ -3827,7 +3843,7 @@ int main() {
     test_a_selection_limits_a_mask_stroke();
     test_the_mask_controls_name_the_layer_they_refused();
     test_a_selection_becomes_a_mask_and_a_mask_becomes_a_selection();
-    test_a_layer_mask_costs_no_undo_step_and_reaches_the_file();
+    test_a_layer_mask_is_one_step_and_reaches_the_file();
     test_the_overlay_reports_the_phase_it_draws_and_freezes_on_request();
     test_the_move_tool_slides_the_layer_and_undoes_it_exactly();
     test_a_move_that_never_left_its_pixel_is_not_an_edit();

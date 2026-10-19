@@ -149,11 +149,10 @@ public:
     // of range is false rather than a clamped value.
     // The layer's mask: what the composite hides. A mask must be the size of the canvas, and a
     // different size is false rather than a resized mask - a mask that quietly shifted would hide
-    // pixels nobody asked about. Like visibility it changes no pixel and enters no undo step - putting a
-    // mask on and taking one off are structural, the way a layer arriving is; writing coverage *into* one
-    // is `paint_mask`, and that is a step - but it does change the canvas, so it bumps the revision, marks
-    // the document dirty and widens the pending region to the whole canvas, because what a mask hides is
-    // outside its bounds too.
+    // pixels nobody asked about. Putting one on and taking one off record the *plane* (`Kind::mask_replaced`);
+    // writing coverage into one records pixels (`paint_mask`). Neither moves the layer's picture, and both
+    // change the canvas, so both bump the revision, mark the document dirty and widen the pending region
+    // to the whole canvas, because what a mask hides is outside its bounds too.
     bool set_layer_mask(int index, std::optional<Mask> mask);
 
     bool set_layer_visible(int index, bool visible);

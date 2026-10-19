@@ -267,11 +267,12 @@ bool Document::set_layer_mask(int index, std::optional<Mask> mask) {
     // A gesture holding this layer's coverage ends here rather than writing over a plane that has
     // since been replaced: it is restored as it was, and not committed.
     discard_provisional();
-    if (!mask) {
-        // Steps naming coverage that is gone cannot be put back, so they leave the timeline. The
-        // steps naming the same layer's colour stay, as they do when a whole layer is deleted.
-        history_.drop_mask(layer.id);
-    }
+    // A mask plane arriving or going is the edit, and what undo puts back is the plane this replaces -
+    // `nullopt` at either end meaning no mask at all. Coverage written *into* a mask is a step of its
+    // own (`paint_mask`), and the steps recorded before this one stay in the timeline: they are reached
+    // by undoing this swap first, which returns the mask with the coverage it was hidden by, so they
+    // land on the state they were recorded against.
+    history_.record_layer_mask(layer.id, layer.mask);
     // The whole canvas, not a box: a mask hides what is *outside* its bounds as much as what is
     // inside, so the pixels that changed are where two coverages differ - which is not a rectangle,
     // and a pending region taken from either mask's bounds would leave the composite showing the

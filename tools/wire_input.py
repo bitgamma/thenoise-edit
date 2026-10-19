@@ -512,9 +512,10 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
     wire.call("edit.undo", {})
 
     # The mask conversions, after a marquee drawn by the pointer: the composite changes, the layer's
-    # own bytes do not, and neither direction costs an undo step. The composite is only visible
-    # through a written image, so that is what is compared - hashed, because "different" has to mean
-    # different bytes rather than a different filename.
+    # own bytes do not, and the plane arriving is exactly one undo step - one that undo takes off again,
+    # back to the bytes the canvas was showing. The composite is only visible through a written image,
+    # so that is what is compared - hashed, because "different" has to mean different bytes rather than
+    # a different filename.
     # `layer.list` is the command that reports a layer's own pixel digest, which is the claim being
     # made here: the document digest counts mask bytes on purpose, so comparing that would say
     # "something changed" without saying whether the pixels moved.
@@ -538,8 +539,24 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
         fails.append("the composite is unchanged by a mask, so the mask is not reaching the canvas")
     if pixels_after != pixels_before:
         fails.append("masking edited the layer's pixels; a mask is meant to hide, not to erase")
-    if steps_after != steps_before:
-        fails.append("applying a layer mask cost an undo step")
+    if steps_after != steps_before + 1:
+        fails.append(f"applying a layer mask cost {steps_after - steps_before} undo steps, expected one")
+
+    # The step holds the plane rather than a pixel, so undoing it returns the composite by taking the
+    # mask off - not by repainting anything - and redo hides the layer again.
+    wire.call("edit.undo", {})
+    undone_pixels, undone_shown = view()
+    print(f"edit.undo of the mask: composite {undone_shown[:8]}, back to what was shown "
+          f"{undone_shown == shown_before}, layer bytes still unchanged "
+          f"{undone_pixels == pixels_before}")
+    if undone_shown != shown_before:
+        fails.append("undoing the mask did not return the composite it changed")
+    if undone_pixels != pixels_before:
+        fails.append("undoing the mask moved the layer's own bytes")
+    wire.call("edit.redo", {})
+    _, redone_shown = view()
+    if redone_shown != shown_masked:
+        fails.append(f"redoing the mask showed {redone_shown[:8]} instead of {shown_masked[:8]}")
 
     loaded_back = wire.call("select.from_mask", {})
     if loaded_back["bounds"] != masked["bounds"] or loaded_back["covered"] != masked["covered"]:

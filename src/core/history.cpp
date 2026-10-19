@@ -62,7 +62,8 @@ void History::record(std::uint64_t layer_id, LayerPlane plane, Rect rect,
                                   .order = {},
                                   .whole = {},
                                    .stack = {},
-                                   .marked = {}});
+                                   .marked = {},
+                                   .mask = {}});
     drop_oldest_until_within_budget();
 }
 
@@ -88,7 +89,8 @@ void History::record_layer_created(std::uint64_t layer_id, std::string name, int
                                   .order = {},
                                   .whole = {},
                                    .stack = {},
-                                   .marked = {}});
+                                   .marked = {},
+                                   .mask = {}});
     drop_oldest_until_within_budget();
 }
 
@@ -108,6 +110,9 @@ std::size_t History::held(const Stacked& entry) {
     }
     if (entry.marked) {
         bytes += entry.marked->plane().size();
+    }
+    if (entry.mask) {
+        bytes += entry.mask->plane().size();
     }
     return bytes;
 }
@@ -140,6 +145,19 @@ void History::record_coverage(std::optional<Mask> marked) {
     drop_oldest_until_within_budget();
 }
 
+void History::record_layer_mask(std::uint64_t layer_id, std::optional<Mask> mask) {
+    redo_stack_.clear();
+    Stacked entry;
+    entry.kind = Kind::mask_replaced;
+    entry.step = open_step_ != 0 ? open_step_ : ++next_step_;
+    entry.layer = layer_id;
+    entry.plane = LayerPlane::mask;
+    entry.mask = std::move(mask);
+    bytes_ += held(entry);
+    undo_stack_.push_back(std::move(entry));
+    drop_oldest_until_within_budget();
+}
+
 void History::record_stack_replaced(std::vector<Layer> stack) {
     redo_stack_.clear();
     Stacked entry;
@@ -167,7 +185,8 @@ void History::record_layer_order(std::vector<std::uint64_t> order) {
                                   .order = std::move(order),
                                   .whole = {},
                                    .stack = {},
-                                   .marked = {}});
+                                   .marked = {},
+                                   .mask = {}});
     drop_oldest_until_within_budget();
 }
 
@@ -201,7 +220,8 @@ void History::record_layer_removed(Layer layer, int index) {
                   .order = {},
                   .whole = std::move(layer),
                   .stack = {},
-                  .marked = {}};
+                  .marked = {},
+                  .mask = {}};
     bytes_ += held(entry);
     undo_stack_.push_back(std::move(entry));
     drop_oldest_until_within_budget();
@@ -225,12 +245,6 @@ void History::drop_layer(std::uint64_t layer_id) {
     // the stack it describes is gone, and restoring half of it would be worse than losing the step.
     drop_entries(
         [layer_id](const Stacked& entry) { return names_layer(entry, layer_id); });
-}
-
-void History::drop_mask(std::uint64_t layer_id) {
-    drop_entries([layer_id](const Stacked& entry) {
-        return entry.layer == layer_id && entry.plane == LayerPlane::mask;
-    });
 }
 
 void History::drop_entries(const std::function<bool(const Stacked&)>& names) {
@@ -293,6 +307,12 @@ bool History::fits(const Layer* layer, const Stacked& entry) {
         case Kind::coverage:
             // Checked against the canvas by `fits_coverage`; it reads no layer.
             return true;
+        case Kind::mask_replaced:
+            // The swap needs the layer and needs the plane to be the size of its picture - a mask of
+            // another canvas would hide pixels that are not there. Whether a mask is already present is
+            // no problem: the entry holds whichever side the layer is on.
+            return layer != nullptr &&
+                   (!entry.mask || entry.mask->size() == layer->pixels.size());
     }
     return false;
 }
@@ -334,6 +354,17 @@ void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
         // needs: the two directions are the same swap, and `nullopt` - no marked area - travels
         // through it exactly like a plane does.
         std::swap(marked, entry.marked);
+        entry.step = step;
+        into.push_back(std::move(entry));
+        return;
+    }
+    if (entry.kind == Kind::mask_replaced) {
+        // The layer leaves holding the plane the entry arrived with, and the entry leaves holding the
+        // one the layer had: the same swap in both directions, so a mask taken off comes back with the
+        // coverage it was hidden by rather than as a fresh one.
+        if (Layer* target = layer_of(layers, entry.layer)) {
+            std::swap(target->mask, entry.mask);
+        }
         entry.step = step;
         into.push_back(std::move(entry));
         return;
@@ -536,7 +567,8 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
                                    .order = {},
                                    .whole = {},
                                    .stack = {},
-                                   .marked = {}});
+                                   .marked = {},
+                                   .mask = {}});
         } else {
             const Mask displaced = layer.mask->region(entry.rect);
             into.push_back(Stacked{.layer = entry.layer,
@@ -551,7 +583,8 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
                                    .order = {},
                                    .whole = {},
                                    .stack = {},
-                                   .marked = {}});
+                                   .marked = {},
+                                   .mask = {}});
         }
         bytes_ += into.back().bytes.size();
         if (entry.plane == LayerPlane::pixels) {

@@ -70,15 +70,23 @@ public:
     // The document's **marked coverage** - the area it marks, which is a document property that is
     // saved and belongs to no layer. The entry holds the coverage that is not current and applying it
     // swaps the two, so undo and redo are the same operation; like `stack_replaced` it names no layer,
-    // which is why `drop_layer` and `drop_mask` leave it alone. A canvas-sized plane per step is the
-    // price, and it is a quarter of what a full-canvas pixel step costs.
+    // which is why `drop_layer` leaves it alone. A canvas-sized plane per step is the price, and it is
+    // a quarter of what a full-canvas pixel step costs.
     void record_coverage(std::optional<Mask> marked);
+
+    // A layer's **mask plane** - a mask put on a layer that had none, or taken off one that had it. The
+    // same swap as `record_coverage`, aimed at one layer instead of the document, and `nullopt` is one
+    // of the two states travelling through it: the layer had no mask. Coverage written *into* a mask a
+    // layer already has is `record` with `LayerPlane::mask`, not this; what makes a plane arriving its
+    // own entry is that there is no rectangle to write into and no bytes to displace, so the step is the
+    // plane's existence and restoring it means putting the whole of it back.
+    void record_layer_mask(std::uint64_t layer_id, std::optional<Mask> mask);
 
     struct Applied {
         std::uint64_t layer;
         Rect rect;
-        // The step moved the layer stack, so what the canvas shows changed everywhere it composites,
-        // not only inside `rect`.
+        // The step moved the layer stack, or a layer's mask plane, so what the canvas shows changed
+        // everywhere it composites, not only inside `rect`.
         bool structure = false;
         // The step moved the marked coverage. It put back no pixel: the composite is byte-identical
         // and no layer holds anything different, so a step that is nothing else re-uploads and
@@ -90,8 +98,8 @@ public:
     // step can be run again. Returns what was touched, or nullopt when there is nothing to
     // step, or when a recorded rectangle no longer fits its layer - a resized layer makes
     // every rectangle it holds a lie, so the whole history is dropped rather than half
-    // restored. `marked` is the document's coverage plane, swapped with what a `coverage` entry
-    // holds.
+    // restored. `marked` is the document's coverage plane, swapped with what a `coverage` entry holds,
+    // and a layer's own mask is swapped with what a `mask_replaced` entry holds.
     std::optional<Applied> undo(std::vector<Layer>& layers, std::optional<Mask>& marked);
     std::optional<Applied> redo(std::vector<Layer>& layers, std::optional<Mask>& marked);
 
@@ -100,9 +108,6 @@ public:
     // step, stays, because losing an unrelated layer's undo is worse than losing one that is
     // impossible.
     void drop_layer(std::uint64_t layer_id);
-    // The same for a layer's mask: entries naming coverage that is gone cannot be restored, so they
-    // leave both stacks while the rest of the timeline stays.
-    void drop_mask(std::uint64_t layer_id);
 
     bool can_undo() const;
     bool can_redo() const;
@@ -121,6 +126,7 @@ private:
         layer_order,
         stack_replaced,
         coverage,
+        mask_replaced,
     };
 
     struct Stacked {
@@ -145,6 +151,9 @@ private:
         // The marked coverage on the far side, for `coverage`. `nullopt` is a real state here - the
         // document had no marked area - so this cannot be folded into `bytes`.
         std::optional<Mask> marked;
+        // The layer's own mask on the far side, for `mask_replaced`, where `nullopt` again means the
+        // layer had no mask at all.
+        std::optional<Mask> mask;
     };
 
     // What an entry costs the budget: its bytes, plus the pixels and mask of a whole layer it carries.
