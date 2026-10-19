@@ -27,10 +27,16 @@ const char* endpoint_name(Endpoint endpoint);
 std::optional<Endpoint> endpoint_from_name(const std::string& name);
 std::string endpoint_names();
 
-// Whether the region is the whole document or the selection's compiled box.
+// Where the coverage a region is compiled from comes from.
 enum class RegionScope {
     document,
     selection,
+    // The active layer's own alpha: what that layer covers, byte for byte. This is *Blend*'s door - a
+    // dropped image looks pasted because it sits on the scene without belonging to it, and the thing to
+    // repaint is exactly where the layer has pixels, with its soft edge kept soft. The upload stays the
+    // document flattened up to and including that layer, so the model is shown the scene the object has
+    // to fit into rather than the object alone.
+    layer,
 };
 
 // What the operation *does*, which decides what the request may contain. These are not flavours of one
@@ -52,6 +58,7 @@ enum class Operation {
     from_words,
 };
 const char* operation_name(Operation operation);
+const char* region_scope_name(RegionScope scope);
 std::optional<Operation> operation_from_name(const std::string& name);
 
 // One `recipes/*.json`. A recipe is an operation + prompt template + region policy + hole policy +
@@ -96,6 +103,8 @@ struct Recipe {
     // True when the region ignores the selection, which is what makes `new-image` work with nothing
     // selected and `reimagine` cover a whole frame.
     bool whole_document() const { return region == RegionScope::document; }
+    // True when the region is what the active layer covers rather than what is marked.
+    bool coverage_from_layer() const { return region == RegionScope::layer; }
     // True when the upload is a picture of something that exists, so a hole in it is a claim about the
     // world rather than about a blank canvas.
     bool makes_a_hole() const { return operation == Operation::reconstruct; }
@@ -113,6 +122,10 @@ struct RecipeSet {
     // offers. The scope and the endpoint are what decide, not a list of ids: adding a recipe adds a
     // row here without anything else being told.
     std::vector<const Recipe*> selection_intents() const;
+    // Everything that works on the active layer's own coverage - *Blend* and whatever else paints a
+    // layer into its scene. A separate list rather than a flag on the selection one, because the panel
+    // offers it under a different condition: a layer with pixels, not a marked area.
+    std::vector<const Recipe*> layer_intents() const;
     std::vector<Recipe> recipes;
 };
 

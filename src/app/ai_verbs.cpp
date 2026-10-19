@@ -19,6 +19,7 @@ const std::vector<VerbInfo> kVerbs{
     {VerbId::fill, "region-fill", "Ctrl+Shift+F"},
     {VerbId::change, "inpaint-replace", "Ctrl+Shift+C"},
     {VerbId::generate, "new-image", "Ctrl+G"},
+    {VerbId::blend, "blend", "Ctrl+B"},
 };
 
 namespace {
@@ -38,6 +39,9 @@ std::string expectation(VerbId id) {
             return "an 'in_place' that asks for one field (what should change)";
         case VerbId::generate:
             return "a 'from_words' that asks for one field (the picture)";
+        case VerbId::blend:
+            return "an 'in_place' over the layer's own coverage that asks for nothing - the pasted "
+                   "thing is painted into the scene it sits on";
     }
     return "an unknown verb";
 }
@@ -56,6 +60,8 @@ const char* verb_name(VerbId id) {
             return "change";
         case VerbId::generate:
             return "generate";
+        case VerbId::blend:
+            return "blend";
     }
     return "?";
 }
@@ -117,6 +123,9 @@ bool verb_matches(const VerbInfo& verb, const ai::Recipe& recipe) {
             return recipe.operation == ai::Operation::in_place && recipe.ask.size() == 1;
         case VerbId::generate:
             return recipe.operation == ai::Operation::from_words && recipe.ask.size() == 1;
+        case VerbId::blend:
+            return recipe.operation == ai::Operation::in_place && recipe.ask.empty() &&
+                   recipe.region == ai::RegionScope::layer;
     }
     return false;
 }
@@ -178,7 +187,7 @@ void register_ai_verb_commands(AppState& state, CommandTable& table) {
                                 {"ask", recipe != nullptr ? json(recipe->ask) : json::array()},
                                 {"scope", recipe == nullptr
                                               ? "unknown"
-                                              : (recipe->whole_document() ? "document" : "selection")},
+                                              : ai::region_scope_name(recipe->region)},
                                 // The frames this key can be pressed at, and the recipes it can be
                                 // pressed with: the panel draws both from here and owns neither.
                                 {"aspects", recipe != nullptr

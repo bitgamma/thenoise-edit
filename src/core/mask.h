@@ -212,5 +212,12 @@ void restrict_to(const Mask& mask, Rect at, const Image& before, Rect before_at,
 // Masking straight-alpha channels instead would turn a half-masked red pixel into a darker red one.
 void scale_by_coverage(const Mask& mask, Rect at, const Image& layer, Image& out);
 
+// The coverage a picture already has: its own alpha, byte for byte, with no threshold anywhere. A
+// dropped image covers the canvas wherever it is not the absent pixel, so "what does this layer cover"
+// is answered by the alpha itself - which keeps a soft edge soft, the thing a threshold would throw
+// away. Nothing normalises 254 to 255: a layer that covers 254/255 of a pixel gets answered 254/255 of
+// the way, because that is the claim its own bytes make.
+Mask coverage_of(const Image& picture);
+
 
 }  // namespace noise

@@ -188,6 +188,20 @@ std::optional<Endpoint> endpoint_from_name(const std::string& name) {
     return std::nullopt;
 }
 
+// The one place a scope becomes a word: the verb row, the region report and the panel all print this, so
+// a scope cannot be called one thing in the table and another on the wire.
+const char* region_scope_name(RegionScope scope) {
+    switch (scope) {
+        case RegionScope::document:
+            return "document";
+        case RegionScope::selection:
+            return "selection";
+        case RegionScope::layer:
+            return "layer";
+    }
+    return "unknown";
+}
+
 const char* operation_name(Operation operation) {
     switch (operation) {
         case Operation::reconstruct:
@@ -259,6 +273,16 @@ const Recipe* RecipeSet::family_head(const std::string& id) const {
         }
     }
     return find(id);
+}
+
+std::vector<const Recipe*> RecipeSet::layer_intents() const {
+    std::vector<const Recipe*> out;
+    for (const Recipe& recipe : recipes) {
+        if (recipe.region == RegionScope::layer) {
+            out.push_back(&recipe);
+        }
+    }
+    return out;
 }
 
 std::vector<const Recipe*> RecipeSet::selection_intents() const {
@@ -333,8 +357,16 @@ std::optional<Recipe> parse_recipe(const nlohmann::json& body, const std::string
         recipe.region = RegionScope::selection;
     } else if (region == "document") {
         recipe.region = RegionScope::document;
+    } else if (region == "layer") {
+        recipe.region = RegionScope::layer;
     } else {
-        error = origin + ": 'region' must be 'selection' or 'document' (got '" + region + "')";
+        error = origin + ": 'region' must be 'selection', 'document' or 'layer' (got '" + region +
+                "')";
+        return std::nullopt;
+    }
+    if (recipe.region == RegionScope::layer && recipe.operation == Operation::from_words) {
+        error = origin + ": region 'layer' needs a picture to blend into the scene, so operation '" +
+                operation_name(recipe.operation) + "' cannot have it";
         return std::nullopt;
     }
     const std::string prep = string_at(body, "prep", "none", origin, error, ok);

@@ -2238,6 +2238,39 @@ void test_the_select_gesture_draws_and_puts_down_the_selection() {
 // The result compositor, reached the way the UI will reach it: through the command table, so the
 // selection fence, the undo step and the revision all behave as they do for a stroke, and so a probe
 // can look at the pixels.
+// *Blend* compiles its region from the layer it was asked on, not from whatever happens to be marked:
+// the coverage is that layer's own alpha, so a paste's soft edge stays soft and a mark left behind from
+// the last operation cannot decide what the model is shown. The empty layer is the other half of the
+// claim - no coverage is a refusal that names the layer, not a region over the whole frame.
+void test_blend_takes_the_layer_for_its_region() {
+    Harness h;
+    h.value("doc.new", json{{"width", 120}, {"height", 100}, {"fill", json::array({30, 40, 50, 255})}});
+    h.value("server.connect", json::object());
+    h.value("layer.add", json{{"name", "pasted"}, {"fill", json::array({200, 100, 50, 128})}});
+    h.value("select.rect", json{{"rect", json::array({10, 10, 20, 20})}});
+
+    const json preview = h.value("ai.preview", json{{"recipe", "blend"}, {"seed", 42}});
+    CHECK_EQ(preview["request"]["path"].get<std::string>(), std::string("/images/edits"));
+    // Half-alpha over the whole canvas is coverage over the whole canvas, so the region is the frame and
+    // the 20x20 mark is nowhere in it. Nothing thresholds the 128 away.
+    CHECK_EQ(preview["region"]["mask_bounds"], (json::array({0, 0, 120, 100})));
+    CHECK(preview["region"]["coverage"].get<std::string>().find("'pasted'") != std::string::npos);
+    const std::string size = preview["request"]["size"].get<std::string>();
+    const std::string::size_type cross = size.find('x');
+    CHECK_EQ(std::stoi(size.substr(0, cross)) % 16, 0);
+    CHECK_EQ(std::stoi(size.substr(cross + 1)) % 16, 0);
+    // No words were asked for and none were invented by the caller: the standing instruction is the
+    // recipe's, and the scene it is to match is in the upload, not in the prompt.
+    CHECK(preview["prompt"].get<std::string>().find("belongs in this scene") != std::string::npos);
+    CHECK(preview["request"].contains("seed"));
+
+    h.value("layer.add", json{{"name", "empty"}, {"fill", json::array({0, 0, 0, 0})}});
+    const CommandResult refused = h.run("ai.blend", json{{"seed", 42}});
+    CHECK(!refused.ok);
+    CHECK(refused.error.find("'empty'") != std::string::npos);
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(3));
+}
+
 // The whole AI path against the recorded server: discovery, role resolution, the compiled request, the
 // queue, and the answer landing through the same compositor door `ai.compose` uses. The fixtures are the
 // transport, so this runs in the default `ctest` and still proves the parts no unit test reaches - the
@@ -2558,7 +2591,15 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     // What is on show is what a headless run would send: the recipe's own defaults, and no question.
     CHECK_EQ(read["vars"]["context_desc"].get<std::string>(), std::string("background"));
     std::fprintf(stderr, "  [mark B]\n");
-    CHECK_EQ(read["intents"].size(), std::size_t(5));
+    // Five intents read the marked area and one reads the active layer's own coverage, so the panel has
+    // *Blend* to offer whether or not anything is marked. The count is here because a dropped intent
+    // would otherwise show up only as a missing row somewhere below.
+    CHECK_EQ(read["intents"].size(), std::size_t(6));
+    bool offers_blend = false;
+    for (const json& offered : read["intents"]) {
+        offers_blend = offers_blend || offered["id"].get<std::string>() == "blend";
+    }
+    CHECK(offers_blend);
     // Reading the action costs an upload encode nothing, and still says what a press would send: the
     // price line is a quote from the region compiler and the model's defaults, not a compiled request.
     CHECK_EQ(read["upload_encodes"].get<std::uint64_t>(), std::uint64_t(0));
@@ -3190,7 +3231,9 @@ void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
     h.value("select.rect", json{{"rect", json::array({20, 12, 36, 24})}});
     const json verbs = h.value("ai.verbs", json::object());
     CHECK(verbs["error"].get<std::string>().empty());
-    REQUIRE(verbs["verbs"].size() == std::size_t(5));
+    // The count is a precondition, not a claim about the table's shape: a row that vanished would make
+    // every `row_of` below answer null and fail twenty checks at once.
+    REQUIRE(verbs["verbs"].size() == std::size_t(6));
     // Rows are named, not counted from the top: the order is what a person meets, and a row added at
     // the front is not a reason for every assertion below to move.
     const auto row_of = [&verbs](const char* id) {
@@ -3218,6 +3261,15 @@ void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
     CHECK_EQ(row_of("heal")["recipe"].get<std::string>(), std::string("heal"));
     CHECK(row_of("heal")["ask"].empty());
     CHECK_EQ(h.table.shortcuts_for("ai.heal"), std::vector<std::string>{"Ctrl+H"});
+    // *Blend* is the third scope: neither the mark nor the frame, but the active layer's own alpha. It
+    // asks for nothing - the whole point is the press with no words - and it is not on the bar, which
+    // hangs off a mark it does not read.
+    CHECK_EQ(row_of("blend")["recipe"].get<std::string>(), std::string("blend"));
+    CHECK_EQ(row_of("blend")["label"].get<std::string>(), std::string("Blend"));
+    CHECK(row_of("blend")["ask"].empty());
+    CHECK_EQ(row_of("blend")["scope"].get<std::string>(), std::string("layer"));
+    CHECK_EQ(row_of("blend")["operation"].get<std::string>(), std::string("in_place"));
+    CHECK_EQ(h.table.shortcuts_for("ai.blend"), std::vector<std::string>{"Ctrl+B"});
     // The bar's rule in one number: every row whose recipe reads the marked area is on it, and the one
     // that makes pixels from words is not.
     int on_the_bar = 0;
@@ -3841,6 +3893,7 @@ void test_the_recent_files_are_the_documents_this_app_touched() {
 int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
+    test_blend_takes_the_layer_for_its_region();
     test_a_recipe_runs_against_the_recorded_server_and_lands();
     test_an_answer_lands_itself_into_the_document_that_asked_for_it();
     test_an_answer_lands_on_the_document_and_undoes_completely();

@@ -89,6 +89,10 @@ Attempt compile_region(const char* command, AppState& state, const ai::Recipe& r
     Mask coverage;
     if (recipe.whole_document()) {
         coverage = document_coverage(state.doc.size(), aspect, coverage_source);
+    } else if (recipe.coverage_from_layer()) {
+        const Layer& active = state.doc.layer(static_cast<std::size_t>(state.doc.active()));
+        coverage = coverage_of(active.pixels);
+        coverage_source = "layer '" + active.name + "' alpha";
     } else {
         if (const std::string why = missing_region(recipe, state); !why.empty()) {
             attempt.failure = fail(command, why);
@@ -438,7 +442,7 @@ void register_ai_commands(AppState& state, CommandTable& table) {
                                 // has a hole in it, and a tool that offers recipes has to be able to say
                                 // which of them destroy something.
                                 {"operation", ai::operation_name(recipe.operation)},
-                                {"region", recipe.whole_document() ? "document" : "selection"},
+                                {"region", ai::region_scope_name(recipe.region)},
                                 {"prep", ai::prep_name(recipe.prep)},
                                 {"ask", recipe.ask},
                                 {"enhance", recipe.enhance},

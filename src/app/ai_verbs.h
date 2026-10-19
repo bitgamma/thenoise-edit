@@ -27,6 +27,7 @@ enum class VerbId {
     fill,      // the marked area is destroyed and filled with what one field describes
     change,    // the marked content is edited in place, the pixels being the reference
     generate,  // pixels from words, with no source image
+    blend,     // the active layer's own coverage is repainted into the scene around it
 };
 
 struct VerbInfo {

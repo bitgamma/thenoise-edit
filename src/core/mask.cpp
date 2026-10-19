@@ -492,4 +492,20 @@ void scale_by_coverage(const Mask& mask, Rect at, const Image& layer, Image& out
     }
 }
 
+Mask coverage_of(const Image& picture) {
+    const Extent size = picture.size();
+    const std::size_t w = static_cast<std::size_t>(size.w);
+    std::vector<std::uint8_t> plane(w * static_cast<std::size_t>(size.h));
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            plane[static_cast<std::size_t>(y) * w + static_cast<std::size_t>(x)] =
+                picture.at(x, y)[3];
+        }
+    }
+    std::optional<Mask> coverage = Mask::from_plane(picture.size(), std::move(plane));
+    // The plane was sized from the image it came from, so the only way this refuses is an image whose
+    // own size and bytes disagree - a broken image, not a broken call.
+    return coverage.has_value() ? *coverage : Mask{};
+}
+
 }  // namespace noise

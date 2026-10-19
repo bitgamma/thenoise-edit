@@ -1,0 +1,25 @@
+{
+  "id": "blend",
+  "label": "Blend",
+  "operation": "in_place",
+  "endpoint": "edits",
+  "role": "edit",
+  "region": "layer",
+  "prep": "none",
+  "enhance": "never",
+  "prompt": [
+    "Repaint the marked object so that it belongs in this scene.",
+    "Match the light, colour temperature, shadow direction, perspective, focus and grain of",
+    "the surrounding {{context_desc}}, and keep what the object is, where it is and how big it is.",
+    "Change nothing outside the marked area."
+  ],
+  "variables": {
+    "context_desc": "background"
+  },
+  "ask": [],
+  "composite": {
+    "feather": "auto",
+    "colour_match": true,
+    "lock_band_px": 6
+  }
+}

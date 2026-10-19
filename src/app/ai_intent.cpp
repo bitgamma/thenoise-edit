@@ -176,7 +176,14 @@ CommandResult start_intent(AppState& state, CommandTable& table, const ai::Recip
 // Whether this intent could run here, and what stops it if it cannot. The panel greys the button from
 // this and the refusal repeats it, so a disabled control and an error message cannot disagree.
 std::string missing_region(const ai::Recipe& recipe, noise::AppState& state) {
-    if (recipe.whole_document() || state.doc.selection().has_value()) {
+    // A layer-scope recipe is ready whenever there is an active layer, which is deliberately optimistic:
+    // "does that layer cover anything" is a scan over the canvas, and readiness is asked every frame the
+    // verb bar is drawn. The empty case is refused where it costs something - `plan_region` already
+    // refuses a coverage with nothing in it, on press and on preview, and says which layer.
+    if (recipe.whole_document() || recipe.coverage_from_layer()) {
+        return {};
+    }
+    if (state.doc.selection().has_value()) {
         return {};
     }
     return "recipe '" + recipe.id + "' works on a selection and there is none: mark the area (" +
@@ -242,8 +249,14 @@ nlohmann::json intent_json(AppState& state) {
     const Readiness readiness = assess(state, recipe);
 
     json intents = json::array();
-    for (const ai::Recipe* candidate : state.ai.recipes.selection_intents()) {
-        intents.push_back(json{{"id", candidate->id}, {"label", candidate->label}});
+    // Two conditions, two lists: what the mark offers and what a layer's own coverage offers. *Blend*
+    // is in the second, so it appears whether or not anything is marked - which is the point of it.
+    const std::vector<const ai::Recipe*> on_the_mark = state.ai.recipes.selection_intents();
+    const std::vector<const ai::Recipe*> on_the_layer = state.ai.recipes.layer_intents();
+    for (const std::vector<const ai::Recipe*>& group : {on_the_mark, on_the_layer}) {
+        for (const ai::Recipe* candidate : group) {
+            intents.push_back(json{{"id", candidate->id}, {"label", candidate->label}});
+        }
     }
 
     json selection{{"whole_document", !state.doc.selection().has_value()},
