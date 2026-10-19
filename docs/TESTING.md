@@ -58,6 +58,15 @@ path is checked hermetically and then again cheaply against the box. `--only gen
 one cell so the budget goes where the change is.
 
 `tools/wire_drive.py` is the shared harness: app startup, display claim, child reaping, golden capture.
+Everything in `tools/` that makes a claim is registered in `tests/CMakeLists.txt`, and every probe that
+starts the app asks `wire_drive.display_skip()` first, so a box with neither `$DISPLAY` nor `Xvfb` reads
+`SKIP:` — a probe that goes red there is hiding the app's own failure behind an unavailable resource, and
+until recently `prep_proof` and `coverage_view_probe` did exactly that.
+
+Two tools measure and gate nothing. `mask_speed_probe.py` prints what a mask event and a marquee event
+cost *against* a pixel event (a ratio, because an absolute millisecond on a shared box is a coin toss),
+and `tn_probe.py` prints a server's latencies. Both are run by hand, and the seam table names them for
+the number they produce, not as a check the suite makes.
 
 ## House rule for every probe
 

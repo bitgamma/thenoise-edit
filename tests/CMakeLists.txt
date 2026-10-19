@@ -191,6 +191,17 @@ if(Python3_Interpreter_FOUND)
                          TIMEOUT 420
                          DEPENDS noise-edit)
 
+    # That the boundary walk, windowed to the selection's own bounds, still outlines all four sides of a
+    # selection that sits far from the origin of a large document. `test_ants` checks the geometry; only a
+    # capture says the window drew what the geometry described.
+    add_test(NAME test_ants_window_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ants_window_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_ants_window_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 420
+                         DEPENDS noise-edit)
+
     # That each layer has its own surface in the panel and its own picture on it: the thumbnail is the
     # layer's content, an opacity change leaves it byte-identical, and a stroke into the layer changes it.
     add_test(NAME test_layer_panel_probe

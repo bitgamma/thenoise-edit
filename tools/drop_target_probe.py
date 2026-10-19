@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Does the desktop know this window takes files, and can a driver do what a drop does?
 
 The drop itself is XDND, which needs a second program dragging at a real pointer, so this checks the two
