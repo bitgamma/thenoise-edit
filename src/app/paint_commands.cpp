@@ -178,9 +178,10 @@ void register_paint_commands(AppState& state, CommandTable& table) {
                 touched = paint_stroke_mask(mask, path, brush, mode);
             });
         } else if (coverage_stroke) {
-            // The marked area takes the same stroke through the same mask, and stays outside history
-            // because a mark is not a change to the picture — putting it down is not undoable today
-            // either, so a freehand mark and a marquee behave alike.
+            // The marked area takes the same stroke through the same mask, and the whole polyline is
+            // painted into one copy of it, so the command is one coat at the brush's own opacity and
+            // `set_selection` records the coverage it replaces as one step - the same thing the pointer
+            // gesture commits at release, which is what makes a freehand mark and a marquee alike.
             Mask marked = state.doc.selection().has_value() ? *state.doc.selection()
                                                             : Mask(state.doc.size());
             touched = paint_stroke_mask(marked, path, brush, mode);

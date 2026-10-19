@@ -72,8 +72,9 @@ src/
                        planes - `pixels`, `mask` - a write or a step belongs to, and its name table is
                        the vocabulary `mask.target` and `stroke.plane` speak
     history.{h,cpp}    undo/redo as stacked (layer, plane, rectangle) deltas, budgeted by stored bytes,
-                       and as structural entries that put a layer back or take one away - an edit that
-                       created a layer is one step, not a layer plus a write
+                       as structural entries that put a layer back, take one away or replace the whole
+                       stack, and as the document's own marked coverage - an edit that created a layer
+                       is one step, not a layer plus a write, and so is a gesture that moved the mark
     brush.{h,cpp}      dabs, stamp coverage, stroke compositing (the CPU paint path), and the same
                        coverage handed to the other plane: `scratch_coverage` as bytes for the mask
                        door, `mask_ink` as the coverage statement of `PaintMode`, and
@@ -514,7 +515,16 @@ a brush does.
 * **`select.from_mask` and `mask.from_selection` are copies**, which is why a selection and a layer
   mask are one type rather than two with an adapter between them: an adapter needs rules, and rules
   are where "the mask moved by a pixel" and "the partial coverage got rounded" come from. Converting
-  costs no undo step on either side and leaves the source where it was.
+  leaves the source where it was. The copy is one undo step where it lands on the marked area; onto a
+  layer that had no mask it is a mask appearing, which enters no step - see §Undo.
+* **Marking is an edit, and a gesture of it is one step.** One press — marquee, `cover`, `un-cover` —
+  holds the coverage it found and commits it once at release (`begin_marked`, `repaint_marked`,
+  `commit_marked`, `cancel_marked`), which is the door the layer's provisional edit uses for its own
+  bytes and buys the same two things: one step rather than one per pointer event, and one **coat** at
+  the brush's opacity rather than one coat per frame. `select.all`, `select.invert`, `select.clear` and
+  `select.from_mask` are each the one step a command is. Writing the coverage that is already there is
+  not an edit, by the rule every write follows; a `cover` press that would rub out a mark and a brush
+  press that would paint colour are separate presses, because one gesture holds one plane.
 * **An edit that changes nothing is not an edit.** A stroke the selection stopped entirely writes no
   bytes, so it marks nothing dirty, bumps no revision and costs no undo step — otherwise painting
   against a small selection would spend the history restoring bytes that already match, and the undo
@@ -562,17 +572,29 @@ panel`, "Regenerate with same params", kept variants) and nothing in the tree st
   storage granularity when partial texture uploads need them. Deleting a layer drops the entries
   naming it from both stacks: a change to a layer that is gone cannot be put back, and the
   unrelated steps around it are worth more than the half-restored one that would remain.
-  Structural commands are planned to store the inverse command. Three are in the timeline today, as entries
+  Structural commands are planned to store the inverse command. Four are in the timeline today, as entries
   of their own rather than as pixels: a reorder (`layer.move`) records the stack's ids in order and keeps
   the order it displaced, because no pixel moved and what the composite shows changed everywhere; a merge
   down (`layer.merge`) records the **whole** layer that went away, so undo returns its pixels, mask, mode
-  and opacity rather than an empty layer wearing the right name; and a flatten (`layer.flatten`) records the
+  and opacity rather than an empty layer wearing the right name; a flatten (`layer.flatten`) records the
   **whole stack** and applies it as a swap, so undo and redo are the same operation - the only encoding that
-  needs no position for a layer, since a removal sees a stack shrinking while an insert needs one growing.
-  Such a step carries every pixel of both sides and therefore records nothing else, and it is the only entry
-  that names no layer, so deleting a layer leaves it alone. Adding or deleting a layer, hiding one, fading
-  one or changing its mode still does not enter the timeline - and deleting is now one entry away, since the
-  entry a merge needs is the entry deletion needs, which is a decision not yet taken.
+  needs no position for a layer, since a removal sees a stack shrinking while an insert needs one growing -
+  and changing the **marked coverage** records the coverage that is not current, applied by swapping it, so
+  the two directions are that same operation again.
+  A flatten carries every pixel of both sides and therefore records nothing else, and neither it nor a
+  coverage entry names a layer: deleting a layer leaves both alone, because the stack and the mark outlive
+  any one layer. A coverage entry is not `structure` either — it puts coverage back and no pixel, so
+  undoing one re-uploads no texture and resamples no thumbnail, which is why `History::undo` is handed the
+  marked coverage next to the stack and reports `Applied::coverage`.
+  Adding or deleting a layer, hiding one, fading one or changing its mode still does not enter the
+  timeline - and deleting is now one entry away, since the entry a merge needs is the entry deletion
+  needs, which is a decision not yet taken.
+* **The same boundary holds for a layer mask.** Coverage written *into* a mask is a step - `mask.fill`,
+  `mask.invert`, a `cover` stroke, a marquee aimed at the mask - while a mask appearing or going
+  (`mask.add`, `mask.remove`, `mask.from_selection` onto a layer that has none) is structural and enters
+  none, exactly as a layer arriving and leaving does. Closing that gap means restating the
+  `layer_created` / `layer_absent` pair for a plane rather than a layer, and it is the remaining
+  exception to the rule *one gesture that changes coverage is one undo step*.
 * Undo and redo are commands like any other (`edit.undo`, `edit.redo`, bound to `Ctrl+Z` and
   `Ctrl+Y`), so a driver can put the pixels back and compare checksums without a keyboard.
 * **(planned)** `history.jsonl` — append-only *journal*: every op with timestamp, params, prompt,
@@ -1406,9 +1428,10 @@ with `canvas` present only while one exists, because a sized mask that covers no
 and must not read as no selection). `covered` counts pixels touched, `area` adds the coverage bytes
 up: for a rectangle they are equal, for an anti-aliased curve `area` is what the ellipse measures and
 `covered` is the pixels it grazes. While a pointer gesture is down, `stroke` also reports `marquee` —
-the box the select tool is drawing, live, and `marquee_shape`, which of them it is: the only way to
-tell a marquee that tracks the pointer from one that appears on release, and the only way to see which
-tool row a gesture was started with. The mask is reported the same way a selection is - `layer.list`
+the box the select tool is drawing, live, `marquee_shape`, which of them it is, and `marquee_coverage`,
+which lifetime that press opened: the only way to tell a marquee that tracks the pointer from one that
+appears on release, and the only way to see which tool row a gesture was started with and which coverage
+it will commit to when the button lifts. The mask is reported the same way a selection is - `layer.list`
 rows carry `mask` (`covered`, `area`, `bounds`, or `null` for none), `mask.get` answers with the mask
 itself, and `brush.coverage_target` with `writable` says which lifetime the next stroke writes - so a
 driver can tell a mask that hides everything from a layer that has no mask, and a stroke that painted

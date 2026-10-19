@@ -23,6 +23,9 @@ void Document::reset(std::vector<Layer> layers, std::optional<Mask> selection, s
     path_ = std::move(path);
     dirty_ = path_.empty();  // nothing on disk holds this document yet
     history_.clear();
+    marked_gesture_ = false;
+    marked_had_selection_ = false;
+    marked_held_ = Mask();
     selection_ = std::move(selection);
     // Every layer here is a layer this document made just now, under an id no viewer has ever seen, so
     // nothing of theirs is cached to invalidate.
@@ -526,10 +529,81 @@ bool Document::set_selection(std::optional<Mask> selection) {
     if (selection_ == selection) {
         return true;
     }
+    // Outside a gesture this write *is* the edit, and what it replaces is what undo hands back. Inside
+    // one the gesture holds the single step, so recording here would price a marquee per pixel it moved
+    // over.
+    if (!marked_gesture_) {
+        history_.record_coverage(selection_);
+    }
     selection_ = std::move(selection);
     dirty_ = true;
     return true;
 }
+
+bool Document::begin_marked() {
+    if (empty()) {
+        return false;
+    }
+    if (provisional_) {
+        log::error(std::string("a gesture already holds ") +
+                   layer_plane_name(provisional_->plane) +
+                   ", so the marked area was not added to it");
+        return false;
+    }
+    if (marked_gesture_) {
+        return true;
+    }
+    marked_gesture_ = true;
+    marked_had_selection_ = selection_.has_value();
+    // Materialised even when the document had no marked area, because a stroke needs a plane to write
+    // into, and whether there was one at all is remembered apart from it - the two are different
+    // documents and the gesture has to put back whichever it found.
+    marked_held_ = marked_had_selection_ ? *selection_ : Mask(size());
+    return true;
+}
+
+void Document::repaint_marked(Rect dirty, const std::function<void(Mask&, Rect)>& paint) {
+    if (!marked_gesture_) {
+        log::error("repaint_marked ran with no marked gesture open");
+        return;
+    }
+    const Rect canvas{0, 0, width(), height()};
+    const Rect area = intersect(dirty, canvas);
+    if (area.empty()) {
+        return;
+    }
+    Mask next = selection_.has_value() ? *selection_ : Mask(size());
+    copy_coverage_rows(next, canvas, marked_held_, canvas, area);
+    paint(next, area);
+    set_selection(std::move(next));
+}
+
+void Document::commit_marked() {
+    if (!marked_gesture_) {
+        return;
+    }
+    marked_gesture_ = false;
+    const std::optional<Mask> found =
+        marked_had_selection_ ? std::optional<Mask>(marked_held_) : std::nullopt;
+    marked_held_ = Mask();
+    // A gesture that moved no coverage - a click that marked nothing over nothing - is not an edit, the
+    // rule every other write follows.
+    if (selection_ == found) {
+        return;
+    }
+    history_.record_coverage(std::move(found));
+}
+
+void Document::cancel_marked() {
+    if (!marked_gesture_) {
+        return;
+    }
+    marked_gesture_ = false;
+    selection_ = marked_had_selection_ ? std::optional<Mask>(marked_held_) : std::nullopt;
+    marked_held_ = Mask();
+}
+
+bool Document::in_marked() const { return marked_gesture_; }
 
 bool Document::unchanged(const Image& before, const Image& after, Rect region) const {
     const std::size_t row = static_cast<std::size_t>(region.w) * kChannels;
@@ -568,6 +642,13 @@ void Document::copy_coverage_rows(Mask& dst, Rect dst_at, const Mask& src, Rect 
 
 bool Document::begin_provisional(Rect area, LayerPlane plane) {
     if (empty()) {
+        return false;
+    }
+    if (marked_gesture_) {
+        // Symmetric with `begin_marked`: the bytes held aside are one plane's, and a gesture that
+        // wrote two of them could restore neither on commit.
+        log::error("a gesture already holds the marked area, so " +
+                   std::string(layer_plane_name(plane)) + " was not added to it");
         return false;
     }
     Layer& target = layers_[static_cast<std::size_t>(active_)];
@@ -793,9 +874,10 @@ Mask Document::held_aside_coverage(Rect absolute) const {
 
 bool Document::undo() {
     discard_provisional();
+    cancel_marked();
     const std::uint64_t was =
         layers_.empty() ? 0 : layers_[static_cast<std::size_t>(active_)].id;
-    const auto moved = history_.undo(layers_);
+    const auto moved = history_.undo(layers_, selection_);
     if (!moved) {
         return false;
     }
@@ -803,6 +885,13 @@ bool Document::undo() {
     pending_ = unite(pending_, moved->rect);
     if (moved->structure) {
         pending_ = Rect{0, 0, width(), height()};
+    }
+    // A step that moved only the marked coverage restored no pixel and moved no layer, so the canvas is
+    // byte-identical and every card already shows the picture it showed. Bumping the stack's revision
+    // for it would re-upload a texture nobody changed and resample every thumbnail to prove nothing
+    // happened; the overlay reads the coverage plane itself, per frame.
+    if (moved->coverage && !moved->structure && moved->rect.empty()) {
+        return true;
     }
     changed_all_layers();
     return true;
@@ -810,9 +899,10 @@ bool Document::undo() {
 
 bool Document::redo() {
     discard_provisional();
+    cancel_marked();
     const std::uint64_t was =
         layers_.empty() ? 0 : layers_[static_cast<std::size_t>(active_)].id;
-    const auto moved = history_.redo(layers_);
+    const auto moved = history_.redo(layers_, selection_);
     if (!moved) {
         return false;
     }
@@ -820,6 +910,9 @@ bool Document::redo() {
     pending_ = unite(pending_, moved->rect);
     if (moved->structure) {
         pending_ = Rect{0, 0, width(), height()};
+    }
+    if (moved->coverage && !moved->structure && moved->rect.empty()) {
+        return true;
     }
     changed_all_layers();
     return true;

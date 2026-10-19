@@ -76,18 +76,13 @@ coverage with verbs at the marked area, is next.
    **Still owed**: local `heal` (in-process Telea/Chan, below), because *Heal* on a small area should
    not pay for a round trip.
 
-   **Owed, and decided**: coverage edits enter the history. The marked area is already a document
-   property (`Document::selection_`, saved with the project); what it lacks is undo. The rule to hold to:
-   *one gesture that changes coverage is one undo step* — marquee press to release, `cover` and
-   `un-cover`, All / None / Invert, to-mask and from-mask — and a pixel write carries no coverage with
-   it, because it did not move any. That reverses the claim in `core/document.h` that a selection enters
-   no step "exactly like a layer's visibility"; its worry was a step undoing something the user never
-   touched, and the answer is a step that snapshots only what it touched (`pixels`, `layer mask`,
-   `marked coverage`) rather than the whole document. Shape: a payload kind in `core/history`, a writing
-   variant of `Document::set_selection` that pushes the previous coverage and marks the document dirty
-   (it is saved), the marquee committing once on release with the drag provisional until then. The claims
-   to flip are the ones made this week that marking costs no undo step, plus the invariant bullets in
-   `core/document.h` and `docs/ARCHITECTURE.md`.
+   **Landed 2026-10-19, below**: coverage edits enter the history. The rule holds — *one gesture that
+   changes coverage is one undo step*: marquee press to release, `cover` and `un-cover`, All / None /
+   Invert, and `select.from_mask` — and a pixel write carries no coverage with it, because it did not
+   move any. The one exception left is a layer mask **appearing or going** (`mask.add`, `mask.remove`,
+   `mask.from_selection` onto a layer that has none): that is coverage changing shape rather than
+   coverage being written, and it wants the `layer_created`/`layer_absent` pair restated for a plane.
+   ARCHITECTURE §Undo states it as the boundary of the rule rather than leaving the rule as a promise.
 4. **The pointer says which tool it is.** Landed 2026-10-16, below: the host cursor takes the tool's
    shape and the canvas draws the dab's footprint, measured against the size the app reports.
 5. **Layers you can see.** Landed since 2026-10-16: thumbnails of the layer and its mask, one bordered card
@@ -119,6 +114,60 @@ Seed is not a user-facing concept: **Retry** re-asks the same request with a dif
 another layer. Roles and recipes are ours to pin for now - the sets are in `assets/roles.json` and
 `assets/recipes/`, loaded from disk, and the plan is that a person edits those files, not a dialog, so
 nothing here needs a settings UI to be foreseen later.
+
+## 2026-10-19 - One gesture that changes coverage is one undo step
+
+The marked area is a document property — it is saved with the project — and it had no undo. It does now.
+`Kind::coverage` in `core/history` holds the coverage that is **not** current and applying it *swaps* it,
+exactly as a replaced stack does, and `History::undo` is handed the document's plane next to the layer
+stack. `Document::set_selection` is the one write door: outside a gesture it records what it replaces,
+inside one the gesture owns the step. `begin_marked` / `repaint_marked` / `commit_marked` /
+`cancel_marked` are the bracket the marquee and `cover` press open and shut around the coverage the press
+found.
+
+**What the change found, rather than what it needed.** Four things, all in the drag path:
+
+* A marquee aimed at a *layer mask* called `paint_mask` once per pointer event, so a 20-event drag pushed
+  20 undo steps and repainted the canvas with each. It runs through the layer's provisional door now —
+  the one the `cover` stroke has always used — so the drag is one step committed at release.
+* The same marquee wrote its shape into the live mask instead of drawing it onto what the press found, so
+  a drag that changed its mind left the earlier box's coverage behind: 256 px marked where the person
+  described 48. Both lifetimes now replace the coverage they are aimed at, from the held bytes.
+* `cover` aimed at the marked area stamped its accumulated scratch onto the *current* selection every
+  event, so the coat compounded and a held pointer darkened the dab once per frame. It restores what the
+  press found inside the event's rectangle first, which is what the colour path does; the new test pins
+  it — three overlapping events equal one coat, byte for byte.
+* A marquee took its lifetime from `coverage.target` on every event *and* on release, so a target switch
+  mid-drag wrote the box into one door and shut the other: the marked gesture was never closed, and from
+  then on every selection command wrote coverage without recording it. `PointerSelection` now carries the
+  lifetime the press opened, as it already carried the shape, and `stroke.marquee_coverage` says which one
+  a running drag holds.
+
+**The step moves coverage and nothing else**, which is a fact the renderer needs: `Applied::coverage` is
+set and `structure` is not, so `Document::undo` neither widens the pending region nor calls
+`changed_all_layers`. Bumping the stack's revision for a mark would re-upload a texture nobody repainted
+and resample every layer card — invisible, and a per-frame cost — so the tests hold `revision` and every
+layer's `content_revision` unchanged across a mark's undo and redo.
+
+**A marked gesture and a layer gesture are different presses**: `begin_marked` refuses when a provisional
+edit already holds a layer's plane and `begin_provisional` refuses the other way round, naming what is
+held. One gesture, one set of held-aside bytes; the alternative is a commit that restores neither.
+
+**Owed.** A mask appearing or going is still coverage that cannot be undone, because the entry it wants is
+the `layer_created`/`layer_absent` pair restated for a *plane*, with `drop_mask` as the invalidation that
+follows it. Everything else in the rule landed.
+
+**What it changes for the next slice.** Slice 6 gives a recipe a third scope, `region: layer`, whose
+coverage is the layer's own alpha. Coverage that a person *edits* is now undoable per gesture; coverage
+the layer *has* by being painted is the same plane, so the seam to watch is a verb whose answer arrives as
+a layer whose alpha is the coverage: landing it writes pixels and no coverage step, and the rule that a
+step prices only what it touched is what keeps that landing from snapshotting the mark along with it.
+
+**On this box**: no `Xvfb` and no root, so the app-over-the-wire tier *skips* and none of this was seen
+through a window — the claims are unit and command-table level (`test_document`, `test_history`,
+`test_app`), and `coverage_view_probe`, `verb_bar_probe`, `layer_panel_probe` and `wire_input` have not
+run since. `ctest --test-dir build`: 40 tests, 0 failed, 15 skipped. Getting there needed the harness
+fixed first — see the note below on `prep_proof` and `coverage_view_probe` aborting instead of skipping.
 
 ## 2026-10-16 - The stack becomes one layer, and the history entry that can say so
 
@@ -316,7 +365,8 @@ fine a minute before.
 | `ai/queue` | one worker, cancellable, in-memory; a job's timeout is predicted when it is queued so it cannot change under it; **a re-ask is another request** | `test_backend` |
 | `ai/server` | latency EMA per `(model, w×h, steps)` → ETA and `timeout_request`; a reply inside 1 s is the box's own answer and never a sample | `test_backend`, `docs/probes/` |
 | `app::kVerbs` + `ai.verbs` | five verbs bound to recipes; a row whose recipe contradicts it — wrong operation, an `ask` that grew, two verbs on one recipe — makes the row not-ready at session open | `test_app`, `ai.verbs` |
-| `app/coverage.h` (`coverage.target`) | one coverage, two lifetimes: `cover` and the marquee write whichever `marked`/`mask` says, a gesture keeps the lifetime it was pressed on, marking costs no pixel write and no undo step, and colour stays a tool rather than a target | `test_app`, `wire_input`, `mask_speed_probe` |
+| `app/coverage.h` (`coverage.target`) | one coverage, two lifetimes: `cover` and the marquee write whichever `marked`/`mask` says, a gesture keeps the lifetime it was pressed on, marking writes no pixel byte and costs one undo step per gesture, and colour stays a tool rather than a target | `test_app`, `wire_input`, `mask_speed_probe` |
+| `Document::set_selection` + `begin_marked` | the marked area is one write door and one step per gesture: the marquee from press to release and a `cover` stroke commit once, in one coat, and undoing a mark puts coverage back without moving a pixel, a revision or a thumbnail | `test_document`, `test_history`, `test_app` |
 | `app/verb_bar.cpp` (`verb.bar`) | the bar offers exactly the verbs whose recipe has `scope: selection`, hangs off the mark and clear of it, and presses the panel's command; where it drew itself is read back rather than remembered by the caller | `test_app`, `verb_bar_probe` |
 | `ai.intent` | the whole action surface (intents, values, price, aspect, style, seed, job, session) in one command; a refusal is recorded so the next read shows it; the handshake lives here too | `test_app`, the status line, `panel_aspect_probe` |
 | `ai/recipes` (`aspects`, `variants`) | a frame is offered only by a document-scope `from_words` recipe, and a variant is interchangeable with its head at the key it shares (operation, endpoint, `ask`, `aspects`) or the table does not load | `test_recipes` |
@@ -405,6 +455,13 @@ invariant) carry the rest. Suite: 37/37 with `test_verb_bar_probe` added.
   out of an `InputText` — measured, text keeps appending — so a verb key pressed with a box active is
   correctly swallowed until `Enter` / `Escape` / a click elsewhere. `WantCaptureKeyboard` being true
   looks like a bug in the gate and is not one; prove it with injected keys before changing the gate.
+* **A live gesture must write onto the bytes it found, not onto what it has already written.** Both halves
+  of coverage failed this way in one pass: the marquee aimed at a mask wrote its shape into the live mask,
+  so the leftovers of every earlier box in the sweep stayed marked, and `cover` aimed at the marked area
+  re-stamped its accumulated scratch onto the current selection, so a still pointer darkened the dab once
+  per frame. Restore the held-aside region first, then paint what the event touched — the rule the colour
+  path has followed since the paint-cost probe, and the reason the marked coverage was given the same door
+  instead of a shortcut.
 * **Undo takes the marked area with it.** A probe that undoes an answer must mark the area again before
   asking whether a verb could run, or it reads its own bookkeeping instead of the verb.
 * **`nlohmann` two-step**: an object literal whose key is a *variable* can deduce an array — build the

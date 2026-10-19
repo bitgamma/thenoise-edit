@@ -346,6 +346,9 @@ json stroke_json(const AppState& state) {
                 // Which shape the marquee is drawing, so a screenshot of an elliptical selection can
                 // be told from a rectangular one with the same bounds.
                 {"marquee_shape", mask_shape_name(state.select.shape)},
+                // The lifetime the marquee's press opened, which outlives wherever the switch has been
+                // aimed by now.
+                {"marquee_coverage", coverage_target_name(state.select.coverage)},
                 {"provisional_area",
                  json::array({state.doc.provisional_area().x, state.doc.provisional_area().y,
                               state.doc.provisional_area().w, state.doc.provisional_area().h})}};

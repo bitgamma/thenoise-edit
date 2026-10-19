@@ -61,7 +61,8 @@ void History::record(std::uint64_t layer_id, LayerPlane plane, Rect rect,
                                   .size = {},
                                   .order = {},
                                   .whole = {},
-                                   .stack = {}});
+                                   .stack = {},
+                                   .marked = {}});
     drop_oldest_until_within_budget();
 }
 
@@ -86,7 +87,8 @@ void History::record_layer_created(std::uint64_t layer_id, std::string name, int
                                   .size = size,
                                   .order = {},
                                   .whole = {},
-                                   .stack = {}});
+                                   .stack = {},
+                                   .marked = {}});
     drop_oldest_until_within_budget();
 }
 
@@ -104,6 +106,9 @@ std::size_t History::held(const Stacked& entry) {
             bytes += layer.mask->plane().size();
         }
     }
+    if (entry.marked) {
+        bytes += entry.marked->plane().size();
+    }
     return bytes;
 }
 
@@ -113,11 +118,26 @@ bool History::inserts(const Stacked& entry) { return entry.kind == Kind::layer_a
 
 bool History::names_layer(const Stacked& entry, const std::uint64_t id) {
     // A `stack_replaced` entry is not matched: it holds a stack instead of naming a layer, and a layer
-    // deleted after the swap is a later step, undone before this one is reached.
+    // deleted after the swap is a later step, undone before this one is reached. Nor is a `coverage`
+    // entry: the marked area outlives every layer it was marked over.
     if (entry.kind == Kind::layer_order) {
         return std::find(entry.order.begin(), entry.order.end(), id) != entry.order.end();
     }
-    return entry.kind != Kind::stack_replaced && entry.layer == id;
+    if (entry.kind == Kind::stack_replaced || entry.kind == Kind::coverage) {
+        return false;
+    }
+    return entry.layer == id;
+}
+
+void History::record_coverage(std::optional<Mask> marked) {
+    redo_stack_.clear();
+    Stacked entry;
+    entry.kind = Kind::coverage;
+    entry.step = open_step_ != 0 ? open_step_ : ++next_step_;
+    entry.marked = std::move(marked);
+    bytes_ += held(entry);
+    undo_stack_.push_back(std::move(entry));
+    drop_oldest_until_within_budget();
 }
 
 void History::record_stack_replaced(std::vector<Layer> stack) {
@@ -146,7 +166,8 @@ void History::record_layer_order(std::vector<std::uint64_t> order) {
                                   .size = {},
                                   .order = std::move(order),
                                   .whole = {},
-                                   .stack = {}});
+                                   .stack = {},
+                                   .marked = {}});
     drop_oldest_until_within_budget();
 }
 
@@ -179,7 +200,8 @@ void History::record_layer_removed(Layer layer, int index) {
                   .size = layer.pixels.size(),
                   .order = {},
                   .whole = std::move(layer),
-                  .stack = {}};
+                  .stack = {},
+                  .marked = {}};
     bytes_ += held(entry);
     undo_stack_.push_back(std::move(entry));
     drop_oldest_until_within_budget();
@@ -188,12 +210,14 @@ void History::record_layer_removed(Layer layer, int index) {
 bool History::can_undo() const { return !undo_stack_.empty(); }
 bool History::can_redo() const { return !redo_stack_.empty(); }
 
-std::optional<History::Applied> History::undo(std::vector<Layer>& layers) {
-    return step_back(undo_stack_, redo_stack_, layers);
+std::optional<History::Applied> History::undo(std::vector<Layer>& layers,
+                                             std::optional<Mask>& marked) {
+    return step_back(undo_stack_, redo_stack_, layers, marked);
 }
 
-std::optional<History::Applied> History::redo(std::vector<Layer>& layers) {
-    return step_back(redo_stack_, undo_stack_, layers);
+std::optional<History::Applied> History::redo(std::vector<Layer>& layers,
+                                             std::optional<Mask>& marked) {
+    return step_back(redo_stack_, undo_stack_, layers, marked);
 }
 
 void History::drop_layer(std::uint64_t layer_id) {
@@ -266,8 +290,21 @@ bool History::fits(const Layer* layer, const Stacked& entry) {
         case Kind::stack_replaced:
             // Nothing to check: it supplies every layer rather than reading one.
             return true;
+        case Kind::coverage:
+            // Checked against the canvas by `fits_coverage`; it reads no layer.
+            return true;
     }
     return false;
+}
+
+bool History::fits_coverage(const std::vector<Layer>& layers, const Stacked& entry) {
+    if (entry.kind != Kind::coverage || !entry.marked) {
+        return true;
+    }
+    if (layers.empty()) {
+        return false;
+    }
+    return entry.marked->size() == layers.front().pixels.size();
 }
 
 bool History::fits_stack(const std::vector<Layer>& layers, const Stacked& entry) {
@@ -291,7 +328,16 @@ bool History::fits_stack(const std::vector<Layer>& layers, const Stacked& entry)
 }
 
 void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
-                             std::vector<Layer>& layers, int step) {
+                             std::vector<Layer>& layers, std::optional<Mask>& marked, int step) {
+    if (entry.kind == Kind::coverage) {
+        // The entry leaves holding the coverage the document had, which is what the other direction
+        // needs: the two directions are the same swap, and `nullopt` - no marked area - travels
+        // through it exactly like a plane does.
+        std::swap(marked, entry.marked);
+        entry.step = step;
+        into.push_back(std::move(entry));
+        return;
+    }
     if (entry.kind == Kind::stack_replaced) {
         // The entry leaves holding the stack that is current now, which is what the other direction
         // needs: undo and redo are the same swap, so a layer cannot come back in the wrong place.
@@ -358,7 +404,8 @@ void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
 
 std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
                                                    std::vector<Stacked>& into,
-                                                   std::vector<Layer>& layers) {
+                                                   std::vector<Layer>& layers,
+                                                   std::optional<Mask>& marked) {
     if (from.empty()) {
         return std::nullopt;
     }
@@ -409,6 +456,13 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
         if (entry.kind == Kind::stack_replaced) {
             continue;  // it replaces every layer, so there is nothing about this stack to check
         }
+        if (entry.kind == Kind::coverage) {
+            if (!fits_coverage(layers, entry)) {
+                clear();
+                return std::nullopt;
+            }
+            continue;
+        }
         if (entry.kind == Kind::layer_absent) {
             if (!fits(found, entry)) {
                 clear();
@@ -447,14 +501,21 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
         touched.rect = unite(touched.rect, entry.rect);
         if (entry.kind != Kind::pixels) {
             const std::size_t carried = held(entry);
-            step_structure(entry, into, layers, step);
+            const bool coverage_step = entry.kind == Kind::coverage;
+            step_structure(entry, into, layers, marked, step);
             // A structural entry trades content with the stack, so what it costs the budget changes with
             // the trade: a step that takes a layer away starts paying for it, and one that gives it back
             // stops. The entry is moved by now, so the price of what stays is read where it landed - a
             // `stack_replaced` entry leaves holding the stack the document just gave up, and pricing that
             // as nothing underflows `bytes_` and drops the whole timeline.
             bytes_ += held(into.back()) - carried;
-            touched.structure = true;
+            // A coverage step moved no pixel and no layer, so it is not `structure`: telling the
+            // document it was would repaint the whole canvas to show a mark moving.
+            if (coverage_step) {
+                touched.coverage = true;
+            } else {
+                touched.structure = true;
+            }
             continue;
         }
         Layer& layer = *layer_of(layers, entry.layer);
@@ -474,7 +535,8 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
                                    .size = {},
                                    .order = {},
                                    .whole = {},
-                                   .stack = {}});
+                                   .stack = {},
+                                   .marked = {}});
         } else {
             const Mask displaced = layer.mask->region(entry.rect);
             into.push_back(Stacked{.layer = entry.layer,
@@ -488,7 +550,8 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
                                    .size = {},
                                    .order = {},
                                    .whole = {},
-                                   .stack = {}});
+                                   .stack = {},
+                                   .marked = {}});
         }
         bytes_ += into.back().bytes.size();
         if (entry.plane == LayerPlane::pixels) {

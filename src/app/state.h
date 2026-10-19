@@ -128,6 +128,10 @@ struct PointerSelection {
     // Held from the moment the button goes down rather than read again on every drag: switching
     // tools mid-marquee must not change the shape of the one already being drawn.
     MaskShape shape = MaskShape::rect;
+    // The same argument for the lifetime: the press opened one door - the layer's provisional bytes or
+    // the document's marked coverage - and releasing has to shut that one, however the switch was
+    // aimed by then.
+    app::CoverageTarget coverage = app::CoverageTarget::marked;
 };
 
 struct AppState {

@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -189,6 +190,7 @@ void test_the_revision_moves_with_every_undoable_change() {
 void test_the_budget_drops_whole_steps_oldest_first() {
     const std::size_t entry_bytes = 8u * 8u * 4u;
     History history(entry_bytes * 2u + entry_bytes / 2u);  // room for two, never three
+    std::optional<Mask> unmarked;  // these steps move layers, not the document's marked area
     std::vector<Layer> layers = one_layer(Image::filled(Extent{8, 8}, 0, 0, 0, 0));
     Image& image = layers.front().pixels;
     const std::uint64_t only = layers.front().id;
@@ -204,9 +206,9 @@ void test_the_budget_drops_whole_steps_oldest_first() {
 
     // The steps that survive are the newest two: dropping the oldest is a shorter history,
     // dropping the newest would be a lost edit.
-    CHECK(history.undo(layers).has_value());
-    CHECK(history.undo(layers).has_value());
-    CHECK(!history.undo(layers).has_value());
+    CHECK(history.undo(layers, unmarked).has_value());
+    CHECK(history.undo(layers, unmarked).has_value());
+    CHECK(!history.undo(layers, unmarked).has_value());
     // The oldest step is gone, so undo stops at the before-image of the second one rather
     // than running all the way back to an empty image.
     CHECK_EQ(static_cast<int>(image.at(0, 0)[0]), 20);
@@ -286,6 +288,7 @@ void test_a_coverage_step_restores_the_mask_and_not_the_pixels() {
     const std::uint64_t only = layer.id;
     const std::string pixels_before = layer.pixels.checksum_hex();
     History history(1u << 20);
+    std::optional<Mask> unmarked;
 
     // The way a paint door uses it: record what was there, then change it.
     history.record(only, LayerPlane::mask, Rect{2, 2, 4, 4},
@@ -293,14 +296,14 @@ void test_a_coverage_step_restores_the_mask_and_not_the_pixels() {
     layer.mask->op(Rect{2, 2, 4, 4}, MaskOp::subtract);
     CHECK_EQ(differing_coverage(*layer.mask, *one_layer_masked(kMaskIn).front().mask), 16u);
 
-    const History::Applied undone = history.undo(layers).value();
+    const History::Applied undone = history.undo(layers, unmarked).value();
     CHECK_EQ(undone.layer, only);
     CHECK_EQ(undone.rect.w * undone.rect.h, 16);
     CHECK_EQ(differing_coverage(*layer.mask, *one_layer_masked(kMaskIn).front().mask), 0u);
     CHECK_EQ(layer.pixels.checksum_hex(), pixels_before);
 
     // And redo puts the hidden square back, still without touching a pixel.
-    history.redo(layers);
+    history.redo(layers, unmarked);
     CHECK_EQ(layer.mask->coverage(2, 2), kMaskOut);
     CHECK_EQ(layer.mask->coverage(1, 1), kMaskIn);
     CHECK_EQ(layer.pixels.checksum_hex(), pixels_before);
@@ -313,6 +316,7 @@ void test_taking_a_mask_off_drops_only_its_coverage_steps() {
     Layer& layer = layers.front();
     const std::uint64_t only = layer.id;
     History history(1u << 20);
+    std::optional<Mask> unmarked;
 
     history.record(only, LayerPlane::pixels, Rect{0, 0, 2, 2},
                    std::vector<std::uint8_t>(2u * 2u * 4u, 7));
@@ -324,7 +328,7 @@ void test_taking_a_mask_off_drops_only_its_coverage_steps() {
     CHECK_EQ(history.stats().undo_depth, 1);
     layer.mask = std::nullopt;
     // The colour step still works: it was never about the mask.
-    CHECK(history.undo(layers).has_value());
+    CHECK(history.undo(layers, unmarked).has_value());
     CHECK_EQ(history.stats().undo_depth, 0);
 }
 
@@ -334,10 +338,11 @@ void test_a_coverage_step_that_no_longer_fits_drops_the_timeline() {
     std::vector<Layer> layers = one_layer_masked(kMaskIn);
     const std::uint64_t only = layers.front().id;
     History history(1u << 20);
+    std::optional<Mask> unmarked;
     history.record(only, LayerPlane::mask, Rect{4, 4, 2, 2},
                    std::vector<std::uint8_t>(4, kMaskIn));
     layers.front().mask = Mask(Extent{4, 4});   // a mask for a smaller canvas
-    CHECK(!history.undo(layers).has_value());
+    CHECK(!history.undo(layers, unmarked).has_value());
     CHECK(!history.can_undo());
     CHECK(!history.can_redo());
 }
@@ -495,8 +500,64 @@ void test_two_removals_in_one_step_are_not_a_step() {
     // other layer gone with nothing recorded about it.
     CHECK(!pair.can_undo());
     std::vector<Layer> live = three();
-    CHECK(!pair.undo(live).has_value());
+    std::optional<Mask> unmarked;
+    CHECK(!pair.undo(live, unmarked).has_value());
     CHECK_EQ(live.size(), 3u);  // and a refused record applies nothing to the caller's stack
+}
+
+// The marked area is the document's own coverage: the entry holds it and applying it swaps the two,
+// so the two directions are one operation, the plane is priced where it lands, and no layer's coming
+// or going has anything to do with it.
+void test_a_marked_coverage_step_swaps_and_survives_the_stack() {
+    std::vector<Layer> layers = one_layer(Image::filled(Extent{4, 4}, 0, 0, 0, 0));
+    const std::uint64_t only = layers.front().id;
+    History history(1u << 20);
+    std::optional<Mask> marked;
+
+    Mask box(Extent{4, 4});
+    box.op(Rect{1, 1, 2, 2}, MaskOp::replace);
+
+    // The step holds what the change replaced, which here was no marked area at all - and a step that
+    // holds nothing costs nothing.
+    history.record_coverage(marked);
+    marked = box;
+    CHECK_EQ(history.stats().bytes, 0u);
+    CHECK_EQ(history.stats().undo_depth, 1);
+
+    const History::Applied undone = history.undo(layers, marked).value();
+    CHECK(!marked.has_value());
+    CHECK(undone.coverage);
+    CHECK(!undone.structure);  // no layer moved, so the canvas has nothing to repaint
+    CHECK(undone.rect.empty());
+    // The entry left holding the coverage the document gave up, and it is that plane the budget now
+    // pays for - priced where it landed, which is the rule a swapped payload makes unforgiving.
+    CHECK_EQ(history.stats().bytes, 16u);
+    CHECK_EQ(history.stats().redo_depth, 1);
+
+    history.redo(layers, marked);
+    REQUIRE(marked.has_value());
+    CHECK_EQ(marked->covered(), 4u);
+    CHECK_EQ(history.stats().bytes, 0u);
+
+    // A second mark, holding the first. Deleting the layer the document happens to have does not
+    // reach either: the area was marked over the stack, not on one layer, and a step that names no
+    // layer is dropped by nothing.
+    history.record_coverage(marked);
+    Mask strip(Extent{4, 4});
+    strip.op(Rect{0, 0, 4, 1}, MaskOp::replace);
+    marked = strip;
+    history.drop_layer(only);
+    CHECK_EQ(history.stats().undo_depth, 2);
+    history.undo(layers, marked);
+    REQUIRE(marked.has_value());
+    CHECK_EQ(marked->covered(), 4u);
+
+    // A marked area of another canvas is not a claim about these pixels: the step is refused and the
+    // timeline goes rather than a document being left with coverage reaching past its own edge.
+    layers.front().pixels = Image::filled(Extent{6, 6}, 0, 0, 0, 0);
+    CHECK(!history.redo(layers, marked).has_value());
+    CHECK(!history.can_undo());
+    CHECK(!history.can_redo());
 }
 
 int main() {
@@ -519,5 +580,6 @@ int main() {
     test_a_history_that_no_longer_fits_its_layers_is_dropped();
     test_a_replaced_stack_walks_back_and_forward_unchanged();
     test_two_removals_in_one_step_are_not_a_step();
+    test_a_marked_coverage_step_swaps_and_survives_the_stack();
     return noise::test::summary("history");
 }

@@ -29,15 +29,15 @@ void add_dabs(AppState& state, const std::vector<Vec2>& path) {
     }
     const Rect touched = scratch_stamp(state.stroke.scratch, dabs, state.brush, state.doc.size());
     state.stroke.dabs += dabs.size();
+    // Which door the coat goes through is which lifetime the switch aimed at when the button went
+    // down; both hold the bytes the press found, so the stroke is one coat at its own opacity rather
+    // than one coat per frame, and both commit as one undo step at release.
     if (state.stroke.coverage != CoverageTarget::mask) {
-        // The marked area is not a layer's bytes, so there is no provisional door and no undo step:
-        // the selection is replaced whole per event exactly as the marquee replaces it, which is what
-        // makes a freehand circle and a rectangle the same kind of thing to press a verb against.
-        Mask marked = state.doc.selection().has_value() ? *state.doc.selection()
-                                                        : Mask(state.doc.size());
-        marked.paint(touched, scratch_coverage(state.stroke.scratch, touched, state.brush.opacity),
-                     ink_of(state));
-        state.doc.set_selection(marked);
+        state.doc.begin_marked();
+        state.doc.repaint_marked(touched, [&state](Mask& mask, Rect region) {
+            mask.paint(region, scratch_coverage(state.stroke.scratch, region, state.brush.opacity),
+                       ink_of(state));
+        });
         return;
     }
     state.doc.begin_provisional(touched, LayerPlane::mask);
@@ -76,6 +76,8 @@ void cover_release(AppState& state) {
     }
     if (state.stroke.coverage == CoverageTarget::mask) {
         state.doc.commit_provisional();
+    } else {
+        state.doc.commit_marked();
     }
     state.stroke = PointerStroke{};
 }

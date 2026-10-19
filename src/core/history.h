@@ -67,21 +67,33 @@ public:
     // replace.
     void record_stack_replaced(std::vector<Layer> stack);
 
+    // The document's **marked coverage** - the area it marks, which is a document property that is
+    // saved and belongs to no layer. The entry holds the coverage that is not current and applying it
+    // swaps the two, so undo and redo are the same operation; like `stack_replaced` it names no layer,
+    // which is why `drop_layer` and `drop_mask` leave it alone. A canvas-sized plane per step is the
+    // price, and it is a quarter of what a full-canvas pixel step costs.
+    void record_coverage(std::optional<Mask> marked);
+
     struct Applied {
         std::uint64_t layer;
         Rect rect;
         // The step moved the layer stack, so what the canvas shows changed everywhere it composites,
         // not only inside `rect`.
         bool structure = false;
+        // The step moved the marked coverage. It put back no pixel: the composite is byte-identical
+        // and no layer holds anything different, so a step that is nothing else re-uploads and
+        // resamples nothing.
+        bool coverage = false;
     };
 
     // Put back the state the other stack holds, keeping the pixels it displaces so the
     // step can be run again. Returns what was touched, or nullopt when there is nothing to
     // step, or when a recorded rectangle no longer fits its layer - a resized layer makes
     // every rectangle it holds a lie, so the whole history is dropped rather than half
-    // restored.
-    std::optional<Applied> undo(std::vector<Layer>& layers);
-    std::optional<Applied> redo(std::vector<Layer>& layers);
+    // restored. `marked` is the document's coverage plane, swapped with what a `coverage` entry
+    // holds.
+    std::optional<Applied> undo(std::vector<Layer>& layers, std::optional<Mask>& marked);
+    std::optional<Applied> redo(std::vector<Layer>& layers, std::optional<Mask>& marked);
 
     // A change to a layer that has been deleted cannot be put back. The entries naming that
     // layer leave both stacks; the rest of the timeline, including other layers of the same
@@ -108,6 +120,7 @@ private:
         layer_absent,
         layer_order,
         stack_replaced,
+        coverage,
     };
 
     struct Stacked {
@@ -129,6 +142,9 @@ private:
         Layer whole;
         // The stack on the far side, for `stack_replaced`.
         std::vector<Layer> stack;
+        // The marked coverage on the far side, for `coverage`. `nullopt` is a real state here - the
+        // document had no marked area - so this cannot be folded into `bytes`.
+        std::optional<Mask> marked;
     };
 
     // What an entry costs the budget: its bytes, plus the pixels and mask of a whole layer it carries.
@@ -138,7 +154,7 @@ private:
     static void pop_step(std::vector<Stacked>& stack, std::vector<Stacked>& moved);
     static int steps_in(const std::vector<Stacked>& stack);
     std::optional<Applied> step_back(std::vector<Stacked>& from, std::vector<Stacked>& into,
-                                     std::vector<Layer>& layers);
+                                     std::vector<Layer>& layers, std::optional<Mask>& marked);
     void drop_oldest_until_within_budget();
     // Both stacks, entries the predicate names. Whole steps are dropped by
     // `drop_oldest_until_within_budget`, not by this: what is removed here cannot be restored at all.
@@ -148,7 +164,7 @@ private:
     // Remove the layer a `layer_created` entry names, or re-insert the one a `layer_absent` entry names,
     // pushing the opposite kind onto `into` under `step` so the pair stays one undoable step.
     static void step_structure(Stacked& entry, std::vector<Stacked>& into,
-                               std::vector<Layer>& layers, int step);
+                               std::vector<Layer>& layers, std::optional<Mask>& marked, int step);
     static Layer* layer_of(std::vector<Layer>& layers, std::uint64_t id);
     // True when the entry can still be applied: a pixel rectangle has to fit the plane it names, and a
     // structural entry has to find its layer on the side the step is stepping away from.
@@ -156,6 +172,10 @@ private:
     // True when an `layer_order` entry names exactly the layers in `layers`: a permutation of anything
     // else is not an order this stack can be put into.
     static bool fits_stack(const std::vector<Layer>& layers, const Stacked& entry);
+    // True when a `coverage` entry's plane still covers the canvas the stack has. A coverage of
+    // another size is not a claim about these pixels, so the step is refused rather than a document
+    // left with a mark that reaches off its own edge.
+    static bool fits_coverage(const std::vector<Layer>& layers, const Stacked& entry);
 
     std::size_t budget_bytes_;
     std::vector<Stacked> undo_stack_;

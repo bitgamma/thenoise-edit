@@ -22,21 +22,26 @@ Rect marquee(Vec2 from, Vec2 to, Extent canvas) {
 
 namespace {
 
+// The canvas the marquee writes, in the document's own coordinates.
+Rect canvas(const AppState& state) {
+    return Rect{0, 0, state.doc.size().w, state.doc.size().h};
+}
+
 // One shape, replaced rather than added to - the modes that combine shapes are the commands'. Which
 // coverage it lands on is the target's: the same drag marks the area or punches a layer mask, and the
-// gesture is not two tools.
+// gesture is not two tools. Both lifetimes get the same treatment for the same reason: the shape is
+// drawn onto the coverage the gesture found, over the whole canvas, so a drag that shrank leaves no
+// trail of the box it used to be, and every event costs the same whether the pointer has moved far or
+// little.
 void apply_marquee(AppState& state) {
-    if (state.coverage_target == CoverageTarget::mask) {
-        state.doc.paint_mask(Rect{0, 0, state.doc.size().w, state.doc.size().h},
-                             [&](Mask& mask) {
-                                 op_shape(mask, state.select.shape, state.select.rect,
-                                          MaskOp::replace);
-                             });
+    Mask shaped(state.doc.size());
+    op_shape(shaped, state.select.shape, state.select.rect, MaskOp::replace);
+    if (state.select.coverage == CoverageTarget::mask) {
+        state.doc.repaint_provisional_mask(canvas(state),
+                                           [&shaped](Mask& mask, Rect) { mask = shaped; });
         return;
     }
-    Mask selection(state.doc.size());
-    op_shape(selection, state.select.shape, state.select.rect, MaskOp::replace);
-    state.doc.set_selection(selection);
+    state.doc.set_selection(std::move(shaped));
 }
 
 }  // namespace
@@ -58,7 +63,17 @@ void select_press(AppState& state, Vec2 document_point) {
         return;
     }
     state.select.shape = *shape;
+    // The lifetime is held here too: the press opens one door, and a switch aimed elsewhere mid-drag
+    // must not leave the other one open.
+    state.select.coverage = state.coverage_target;
     state.select.rect = marquee(document_point, document_point, state.doc.size());
+    // One gesture, one undo step, in whichever lifetime the switch aims it: the layer's mask holds its
+    // bytes aside, the marked area holds the document's own coverage.
+    if (state.select.coverage == CoverageTarget::mask) {
+        state.doc.begin_provisional(canvas(state), LayerPlane::mask);
+    } else {
+        state.doc.begin_marked();
+    }
     apply_marquee(state);
 }
 
@@ -79,16 +94,21 @@ void select_release(AppState& state) {
         return;
     }
     if (state.select.rect.empty()) {
-        if (state.coverage_target == CoverageTarget::mask) {
+        if (state.select.coverage == CoverageTarget::mask) {
             // An empty drag clears the mask it was aimed at rather than reaching past it for the
             // marked area: a gesture does not change what it was pointed at on the way out.
-            state.doc.paint_mask(Rect{0, 0, state.doc.size().w, state.doc.size().h},
-                                 [](Mask& mask) { mask.fill(0); });
+            state.doc.repaint_provisional_mask(canvas(state),
+                                               [](Mask& mask, Rect) { mask.fill(0); });
         } else {
             state.doc.set_selection(std::nullopt);
         }
     } else {
         apply_marquee(state);
+    }
+    if (state.select.coverage == CoverageTarget::mask) {
+        state.doc.commit_provisional();
+    } else {
+        state.doc.commit_marked();
     }
     state.select = PointerSelection{};
 }

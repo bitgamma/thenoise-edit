@@ -65,6 +65,13 @@ std::map<std::uint64_t, std::uint64_t> content_revisions(const Document& doc) {
     return out;
 }
 
+// A coat of flat ink for `area`, in the units `Mask::paint` wants: one byte per pixel of the region.
+std::vector<std::uint8_t> coat(Rect area, std::uint8_t value) {
+    return std::vector<std::uint8_t>(static_cast<std::size_t>(area.w) *
+                                         static_cast<std::size_t>(area.h),
+                                     value);
+}
+
 void paint_on(Document& doc, Rect rect, std::uint8_t grey) {
     doc.paint(rect, PaintFence::selection, [rect, grey](Image& image) {
         const std::uint8_t rgba[4] = {grey, grey, grey, 255};
@@ -789,6 +796,7 @@ void test_a_gesture_clips_to_the_selection_and_undoes_exactly() {
     CHECK(doc.set_selection(selection));
 
     const std::string start = doc.checksum();
+    const int marked = doc.history().undo_depth;  // putting the mark down is a step of its own
     // Three events of one drag, each repainting its own rectangle, which is how a live stroke
     // reaches the document. The last rectangle overlaps the earlier ones, so a writer that
     // compounded its own work instead of starting from the held-aside pixels would show up.
@@ -803,7 +811,7 @@ void test_a_gesture_clips_to_the_selection_and_undoes_exactly() {
     const std::string gestured = doc.checksum();
     doc.commit_provisional();
     CHECK_EQ(doc.checksum(), gestured);
-    CHECK_EQ(doc.history().undo_depth, 1);
+    CHECK_EQ(doc.history().undo_depth, marked + 1);  // the gesture, and nothing per event
 
     for (int y = 0; y < size.h; ++y) {
         for (int x = 0; x < size.w; ++x) {
@@ -939,6 +947,7 @@ void test_the_selection_fences_a_mask_stroke_too() {
     }
     const Mask selection = Mask::from_plane(size, coverage).value();
     CHECK(doc.set_selection(selection));
+    const int marked = doc.history().undo_depth;  // the mark is a step; what follows is the write
 
     // Hide the whole canvas: only the selected columns move, and the half-selected one moves
     // half way - 255 of coverage travelling to 0 by 128/255 is 127, which is the byte the door's own
@@ -953,7 +962,7 @@ void test_the_selection_fences_a_mask_stroke_too() {
             CHECK_EQ(static_cast<int>(doc.layer(0).mask->coverage(x, y)), static_cast<int>(want));
         }
     }
-    CHECK_EQ(doc.history().undo_depth, 1);
+    CHECK_EQ(doc.history().undo_depth, marked + 1);
     CHECK(doc.undo());
     CHECK_EQ(doc.layer(0).mask->covered(), static_cast<std::size_t>(size.w * size.h));
 }
@@ -997,7 +1006,8 @@ void test_a_mask_gesture_is_fenced_by_the_selection() {
     expect_fenced("during the gesture");
     doc.commit_provisional();
     expect_fenced("after the commit");
-    CHECK_EQ(doc.history().undo_depth, 1);
+    // The mark the fence was drawn with, and the one step the gesture committed.
+    CHECK_EQ(doc.history().undo_depth, 2);
 
     CHECK(doc.undo());
     CHECK_EQ(doc.layer(0).mask->covered(), static_cast<std::size_t>(size.w * size.h));
@@ -1130,12 +1140,16 @@ void test_a_selection_change_is_a_document_change() {
     selection.op(Rect{1, 1, 2, 2}, MaskOp::replace);
     CHECK(doc.set_selection(selection));
     CHECK(doc.dirty());
+    CHECK_EQ(doc.history().undo_depth, 1);  // the mark is a step
 
     const std::uint64_t revision_after = doc.revision();
     doc.mark_saved();
     CHECK(doc.set_selection(selection));
     CHECK(!doc.dirty());
     CHECK_EQ(doc.revision(), revision_after);
+    // Writing the coverage that is already there changed nothing, so it is not an edit: no step, no
+    // depth spent restoring bytes nobody moved.
+    CHECK_EQ(doc.history().undo_depth, 1);
 
     Mask wider(Extent{8, 8});
     wider.op(Rect{1, 1, 4, 4}, MaskOp::replace);
@@ -1146,6 +1160,7 @@ void test_a_selection_change_is_a_document_change() {
     CHECK(doc.set_selection(std::nullopt));
     CHECK(doc.dirty());
     CHECK(!doc.selection().has_value());
+    CHECK_EQ(doc.history().undo_depth, 3);  // the mark, the wider mark, the clearing
 }
 
 // A layer mask says what shows, not what exists: it changes the composite and leaves the layer's
@@ -1516,9 +1531,10 @@ void test_a_selection_and_a_mask_fence_different_things() {
 
     // Outside the selection: the write door is the selection, so nothing lands anywhere.
     const std::string empty = doc.layer(0).pixels.checksum_hex();
+    const int marked = doc.history().undo_depth;  // the mark itself is a step
     paint_on(doc, Rect{8, 1, 2, 2}, 180);
     CHECK_EQ(doc.layer(0).pixels.checksum_hex(), empty);
-    CHECK(!doc.can_undo());
+    CHECK_EQ(doc.history().undo_depth, marked);
 
     // Inside both: the layer changes and the canvas shows it.
     paint_on(doc, Rect{1, 1, 2, 2}, 180);
@@ -1540,6 +1556,199 @@ void test_a_selection_and_a_mask_fence_different_things() {
     CHECK(doc.set_layer_mask(0, std::nullopt));
     CHECK_EQ(doc.composite().at(7, 1)[3], 255);
     CHECK_EQ(doc.composite().at(9, 1)[3], 255);
+}
+
+// The marked area is a document property that is saved, so it is undoable - and the step that puts it
+// back moves coverage and nothing else. A build that bumped the stack's revision for a mark would
+// re-upload a canvas nobody repainted and resample every layer thumbnail to prove nothing happened.
+void test_marking_the_area_is_one_step_that_moves_no_pixel() {
+    const Extent size{12, 6};
+    Document doc;
+    doc.reset(stack({{"Sky", Image::filled(size, 9, 9, 9, 255)}}), std::nullopt, "x.noise");
+    const std::string canvas = doc.composite().checksum_hex();
+
+    Mask corner(size);
+    corner.op(Rect{2, 1, 5, 4}, MaskOp::replace);
+    CHECK(doc.set_selection(corner));
+    CHECK_EQ(doc.history().undo_depth, 1);
+    CHECK(doc.dirty());
+    CHECK_EQ(doc.composite().checksum_hex(), canvas);
+
+    paint_on(doc, Rect{2, 1, 3, 2}, 200);  // inside the mark, so it lands - and is its own step
+    CHECK_EQ(doc.history().undo_depth, 2);
+    CHECK(doc.undo());                      // pixels first: the mark was not part of that step
+    CHECK_EQ(doc.history().undo_depth, 1);
+    REQUIRE(doc.selection().has_value());
+    CHECK_EQ(doc.selection()->covered(), corner.covered());
+
+    const std::uint64_t revision = doc.revision();
+    const std::map<std::uint64_t, std::uint64_t> cards = content_revisions(doc);
+    CHECK(doc.undo());
+    CHECK(!doc.selection().has_value());
+    CHECK_EQ(doc.composite().checksum_hex(), canvas);
+    CHECK_EQ(doc.revision(), revision);
+    CHECK(content_revisions(doc) == cards);
+
+    // Forward again is the same operation, and the coverage that comes back is byte for byte the one
+    // that was put down - partial coverage included, because a mark is not a box.
+    Mask soft(size);
+    soft.op(Rect{2, 1, 5, 4}, MaskOp::replace);
+    soft.row(1)[3] = 128;
+    CHECK(doc.set_selection(soft));
+    CHECK(doc.undo());
+    CHECK(!doc.selection().has_value());
+    CHECK(doc.redo());
+    REQUIRE(doc.selection().has_value());
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            CHECK_EQ(static_cast<int>(doc.selection()->coverage(x, y)),
+                     static_cast<int>(soft.coverage(x, y)));
+        }
+    }
+    CHECK_EQ(doc.revision(), revision);
+    CHECK(content_revisions(doc) == cards);
+}
+
+// A marquee or a `cover` stroke is one gesture and one undo step, however many events it arrived as,
+// and the coat is the stroke's own - not one coat per frame. The middle event lies inside the union of
+// the other two, so an implementation that painted onto what it had already written comes back darker
+// there than the single coat below.
+void test_a_marked_gesture_is_one_step_painted_in_one_coat() {
+    const Extent size{12, 6};
+    Document doc;
+    doc.reset(stack({{"Sky", Image::filled(size, 9, 9, 9, 255)}}), std::nullopt, "x.noise");
+    Mask started(size);
+    started.op(Rect{0, 0, 3, size.h}, MaskOp::replace);
+    CHECK(doc.set_selection(started));
+    const int steps = doc.history().undo_depth;
+    const std::string canvas = doc.composite().checksum_hex();
+
+    CHECK(doc.begin_marked());
+    CHECK(doc.in_marked());
+    for (const Rect event : {Rect{2, 0, 5, 2}, Rect{2, 2, 5, 4}, Rect{4, 1, 3, 2}}) {
+        doc.repaint_marked(event, [](Mask& mask, Rect area) {
+            mask.paint(area, coat(area, 128), MaskInk::reveal);
+        });
+        // Live on the canvas, and still no step: the gesture commits once, at release.
+        CHECK_EQ(doc.history().undo_depth, steps);
+    }
+    doc.commit_marked();
+    CHECK(!doc.in_marked());
+    CHECK_EQ(doc.history().undo_depth, steps + 1);
+    CHECK_EQ(doc.composite().checksum_hex(), canvas);
+
+    Mask one_coat(started);
+    one_coat.paint(Rect{2, 0, 5, size.h}, coat(Rect{2, 0, 5, size.h}, 128), MaskInk::reveal);
+    REQUIRE(doc.selection().has_value());
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            CHECK_EQ(static_cast<int>(doc.selection()->coverage(x, y)),
+                     static_cast<int>(one_coat.coverage(x, y)));
+        }
+    }
+
+    // And the step puts back the coverage the press found, which was `started` - including the column
+    // the gesture never touched, which is what makes the coat reversible rather than merely darker.
+    CHECK(doc.undo());
+    REQUIRE(doc.selection().has_value());
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            CHECK_EQ(static_cast<int>(doc.selection()->coverage(x, y)),
+                     static_cast<int>(started.coverage(x, y)));
+        }
+    }
+    CHECK_EQ(doc.history().undo_depth, steps);
+}
+
+// A gesture that moved no coverage - a coat of no ink over what is already there - is not an edit:
+// no step, no dirty mark. Otherwise tapping the canvas with `cover` would spend the undo budget
+// restoring coverage nobody changed.
+void test_a_marked_gesture_that_moved_nothing_costs_nothing() {
+    const Extent size{10, 4};
+    Document doc;
+    doc.reset(stack({{"Sky", Image::filled(size, 1, 1, 1, 255)}}), std::nullopt, "x.noise");
+    Mask started(size);
+    started.op(Rect{1, 0, 4, size.h}, MaskOp::replace);
+    CHECK(doc.set_selection(started));
+    doc.mark_saved();
+    const int steps = doc.history().undo_depth;
+
+    CHECK(doc.begin_marked());
+    doc.repaint_marked(Rect{0, 0, size.w, size.h}, [](Mask& mask, Rect area) {
+        mask.paint(area, coat(area, 0), MaskInk::reveal);
+    });
+    CHECK(!doc.dirty());
+    doc.commit_marked();
+    CHECK_EQ(doc.history().undo_depth, steps);
+    REQUIRE(doc.selection().has_value());
+    CHECK_EQ(doc.selection()->covered(), started.covered());
+
+    // Writing what is already there inside a gesture is the same nothing, through the other door.
+    CHECK(doc.begin_marked());
+    CHECK(doc.set_selection(started));
+    doc.commit_marked();
+    CHECK_EQ(doc.history().undo_depth, steps);
+    CHECK(!doc.dirty());
+}
+
+// A gesture that is called off - the frame that stops caring about the drag - gives back the coverage
+// the press found, including the difference between "no marked area" and "a plane covering nothing".
+void test_cancel_marked_gives_back_the_coverage_the_press_found() {
+    const Extent size{8, 4};
+    Document doc;
+    doc.reset(stack({{"Sky", Image::filled(size, 3, 3, 3, 255)}}), std::nullopt, "x.noise");
+    const int steps = doc.history().undo_depth;
+
+    CHECK(doc.begin_marked());
+    Mask box(size);
+    box.op(Rect{2, 1, 4, 2}, MaskOp::replace);
+    CHECK(doc.set_selection(box));
+    CHECK(doc.selection().has_value());
+    doc.cancel_marked();
+    CHECK(!doc.in_marked());
+    CHECK(!doc.selection().has_value());  // there was nothing to find, so nothing comes back
+    CHECK_EQ(doc.history().undo_depth, steps);
+
+    // The same, from a document that did have a marked area: it comes back byte for byte, the
+    // half-covered cell with the rest of it.
+    Mask started(size);
+    started.op(Rect{0, 0, 2, size.h}, MaskOp::replace);
+    started.row(2)[1] = 96;
+    CHECK(doc.set_selection(started));
+    const int marked = doc.history().undo_depth;
+    CHECK(doc.begin_marked());
+    doc.repaint_marked(Rect{3, 0, 5, size.h}, [](Mask& mask, Rect area) {
+        mask.op(area, MaskOp::subtract);
+    });
+    CHECK_EQ(doc.selection()->covered(), static_cast<std::size_t>(2 * size.h));
+    doc.cancel_marked();
+    REQUIRE(doc.selection().has_value());
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            CHECK_EQ(static_cast<int>(doc.selection()->coverage(x, y)),
+                     static_cast<int>(started.coverage(x, y)));
+        }
+    }
+    CHECK_EQ(doc.history().undo_depth, marked);
+}
+
+// One press writes one thing: the bytes a gesture held aside belong to the plane it was pressed on,
+// so a marked gesture and a layer gesture cannot share a frame - and the refusal says which one it
+// already holds rather than quietly writing into both.
+void test_a_marked_gesture_and_a_layer_gesture_are_different_presses() {
+    const Extent size{8, 4};
+    Document doc;
+    doc.reset(stack({{"Sky", Image::filled(size, 4, 4, 4, 255)}}), std::nullopt, "x.noise");
+    CHECK(doc.begin_provisional(Rect{0, 0, 4, 4}, LayerPlane::pixels));
+    CHECK(!doc.begin_marked());
+    CHECK(!doc.in_marked());
+    doc.discard_provisional();
+
+    CHECK(doc.begin_marked());
+    CHECK(!doc.begin_provisional(Rect{0, 0, 4, 4}, LayerPlane::pixels));
+    doc.commit_marked();
+    // A gesture that never wrote is not an edit, and the refused attempt added nothing to it.
+    CHECK_EQ(doc.history().undo_depth, 0);
 }
 
 }  // namespace
@@ -1587,5 +1796,10 @@ int main() {
     test_a_layer_moves_as_one_step_that_undoes_itself();
     test_merging_down_shows_what_the_canvas_already_showed();
     test_flattening_leaves_one_layer_that_shows_what_the_stack_showed();
+    test_marking_the_area_is_one_step_that_moves_no_pixel();
+    test_a_marked_gesture_is_one_step_painted_in_one_coat();
+    test_a_marked_gesture_that_moved_nothing_costs_nothing();
+    test_cancel_marked_gives_back_the_coverage_the_press_found();
+    test_a_marked_gesture_and_a_layer_gesture_are_different_presses();
     return noise::test::summary("document");
 }
