@@ -207,7 +207,10 @@ json layer_panel_json(const AppState& state) {
     return json{{"add", screen_json(controls.add)},
                 {"remove", screen_json(controls.remove)},
                 {"flatten", screen_json(controls.flatten)},
-                {"can_flatten", controls.can_flatten}};
+                {"mask_add", screen_json(controls.mask_add)},
+                {"mask_remove", screen_json(controls.mask_remove)},
+                {"can_flatten", controls.can_flatten},
+                {"has_mask", controls.has_mask}};
 }
 
 json image_json(const Image& image, const std::string& label) {

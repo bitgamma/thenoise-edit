@@ -82,7 +82,12 @@ struct LayerPanelControls {
     ScreenRect add{};
     ScreenRect remove{};
     ScreenRect flatten{};
+    // The mask section's two doorways, published because clicking them is the only way to test the
+    // frame they live in: `Remove` changes the state the same frame's own text is drawn from.
+    ScreenRect mask_add{};
+    ScreenRect mask_remove{};
     bool can_flatten = false;
+    bool has_mask = false;
 };
 
 // The gesture the pointer is making, if any. The walk carries the dab spacing across events

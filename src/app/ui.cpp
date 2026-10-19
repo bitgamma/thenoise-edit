@@ -961,10 +961,16 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
         // means, and none of them has to know whether a mask is a plane, a channel or a claim.
         const Layer& active = state.doc.layer(static_cast<std::size_t>(state.doc.active()));
         ImGui::SeparatorText("mask");
-        if (active.mask) {
+        // Read before the buttons, not after them. `Remove` takes the mask off during this very frame,
+        // and `layer_mask_json` answers null for a layer that has just lost one - indexing that is a
+        // throw in the middle of a click. Facts one gesture behind are what a panel's facts already are.
+        const json facts = active.mask.has_value() ? layer_mask_json(active) : json(nullptr);
+        state.layer_panel.has_mask = !facts.is_null();
+        if (!facts.is_null()) {
             if (ImGui::Button("Remove")) {
                 commands.invoke("mask.remove", json::object());
             }
+            state.layer_panel.mask_remove = item_rect();
             ImGui::SameLine();
             if (ImGui::Button("Show all")) {
                 commands.invoke("mask.fill", json{{"to", "show"}});
@@ -977,7 +983,6 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
             if (ImGui::Button("Invert")) {
                 commands.invoke("mask.invert", json::object());
             }
-            const json facts = layer_mask_json(active);
             const json& bounds = facts["bounds"];
             // Two lines, because one of them clipped mid-word in a panel a third of the window.
             // "Touched" and "shown" are the two counts a coverage plane has - how many pixels it
@@ -992,6 +997,7 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
             if (ImGui::Button("Add mask")) {
                 commands.invoke("mask.add", json::object());
             }
+            state.layer_panel.mask_add = item_rect();
             ImGui::SameLine();
             ImGui::TextDisabled("nothing hidden");
         }

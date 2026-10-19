@@ -465,6 +465,27 @@ def main() -> int:
                 f"{facts['name']} {facts['checksum'][:8]}")
         p.check(wire.call("doc.get")["checksum"] == shown_before_delete,
                 "and the document byte for byte")
+
+        # The mask section is the one control here that changes the state its own frame is drawn from:
+        # pressing `Remove` took the mask off and the two lines under it then asked a null for its
+        # bounds, which is a throw in the middle of a click rather than a panel one frame behind. Both
+        # directions get clicked, and the app answering afterwards is part of the claim.
+        for _ in range(12):
+            if inside_box(wire.call("app.state")["layer_panel"]["mask_add"], window):
+                break
+            inj.wheel(-3)
+            wd.settle(wire)
+        click(inj, *centre(wire.call("app.state")["layer_panel"]["mask_add"]))
+        wd.settle(wire)
+        p.check(wire.call("app.state")["layer_panel"]["has_mask"] is True,
+                "Add mask puts a mask on the layer the card selected")
+        click(inj, *centre(wire.call("app.state")["layer_panel"]["mask_remove"]))
+        wd.settle(wire)
+        maskless = wire.call("app.state")
+        p.check(maskless["layer_panel"]["has_mask"] is False,
+                "and Remove takes it off without the frame falling over the state it just changed")
+        # Back to the top: the claims below measure a card's picture, and the wheel moved the list.
+        to_top()
         canvas_restored = canvas_shot(wire, "after-delete-undo")
         p.check(ImageChops.difference(canvas_before_delete, canvas_restored).getbbox() is None,
                 "the canvas as it was before the press", apart(canvas_before_delete, canvas_restored))
