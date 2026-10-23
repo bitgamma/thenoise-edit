@@ -142,13 +142,28 @@ The recorded tier passed, because the probe's own `ai.preview` pair happened to 
 per verb: two asks draw two seeds, a named seed dies with its press, a held seed survives every ask until
 it is released.
 
-**The engine refused a 64-bit seed, and said the wrong thing about it.** The first live press after that
-change answered `400 Invalid value for 'seed': must be an integer`: the field goes out signed, so a full
-unsigned draw arrives negative, and a range error wears a type error's clothes. There is no schema to read
-the real bound from — `/ui-schema` does not exist on this box and `/models` carries no seed limits — so the
-width is `ai::kMaxSeed`, 32 bits, in the module that owns the field: the draw is masked to it and a named
-seed above it is refused by name. Measured facts and judgement are separated in its comment, because the
-next person cannot tell which is which otherwise.
+**The engine refused a wide seed, and said the wrong thing about it — twice.** The first live press after
+that change answered `400 Invalid value for 'seed': must be an integer`. The first fix assumed a 32-bit
+unsigned field and masked to `0xFFFFFFFF`, which fixed nothing: the box's *multipart* form parses `seed` as
+a signed 32-bit integer, so the second live press failed the same way with roughly half the draws. Measured
+by asking, at 256², one step: `/images/edits` takes `2147483647` and refuses `3000000000` and `4294967295`
+with that message, while `/images/generations` — a JSON body — takes all of them and `0` as well. The
+upload path therefore sets `ai::kMaxSeed` (`ai/provider.h`, the module that owns the field): the draw is
+masked to it, a named seed above it is refused by name, and `ai_job_probe` asserts the bound on every ask.
+Two lessons, both mine: an inferred bound is a guess, and a guess written into a comment with the word
+"measured" in it is worse than no comment. There is no schema to read here — `/ui-schema` does not exist on
+this box and `/models` carries no seed limits — so the bound has to be probed, which costs nothing because a
+400 runs no model.
+
+**Bigger asks outran the request timeout, and a live server was reported dead.** Raising the pixel ceiling
+made the first job the user then ran fail as `timeout - /images/edits: timeout`. The ETA is keyed on the
+exact `(model, size, steps)`, so a mark never asked before has no sample and its timeout fell to the 60 s
+floor — while a masked edit at the new ceiling measures 71.1 s on this box (1024² at 8 steps masked: 33.5 s;
+the same shape at 4 steps unmasked: 20.2 s, against 29.7 s at 1440x1088). The floor is now 600 s, enough for
+a model load (measured 72–198 s) inside the first request, and the timeout — which is a margin, not the
+promise the panel shows — falls back to scaling the model's best-sampled run by pixels × steps. The ETA
+itself still refuses to guess: a shape nobody has run here has no estimate, which is what its test and its
+thread-safety test both defend.
 
 **A Change over a large mark came back as the same picture, softer.** A 1440x1080 document with a
 1000x700 mark compiled `crop [0,0,1440,1080]` to `requested [1184,896], scale 0.8211`: `roles.json` capped
@@ -161,6 +176,32 @@ states one, and the table's only as a stand-in for a model that says nothing, ra
 cap this box publishes, so the stand-in does not shrink answers the box would have served. A scale below 1
 is now a fact in the report (`region.resampled`, plus the size it shrank to in the landing log) rather than
 something a person infers by squinting.
+
+**Two of my own fixes were wrong, and only measuring caught them.** Both were in the rescale, and both
+survived a green hermetic suite because the tests asserted the *shape* of the answer rather than the
+promise it carries.
+
+- The shrunken ask was snapped *up* to the size multiple, which put it back over the ceiling it had just
+  been shrunk for: a 2400x1600 mark under a 2097152 cap asked `1776x1184` — 2102784 pixels. The grid is
+  snapped *inside* the ceiling now (down when a shrink is in force, up when there was room, never below
+  one multiple), and `test_region` sweeps 1040 shapes against the invariant `asked ≤ cap`, because the
+  failure needs a particular remainder and the two assertions that used to cover it allowed a factor of
+  two and a slack term.
+- `resampled` never reached the sentence it was supposed to produce. The landing rebuilds its plan from
+  the job record — `plan_of_landing` copies the crop, the asked size and the mask bounds — and a plan
+  rebuilt that way had `resampled == false`, so the automatic landing, which is the path answers actually
+  take, logged a rescaled answer as a plain one. It is a fact the compile decides, carried on `Landing`
+  and restored with the rectangles, which is what the live line now reads: `rescaled to 1760x1168 for the
+  model's pixel ceiling, answered at a different size than requested`.
+
+The general shape: a derived flag travelling beside the numbers it was derived from is a second home, and
+it goes stale the moment one of them is rebuilt from storage. Either carry it or recompute it from the
+same bytes the compositor maps by — do not leave both half-done.
+
+What the box added for free: the engine snaps the size it *answers* (`1760x1168` asked, `1760x1184`
+answered), so `answered_as_requested` is a separate fact from `resampled` and the landing keeps saying
+them apart. Pixel-lock held byte-exact outside the coverage in every case above, at 1:1 and both ways
+around a rescale.
 
 **What the tests talked me out of.** The first cut asked for the crop's exact size, which is what "output
 size equals input size" sounds like. Two `test_region` assertions went red for a reason: the 16-grid exists

@@ -471,7 +471,12 @@ void register_ai_commands(AppState& state, CommandTable& table) {
                                 {"enhance", recipe.enhance},
                                 {"composite", composite_policy_json(recipe.composite)},
                                 {"model", resolution.model_id},
-                                {"model_reason", resolution.reason}});
+                                {"model_reason", resolution.reason},
+                                // The pixel ceiling a region for this recipe compiles under: the model's
+                                // published `soft_pixel_cap`, or the table's stand-in when it publishes
+                                // none. Without it a driver can see `resampled` but not the number the
+                                // region was measured against.
+                                {"region_max_area_px", policy_for(state, &recipe).max_area_px}});
         }
         return command_ok(json{{"recipes", rows},
                                {"directory", state.ai.resource_dir + "/recipes"}});
@@ -510,6 +515,7 @@ void register_ai_commands(AppState& state, CommandTable& table) {
         landing.crop = assembled.plan.crop;
         landing.mask_bounds = assembled.plan.mask_bounds;
         landing.requested = assembled.plan.requested;
+        landing.resampled = assembled.plan.resampled;
         landing.canvas = state.doc.size();
         landing.feather_px = recipe.composite.feather_px;
         landing.colour_match = recipe.composite.colour_match;

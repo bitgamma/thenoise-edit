@@ -17,6 +17,7 @@ using noise::ai::build_request;
 using noise::ai::BuiltRequest;
 using noise::ai::Endpoint;
 using noise::ai::field_allowed;
+using noise::ai::kMaxSeed;
 using noise::ai::ModelEntry;
 using noise::ai::parse_recipe;
 using noise::ai::Recipe;
@@ -119,7 +120,8 @@ struct Built {
     std::string error;
 };
 
-Built build(const json& overrides, const SizePolicy& policy, std::vector<std::uint8_t> bytes) {
+Built build(const json& overrides, const SizePolicy& policy, std::vector<std::uint8_t> bytes,
+      std::uint64_t seed) {
     const Recipe recipe = recipe_of(overrides);
     const ModelEntry entry = model();
     RequestInput input;
@@ -130,7 +132,7 @@ Built build(const json& overrides, const SizePolicy& policy, std::vector<std::ui
     input.width = 64;
     input.height = 64;
     input.prompt = "do the thing";
-    input.seed = 7;
+    input.seed = seed;
     input.png = std::move(bytes);
     std::string error;
     std::optional<BuiltRequest> built = build_request(input, policy, error);
@@ -162,7 +164,7 @@ void test_the_whitelist_is_per_endpoint() {
 void test_what_goes_out_is_exactly_the_table() {
     const SizePolicy policy{16, 1024 * 1024};
 
-    const Built edit = build(json{{"endpoint", "edits"}}, policy, png());
+    const Built edit = build(json{{"endpoint", "edits"}}, policy, png(), 7);
     REQUIRE(edit.error.empty());
     CHECK(on_the_wire(edit.request) == sorted(noise::ai::allowed_fields(Endpoint::edits)));
     CHECK(follows_the_table(edit.request));
@@ -177,7 +179,7 @@ void test_what_goes_out_is_exactly_the_table() {
     CHECK(edit.request.json_body().is_null());
     CHECK(edit.request.multipart());
 
-    const Built generation = build(json{{"endpoint", "generations"}}, policy, {});
+    const Built generation = build(json{{"endpoint", "generations"}}, policy, {}, 7);
     REQUIRE(generation.error.empty());
     CHECK(on_the_wire(generation.request) ==
           sorted(noise::ai::allowed_fields(Endpoint::generations)));
@@ -193,7 +195,7 @@ void test_what_goes_out_is_exactly_the_table() {
     CHECK_EQ(generation.request.json_body()["response_format"].get<std::string>(),
              std::string("b64_json"));
 
-    const Built up = build(json{{"endpoint", "upscale"}}, policy, png());
+    const Built up = build(json{{"endpoint", "upscale"}}, policy, png(), 7);
     REQUIRE(up.error.empty());
     CHECK(on_the_wire(up.request) == sorted(noise::ai::allowed_fields(Endpoint::upscale)));
     CHECK(follows_the_table(up.request));
@@ -226,8 +228,8 @@ void test_a_request_the_server_could_not_answer_is_refused_here() {
 
     // The region is uploaded, so an absent or non-PNG blob is refused before anything leaves: the server
     // would answer 400 with a body that says nothing about which part was wrong.
-    CHECK(build(json{{"endpoint", "edits"}}, policy, {}).error.find("PNG") != std::string::npos);
-    CHECK(build(json{{"endpoint", "edits"}}, policy, std::vector<std::uint8_t>{1, 2, 3}).error.find(
+    CHECK(build(json{{"endpoint", "edits"}}, policy, {}, 7).error.find("PNG") != std::string::npos);
+    CHECK(build(json{{"endpoint", "edits"}}, policy, std::vector<std::uint8_t>{1, 2, 3}, 7).error.find(
               "PNG") != std::string::npos);
 
     RequestInput base;
@@ -298,19 +300,19 @@ void test_a_request_the_server_could_not_answer_is_refused_here() {
 // the compiler built rather than something else that was on the canvas.
 void test_the_upload_blob_names_the_pixels_and_nothing_else() {
     const SizePolicy policy{16, 1024 * 1024};
-    const Built first = build(json{{"endpoint", "edits"}}, policy, png());
+    const Built first = build(json{{"endpoint", "edits"}}, policy, png(), 7);
     REQUIRE(first.error.empty());
     const json preview = first.request.preview_json();
     const std::string blob = preview["blob"].get<std::string>();
     CHECK_EQ(blob.size(), std::size_t(64));
     CHECK(blob.find_first_not_of("0123456789abcdef") == std::string::npos);
-    CHECK_EQ(build(json{{"endpoint", "edits"}}, policy, png()).request.preview_json()["blob"]
+    CHECK_EQ(build(json{{"endpoint", "edits"}}, policy, png(), 7).request.preview_json()["blob"]
                  .get<std::string>(),
              blob);
 
     // Different pixels at the same size are a different upload: a region that changed cannot be
     // reported as the one that was asked for.
-    CHECK(build(json{{"endpoint", "edits"}}, policy, png(64, 64, 200)).request.preview_json()["blob"]
+    CHECK(build(json{{"endpoint", "edits"}}, policy, png(64, 64, 200), 7).request.preview_json()["blob"]
               .get<std::string>() != blob);
 
     // What the preview promises is what the wire carries: the endpoint, the resolved size, the seed and
@@ -322,9 +324,31 @@ void test_the_upload_blob_names_the_pixels_and_nothing_else() {
     CHECK(!preview.contains("cache_key"));
 }
 
+// The upload path takes `seed` as a signed 32-bit integer and says so badly: measured on the dev box,
+// `/images/edits` answers 200 for 2147483647 and 400 `Invalid value for 'seed': must be an integer` for
+// 3000000000, while `/images/generations` takes both. The stricter endpoint therefore decides what the
+// field carries, and the builder refuses over it by name instead of sending it to be misread.
+void test_a_seed_the_field_cannot_carry_is_refused_here() {
+    const SizePolicy policy{16, 1024 * 1024};
+    for (const std::uint64_t seed : {std::uint64_t(1), kMaxSeed - 1, kMaxSeed}) {
+        const Built built = build(json{{"endpoint", "edits"}}, policy, png(), seed);
+        REQUIRE(built.error.empty());
+        CHECK_EQ(built.request.params.seed, seed);
+        CHECK_EQ(field_text(built.request, "seed"), std::to_string(seed));
+    }
+
+    const Built over = build(json{{"endpoint", "edits"}}, policy, png(), kMaxSeed + 1);
+    CHECK(!over.error.empty());
+    CHECK(over.error.find("seed") != std::string::npos);
+    CHECK(over.error.find(std::to_string(kMaxSeed + 1)) != std::string::npos);
+    // The generations endpoint would take it, and still refuses: one field, one limit.
+    CHECK(!build(json{{"endpoint", "generations"}}, policy, {}, kMaxSeed + 1).error.empty());
+}
+
 }  // namespace
 
 int main() {
+    test_a_seed_the_field_cannot_carry_is_refused_here();
     test_the_whitelist_is_per_endpoint();
     test_what_goes_out_is_exactly_the_table();
     test_a_request_the_server_could_not_answer_is_refused_here();

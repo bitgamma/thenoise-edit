@@ -906,10 +906,14 @@ field, and it refuses tier-2 unless the model profile opts in.
 **The builder also validates its own values, because nobody downstream does.** `seed:
 "not-a-number"` is answered with `200` and a default (measured). A misspelt field name is
 therefore silent rather than loud, and the one place that can catch it is here. The seed's
-*range* is caught here too: the field goes out signed and the engines read 32 bits, so a wider
-draw leaves as a negative number and comes back as 400 `Invalid value for 'seed': must be an
-integer` (seen live 2026-10-23) — a range error wearing a type error's clothes, and the box
-publishes no schema to read the bound from.
+*range* is caught here too, and the two endpoints disagree about it (measured 2026-10-25):
+`/images/generations`, a JSON body, answers `200` for `0`, `2147483647`, `2148483648` and
+`4294967295`; `/images/edits`, a multipart form, answers `200` for `2147483647` and `400
+Invalid value for 'seed': must be an integer` for `3000000000` — a range error wearing a type
+error's clothes, in a form-field parser that reads a signed 32-bit integer. The form therefore
+sets `ai::kMaxSeed`, since one field carries one limit; the box publishes no schema to read it
+from (`/ui-schema` does not exist, `/models` carries no seed bounds). `seed: 0` is accepted by
+both, so 0 staying unused is our convention for "no seed yet", not an engine rule.
 
 **Tier 1 — OpenAI-level, used in MVP**
 
@@ -1007,7 +1011,11 @@ ServerProfile (N of them, one active):
   api_key           from $THENOISE_API_KEY today (the keyring and the 0600 config file are designed
                     and not built) — never in a .noise file, never in the repo, never in a log line
   timeout_connect   5 s
-  timeout_request   adaptive: max(60 s, predicted ETA × 4)   ← local diffusion is slow by design
+  timeout_request   max(600 s, 4 × wait), where the wait is this box's measured time for the exact shape
+                    or, when the shape is new, its measured time for the model scaled by pixels × steps
+                    ← local diffusion is slow by design, and a compiled region is a shape that has never
+                    been run before: a masked edit at the pixel ceiling measured 71.1 s on the dev box,
+                    which a 60 s floor reported as a dead server
   verify_tls        on by default; per-profile opt-out for self-signed LAN certs
   prefixes          try /v1, fall back to /api/v1 (both documented)
 ```

@@ -42,6 +42,7 @@ ai::RegionPlan plan_of_landing(const ai::JobRecord& record) {
     plan.crop = record.landing.crop;
     plan.requested = record.landing.requested;
     plan.mask_bounds = record.landing.mask_bounds;
+    plan.resampled = record.landing.resampled;
     return plan;
 }
 

@@ -2,6 +2,7 @@
 #include "test.h"
 
 #include "app/ai_intent.h"
+#include "ai/provider.h"
 #include "app/ai_session.h"
 #include "app/ai_verbs.h"
 #include "app/commands.h"
@@ -2828,8 +2829,10 @@ void test_each_ask_takes_its_own_seed_and_a_pin_holds_one() {
                  .get<std::uint64_t>(),
              std::uint64_t(13));
 
-    // A seed the field cannot carry is refused here rather than sent for the engine to misread: over 32
-    // bits it leaves as a negative number and comes back as an http 400 about its type.
+    // A seed the field cannot carry is refused here rather than sent for the engine to misread: the
+    // upload form parses it as a signed 32-bit integer and answers http 400 `must be an integer`.
+    // The draw is 64-bit entropy and the field is not, so the mask happens on the way out: whatever the
+    // entropy source returns, the number that reaches the engine is one it accepts.
     const CommandResult too_big =
         h.run("ai.preview", json{{"recipe", "inpaint-remove"}, {"seed", 4294967296LL}});
     CHECK(!too_big.ok);
@@ -2846,6 +2849,13 @@ void test_each_ask_takes_its_own_seed_and_a_pin_holds_one() {
                  .get<std::uint64_t>(),
              std::uint64_t(14));
     h.value("job.cancel", json{{"id", pressed["job"]["id"].get<std::string>()}});
+
+    // The draw is 64-bit entropy and the field is not, so the mask happens on the way out: whatever the
+    // entropy source returns, the number that reaches the engine is one it accepts.
+    h.state.ai.seed_draw = [] { return 0xFFFFFFFFFFFFFFFFull; };
+    CHECK_EQ(h.value("ai.preview", json{{"recipe", "inpaint-remove"}})["request"]["seed"]
+                 .get<std::uint64_t>(),
+             noise::ai::kMaxSeed);
 }
 
 // The size a region is asked for is its own size, so far as the model can take it. A request shrunk to
@@ -2869,6 +2879,18 @@ void test_a_region_is_asked_at_its_own_size_and_says_when_it_is_not() {
     // The case that was reported: a mark over a full-HD canvas. Its grown crop is the canvas - 1.56 MP,
     // inside the 2 MP the models on this box publish - so the ask is the crop, bar the grid the engine
     // snaps to anyway, and nothing is thrown away.
+    // The ceiling the compile used is on the wire beside the recipe that used it: the model's published
+    // `soft_pixel_cap`, not a number the reader has to remember.
+    bool reported = false;
+    const json recipes_table = h.value("ai.recipes", json::object());
+    for (const json& row : recipes_table["recipes"]) {
+        if (row["id"].get<std::string>() == "inpaint-remove") {
+            reported = true;
+            CHECK_EQ(row["region_max_area_px"].get<int>(), 2097152);
+        }
+    }
+    CHECK(reported);
+
     const json inside = h.value("ai.preview", json{{"recipe", "inpaint-remove"}});
     CHECK(!inside["region"]["resampled"].get<bool>());
     // And the price line says the same thing before the press, not only after it.
@@ -2893,6 +2915,22 @@ void test_a_region_is_asked_at_its_own_size_and_says_when_it_is_not() {
     CHECK(over["region"]["scale"].get<double>() < 1.0);
     const auto [shrunk_w, shrunk_h] = asked_size(over);
     CHECK_NEAR(static_cast<double>(shrunk_w) / static_cast<double>(shrunk_h), 1.5, 0.05);
+    // The ask stays inside the ceiling rather than being snapped back over it on the grid.
+    CHECK(shrunk_w * shrunk_h <= 2097152);
+
+    // And the landing - the path that actually puts the answer on the document, not the preview - says
+    // so too. A plan rebuilt from the job record used to come back unscaled, so the sentence about the
+    // rescale only appeared when someone composited by hand.
+    const json pressed = wide.value("ai.remove", json::object());
+    REQUIRE(pressed.contains("job"));
+    const std::string job_id = pressed["job"]["id"].get<std::string>();
+    const json settled = wide.value("job.wait", json{{"id", job_id}, {"timeout", 30}});
+    CHECK_EQ(settled["state"].get<std::string>(), std::string("succeeded"));
+    const json record = wide.value("job.get", json{{"id", job_id}});
+    CHECK(record["landing"]["resampled"].get<bool>());
+    const std::string log_line = wide.value("log.tail", json{{"count", 40}}).dump();
+    CHECK(log_line.find("rescaled to") != std::string::npos);
+    CHECK(log_line.find("pixel ceiling") != std::string::npos);
 }
 
 void test_an_unconfigured_server_names_the_variable() {

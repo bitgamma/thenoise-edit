@@ -115,6 +115,12 @@ def seed_and_resample_claims(p: Probe, wire: wd.Wire, row: dict, words: dict, se
             f'{first["seed"]} vs {second["seed"]}')
     p.check(first["seed_source"] == "random", f'{row["id"]}: an unpinned ask draws',
             str(first["seed_source"]))
+    # The multipart form answers anything over `ai::kMaxSeed` - a signed 32-bit integer - with 400
+    # `must be an integer`, a range error wearing a type error's clothes. The app draws 64 bits, so the
+    # bound belongs on the ask rather than in the engine's message.
+    for name, seed in (("first", first["seed"]), ("second", second["seed"])):
+        p.check(isinstance(seed, int) and 0 < seed <= 2147483647,
+                f'{row["id"]}: the {name} seed is inside what the form carries', str(seed))
     p.check(first["request"]["blob"] == second["request"]["blob"],
             f'{row["id"]}: the seed is the only thing that moved',
             "the upload hash changed between two asks of the same region")

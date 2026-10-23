@@ -31,6 +31,14 @@ int round_up_to(int value, int multiple) {
     return ((value + multiple - 1) / multiple) * multiple;
 }
 
+// Never below one multiple: a shape the grid is wider than still has to ask for something.
+int round_down_to(int value, int multiple) {
+    if (multiple <= 1 || value <= 0) {
+        return value;
+    }
+    return std::max(multiple, (value / multiple) * multiple);
+}
+
 bool is_multiple_of(int value, int multiple) {
     return multiple <= 1 || value % multiple == 0;
 }
@@ -198,8 +206,15 @@ std::optional<RegionPlan> plan_region(Extent canvas, const Mask& mask, const Reg
     }
     const int wanted_w = static_cast<int>(std::ceil(static_cast<double>(plan.crop.w) * plan.scale));
     const int wanted_h = static_cast<int>(std::ceil(static_cast<double>(plan.crop.h) * plan.scale));
-    plan.requested = Extent{round_up_to(wanted_w, policy.size_multiple),
-                            round_up_to(wanted_h, policy.size_multiple)};
+    // Snapped up when there was room, down when there was not: the grid is what the engine wants, the
+    // ceiling is what the model said it could take, and rounding a shrunken ask up past it asks for more
+    // than the plan just gave up (measured: 2400x1600 against a 2097152 cap came out 1776x1184 -
+    // 2102784 pixels, over the top of the number it was shrunk for).
+    plan.requested = plan.scale < 1.0
+                         ? Extent{round_down_to(wanted_w, policy.size_multiple),
+                                  round_down_to(wanted_h, policy.size_multiple)}
+                         : Extent{round_up_to(wanted_w, policy.size_multiple),
+                                  round_up_to(wanted_h, policy.size_multiple)};
     plan.resampled = plan.scale < 1.0;
     plan.snapped_width = is_multiple_of(plan.crop.w, policy.size_multiple);
     plan.snapped_height = is_multiple_of(plan.crop.h, policy.size_multiple);
