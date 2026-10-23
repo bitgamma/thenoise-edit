@@ -1,0 +1,25 @@
+{
+  "name": "noise-edit GUI",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteUser": "vscode",
+  "runArgs": [
+    "--shm-size=512m"
+  ],
+  "postCreateCommand": "cmake -S . -B build-devcontainer -G Ninja && if [ ! -e compile_commands.json ] && [ ! -L compile_commands.json ]; then ln -s build-devcontainer/compile_commands.json compile_commands.json; fi",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "cmake.generator": "Ninja",
+        "cmake.buildDirectory": "${workspaceFolder}/build-devcontainer",
+        "cmake.configureOnOpen": false
+      },
+      "extensions": [
+        "ms-vscode.cmake-tools",
+        "llvm-vs-code-extensions.vscode-clangd",
+        "ms-python.python"
+      ]
+    }
+  }
+}
