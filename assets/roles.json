@@ -2,7 +2,7 @@
   "format": 1,
   "size_policy": {
     "multiple": 16,
-    "max_area_px": 1048576
+    "max_area_px": 2097152
   },
   "context_policy": {
     "ratio": 0.35,

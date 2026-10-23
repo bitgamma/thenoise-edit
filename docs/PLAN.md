@@ -1,9 +1,11 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the tree against the docs: **2026-10-15**, when the product was rewritten around what a
-person does ([PRODUCT.md](PRODUCT.md)) and the other design documents were merged into this one,
-[ARCHITECTURE.md](ARCHITECTURE.md) and [TESTING.md](TESTING.md). `AGENTS.md` is normative and outranks this
-file.
+Last re-read of the tree against the docs: **2026-10-23**, at the request-policy fix below — the AI path
+had two defects that were both invisible to the recorded tier, and the sections of this file that describe
+what a request contains were checked against `ai/provider`, `ai/region` and `app/ai_session` rather than
+against memory. Slice 6 (frames and style) landed earlier; **slice 7 (`doc.crop` / `doc.resize`) is still
+what is next**, blocked on `History::fits_coverage` validating a far-side plane against the current stack
+extent. `AGENTS.md` is normative and outranks this file.
 
 ---
 
@@ -112,9 +114,70 @@ coverage with verbs at the marked area, is next.
    button, the keymap file, autosave.
 
 Seed is not a user-facing concept: **Retry** re-asks the same request with a different seed and lands
-another layer. Roles and recipes are ours to pin for now - the sets are in `assets/roles.json` and
+another layer — which is only true because every request draws one of its own (see 2026-10-23 below); with
+the constant the code had before, a re-ask was a restatement. Roles and recipes are ours to pin for now - the sets are in `assets/roles.json` and
 `assets/recipes/`, loaded from disk, and the plan is that a person edits those files, not a dialog, so
 nothing here needs a settings UI to be foreseen later.
+
+## 2026-10-23 - A re-ask that could not differ, and a Change that only softened
+
+Two reported defects, one seam each, and both invisible to the recorded tier because a recording answers
+whatever you send it.
+
+**Every press sent `seed: 0`.** Two `ai.preview` calls on one mark produced byte-identical requests, so
+pressing Change twice was one request twice — a second GPU charge for the picture already on the canvas.
+`kSessionSeed = 0` was the default and nothing re-rolled it, and the doc claim that *Retry re-asks with a
+different seed* had no code behind it. A request now takes a seed at compile time: the panel's pin, or a
+draw through `AiSession::seed_draw` (`platform::random_seed` — the only place entropy enters the app, and
+the seam a test replaces with a fixed sequence, since nothing a test reaches may read entropy for itself).
+The number and its source (`named` / `pinned` / `random`) travel with the compile, the job and the panel:
+reproducibility comes from recording the seed, not from freezing it, and a per-frame read draws nothing —
+rule A forbids a read from computing an answer, and spending entropy is the same offence.
+
+**Then the probe found the fix had a second bug.** `seed` was one argument doing two jobs, so a verb press
+that carried a number *held* it: `ai.remove {seed: n}` quietly became `seed_pin`, and every ask after it
+was the same request again — the defect I had set out to remove, reintroduced by the press that removed it.
+The recorded tier passed, because the probe's own `ai.preview` pair happened to run before any press. Now
+`seed` belongs to the request the call builds and `seed_pin` is the hold, and the probe asserts both halves
+per verb: two asks draw two seeds, a named seed dies with its press, a held seed survives every ask until
+it is released.
+
+**The engine refused a 64-bit seed, and said the wrong thing about it.** The first live press after that
+change answered `400 Invalid value for 'seed': must be an integer`: the field goes out signed, so a full
+unsigned draw arrives negative, and a range error wears a type error's clothes. There is no schema to read
+the real bound from — `/ui-schema` does not exist on this box and `/models` carries no seed limits — so the
+width is `ai::kMaxSeed`, 32 bits, in the module that owns the field: the draw is masked to it and a named
+seed above it is refused by name. Measured facts and judgement are separated in its comment, because the
+next person cannot tell which is which otherwise.
+
+**A Change over a large mark came back as the same picture, softer.** A 1440x1080 document with a
+1000x700 mark compiled `crop [0,0,1440,1080]` to `requested [1184,896], scale 0.8211`: `roles.json` capped
+a region at 1 MP, a number nobody had measured, so the upload was Lanczos-downscaled and the answer
+Lanczos-upscaled back over a surround that pixel-lock keeps byte-identical — softness everywhere, change
+nowhere. Small marks were unaffected (their grown crop fits 1 MP), which is why it looked intermittent.
+`GET /models` publishes a per-model `soft_pixel_cap` — 2097152 on `Flux-2-Klein-9B-TheNoise`, 4194304 on
+`builtin.Qwen-Image-2.1-Turbo-INT8` — and nothing parsed it. The ceiling is that number when the model
+states one, and the table's only as a stand-in for a model that says nothing, raised to 2 MP: the smallest
+cap this box publishes, so the stand-in does not shrink answers the box would have served. A scale below 1
+is now a fact in the report (`region.resampled`, plus the size it shrank to in the landing log) rather than
+something a person infers by squinting.
+
+**What the tests talked me out of.** The first cut asked for the crop's exact size, which is what "output
+size equals input size" sounds like. Two `test_region` assertions went red for a reason: the 16-grid exists
+because the engine snaps an off-grid ask itself (measured: asking 500x300 answers 512x304), so an off-grid
+ask trades a snap this side planned for one the engine invented, and the aspect-frame contract — a 16:9
+frame arrives 16:9 — depends on `requested` being on the grid. The grid costs at most 15 pixels; the
+invented ceiling cost 18%. The ceiling was the defect, not the grid.
+
+Also settled, from a claim in an older session that a `style` request field was half-built: it is not
+needed and it would have been a field-policy violation. `style` is a recipe *variable*
+(`assets/recipes/change.local.json`) fed by the panel's style dropdown, and `style` stays among the fields
+never sent ([ARCHITECTURE.md](ARCHITECTURE.md) §field policy).
+
+Hermetic: 40/40 green (including `ai_job_probe`, which now asserts the seed and resample claims per
+verb), `sweep_procs.py` clean. **Owed, not yet spent:** live verification of both fixes —
+two asks over one mark differing in the answer, and a full-HD Change landing 1:1 sharp — four images on
+the dev box, waiting on a yes.
 
 ## 2026-10-19 - The live tier ran for the first time, and it found two things the recordings cannot
 

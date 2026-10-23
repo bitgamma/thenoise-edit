@@ -105,6 +105,48 @@ def words_for(ask: list[str]) -> dict:
     return {name: SENTENCES.get(name, "the thing the recipe asked about") for name in ask}
 
 
+def seed_and_resample_claims(p: Probe, wire: wd.Wire, row: dict, words: dict, seed: int) -> None:
+    """The two facts a press owns that a recording cannot show: whether the ask can differ at all, and
+    whether the region it was built from survived the trip."""
+    asked = {"recipe": row["recipe"], "vars": words}
+    first = wire.call("ai.preview", asked)
+    second = wire.call("ai.preview", asked)
+    p.check(first["seed"] != second["seed"], f'{row["id"]}: two asks take two seeds',
+            f'{first["seed"]} vs {second["seed"]}')
+    p.check(first["seed_source"] == "random", f'{row["id"]}: an unpinned ask draws',
+            str(first["seed_source"]))
+    p.check(first["request"]["blob"] == second["request"]["blob"],
+            f'{row["id"]}: the seed is the only thing that moved',
+            "the upload hash changed between two asks of the same region")
+
+    # A seed on a press belongs to that press. Holding one across asks is `seed_pin`, and a press that
+    # pinned the session would make every later ask identical - the defect this probe found.
+    wire.call("ai.intent", {"seed_pin": seed})
+    pinned = wire.call("ai.preview", asked)
+    p.check(pinned["seed"] == seed and pinned["seed_source"] == "pinned",
+            f'{row["id"]}: a pinned seed is the seed that goes out',
+            f'{pinned["seed"]}/{pinned["seed_source"]}')
+    state = wire.call("server.state")
+    p.check(state["seed_pinned"] is True and state["seed"] == seed,
+            f'{row["id"]}: the session reports the pin', str(state.get("seed_pinned")))
+    one_press = wire.call("ai.preview", {**asked, "seed": seed})
+    p.check(one_press["seed"] == seed and one_press["seed_source"] == "named",
+            f'{row["id"]}: a named seed belongs to this press only', 
+            f'{one_press["seed"]}/{one_press["seed_source"]}')
+    wire.call("ai.intent", {"seed_pin": None})
+    p.check(wire.call("server.state")["seed_pinned"] is False,
+            f'{row["id"]}: letting go returns to one seed per ask')
+    p.check(wire.call("ai.preview", asked)["seed_source"] == "random",
+            f'{row["id"]}: the next ask draws again')
+
+    # A mark this small is nowhere near a pixel ceiling, so the answer is asked for at the region's own
+    # size: a resample here would mean the ceiling was invented rather than measured.
+    p.check(first["region"]["resampled"] is False, f'{row["id"]}: the region was not shrunk',
+            f'crop {first["region"]["crop"]} asked {first["region"]["requested"]}')
+    intent = wire.call("ai.intent", {"recipe": row["recipe"]})
+    p.check(intent["quote"]["resampled"] is False, f'{row["id"]}: the price line says the same')
+
+
 def preview_claims(p: Probe, wire: wd.Wire, row: dict, words: dict, seed: int, model: str) -> None:
     """What a press would send, checked before it costs anything. Field policy and geometry, per verb."""
     preview = wire.call("ai.preview", {"recipe": row["recipe"], "vars": words, "seed": seed})
@@ -252,6 +294,7 @@ def run_verbs(p: Probe, wire: wd.Wire, live: bool, args: argparse.Namespace, tmp
         # Refused first, before anything is typed: the words are what the operation was told.
         press_refuses_without_the_words(p, wire, row)
         preview_claims(p, wire, row, words, args.seed, model)
+        seed_and_resample_claims(p, wire, row, words, args.seed)
         # The panel's door in the panel's own order: the row's box commits the words, then the verb
         # command - carrying nothing - presses. `ai.run` is deliberately nowhere in this file.
         wire.call("ai.intent", {"recipe": row["recipe"], "vars": words})

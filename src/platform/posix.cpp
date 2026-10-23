@@ -2,6 +2,7 @@
 #include "platform/platform.h"
 
 #include <ctime>
+#include <random>
 #include <unistd.h>
 #include <cstdlib>
 #include <filesystem>
@@ -75,6 +76,13 @@ void sleep_ms(int ms) {
 
 std::int64_t pid() {
     return static_cast<std::int64_t>(::getpid());
+}
+
+std::uint64_t random_seed() {
+    // Two draws: libstdc++ hands out 32 bits at a time, so one call would leave the upper half of the
+    // return value constant.
+    std::random_device device;
+    return (static_cast<std::uint64_t>(device()) << 32) | static_cast<std::uint64_t>(device());
 }
 
 }

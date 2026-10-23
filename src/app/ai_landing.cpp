@@ -180,6 +180,9 @@ json region_plan_json(const ai::RegionPlan& plan, const std::string& coverage_so
                 {"crop", json::array({plan.crop.x, plan.crop.y, plan.crop.w, plan.crop.h})},
                 {"requested", json::array({plan.requested.w, plan.requested.h})},
                 {"scale", plan.scale},
+                // Whether the answer will be a resample of the region rather than the region: true only
+                // above the model's pixel ceiling, and the reason a Change can look like a no-op.
+                {"resampled", plan.resampled},
                 {"snapped_width", plan.snapped_width},
                 {"snapped_height", plan.snapped_height}};
 }
@@ -298,6 +301,13 @@ CommandResult land_answer(const char* command, AppState& state, const AnswerLand
               std::to_string(report.area.h) + " under a " + std::to_string(report.feather_px) +
               "px feather: " + std::to_string(report.pixels_changed) + " pixels" +
               (landing.apply ? "" : " (preview)") +
+              // Two different reasons the picture is not the one that was asked for, said separately: one is
+              // the engine snapping, the other is this app rescaling the region before asking - which costs
+              // detail at both ends and is the one a person can avoid by marking a smaller area.
+              (landing.plan.resampled ? ", rescaled to " + std::to_string(landing.plan.requested.w) + "x" +
+                                            std::to_string(landing.plan.requested.h) +
+                                            " for the model's pixel ceiling"
+                                      : "") +
               (report.answered_as_requested ? "" : ", answered at a different size than requested"));
 
     json result{{"applied", landing.apply},

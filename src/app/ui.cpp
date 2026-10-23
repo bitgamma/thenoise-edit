@@ -696,12 +696,19 @@ void draw_ai_status_line(AppState& state, CommandTable& commands, const json& vi
         // anyone who wants it, and the bar has to leave room for where an answer went.
         const json& quote = view["quote"];
         ImGui::SameLine();
-        ImGui::TextDisabled("%dx%d", quote["size"][0].get<int>(), quote["size"][1].get<int>());
+        ImGui::TextDisabled("%dx%d%s", quote["size"][0].get<int>(), quote["size"][1].get<int>(),
+                            quote["resampled"].get<bool>() ? " rescaled" : "");
     }
-    // The seed is on screen because it is in the request; nothing draws a number behind the person's
-    // back, and `ai.intent {seed: n}` is how it changes.
+    // The seed of the ask that produced the last answer, not a number the next press will reuse: an ask
+    // with nothing held draws its own. `ai.intent {seed_pin: n}` holds one, `{seed_pin: null}` lets go.
     ImGui::SameLine();
-    ImGui::TextDisabled("seed %llu", static_cast<unsigned long long>(view["seed"].get<std::uint64_t>()));
+    if (view["seed_pinned"].get<bool>()) {
+        ImGui::TextDisabled("seed %llu (pinned)",
+                            static_cast<unsigned long long>(view["seed"].get<std::uint64_t>()));
+    } else {
+        ImGui::TextDisabled("seed random (last %llu)",
+                            static_cast<unsigned long long>(view["seed"].get<std::uint64_t>()));
+    }
     if (view["swap"].get<bool>()) {
         ImGui::SameLine();
         ImGui::TextColored(kWarnInk, "will load the model (resident: %s)",

@@ -90,10 +90,21 @@ struct RequestInput {
     int width = 0;
     int height = 0;
     std::string prompt;
+    // Inside `kMaxSeed`: the field goes out signed, and the builder refuses a value it cannot carry
+    // rather than sending one the engine misreads.
     std::uint64_t seed = 0;
     // The prepped region, PNG-encoded: the upload, and its content hash in `blob_id`.
     std::vector<std::uint8_t> png;
 };
+
+// The largest seed a request may carry: 32 bits.
+//
+// Measured: a draw over the top of a signed field arrives at the engine negative, and the answer is 400
+// `Invalid value for 'seed': must be an integer` (seen live 2026-10-23) - a range error wearing a type
+// error's clothes. The box publishes no bound to read instead (`/models` carries no seed limits, there is
+// no `/ui-schema`), so this is the width these engines have always used. Four billion variants is far past
+// what "each ask may differ" needs; above it a seed is refused by name rather than sent and misread.
+inline constexpr std::uint64_t kMaxSeed = 0xFFFFFFFFULL;
 
 // The builder. It validates its own values because the server does not: a `seed` of
 // "not-a-number" is answered with 200 and a default, and a misspelt field name is ignored, so the only

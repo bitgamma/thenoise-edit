@@ -43,6 +43,8 @@ struct Assembly {
     // The prepped region, written out so a person can look at the exact image that is being uploaded.
     std::string prepped_path;
     ai::BuiltRequest request{};
+    // Which of the three ways a seed is chosen this one came from: `named`, `pinned` or `random`.
+    std::string seed_source;
 };
 
 struct Attempt {
@@ -210,11 +212,29 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
     }
     region.assembled.prompt = *prompt;
 
-    // Absent means the session's seed, never a fresh random one: a request must be reproducible from
-    // what the screen showed, and a number that appeared from nowhere is not.
-    int seed = static_cast<int>(state.ai.seed);
-    if (!arg_int(args, "seed", seed)) {
-        return Attempt{false, Assembly{}, fail(command, "'seed' must be an integer")};
+    // One seed per request. A call that names one gets exactly it; a call that names none takes the
+    // panel's pin or a fresh draw, because two asks over the same pixels with the same seed are the
+    // same request twice - a second charge for the picture that is already on the canvas. The number
+    // and its source travel with the compile, so "what made this" is answered from the job.
+    std::uint64_t seed = 0;
+    if (args.contains("seed")) {
+        // Read as 64 bits, because `int` would truncate a value the provider is there to refuse.
+        const json& given = args.at("seed");
+        if (!given.is_number_integer()) {
+            return Attempt{false, Assembly{}, fail(command, "'seed' must be an integer")};
+        }
+        const std::int64_t named = given.get<std::int64_t>();
+        if (named < 0) {
+            return Attempt{false, Assembly{},
+                           fail(command,
+                                "'seed' must not be negative (got " + std::to_string(named) + ")")};
+        }
+        seed = static_cast<std::uint64_t>(named);
+        state.ai.last_seed = seed;
+        region.assembled.seed_source = "named";
+    } else {
+        seed = take_seed(state.ai);
+        region.assembled.seed_source = state.ai.seed_pin.has_value() ? "pinned" : "random";
     }
 
     Attempt prepped = prep_bytes(command, state, region.assembled, static_cast<std::uint64_t>(seed));
@@ -289,6 +309,8 @@ nlohmann::json assembly_json(const AppState& state, const Assembly& assembled,
                 {"prompt", assembled.prompt},
                 {"prepped", assembled.prepped_path},
                 {"prep", ai::prep_name(assembled.recipe->prep)},
+                {"seed", assembled.request.params.seed},
+                {"seed_source", assembled.seed_source},
                 {"region", region_plan_json(assembled.plan, assembled.coverage_source)},
                 {"request",
                  ai::outgoing_preview(state.ai.client != nullptr
@@ -325,6 +347,7 @@ std::optional<RequestQuote> quote_request(AppState& state, const ai::Recipe& rec
     RequestQuote quote;
     quote.endpoint = ai::request_path(recipe.endpoint);
     quote.size = plan->requested;
+    quote.resampled = plan->resampled;
     if (state.ai.registry != nullptr) {
         const ai::ModelEntry* entry = state.ai.registry->resolved_model(recipe.role);
         if (entry != nullptr) {

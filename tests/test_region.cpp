@@ -124,6 +124,9 @@ void test_a_frame_keeps_its_ratio_from_preset_to_pixels() {
               frame.right() <= plan.crop.right() && frame.bottom() <= plan.crop.bottom());
         CHECK(plan.requested.w % kFramePolicy.size_multiple == 0);
         CHECK(plan.requested.h % kFramePolicy.size_multiple == 0);
+        // A frame inside the ceiling is asked at its own size bar the grid it must sit on: nothing of it
+        // is thrown away, so a 16:9 frame does not come back as a shrunk 16:9 frame.
+        CHECK(!plan.resampled);
         // The answer's centre is the crop's centre, so a wide answer cannot land off to one side of the
         // region it was compiled for.
         const Vec2 centre = plan.to_document(
@@ -232,6 +235,11 @@ void test_the_requested_size_honours_the_policy_and_the_budget() {
         CHECK(plan.requested.h >= plan.crop.h);
         CHECK(plan.scale <= 1.0);
         CHECK(plan.requested.w >= static_cast<int>(std::ceil(plan.crop.w * plan.scale)));
+        // Inside the ceiling the ask is the crop, so the answer arrives as the region it was compiled
+        // from. The slack is the grid: one multiple, never a fraction of the region.
+        CHECK(!plan.resampled);
+        CHECK(plan.requested.w - plan.crop.w < multiple);
+        CHECK(plan.requested.h - plan.crop.h < multiple);
     }
 
     // A region over budget comes down to it: the area asked for is inside the budget plus the slack
@@ -241,6 +249,9 @@ void test_the_requested_size_honours_the_policy_and_the_budget() {
     const Extent canvas{4096, 4096};
     const auto big = plan_region(canvas, mask_of(canvas, Rect{0, 0, 4000, 3000}), budget).value();
     CHECK(big.scale < 1.0);
+    // The one case that says so out loud: a shrunk ask means a soft answer over a sharp canvas, and
+    // nothing may discover it by eye.
+    CHECK(big.resampled);
     const double slack = static_cast<double>(2 * multiple) * static_cast<double>(4096) * 2.0;
     CHECK(static_cast<double>(big.requested.w) * static_cast<double>(big.requested.h) <=
           static_cast<double>(budget.max_area_px) + slack);

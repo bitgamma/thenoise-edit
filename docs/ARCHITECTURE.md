@@ -206,7 +206,7 @@ src/
                        whose `document_epoch` the job was queued under
     ai_intent.{h,cpp}  `ai.intent`: the AI action's state (which recipe the last verb chose, the values
                        typed for the fields it asks about, the aspect chosen for a recipe that offers
-                       them, the session seed, the job) and its one action,
+                       them, the seed pinned, if any, the job) and its one action,
                        plus the readiness every door forecasts from (`assess`, `missing_region`,
                        `needs_swap`). A refusal is recorded on the intent by the command wrapper, so the
                        next read - the panel's, every frame - still carries the sentence: a words box that
@@ -859,9 +859,17 @@ Input: `(document composite, selection mask, recipe)` → one compiled request.
              crop you get, and expect returned dims != requested dims regardless (the resample
              below already handles it). The number lives in roles.json / the recipe policy,
              nowhere else
-5. FIT       if area > region_budget (default 1024×1024 equivalent) → uniform scale down;
-             record `scale` *and* `requested` = that scale rounded **up** to the multiple, because
-             the two are not proportional and the inverse map needs the size, not the scale
+5. FIT       a crop inside the model's pixel ceiling is asked for at its **own** size — the upload,
+             the `size` field and the answer describe the same pixels, so nothing is resampled at
+             either end. Only above the ceiling does it scale down, uniformly by area; record
+             `scale` *and* `requested` = that scale rounded **up** to the multiple, because the two
+             are not proportional and the inverse map needs the size, not the scale.
+             The ceiling is the model's `soft_pixel_cap` from `/v1/models` (2 MP on
+             `Flux-2-Klein-9B-TheNoise`, measured 2026-10-23) and `roles.json`'s `max_area_px` only
+             for a model that publishes none — a ceiling invented here shrinks answers the box would
+             have served at full size, and a shrunk ask resampled back over a locked surround is the
+             same picture, softer: a Change that visibly did nothing. When it happens the plan says
+             so (`region.resampled`, in the preview, the landing and the log)
 6. CROP      flattened base = visible layers below ∪ active layer (`Document::flatten_over`),
              alpha flattened over a colour sampled from the mask ring (never over plain
              white/black) — `flatten_over_ring(crop, coverage_in_crop)`
@@ -897,7 +905,11 @@ field, and it refuses tier-2 unless the model profile opts in.
 
 **The builder also validates its own values, because nobody downstream does.** `seed:
 "not-a-number"` is answered with `200` and a default (measured). A misspelt field name is
-therefore silent rather than loud, and the one place that can catch it is here.
+therefore silent rather than loud, and the one place that can catch it is here. The seed's
+*range* is caught here too: the field goes out signed and the engines read 32 bits, so a wider
+draw leaves as a negative number and comes back as 400 `Invalid value for 'seed': must be an
+integer` (seen live 2026-10-23) — a range error wearing a type error's clothes, and the box
+publishes no schema to read the bound from.
 
 **Tier 1 — OpenAI-level, used in MVP**
 
@@ -1277,10 +1289,25 @@ an `edits` or `upscale` endpoint (`RecipeSet::selection_intents`): adding an ope
 file, and a recipe that stops being a selection operation leaves the palette by itself.
 
 Variables come from the user's instruction (whatever the recipe's `ask` lists) and the layer name. A
-chosen `aspect` is not one of them: it never enters the words, only the size the request asks for. **The seed is the session's**: `ai.preview` and `ai.run` take `seed` optionally and use
-`AiSession::seed` when the call names none, and the status line shows that number. Nothing
-draws a random seed inside a request path - the number on the screen is the number the request carried,
-which is what makes "run that again" and "why does this one look different" answerable. Variants are the
+chosen `aspect` is not one of them: it never enters the words, only the size the request asks for.
+
+**Every request takes a seed of its own.** The model explores from the seed, so two asks over the same
+pixels with the same seed are the *same request twice* — a second charge for the picture already on the
+canvas, and a verb that cannot improve. `ai.preview` and `ai.run` take `seed` optionally; a call that
+names none takes the panel's pin (`ai.intent {seed: n}` pins, `{seed: null}` lets go) or a draw from
+`AiSession::seed_draw`, which is `platform::random_seed` and nothing else. Reproducibility comes from
+*recording*, not from a constant: the number and its source (`named` / `pinned` / `random`) travel with
+the compile and the job record, so "what made this" is answered afterwards.
+
+`seed` and `seed_pin` are different arguments because they are different claims. `seed` belongs to the
+request the call builds — `ai.change {seed: n}`, `ai.run {seed: n}`, `ai.intent {seed: n, run: true}` all
+carry *that* request and nothing after it. `seed_pin` is the hold: `ai.intent {seed_pin: n}` makes every
+later ask take that number (how someone iterates on an answer they liked), `{seed_pin: null}` lets go.
+They were one argument for an hour, and `ai_job_probe` caught what that meant: a verb press carrying a
+seed quietly held it for every press that followed, which is the original defect wearing the fix's clothes.
+The panel shows the seed of the ask that produced the current answer, labelled pinned or random — never a
+number the next press promises to reuse — and reading the intent draws nothing, because a rule that
+forbids a per-frame read from computing an answer forbids it spending entropy too. Variants stay the
 explicit case: `seed + i`, asked for by name. The
 `enhance` **role** (one `chat/completions` call on a downscaled crop — *"describe the
 background surface, lighting and palette in two lines"*) is designed in but switched off in
@@ -1440,7 +1467,7 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
  `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
-| ai | `ai.verbs` (the verb rows: id, command, key, recipe, label, operation, `ask`, scope, `ready`, `reason`, `model`, `resident`, `swap`), `ai.heal` / `ai.remove` / `ai.fill` / `ai.change` / `ai.generate` / `ai.blend` `{vars?, seed?, confirm?}` (one verb row pressed - they call `ai.intent` with their recipe named, so a key and a scripted intent cannot diverge), `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}`, `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pinned}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.apply {id, feather?, colour_match?}` (the idempotent landing door - answers land by themselves, so this one brings one back or overrides the policy, and says `already_landed` otherwise), | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact field list, size and blob digest before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel and land without a UI; `ai.intent` is the whole surface of the action, so a scripted run and a key press cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command and means the session seed when absent - nothing draws a random one inside a request path |
+| ai | `ai.verbs` (the verb rows: id, command, key, recipe, label, operation, `ask`, scope, `ready`, `reason`, `model`, `resident`, `swap`), `ai.heal` / `ai.remove` / `ai.fill` / `ai.change` / `ai.generate` / `ai.blend` `{vars?, seed?, confirm?}` (one verb row pressed - they call `ai.intent` with their recipe named, so a key and a scripted intent cannot diverge), `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}`, `ai.intent {recipe?, vars?, aspect?, seed?, seed_pin?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pinned}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.apply {id, feather?, colour_match?}` (the idempotent landing door - answers land by themselves, so this one brings one back or overrides the policy, and says `already_landed` otherwise), | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact field list, size and blob digest before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel and land without a UI; `ai.intent` is the whole surface of the action, so a scripted run and a key press cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command; absent, the request takes the panel's pin or a fresh draw, and every report says which (`seed`, `seed_source`) |
 
 Live now: every row. The AI row is driven end to end by `tools/ai_job_probe.py` against
 `tests/fixtures/http` (a recorded server), so the whole path - discovery, role resolution, the compiled
