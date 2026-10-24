@@ -35,3 +35,42 @@ For interactive GUI input tests, use `tools/wire_input.py` and the panel probes.
 For the command protocol, use `command.list` through `tools/wire_call.py` on a
 running instance, as required by `AGENTS.md`. After a timed-out probe, check for
 orphaned processes with `python3 tools/sweep_procs.py --list`.
+
+## WebAssembly and headless browser checks
+
+This **same container** also includes Emscripten 6.0.10, Node.js 24 and
+Playwright Chromium (including the headless shell). Emscripten ports are cached
+under `~/.cache/emscripten`; Playwright lives under
+`~/.local/share/thenoise-web-tools`, and Chromium under `~/.cache/ms-playwright`.
+No packages are installed into the repository or `REF/node_modules`. The
+container installs Playwright **before** native CMake configuration and checks
+for its browser on every start. Existing downloads are reused. The Playwright
+CLI and Node module are on the VS Code terminal environment (`PATH` / `NODE_PATH`).
+The first container build needs internet for the SDK, npm package and browser.
+
+```sh
+emcc --version
+node --version
+playwright --version                 # available directly in the VS Code terminal
+node -e "console.log(require('playwright').chromium.executablePath())"
+node web/bridge.test.cjs
+emcmake cmake -S . -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release -DNOISE_BUILD_TESTS=OFF
+cmake --build build-web --parallel 4
+node web/smoke.cjs             # launches the server, checks both themes, writes screenshots
+python3 -m http.server 8000 --bind 0.0.0.0 --directory build-web  # optional manual preview
+```
+
+If a browser cache was deleted, rerun `bash .devcontainer/playwright.sh`; the
+command is also run automatically when the container starts.
+
+Open the forwarded port 8000 to preview `noise-edit.html` interactively.
+The smoke test writes `out/web-smoke/dark.png` and `light.png`, requires WebGL2,
+and fails on runtime JS errors or HTTP failures. The headless browser uses
+SwiftShader; test on real hardware too before shipping performance-sensitive UI.
+It does **not** replace manual checks of editing workflows or the native CTest
+suite. Keep `build-web/` separate from `build-devcontainer/`; never reuse their
+CMake caches.
+
+The browser deliberately has no TCP debug wire. Test it via the DOM, canvas,
+Playwright screenshots and browser console instead. The container does not
+implement browser AI networking, offline persistence or WebGL1 fallback.

@@ -7,7 +7,9 @@
 
 #include "ai/provider.h"
 #include "ai/recorded.h"
+#ifndef __EMSCRIPTEN__
 #include "ai/transport_curl.h"
+#endif
 #include "core/log.h"
 #include "platform/platform.h"
 
@@ -20,6 +22,7 @@ namespace noise::app {
 
 namespace {
 
+#ifndef __EMSCRIPTEN__
 constexpr const char* kFixturesVariable = "NOISE_AI_FIXTURES";
 // A recording has no host, but a request still needs a URL to be shaped: `.invalid` is reserved and
 // can never resolve, so a replay session carries an address that says what it is and cannot leak a
@@ -40,6 +43,7 @@ ai::ServerProfile session_profile(bool replaying) {
     log::warn("ai: " + error);
     return ai::ServerProfile{};
 }
+#endif
 
 }  // namespace
 
@@ -138,6 +142,13 @@ void open_ai_session(noise::AppState& state) {
         log::error("ai: " + error);
     }
 
+#ifdef __EMSCRIPTEN__
+    // Browser builds have no blocking libcurl transport or worker: editing remains fully local.
+    // A browser Fetch transport requires a separate asynchronous job path and server CORS support.
+    ai.connect_error = "AI generation is unavailable in the browser build; use the native editor";
+    return;
+#else
+
     // Recordings first: a probe that means to replay must never reach the network by accident, and a
     // fixture directory that fails to load is reported rather than falling through to a live server.
     bool replaying = false;
@@ -168,6 +179,7 @@ void open_ai_session(noise::AppState& state) {
             ai::JobQueue::Deps{ai.client.get(), state.runtime_dir + "/ai/jobs"},
             [] { return platform::now_seconds(); });
     }
+#endif
 }
 
 }  // namespace noise::app

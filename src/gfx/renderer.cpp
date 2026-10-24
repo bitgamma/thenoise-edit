@@ -3,7 +3,11 @@
 
 #include "core/log.h"
 
+#ifdef __EMSCRIPTEN__
+#include <GLES3/gl3.h>
+#else
 #include <GL/gl.h>
+#endif
 #include <sokol_glue.h>
 #include <sokol_log.h>
 

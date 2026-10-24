@@ -18,7 +18,6 @@ constexpr std::uint16_t kVersion = 20;  // 2.0: deflate and stored, anything old
 constexpr std::uint16_t kTimeFixed = 0;
 constexpr std::uint16_t kDateFixed = 0x0021;  // 1980-01-01, the epoch DOS can express
 constexpr std::size_t kLocalHeaderBytes = 30;
-constexpr std::size_t kCentralHeaderBytes = 46;
 constexpr std::size_t kEndHeaderBytes = 22;
 constexpr std::size_t kMaxCommentBytes = 0xFFFF;
 constexpr std::uint16_t kMethodStore = 0;

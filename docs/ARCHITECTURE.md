@@ -30,8 +30,10 @@ Every claim here is either in the tree or marked **(planned)** / **(out)**. What
 | Inference backend | **Lemonade Server**, `thenoise` recipe only | we are a client; the model box is AMD/ROCm, usually on the LAN, bearer-keyed |
 
 Build: CMake + `FetchContent` (sokol, imgui, miniz, nlohmann). System libs via `pkg-config`, all
-required: libpng16, libjpeg, libwebp and libcurl (the AI transport - there is no build of this app
-without it, and no network call at build time). Everything statically linkable into one binary. No OpenCV (heavy, wrong
+required for the native target: libpng16, libjpeg, libwebp and libcurl (the AI transport).
+The optional Emscripten target uses Emscripten codec ports and WebGL2, without libcurl or a
+worker thread; it is a local-only editor until an asynchronous browser AI transport exists.
+Everything statically linkable into one binary on Linux or a WASM/JS asset bundle in the browser. No OpenCV (heavy, wrong
 licence gravity for what we need; the ~400 lines of healing/filtering we want are ours).
 
 **Cross-platform by design, Linux-first in practice.** No Windows/macOS build scripts yet,

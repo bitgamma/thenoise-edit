@@ -150,7 +150,9 @@ JobQueue::JobQueue(Deps deps, Clock clock)
     : deps_(deps), clock_(std::move(clock)), directory_(deps.directory) {
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(directory_), ec);
+#ifndef __EMSCRIPTEN__
     worker_ = std::thread([this] { worker(); });
+#endif
 }
 
 JobQueue::~JobQueue() {
@@ -159,9 +161,11 @@ JobQueue::~JobQueue() {
         stopping_ = true;
     }
     ready_.notify_all();
+#ifndef __EMSCRIPTEN__
     if (worker_.joinable()) {
         worker_.join();
     }
+#endif
 }
 
 std::string JobQueue::new_id() { return pad_id(next_id_++); }

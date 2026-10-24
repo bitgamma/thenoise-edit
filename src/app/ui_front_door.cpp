@@ -19,9 +19,11 @@ using nlohmann::json;
 
 namespace {
 constexpr float kThemeSelectorWidthPx = 82.0f;
+#ifndef __EMSCRIPTEN__
 constexpr float kFileActionPaddingPx = 1.0f;
 constexpr float kFileActionVerticalPaddingPx = 3.0f;
 constexpr float kFileActionSpacingPx = 2.0f;
+#endif
 // The menu and the front door both ask for a path and act on the answer later: a native dialog is
 // asynchronous by design, so the click that opened it and the document it produced cannot share a
 // frame. This remembers which door the open picker is behind.
@@ -36,7 +38,8 @@ void start_pick(CommandTable& commands, const char* set, const char* title) {
     commands.invoke("file.pick", json{{"for", set}, {"title", title}});
 }
 
-void draw_file_buttons(AppState& state, CommandTable& commands, bool has_document) {
+#ifndef __EMSCRIPTEN__
+void draw_file_buttons(CommandTable& commands, bool has_document, bool can_save) {
     if (ImGui::Button("New")) {
         commands.invoke("file.new", json::object());
     }
@@ -45,7 +48,7 @@ void draw_file_buttons(AppState& state, CommandTable& commands, bool has_documen
         start_pick(commands, "open", "Open an image or a document");
     }
     ImGui::SameLine();
-    ImGui::BeginDisabled(!has_document || state.doc.path().empty());
+    ImGui::BeginDisabled(!can_save);
     if (ImGui::Button("Save")) {
         commands.invoke("doc.save", json::object());
     }
@@ -57,6 +60,7 @@ void draw_file_buttons(AppState& state, CommandTable& commands, bool has_documen
     }
     ImGui::EndDisabled();
 }
+#endif
 
 void draw_theme_picker(AppState& state, CommandTable& commands) {
     ImGui::TextDisabled("Theme");
@@ -83,6 +87,7 @@ void draw_theme_picker(AppState& state, CommandTable& commands) {
     ImGui::EndCombo();
 }
 
+#ifndef __EMSCRIPTEN__
 void draw_export_insert_buttons(CommandTable& commands, bool has_document) {
     ImGui::SameLine();
     ImGui::BeginDisabled(!has_document);
@@ -95,6 +100,7 @@ void draw_export_insert_buttons(CommandTable& commands, bool has_document) {
     }
     ImGui::EndDisabled();
 }
+#endif
 }
 
 // Files first, in the panel rather than in a menu bar: `BeginMainMenuBar()` asserts in this frame
@@ -104,19 +110,24 @@ void draw_export_insert_buttons(CommandTable& commands, bool has_document) {
 // a menu would have shown.
 void draw_file_row(AppState& state, CommandTable& commands) {
     const bool has_document = !state.doc.empty();
+#ifndef __EMSCRIPTEN__
+    const bool can_save = has_document && !state.doc.path().empty();
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                         ImVec2(kFileActionPaddingPx, kFileActionVerticalPaddingPx));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
                         ImVec2(kFileActionSpacingPx, ImGui::GetStyle().ItemSpacing.y));
-    draw_file_buttons(state, commands, has_document);
+    draw_file_buttons(commands, has_document, can_save);
     draw_export_insert_buttons(commands, has_document);
     ImGui::NewLine();
+#endif
     draw_theme_picker(state, commands);
     if (has_document && state.doc.dirty()) {
         ImGui::SameLine();
         ImGui::TextDisabled("unsaved");
     }
+#ifndef __EMSCRIPTEN__
     ImGui::PopStyleVar(2);
+#endif
 }
 
 // The body both doors draw: a size and, if the person already knows what they want, the words. Reading

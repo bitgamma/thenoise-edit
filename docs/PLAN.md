@@ -1,11 +1,11 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the tree against the docs: **2026-10-23**, at the request-policy fix below — the AI path
-had two defects that were both invisible to the recorded tier, and the sections of this file that describe
-what a request contains were checked against `ai/provider`, `ai/region` and `app/ai_session` rather than
-against memory. Slice 6 (frames and style) landed earlier; **slice 7 (`doc.crop` / `doc.resize`) is still
-what is next**, blocked on `History::fits_coverage` validating a far-side plane against the current stack
-extent. `AGENTS.md` is normative and outranks this file.
+Last re-read of the tree against the docs: **2026-10-24**, after merging current `main` and finishing the
+browser host path — request seed and size policy were checked against `ai/provider`, `ai/region` and
+`app/ai_session`; the WASM target, browser file flow and UI controls were checked against the built tree.
+The selected next architecture milestone remains `doc.crop` / `doc.resize`, blocked on
+`History::fits_coverage` validating coverage when a history entry's canvas extent differs from the current
+stack extent. `AGENTS.md` is normative and outranks this file.
 
 ---
 
@@ -68,21 +68,49 @@ and font files. GUI probes use the existing `io/config` path in a temporary dire
 controls still belong in the existing UI modules and dispatch through the same command table. The
 remaining product roadmap is unchanged.
 
+## 2026-10-24 — Optional WebAssembly/WebGL2 build
+
+The `EMSCRIPTEN` CMake branch keeps the existing document, command table, Dear ImGui UI, and
+Sokol draw path. Only host seams change: WebGL2, browser file selection/drop/download, codec
+ports, and localStorage preferences live behind `src/platform/web*` and `web/`. Browser uploads
+and project bytes are transient MEMFS data until explicitly downloaded. The native executable
+and its tests remain the reference for image semantics. This no-pthread target intentionally
+cannot run the blocking libcurl job worker, so AI generation reports an unsupported operation
+rather than pretending to succeed; a future async Fetch transport requires its own tested job
+path and server CORS policy. The web file bridge has isolated Node tests, while full WASM
+rendering is exercised in Chromium/WebGL2 by `web/smoke.cjs`: in both themes it creates a canvas, paints,
+undoes, and checks the canvas capture returns byte-for-byte to its earlier state. It also downloads and
+reopens a `.noise` project, exports PNG, reopens it through the browser picker, and compares the visible
+canvas bytes. The brush slider rows reserve space for their full labels, including in a 280 px Tools dock.
+
+Architecture verdict after rereading the full design: the browser branch changes only host
+seams and keeps editing commands, document semantics and codecs in their existing modules.
+The slider adjustment stays in `app/ui_tool_panel`; the browser toolbar and native UI still
+reach behavior through the command table. The smoke test goes through real browser actions and
+pointer/keyboard input. No document, AI request, field policy, or debug-wire contract changed;
+async browser AI remains a separate transport milestone.
+
+The native and WASM builds pass. The bridge and Chromium smoke tests pass, including the `.noise` and
+PNG file round trips. Native CTest is 39/40: all GUI probes pass with `DISPLAY` unset; only the existing
+wide-versus-tiled timing assertion in `test_blend` fails, as it did before the merge. `sweep_procs.py`
+reports clean.
+
 ## What is next, in order
 
 Ordered by what makes the thing usable rather than by what is interesting. Each slice is demoable by a
 human without a terminal, ships the wire command that makes it observable, and ends with a step of
-`tools/flow_probe.py` walking [PRODUCT.md](PRODUCT.md)'s scenario. Until slice 3 the scenario is walked
-partly over the wire; after it, by clicking.
+`tools/flow_probe.py` walking [PRODUCT.md](PRODUCT.md)'s scenario. The primary flows in slices 1–4 are
+landed; slice 3 still owes local Heal. Slices 5 and 6 have landed their core UI and image-input behavior,
+with remaining work listed below. The selected next milestone is slice 7, document geometry.
 
-**Slices 1 and 2 landed 2026-10-15** — files, and a new image from an idea — with two deliberate gaps: the
-New dialog quotes no price, because that was cut by decision, and *Blend* belongs to slice 5. Slice 3, one
-coverage with verbs at the marked area, is next.
+**Slices 1 and 2 landed 2026-10-15** — files, and a new image from an idea. The file surface now includes
+New, Open, Save, Save As, Export, Insert, drop, recent files and the quit guard. The New dialog's price
+quote remains deliberately cut. Slice 3's coverage and verb bar are in place; local Heal remains owed.
 
-1. **Files.** Start dialog (New / Open + recent), Open, Save, Save As, Export (png / jpg / webp),
-   drag-and-drop onto a new layer, dirty title, quit guard. Native picker through the desktop portal or
-   `zenity`, one file in `src/platform/`, with the in-app browser as the fallback. `doc.new`, `doc.open`,
-   `doc.save` and `doc.export` already exist as commands; what does not exist is a way to reach them.
+1. **Files.** Landed: Start dialog (New / Open + recent), Open, Save, Save As, Export (png / jpg / webp),
+   Insert and drag-and-drop onto a new layer, dirty title, and quit guard. Native pickers live in
+   `src/platform/`; the browser picker, import and download path lives in `src/platform/*_web.cpp` and
+   `web/bridge.js`.
 2. **New image from an idea.** The New dialog's prompt, kind (a recipe family's `variants`) and size -
    preset ratios plus explicit pixels - and the dialog **quoting the price** the way the status line does.
    OK generates into the document's first layer. Progress, coarse or indefinite, plus Cancel.
@@ -115,10 +143,9 @@ coverage with verbs at the marked area, is next.
    owes: moving and scaling a layer's picture, inline rename, and the panel's own row of buttons pinned
    clear of the scrolling card list. The panel is always visible: it is where a person goes to understand
    what an edit did.
-6. **Blend, and images as input.** Drop an image → its own layer → *Blend* with no prompt repaints it into
-   the scene on that layer. Needs the third recipe scope, `region: layer`, whose source is the layer's
-   pixels and whose coverage is its alpha. *Blend* with a prompt, then control images (openpose), come in
-   through the same door.
+6. **Blend, and images as input.** Landed: Insert/drop places an image on its own layer; no-prompt *Blend*
+   uses `region: layer`, whose source is the layer's pixels and whose coverage is its alpha. *Blend* with a
+   prompt and control images (openpose) remain future work through the same input path.
 7. **Document geometry.** `doc.crop`, `doc.resize` for the canvas - with *AI fill* on the grown strip, the
    outpaint mechanism below - and *Image size* with a method: Lanczos, `AI upscale (fast)` (ESRGAN),
    `AI upscale (best)` (an edit model, so one `roles.json` row and one recipe). The seam to think about

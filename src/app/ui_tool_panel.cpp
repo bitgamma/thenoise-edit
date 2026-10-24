@@ -112,8 +112,15 @@ std::string brush_step_hint(const CommandTable& commands, const char* field) {
     return hint;
 }
 
+void set_brush_slider_width(const char* label) {
+    const float label_width = ImGui::CalcTextSize(label).x;
+    const float label_gap = ImGui::GetStyle().ItemInnerSpacing.x;
+    ImGui::SetNextItemWidth(-label_width - label_gap);
+}
+
 void draw_brush_size(AppState& state, CommandTable& commands) {
     float size = static_cast<float>(state.brush.size);
+    set_brush_slider_width("size");
     if (ImGui::SliderFloat("size", &size, static_cast<float>(kMinBrushSize),
                            static_cast<float>(kMaxBrushSize), "%.1f px",
                            ImGuiSliderFlags_Logarithmic) &&
@@ -124,6 +131,7 @@ void draw_brush_size(AppState& state, CommandTable& commands) {
 
 void draw_brush_slider(AppState& state, CommandTable& commands, const BrushSlider& slider) {
     float value = static_cast<float>(state.brush.*(slider.member));
+    set_brush_slider_width(slider.label);
     if (ImGui::SliderFloat(slider.label, &value, 0.0f, 1.0f, "%.2f") &&
         static_cast<double>(value) != state.brush.*(slider.member)) {
         commands.invoke("tool.set", json{{slider.label, static_cast<double>(value)}});
