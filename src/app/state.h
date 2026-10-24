@@ -14,6 +14,7 @@
 #include "io/zip.h"
 #include "core/geom.h"
 #include "core/image.h"
+#include "io/config.h"
 #include "platform/file_dialog.h"
 
 #include <cstdint>
@@ -36,7 +37,7 @@ struct ViewPolicy {
 inline constexpr ViewPolicy kViewPolicy{0.05, 64.0, 1.10, 16, 48};
 
 inline constexpr const char* kAppVersion = "0.0.0-m0";
-inline constexpr const char* kWindowTitle = "noise-edit";
+inline constexpr const char* kWindowTitle = "TheNoise Editor";
 
 // A rectangle in framebuffer pixels. Not `Rect`: that one counts document pixels, and these two are
 // compared against different things all day.
@@ -141,6 +142,7 @@ struct PointerSelection {
 
 struct AppState {
     Document doc;
+    io::Theme ui_theme = io::Theme::dark;
     // The brush the next stroke uses, and the one the last stroke ran with: the status bar
     // and the wire read this, so a screenshot can be reproduced from the state alone.
     Brush brush = kBrushDefaults;

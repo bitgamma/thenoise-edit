@@ -9,6 +9,7 @@
 #include "dbg/wire.h"
 #include "gfx/checker.h"
 #include "gfx/renderer.h"
+#include "io/config.h"
 #include "platform/platform.h"
 
 #include "imgui.h"
@@ -35,6 +36,9 @@ using nlohmann::json;
 constexpr int kDefaultWidth = 1280;
 constexpr int kDefaultHeight = 800;
 constexpr const char* kWireAddress = "127.0.0.1";
+constexpr float kUiFontSizePx = 14.0f;
+constexpr const char* kUiFontFile = "fonts/DejaVuSans.ttf";
+
 std::optional<std::string> value_after(const std::string& arg, const std::string& prefix) {
     if (arg.rfind(prefix, 0) != 0) {
         return std::nullopt;
@@ -121,6 +125,18 @@ dbg::WireConfig config_for(std::uint16_t port) {
     return config;
 }
 
+void load_ui_font() {
+    const std::filesystem::path font_path =
+        std::filesystem::path(g.state.ai.resource_dir) / kUiFontFile;
+    ImFont* font = ImGui::GetIO().Fonts->AddFontFromFileTTF(font_path.string().c_str(),
+                                                            kUiFontSizePx);
+    if (font == nullptr) {
+        log::error("cannot load UI font '" + font_path.string() + "'");
+        std::exit(EXIT_FAILURE);
+    }
+    ImGui::GetIO().FontDefault = font;
+}
+
 // ImGui stores the pointer rather than the text, so the string must outlive setup.
 std::string& ini_path() {
     static std::string path;
@@ -138,11 +154,13 @@ void init(void) {
     simgui.color_format = swapchain.color_format;
     simgui.depth_format = swapchain.depth_format;
     simgui.sample_count = swapchain.sample_count;
+    simgui.no_default_font = true;
     ini_path() = (std::filesystem::path(g.state.runtime_dir) / "imgui.ini").string();
     simgui.ini_filename = ini_path().c_str();
     simgui.logger.func = slog_func;
     simgui_setup(&simgui);
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    g.state.ui_theme = io::load_theme();
 
     g.state.framebuffer = Extent{sapp_width(), sapp_height()};
     g.state.viewport = g.state.framebuffer;
@@ -159,6 +177,7 @@ void init(void) {
     }
     const app::HostHooks hooks{&gfx::read_framebuffer, &sapp_quit};
     app::register_commands(g.state, g.commands, g.wire, hooks);
+    load_ui_font();
 
     // The same path the UI and the wire take, so an image named on the command line
     // gets the view fit, the log line and the error mapping like any other open.

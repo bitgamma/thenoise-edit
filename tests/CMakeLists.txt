@@ -265,6 +265,7 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME test_view_golden
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/wire_drive.py
                      --bin $<TARGET_FILE:noise-edit>
+                     --theme light
                      --golden ${CMAKE_SOURCE_DIR}/tests/golden/view_pan_zoom.png)
     set_tests_properties(test_view_golden PROPERTIES
                          SKIP_REGULAR_EXPRESSION "SKIP:"

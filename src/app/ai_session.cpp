@@ -66,14 +66,18 @@ void open_ai_session(noise::AppState& state) {
     AiSession& ai = state.ai;
 
     if (ai.resource_dir.empty()) {
-        // The tables ship with the tree. `$NOISE_EDIT_ASSETS` says where explicitly, which is what a
-        // packaged build and a probe do; otherwise the first place a `roles.json` actually is wins, and
-        // a session with none reports that rather than resolving roles against an empty table.
-        const std::vector<std::string> candidates = {
-            platform::env("NOISE_EDIT_ASSETS").value_or(std::string()),
-            "assets",
-            state.runtime_dir + "/assets",
-        };
+        std::vector<std::string> candidates;
+        if (const auto override_dir = platform::env("NOISE_EDIT_ASSETS");
+            override_dir && !override_dir->empty()) {
+            candidates.push_back(*override_dir);
+        }
+        const std::string executable = platform::executable_path();
+        if (!executable.empty()) {
+            candidates.push_back((std::filesystem::path(executable).parent_path() /
+                                  NOISE_INSTALL_ASSET_RELATIVE).string());
+        }
+        candidates.push_back("assets");
+        candidates.push_back(state.runtime_dir + "/assets");
         for (const std::string& candidate : candidates) {
             if (candidate.empty()) {
                 continue;
@@ -84,7 +88,7 @@ void open_ai_session(noise::AppState& state) {
             }
         }
         if (ai.resource_dir.empty()) {
-            ai.resource_dir = candidates.back();
+            ai.resource_dir = state.runtime_dir + "/assets";
         }
     }
 

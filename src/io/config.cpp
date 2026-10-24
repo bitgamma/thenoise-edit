@@ -7,13 +7,32 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <cstdlib>
 
 namespace noise::io {
 
 namespace {
 
+using json = nlohmann::json;
+
 std::filesystem::path config_path() {
     return std::filesystem::path(platform::config_dir()) / "config.json";
+}
+
+json read_config() {
+    std::vector<std::uint8_t> bytes;
+    std::string error;
+    if (!read_file(config_path().string(), bytes, error)) {
+        return json::object();
+    }
+    const json parsed = json::parse(bytes, nullptr, false);
+    return parsed.is_object() ? parsed : json::object();
+}
+
+bool write_config(const json& config, std::string& error) {
+    const std::string text = config.dump(2) + "\n";
+    const std::vector<std::uint8_t> bytes(text.begin(), text.end());
+    return write_file_atomic(config_path().string(), bytes, error);
 }
 
 // Two spellings of one file are one recent entry: `./a.noise` and its absolute path are the same
@@ -27,18 +46,12 @@ std::string canonical(const std::string& path) {
 }  // namespace
 
 std::vector<std::string> load_recent_files() {
-    std::vector<std::uint8_t> bytes;
-    std::string error;
-    if (!read_file(config_path().string(), bytes, error)) {
-        return {};
-    }
-    const nlohmann::json parsed = nlohmann::json::parse(bytes, nullptr, false);
-    if (parsed.is_discarded() || !parsed.is_object() || !parsed.contains("recent_files") ||
-        !parsed.at("recent_files").is_array()) {
+    const json config = read_config();
+    if (!config.contains("recent_files") || !config.at("recent_files").is_array()) {
         return {};
     }
     std::vector<std::string> out;
-    for (const nlohmann::json& entry : parsed.at("recent_files")) {
+    for (const json& entry : config.at("recent_files")) {
         if (entry.is_string()) {
             out.push_back(entry.get<std::string>());
         }
@@ -57,13 +70,51 @@ void remember_recent_file(const std::string& path) {
             recent.push_back(seen);
         }
     }
-    const nlohmann::json out{{"recent_files", recent}};
-    const std::string text = out.dump(2) + "\n";
-    const std::vector<std::uint8_t> bytes(text.begin(), text.end());
+    json config = read_config();
+    config["recent_files"] = recent;
     std::string error;
     // Failure here costs a shorter list on the next launch and nothing else, so it is not worth
     // interrupting a save with.
-    static_cast<void>(write_file_atomic(config_path().string(), bytes, error));
+    static_cast<void>(write_config(config, error));
+}
+
+Theme load_theme() {
+    const json config = read_config();
+    if (config.contains("ui_theme") && config.at("ui_theme").is_string()) {
+        Theme theme = Theme::dark;
+        if (theme_from_name(config.at("ui_theme").get<std::string>(), theme)) {
+            return theme;
+        }
+    }
+    return Theme::dark;
+}
+
+std::string theme_name(Theme theme) {
+    switch (theme) {
+        case Theme::dark:
+            return "dark";
+        case Theme::light:
+            return "light";
+    }
+    std::abort();
+}
+
+bool theme_from_name(const std::string& name, Theme& theme) {
+    if (name == "dark") {
+        theme = Theme::dark;
+        return true;
+    }
+    if (name == "light") {
+        theme = Theme::light;
+        return true;
+    }
+    return false;
+}
+
+bool save_theme(Theme theme, std::string& error) {
+    json config = read_config();
+    config["ui_theme"] = theme_name(theme);
+    return write_config(config, error);
 }
 
 }  // namespace noise::io

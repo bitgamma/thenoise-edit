@@ -799,7 +799,9 @@ def run(args: argparse.Namespace) -> int:
             env = dict(os.environ)
             env["DISPLAY"] = display
             env["NOISE_RUNTIME_DIR"] = str(runtime)
-            env.pop("NOISE_CONFIG_DIR", None)
+            config_dir = runtime / "config"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            env["NOISE_CONFIG_DIR"] = str(config_dir)
             # The verb-key section runs the AI path, and it must run it against the recordings even on a
             # shell that exports the dev-box credentials: the recorded transport answers before a socket
             # is opened, and this test spends no requests.

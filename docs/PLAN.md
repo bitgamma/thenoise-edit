@@ -1,9 +1,8 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the tree against the docs: **2026-10-15**, when the product was rewritten around what a
-person does ([PRODUCT.md](PRODUCT.md)) and the other design documents were merged into this one,
-[ARCHITECTURE.md](ARCHITECTURE.md) and [TESTING.md](TESTING.md). `AGENTS.md` is normative and outranks this
-file.
+Last re-read of the tree against the docs: **2026-10-23**, after the native UI redesign and theme preference.
+[PRODUCT.md](PRODUCT.md) states what a person can do; [ARCHITECTURE.md](ARCHITECTURE.md) states how it is
+built; [TESTING.md](TESTING.md) states how it is proven. `AGENTS.md` is normative and outranks this file.
 
 ---
 
@@ -18,11 +17,12 @@ Not preferences. Each one exists because breaking it was observed as a bug.
    it quotes (endpoint, size, model, steps, measured ~s) from geometry and tables and preps / resamples /
    PNG-encodes nothing. `AppState::upload_encodes` counts every upload encode and a test fails if a read
    raises it. `ai.preview` is the only pre-flight compile, and it is for drivers and probes, not a frame.
-3. **Nothing persists except the document.** No answer cache, no job file, no `job.retry`, no durable
-   queue. The runtime directory is scratch — startup deletes the previous run's `ai/` and `captures/` —
-   and nothing is read back from it. Pressing the verb again *is* the retry: it recompiles against what
-   the document is now and costs a second request. Any future store states its identity scheme and its
-   eviction policy before it gets a writer.
+3. **Documents, jobs and app preferences have separate lifetimes.** No answer cache, no job file, no
+   `job.retry`, no durable queue. The runtime directory is scratch — startup deletes the previous run's
+   `ai/` and `captures/` — and nothing is read back from it. Pressing the verb again *is* the retry: it
+   recompiles against what the document is now and costs a second request. The UI theme and recent-file
+   list are app preferences in config, not document or job state. Any future durable store states its
+   identity scheme and eviction policy before it gets a writer.
 4. **The words an operation asks for are typed.** An `ask` field has no default anywhere; a run with a
    blank or whitespace-only asked-for field is refused, naming the recipe and the field.
 5. **Every feature is observable on the debug wire, through the same command table the UI uses.** If the
@@ -39,12 +39,31 @@ Not preferences. Each one exists because breaking it was observed as a bug.
    | prompts, region/prep/composite policy | `assets/recipes/*.json` |
    | document model and its defaults | `core/document` |
    | blend maths | `core/blend`'s reference, mirrored only in `tests/test_blend` |
-   | prefs, session state | `io/config` (planned), `manifest.json`, the environment |
+   | app preferences | `io/config` (`ui_theme`, recent files), the environment |
+   | document state | `core/document`, `manifest.json` |
 7. **The default `ctest` run is hermetic and opens no sockets.** `$NOISE_AI_FIXTURES` selects the recorded
    transport. Live-tier tests are labelled `live`, registered only with `-DNOISE_LIVE_TESTS=ON`, skip
    loudly without `$THENOISE_URL` / `$THENOISE_API_KEY`, assert contract and invariants and never model
    output, and put the resident model back (`server.load`'s argument is `pinned`). No URL, host or key
    ever enters the repo.
+
+## 2026-10-23 — Native UI redesign and theme preference
+
+The app chrome now uses one shared semantic palette and one UI font, with dark and light styles applied
+through the existing ImGui layer. The window code is split by real panel responsibilities so the next UI
+change can stay local to its canvas, front door, layers, tools, verb rows or theme. The theme picker uses
+the `ui.theme` command used by the debug wire; `io/config` owns its persisted value alongside recents.
+The native install carries the role, recipe and font assets under the same prefix, while GUI probes point
+`NOISE_CONFIG_DIR` into their temporary runtime and select a theme before capturing.
+The viewport golden is light mode and the CTest command names that choice explicitly.
+
+Architecture verdict after rereading the full design: this changes no document, AI request, recipe, or
+pixel-write seam. The theme is an application preference, not project state. The new UI command is
+observable through the existing command table, and `app.state.ui_theme` reports the active choice. The
+installed asset lookup follows the executable and keeps CWD-independent launches on the same role, recipe
+and font files. GUI probes use the existing `io/config` path in a temporary directory. Future editor
+controls still belong in the existing UI modules and dispatch through the same command table. The
+remaining product roadmap is unchanged.
 
 ## What is next, in order
 

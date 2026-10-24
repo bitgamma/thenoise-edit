@@ -4,6 +4,7 @@
 #include "imgui.h"
 
 #include "app/verb_fields.h"
+#include "app/ui_theme.h"
 #include "imgui_internal.h"  // BringWindowToDisplayFront: the bar has to sit above the canvas
 #include <nlohmann/json.hpp>
 
@@ -68,8 +69,9 @@ void draw_ask(AppState& state, CommandTable& commands, const json& ask, bool bar
     x = std::max(x, static_cast<double>(state.canvas_origin.x));
 
     ImGui::SetNextWindowPos(ImVec2(static_cast<float>(x), static_cast<float>(y)), ImGuiCond_Always);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(22, 22, 26, 242));
-    ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(150, 150, 168, 220));
+    const ui_theme::Palette& colors = ui_theme::palette(state.ui_theme);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, colors.floating);
+    ImGui::PushStyleColor(ImGuiCol_Border, colors.floating_border);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(static_cast<float>(kBarPadPx),
                                                             static_cast<float>(kBarPadPx)));
     ImGui::Begin("##verb_ask", nullptr,
@@ -180,8 +182,9 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
 
     ImGui::SetNextWindowPos(ImVec2(state.verb_bar.x, state.verb_bar.y), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(state.verb_bar.w, state.verb_bar.h), ImGuiCond_Always);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(22, 22, 26, 232));
-    ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(120, 120, 132, 200));
+    const ui_theme::Palette& colors = ui_theme::palette(state.ui_theme);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, colors.floating);
+    ImGui::PushStyleColor(ImGuiCol_Border, colors.floating_border);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(static_cast<float>(kBarPadPx),
                                                             static_cast<float>(kBarPadPx)));
     const bool began = ImGui::Begin("##verb_bar", nullptr,

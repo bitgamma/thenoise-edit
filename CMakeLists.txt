@@ -2,6 +2,8 @@
 cmake_minimum_required(VERSION 3.24)
 project(noise_edit CXX)
 
+include(GNUInstallDirs)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -179,12 +181,23 @@ add_library(noise_app STATIC
     src/app/pointer.cpp)
 target_include_directories(noise_app PUBLIC src)
 target_link_libraries(noise_app PUBLIC noise_ai noise_dbg noise_core noise_io noise_platform)
+file(RELATIVE_PATH NOISE_INSTALL_ASSET_RELATIVE
+    "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}"
+    "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/thenoise-edit")
+target_compile_definitions(noise_app PRIVATE
+    "NOISE_INSTALL_ASSET_RELATIVE=\"${NOISE_INSTALL_ASSET_RELATIVE}\"")
 
 # The host side of the UI: it needs sokol's event and keycode types, so the key-event
 # translation builds with this target and not with the windowless command table.
 add_library(noise_ui STATIC
     src/app/shortcuts.cpp
     src/app/ui.cpp
+    src/app/ui_canvas.cpp
+    src/app/ui_front_door.cpp
+    src/app/ui_layers_panel.cpp
+    src/app/ui_theme.cpp
+    src/app/ui_tool_panel.cpp
+    src/app/ui_verbs.cpp
     src/app/verb_bar_draw.cpp
     src/app/coverage_tint.cpp
     src/app/layer_thumbs.cpp)
@@ -194,6 +207,9 @@ target_link_libraries(noise_ui PUBLIC noise_app noise_gfx imgui sokol)
 add_executable(noise-edit
     src/main.cpp)
 target_link_libraries(noise-edit PRIVATE noise_ui noise_gfx noise_dbg noise_core noise_platform)
+
+install(TARGETS noise-edit RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY assets/ DESTINATION ${CMAKE_INSTALL_DATADIR}/thenoise-edit)
 
 if(NOISE_WERROR)
     set(NOISE_WARNINGS -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
