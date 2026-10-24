@@ -1,13 +1,24 @@
 {
-  "name": "noise-edit GUI",
+  "name": "noise-edit native + WASM",
   "build": {
     "dockerfile": "Dockerfile"
   },
   "remoteUser": "vscode",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {"version": "24"}
+  },
+  "forwardPorts": [8000],
   "runArgs": [
     "--shm-size=512m"
   ],
-  "postCreateCommand": "cmake -S . -B build-devcontainer -G Ninja && if [ ! -e compile_commands.json ] && [ ! -L compile_commands.json ]; then ln -s build-devcontainer/compile_commands.json compile_commands.json; fi",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "postStartCommand": "bash .devcontainer/playwright.sh",
+  "waitFor": "postStartCommand",
+  "remoteEnv": {
+    "NODE_PATH": "/home/vscode/.local/share/thenoise-web-tools/node_modules",
+    "PLAYWRIGHT_BROWSERS_PATH": "/home/vscode/.local/share/thenoise-web-tools/browsers",
+    "PATH": "${containerEnv:PATH}:/home/vscode/.local/share/thenoise-web-tools/node_modules/.bin"
+  },
   "customizations": {
     "vscode": {
       "settings": {

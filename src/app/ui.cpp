@@ -98,7 +98,11 @@ void draw_status_bar(AppState& state, CommandTable& commands, const json& ai_vie
                         state.doc.history().redo_depth);
     char frame_text[32]{};
     std::snprintf(frame_text, sizeof(frame_text), "%.1f ms", state.frame_ms);
+#ifdef __EMSCRIPTEN__
+    const std::string wire_text = "WebGL2";
+#else
     const std::string wire_text = "wire :" + std::to_string(state.wire_port);
+#endif
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float right_edge = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
     const float needed_width = ImGui::CalcTextSize(frame_text).x +

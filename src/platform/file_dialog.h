@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,12 @@ struct PickResult {
 // (`NSOpenPanel`) and Windows (`GetOpenFileNameW`) are seams that no one has written yet, and
 // `pick_path` says so in `error` rather than reporting a cancel that never happened.
 PickResult pick_path(const PickRequest& request);
+
+#ifdef __EMSCRIPTEN__
+void begin_browser_pick(const PickRequest& request);
+std::optional<PickResult> poll_browser_pick();
+void receive_browser_pick(PickResult result);
+#endif
 
 // The command line `pick_path` hands the picker, argv[0] first. Split out because what the dialog is
 // *asked* is the part that breaks quietly: a filter that never reaches the tool is a dialog full of the

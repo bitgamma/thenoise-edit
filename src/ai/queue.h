@@ -215,7 +215,9 @@ private:
     bool running_ = false;
     bool stopping_ = false;
 
+#ifndef __EMSCRIPTEN__
     std::thread worker_;
+#endif
 };
 
 }  // namespace noise::ai

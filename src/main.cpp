@@ -11,6 +11,10 @@
 #include "gfx/renderer.h"
 #include "io/config.h"
 #include "platform/platform.h"
+#ifdef __EMSCRIPTEN__
+#include "platform/web.h"
+#include <emscripten/emscripten.h>
+#endif
 
 #include "imgui.h"
 #include "sokol_app.h"
@@ -50,7 +54,11 @@ struct Args {
     int width = kDefaultWidth;
     int height = kDefaultHeight;
     std::uint16_t wire_port = 0;
+#ifdef __EMSCRIPTEN__
+    bool wire_enabled = false;
+#else
     bool wire_enabled = true;
+#endif
     bool start_dialog = true;
     std::string open_path;
 };
@@ -161,6 +169,9 @@ void init(void) {
     simgui_setup(&simgui);
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     g.state.ui_theme = io::load_theme();
+#ifdef __EMSCRIPTEN__
+    platform::set_browser_theme(g.state.ui_theme == io::Theme::light);
+#endif
 
     g.state.framebuffer = Extent{sapp_width(), sapp_height()};
     g.state.viewport = g.state.framebuffer;
@@ -178,6 +189,9 @@ void init(void) {
     const app::HostHooks hooks{&gfx::read_framebuffer, &sapp_quit};
     app::register_commands(g.state, g.commands, g.wire, hooks);
     load_ui_font();
+#ifdef __EMSCRIPTEN__
+    platform::enable_browser_drop();
+#endif
 
     // The same path the UI and the wire take, so an image named on the command line
     // gets the view fit, the log line and the error mapping like any other open.
@@ -214,6 +228,13 @@ std::string window_title() {
 }
 
 void frame(void) {
+#ifdef __EMSCRIPTEN__
+    static io::Theme last_theme = g.state.ui_theme;
+    if (last_theme != g.state.ui_theme) {
+        last_theme = g.state.ui_theme;
+        platform::set_browser_theme(last_theme == io::Theme::light);
+    }
+#endif
     g.state.framebuffer = Extent{sapp_width(), sapp_height()};
     static std::string title;
     if (const std::string wanted = window_title(); wanted != title) {
@@ -391,6 +412,9 @@ void cleanup(void) {
 int main(int argc, char** argv) {
     g.args = parse_args(argc, argv);
     g.state.runtime_dir = platform::runtime_dir();
+#ifdef __EMSCRIPTEN__
+    g.state.ai.resource_dir = "/assets";
+#endif
     // The runtime directory is scratch: nothing in it is read back, and the only thing that has to
     // outlive a run is the document the person saved. Job blobs and captures therefore go at startup -
     // a directory that grows by a few megabytes every run, forever, is a bug with a slow fuse.
@@ -414,7 +438,12 @@ int main(int argc, char** argv) {
     app.window_title = kWindowTitle;
     // sokol asks for the drop support up front and caps what it will hand over; the cap is here
     // because a stack of forty imports would be an undo history nobody asked for.
+#ifdef __EMSCRIPTEN__
+    // The browser delivers File blobs, not host paths; web/bridge.js imports them into MEMFS.
+    app.enable_dragndrop = false;
+#else
     app.enable_dragndrop = true;
+#endif
     app.max_dropped_files = kMaxDroppedFiles;
     app.max_dropped_file_path_length = kDroppedPathBytes;
     app.high_dpi = false;
@@ -425,3 +454,40 @@ int main(int argc, char** argv) {
     sapp_run(&app);
     return 0;
 }
+
+#ifdef __EMSCRIPTEN__
+extern "C" EMSCRIPTEN_KEEPALIVE void noise_web_dropped(const char* path) {
+    if (path == nullptr || path[0] == '\0') { return; }
+    if (g.state.doc.empty()) {
+        invoke_command("doc.open", nlohmann::json{{"path", path}}, "browser file drop");
+    } else {
+        invoke_command("layer.import",
+                       nlohmann::json{{"path", path},
+                            {"at", nlohmann::json::array({g.state.doc.width() / 2,
+                                                           g.state.doc.height() / 2})}},
+                       "browser file drop");
+    }
+}
+#endif
+
+#ifdef __EMSCRIPTEN__
+extern "C" EMSCRIPTEN_KEEPALIVE void noise_web_action(int action) {
+    switch (action) {
+        case 0:
+            invoke_command("file.pick", nlohmann::json{{"for", "open"}}, "browser Open");
+            break;
+        case 1:
+            invoke_command("file.pick", nlohmann::json{{"for", "image"}}, "browser Insert");
+            break;
+        case 2:
+            invoke_command("doc.save", nlohmann::json::object(), "browser Save");
+            break;
+        case 3:
+            invoke_command("file.pick", nlohmann::json{{"for", "flat"}}, "browser Export");
+            break;
+        case 4:
+            invoke_command("file.new", nlohmann::json::object(), "browser New");
+            break;
+    }
+}
+#endif

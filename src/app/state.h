@@ -251,7 +251,8 @@ struct AppState {
     std::string pick_set;
     bool pick_needs_route = false;
     std::string pick_note;
-    // Joined when the state goes away, so nothing can free it under a worker still writing the answer.
+    // The desktop picker owns its worker; the browser picker posts its answer to the frame loop.
+#ifndef __EMSCRIPTEN__
     std::thread pick_worker;
 
     ~AppState() {
@@ -259,6 +260,7 @@ struct AppState {
             pick_worker.join();
         }
     }
+#endif
 
     // True while the pointer is inside a gesture of any tool. The host ends the gesture on the
     // button release through this, so a new tool has one place to be counted in and cannot leave

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>TheNoise Editor</title>
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; background: #181818; }
+    body { display: flex; flex-direction: column; }
+    #toolbar { display: flex; gap: 6px; align-items: center; padding: 5px 12px;
+               background: #222; border-bottom: 1px solid #444; }
+    #toolbar button { padding: 5px 12px; background: #313131; color: #eee;
+                      border: 1px solid #555; border-radius: 6px; cursor: pointer;
+                      font: 13px system-ui, sans-serif; }
+    #toolbar button:hover, #toolbar button:focus-visible { border-color: #f7ce44; }
+    #toolbar .mode { margin-left: auto; color: #bcb6a8;
+                     font: 12px system-ui, sans-serif; }
+    html[data-theme="light"] #toolbar { background: #f8f6f0; border-color: #d8d4ca; }
+    html[data-theme="light"] #toolbar button { background: #fff; color: #252525;
+                                                  border-color: #d8d4ca; }
+    html[data-theme="light"] #toolbar button:hover { border-color: #9c7510; }
+    html[data-theme="light"] #toolbar .mode { color: #686356; }
+    #canvas { width: 100%; flex: 1; min-height: 0; display: block; outline: none; }
+    #status { position: absolute; left: 16px; top: 48px; z-index: 1;
+              color: #ececec; font: 14px/1.5 system-ui, sans-serif; pointer-events: none; }
+    #status:empty { display: none; }
+  </style>
+</head>
+<body>
+  <nav id="toolbar" aria-label="Browser file actions">
+    <button data-action="4">New</button>
+    <button data-action="0">Open</button>
+    <button data-action="1">Insert image</button>
+    <button data-action="2">Save project</button>
+    <button data-action="3">Export image</button>
+    <span class="mode" title="AI generation requires the native build">Local editor · AI unavailable</span>
+  </nav>
+  <div id="status" role="status">Loading TheNoise…</div>
+  <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+  <script>
+    var Module = {
+      canvas: document.getElementById('canvas'),
+      setStatus: function (text) { document.getElementById('status').textContent = text; },
+      onRuntimeInitialized: function () { document.getElementById('status').textContent = ''; },
+      onAbort: function (reason) { document.getElementById('status').textContent = String(reason); }
+    };
+    document.querySelectorAll('#toolbar button').forEach(function (button) {
+      button.addEventListener('click', function () {
+        if (Module.ccall) Module.ccall('noise_web_action', null, ['number'],
+          [Number(button.dataset.action)]);
+      });
+    });
+    window.addEventListener('error', function (event) {
+      document.getElementById('status').textContent = 'TheNoise error: ' + event.message;
+    });
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>

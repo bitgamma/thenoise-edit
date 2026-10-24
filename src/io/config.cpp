@@ -3,6 +3,9 @@
 
 #include "io/file.h"
 #include "platform/platform.h"
+#ifdef __EMSCRIPTEN__
+#include "platform/web.h"
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -15,11 +18,17 @@ namespace {
 
 using json = nlohmann::json;
 
+#ifndef __EMSCRIPTEN__
 std::filesystem::path config_path() {
     return std::filesystem::path(platform::config_dir()) / "config.json";
 }
+#endif
 
 json read_config() {
+#ifdef __EMSCRIPTEN__
+    const json parsed = json::parse(platform::browser_config(), nullptr, false);
+    return parsed.is_object() ? parsed : json::object();
+#else
     std::vector<std::uint8_t> bytes;
     std::string error;
     if (!read_file(config_path().string(), bytes, error)) {
@@ -27,21 +36,28 @@ json read_config() {
     }
     const json parsed = json::parse(bytes, nullptr, false);
     return parsed.is_object() ? parsed : json::object();
+#endif
 }
 
 bool write_config(const json& config, std::string& error) {
     const std::string text = config.dump(2) + "\n";
+#ifdef __EMSCRIPTEN__
+    return platform::save_browser_config(text, error);
+#else
     const std::vector<std::uint8_t> bytes(text.begin(), text.end());
     return write_file_atomic(config_path().string(), bytes, error);
+#endif
 }
 
 // Two spellings of one file are one recent entry: `./a.noise` and its absolute path are the same
 // document, and listing it twice reads as two things the person has to tell apart.
+#ifndef __EMSCRIPTEN__
 std::string canonical(const std::string& path) {
     std::error_code ec;
     const std::filesystem::path fixed = std::filesystem::canonical(path, ec);
     return ec ? path : fixed.string();
 }
+#endif
 
 }  // namespace
 
@@ -60,6 +76,11 @@ std::vector<std::string> load_recent_files() {
 }
 
 void remember_recent_file(const std::string& path) {
+#ifdef __EMSCRIPTEN__
+    // Uploaded files are transient MEMFS entries; saving them as recents leaves broken links.
+    static_cast<void>(path);
+    return;
+#else
     const std::string wanted = canonical(path);
     std::vector<std::string> recent{wanted};
     for (const std::string& seen : load_recent_files()) {
@@ -76,6 +97,7 @@ void remember_recent_file(const std::string& path) {
     // Failure here costs a shorter list on the next launch and nothing else, so it is not worth
     // interrupting a save with.
     static_cast<void>(write_config(config, error));
+#endif
 }
 
 Theme load_theme() {

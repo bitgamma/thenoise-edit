@@ -238,6 +238,9 @@ void register_file_commands(AppState& state, CommandTable& table) {
                       state.pick_needs_route = true;
                       state.pick_note.clear();
                   }
+#ifdef __EMSCRIPTEN__
+                  platform::begin_browser_pick(request);
+#else
                   if (state.pick_worker.joinable()) {
                       state.pick_worker.join();
                   }
@@ -247,6 +250,7 @@ void register_file_commands(AppState& state, CommandTable& table) {
                       state.pick_answer = answered;
                       state.pick_running = false;
                   });
+#endif
                   return command_ok({{"started", true},
                                      {"for", file_set_name(*set)},
                                      {"title", request.title},
@@ -422,6 +426,13 @@ void register_file_commands(AppState& state, CommandTable& table) {
 // for over the wire does the same thing as one clicked: the answer is applied once, a refusal is left
 // where the buttons are, and a cancelled dialog stays silent because "no" is an ordinary answer.
 void pump_picked_files(AppState& state, CommandTable& table) {
+#ifdef __EMSCRIPTEN__
+    if (auto answer = platform::poll_browser_pick()) {
+        std::lock_guard lock(state.pick_mutex);
+        state.pick_answer = std::move(*answer);
+        state.pick_running = false;
+    }
+#endif
     std::string set;
     std::string path;
     {
