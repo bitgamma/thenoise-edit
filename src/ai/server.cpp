@@ -9,6 +9,10 @@ namespace noise::ai {
 
 namespace {
 
+constexpr long long pixels(const Extent& extent) {
+    return static_cast<long long>(extent.w) * static_cast<long long>(extent.h);
+}
+
 // How much of a new sample an observation carries. Slow enough that one unlucky request - a model swap,
 // a cold page cache - does not make the next ETA useless, fast enough that the estimate follows a box
 // that genuinely got quicker.
@@ -109,10 +113,43 @@ std::optional<double> LatencyModel::predict_locked(const std::string& model, Ext
     return found->second.seconds;
 }
 
+// A diffusion run costs its work per pixel per step, so a shape nobody has measured is scaled from one
+// that has rather than left to the floor: the region is asked at its own size, which makes every new mark
+// an unmeasured shape, and a floor that a normal ask outruns reports a healthy server as dead. Measured
+// on the dev box against `seconds x pixels x steps`: 20.2 s at 1024^2/4 steps against 29.7 s at
+// 1440x1088/4 (scaled 29.8), and 33.5 s at 1024^2/8 masked against 71.1 s at 1920x1088/8 masked
+// (scaled 66.8).
+std::optional<double> LatencyModel::scaled_locked(const std::string& model, Extent size,
+                                                 int steps) const {
+    if (steps <= 0 || pixels(size) <= 0) {
+        return std::nullopt;
+    }
+    const Entry* best = nullptr;
+    for (const auto& [entry_key, entry] : entries_) {
+        if (entry.model != model || entry.samples == 0 || entry.steps <= 0 ||
+            pixels(entry.size) <= 0) {
+            continue;
+        }
+        if (best == nullptr || entry.samples > best->samples) {
+            best = &entry;
+        }
+    }
+    if (best == nullptr) {
+        return std::nullopt;
+    }
+    const double per_pixel = best->seconds /
+                             (static_cast<double>(pixels(best->size)) *
+                              static_cast<double>(best->steps));
+    return per_pixel * static_cast<double>(pixels(size)) * static_cast<double>(steps);
+}
+
 int LatencyModel::request_timeout_s(const std::string& model, Extent size, int steps,
-                                   int floor_seconds) const {
+                                    int floor_seconds) const {
     const std::lock_guard<std::mutex> lock(mutex_);
-    const std::optional<double> predicted = predict_locked(model, size, steps);
+    std::optional<double> predicted = predict_locked(model, size, steps);
+    if (!predicted.has_value()) {
+        predicted = scaled_locked(model, size, steps);
+    }
     if (!predicted.has_value()) {
         return floor_seconds;
     }

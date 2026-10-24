@@ -126,11 +126,19 @@ nlohmann::json family_json(AppState& state, const ai::Recipe& recipe) {
     return members;
 }
 
+// A seed as an argument, read wide: `int` would truncate a value the provider is there to refuse.
+std::optional<std::int64_t> seed_argument(const json& value) {
+    if (!value.is_number_integer()) {
+        return std::nullopt;
+    }
+    return value.get<std::int64_t>();
+}
+
 // The Run button. A swap is the expensive thing in this design, so it is confirmed rather than
 // discovered: the refusal says which model, which model is resident and what it costs, and the same
 // call with `confirm` goes ahead.
 CommandResult start_intent(AppState& state, CommandTable& table, const ai::Recipe* recipe,
-                          const Readiness& readiness, bool confirm) {
+                          const Readiness& readiness, bool confirm, const json& args) {
     const std::string id = recipe != nullptr ? recipe->id : std::string();
     if (recipe == nullptr) {
         return fail("ai.intent", "nothing to run: " + readiness.reason);
@@ -154,10 +162,13 @@ CommandResult start_intent(AppState& state, CommandTable& table, const ai::Recip
                         "shared box. Re-run with confirm, or load it yourself with server.load");
     }
     // Passed to `ai.run` rather than read back out of the intent, so the run door takes what a press
-    // meant.
+    // meant - the seed included, because a seed that stayed behind in the intent would be a pin.
     json run{{"recipe", recipe->id}, {"vars", effective_vars(*recipe, state.ai_intent.given)}};
     if (state.ai_intent.aspect.has_value()) {
         run["aspect"] = aspect_name(*state.ai_intent.aspect);
+    }
+    if (args.contains("seed")) {
+        run["seed"] = args.at("seed");
     }
     const CommandResult started = table.invoke("ai.run", run);
     if (!started.ok) {
@@ -282,6 +293,7 @@ nlohmann::json intent_json(AppState& state) {
     if (quote.has_value()) {
         quote_json = json{{"endpoint", quote->endpoint},
                           {"size", json::array({quote->size.w, quote->size.h})},
+                          {"resampled", quote->resampled},
                           {"steps", quote->steps.has_value() ? json(*quote->steps) : json(nullptr)}};
     }
     const std::optional<double> estimate = estimate_seconds(state, readiness.model, quote);
@@ -303,7 +315,8 @@ nlohmann::json intent_json(AppState& state) {
                 {"aspect", intent.aspect.has_value() ? json(aspect_name(*intent.aspect))
                                                      : json(nullptr)},
                 {"family", recipe != nullptr ? family_json(state, *recipe) : json::array()},
-                {"seed", static_cast<std::int64_t>(state.ai.seed)},
+                {"seed", static_cast<std::int64_t>(state.ai.last_seed)},
+                {"seed_pinned", state.ai.seed_pin.has_value()},
                 {"selection", selection},
                 {"connected", state.ai.connected},
                 // Whether a server is configured at all: `$THENOISE_URL` unset means there is nothing
@@ -413,17 +426,30 @@ CommandResult apply_intent(AppState& state, CommandTable& table, const json& arg
     }
     intent.aspect = aspect;
 
-    // The seed the panel shows is the session's, so typing one changes what every later run
-    // without an explicit seed would send. That is deliberate: the number on the screen is the
-    // number the request carried.
-    int seed = static_cast<int>(state.ai.seed);
-    if (!arg_int(args, "seed", seed)) {
-        return fail("ai.intent", "'seed' must be an integer");
+    // A seed and a held seed are different things and the argument names say which. `seed` belongs to the
+    // run this call starts and nothing after it - a driver pressing a verb with a number in hand means
+    // *this* request. `seed_pin` is the hold: every later ask takes that number, which is how someone
+    // iterates on an answer they liked, and `null` lets go. Conflating them made one press with a seed
+    // quietly fix the seed of every press after it - found by `ai_job_probe`, not by the unit test that
+    // pinned on purpose.
+    if (args.contains("seed") && !args.at("seed").is_null()) {
+        const std::optional<std::int64_t> given = seed_argument(args.at("seed"));
+        if (!given.has_value() || *given < 0) {
+            return fail("ai.intent", "'seed' must be a non-negative integer or null");
+        }
     }
-    if (seed < 0) {
-        return fail("ai.intent", "'seed' must not be negative (got " + std::to_string(seed) + ")");
+    if (args.contains("seed_pin")) {
+        if (args.at("seed_pin").is_null()) {
+            state.ai.seed_pin = std::nullopt;
+        } else {
+            const std::optional<std::int64_t> held = seed_argument(args.at("seed_pin"));
+            if (!held.has_value() || *held < 0) {
+                return fail("ai.intent", "'seed_pin' must be a non-negative integer or null");
+            }
+            state.ai.seed_pin = static_cast<std::uint64_t>(*held);
+            state.ai.last_seed = *state.ai.seed_pin;
+        }
     }
-    state.ai.seed = static_cast<std::uint64_t>(seed);
 
     if (args.contains("job")) {
         if (!args.at("job").is_string()) {
@@ -460,7 +486,7 @@ CommandResult apply_intent(AppState& state, CommandTable& table, const json& arg
     if (run) {
         const CommandResult started =
             start_intent(state, table, intent_recipe(state), assess(state, intent_recipe(state)),
-                         confirm);
+                         confirm, args);
         if (!started.ok) {
             return started;
         }
@@ -486,7 +512,8 @@ void register_ai_intent_commands(AppState& state, CommandTable& table) {
     // was typed - a field its recipe never asked for, a recipe that no longer exists - draws nothing,
     // and the person is left typing into a widget connected to nothing.
     table.add("ai.intent", "Read or set what the selection panel is asking for", {},
-              {"recipe", "vars", "aspect", "seed", "job", "run", "confirm", "connect"},
+              {"recipe", "vars", "aspect", "seed", "seed_pin", "job", "run", "confirm",
+               "connect"},
               [&state, &table](const json& args) -> CommandResult {
         const CommandResult applied = apply_intent(state, table, args);
         if (!applied.ok && !args.empty()) {

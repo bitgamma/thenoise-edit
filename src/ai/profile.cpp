@@ -56,6 +56,7 @@ ImageDefaults defaults_at(const nlohmann::json& object) {
     defaults.cfg_scale = number_at(source, "cfg_scale", 0.0);
     defaults.width = static_cast<int>(number_at(source, "width", 0.0));
     defaults.height = static_cast<int>(number_at(source, "height", 0.0));
+    defaults.soft_pixel_cap = static_cast<int>(number_at(source, "soft_pixel_cap", 0.0));
     return defaults;
 }
 

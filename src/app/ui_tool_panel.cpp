@@ -247,7 +247,8 @@ void draw_ai_quote(const json& view, const ui_theme::Palette& colors) {
     if (view["quote"].is_object()) {
         const json& quote = view["quote"];
         ImGui::SameLine();
-        ImGui::TextDisabled("%dx%d", quote["size"][0].get<int>(), quote["size"][1].get<int>());
+        ImGui::TextDisabled("%dx%d%s", quote["size"][0].get<int>(), quote["size"][1].get<int>(),
+                            quote["resampled"].get<bool>() ? " rescaled" : "");
     }
     if (view["swap"].get<bool>()) {
         ImGui::SameLine();
@@ -329,8 +330,13 @@ void draw_ai_status_line(AppState& state, CommandTable& commands, const json& vi
     ImGui::SameLine();
     ImGui::TextDisabled("%s", view["model"].get<std::string>().c_str());
     ImGui::SameLine();
-    ImGui::TextDisabled("seed %llu",
-                        static_cast<unsigned long long>(view["seed"].get<std::uint64_t>()));
+    if (view["seed_pinned"].get<bool>()) {
+        ImGui::TextDisabled("seed %llu (pinned)",
+                            static_cast<unsigned long long>(view["seed"].get<std::uint64_t>()));
+    } else {
+        ImGui::TextDisabled("seed random (last %llu)",
+                            static_cast<unsigned long long>(view["seed"].get<std::uint64_t>()));
+    }
     draw_ai_quote(view, colors);
     if (view["job"].is_object()) {
         draw_job_status(state, commands, view["job"], colors);
