@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import base64
 import io
-import os
 import shutil
 import subprocess
 import sys
@@ -205,9 +204,6 @@ def check_they_write_we_read(wire: wd.Wire, work: Path, fails: list[str]) -> Non
 def run(args: argparse.Namespace) -> int:
     runtime = Path(tempfile.mkdtemp(prefix="noise-interop-"))
     work = Path(tempfile.mkdtemp(prefix="noise-interop-files-"))
-    env = dict(os.environ)
-    env["NOISE_RUNTIME_DIR"] = str(runtime)
-    env.pop("NOISE_CONFIG_DIR", None)
     fails: list[str] = []
     with (runtime / "app-stderr.log").open("w") as app_stderr:
         proc = wd.start_app(args, runtime, 700, 500, None, app_stderr)

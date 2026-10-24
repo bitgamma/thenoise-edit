@@ -177,14 +177,17 @@ src/
                        mid-gesture cannot change the shape already being drawn
     shortcuts.{h,cpp}  platform key event -> canonical shortcut text (the only sokol-aware
                        part of the app layer)
-    ui.cpp             the window: canvas, the tool panel (tools, selection, mask, the verb rows - each
-                       one whose recipe asks for words carrying a box for that field, committed through
-                       `ai.intent` as it is typed - and brush fields for the tools that paint), layers,
-                       log, and a two-line status bar whose second line is the AI line: the verb's label,
-                       the model, the size and seed a press would send, ~seconds where the box has
-                       measured that shape, a swap warning, and where a finished answer landed. The panel
-                       owns no verb list, no keymap and no copy of the words; it draws `ai.verbs` and
-                       `ai.intent` and writes back through them
+    ui.cpp             docking layout and status bar; it reads the AI intent once per frame and shares
+                       that answer between the tool panel and the status line
+    ui_canvas.cpp      checker, document composite, pointer interaction, selection overlays and brush
+                       footprint
+    ui_front_door.cpp  file actions, theme picker, recent files, new-document and quit dialogs
+    ui_layers_panel.cpp layer cards, thumbnails, stack actions, mask controls and log panel
+    ui_tool_panel.cpp  tool selection, coverage controls, brush controls and AI status
+    ui_verbs.cpp       recipe-backed verb rows, their fields, aspect/style selectors and model-swap
+                       confirmation; owns no parallel verb list or prompt state
+    ui_theme.{h,cpp}   shared semantic palette and ImGui style for dark and light themes
+    ui_internal.h     declarations shared by the UI translation units
     select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
     coverage.cpp        the two lifetimes coverage has (`marked`, `mask`): one id, one title each
     coverage_commands.cpp `coverage.target`, read and set, answering with what the target can do
@@ -296,13 +299,10 @@ src/
     flat.{h,cpp}       those formats as one table - extension, sniffed magic, whether it holds
                        alpha, whether `quality` means anything - plus the default export quality
     project.{h,cpp}    .noise read/write (the only layered format we read or write)
-    config.{h,cpp}     (planned) settings, keymap file, keyring access: prefs are `$NOISE_CONFIG_DIR`
-                       and the environment today, and nothing is written to disk between runs
-assets/        the shipped tables, read by `ai/registry` and `ai/recipes` and by no code path that
-               invents a value: `roles.json` (role → candidate models, the size and context policy) and
-               `recipes/*.json` (endpoint, role, operation, region scope, prep, `ask`, prompt lines,
-               composite policy). `$NOISE_EDIT_ASSETS` points at this tree from outside the build
-               directory, which is where the probes run from
+    config.{h,cpp}     app preferences: recent files and `ui_theme` in `$NOISE_CONFIG_DIR`; keymap and
+                       keyring access remain planned
+assets/        shipped role and recipe tables, plus the bundled DejaVu Sans Regular UI font and its
+               license; CMake installs this tree in the native install prefix's shared data directory
 tests/         core + ai unit tests (no GPU), golden-image tests, and `fixtures/http` - the recorded
                server the default `ctest` run answers from
 tools/         the probes that drive the running app over the wire, and the shared harness
@@ -316,8 +316,8 @@ Shader sources are inline in the module that compiles them (renderer, checker, a
 uniform layout true.
 
 Dependency direction: `app → {core, gfx, ai, io}`; `gfx → core`; `ai → core, io`; `io → core`.
-Nothing imports ImGui except `app/ui`. That keeps the door open for a different UI later and
-makes `core`+`ai` testable headless.
+Only `src/main.cpp`, `src/app/ui_*.cpp`, `src/app/ui_theme.h` and the UI-specific
+`src/app/verb_bar_draw.cpp` import ImGui. `core`+`ai` stay testable headless.
 
 ## Threading model
 
@@ -955,15 +955,16 @@ image checkpoints a box of this class holds are 17–35 GB, the same size class 
 swap is a real event: the first request that followed an unloaded model on the dev box cost
 32.0 s for a 512² image. Tens of seconds, sometimes minutes, on a LAN box. Therefore:
 
-* The app has a **session model** concept, shown persistently in the status bar:
-  `server · model · loaded/pinned · ETA seed`.
+* The app has a **session model** concept, available through `server.state` and `ai.intent`. The UI
+  status line shows the active verb, quoted size and estimate; a model name appears when a press would
+  switch the server, and the line reports job progress, cancellation, landing and errors.
 * Recipes declare a preferred *role* (`generate` / `edit`), not a model. The picker resolves
   role → user's chosen model for that role.
 * **Swap is explicit and priced.** When a command's role resolves to a model that isn't
   loaded, the confirm dialog says "this switches the server model (~Xs)" and offers to pin.
 * We call `POST /v1/load {model_name, pinned:true}` when the user pins, and
   `GET /v1/health` (`model_loaded`, `all_models_loaded[] {model_name, recipe, device,
-  pinned, last_use}`) to keep the status line honest. Never auto-swap silently.
+  pinned, last_use}`) to keep the session state honest. Never auto-swap silently.
 * **Warm-up** (a 256×256/1-step request right after a swap, so the first real generation is not the
   one that pays model init): designed, not built. What is built is `server.load {model, pin?}`, so the
   swap is at least something the user chooses a moment for.
@@ -1277,11 +1278,10 @@ an `edits` or `upscale` endpoint (`RecipeSet::selection_intents`): adding an ope
 file, and a recipe that stops being a selection operation leaves the palette by itself.
 
 Variables come from the user's instruction (whatever the recipe's `ask` lists) and the layer name. A
-chosen `aspect` is not one of them: it never enters the words, only the size the request asks for. **The seed is the session's**: `ai.preview` and `ai.run` take `seed` optionally and use
-`AiSession::seed` when the call names none, and the status line shows that number. Nothing
-draws a random seed inside a request path - the number on the screen is the number the request carried,
-which is what makes "run that again" and "why does this one look different" answerable. Variants are the
-explicit case: `seed + i`, asked for by name. The
+chosen `aspect` is not one of them: it never enters the words, only the size the request asks for. **The
+seed is the session's**: `ai.preview` and `ai.run` take `seed` optionally and use `AiSession::seed` when
+the call names none. Nothing draws a random seed inside a request path; a driver can inspect the request
+seed on the wire. Variants are the explicit case: `seed + i`, asked for by name. The
 `enhance` **role** (one `chat/completions` call on a downscaled crop — *"describe the
 background surface, lighting and palette in two lines"*) is designed in but switched off in
 every MVP recipe: it should buy better lighting/perspective matching for ~1 s of an LLM call
@@ -1349,9 +1349,10 @@ describes, and prefilling it with "the marked area" produced answers that commen
 instead of editing it.
 
 **Built today.** `assets/roles.json` + `assets/recipes/*.json` (10 recipes; `free-command` is the one
-row of the table not shipped), loaded by `ai/registry` and `ai/recipes` from `$NOISE_EDIT_ASSETS`, `assets`
-beside the app, or the runtime directory — in that order, one lookup, reported by `server.state` as
-`tables`. `ai.recipes` lists each recipe with the policy it states and the model its role resolved to, so
+row of the table not shipped), loaded by `ai/registry` and `ai/recipes` from `$NOISE_EDIT_ASSETS`, the
+installed asset directory relative to the executable, `assets` in the working directory, or the runtime
+directory — in that order, one lookup, reported by `server.state` as `tables`. `ai.recipes` lists each
+recipe with the policy it states and the model its role resolved to, so
 "a recipe that behaves oddly" is answerable from the wire. A recipe file whose name and `id` disagree is a
 refusal, not two ids for one policy.
 
@@ -1437,7 +1438,7 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | Group | Commands | Why |
 |---|---|---|
 | state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `server.state`, `job.list`, `job.get {id}`, `ai.roles`, `ai.recipes`, `log.tail` | read what the app believes, cheaply |
-| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
+| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `ui.theme {theme?}`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
  `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
 | ai | `ai.verbs` (the verb rows: id, command, key, recipe, label, operation, `ask`, scope, `ready`, `reason`, `model`, `resident`, `swap`), `ai.heal` / `ai.remove` / `ai.fill` / `ai.change` / `ai.generate` / `ai.blend` `{vars?, seed?, confirm?}` (one verb row pressed - they call `ai.intent` with their recipe named, so a key and a scripted intent cannot diverge), `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}`, `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pinned}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.apply {id, feather?, colour_match?}` (the idempotent landing door - answers land by themselves, so this one brings one back or overrides the policy, and says `already_landed` otherwise), | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact field list, size and blob digest before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel and land without a UI; `ai.intent` is the whole surface of the action, so a scripted run and a key press cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command and means the session seed when absent - nothing draws a random one inside a request path |
@@ -1447,7 +1448,7 @@ Live now: every row. The AI row is driven end to end by `tools/ai_job_probe.py` 
 request, the queue, the landing, the pixels the report claims - is checked in the default `ctest`
 without a socket. `--live` runs the same probe against the dev box and asserts only what holds whatever
 model answers; it is registered under the `live` label and skips without `$THENOISE_URL`.
-`app.state` reports `frame` (frames presented), `frame_ms` (last presented frame), `canvas`
+`app.state` reports `ui_theme` (`dark` or `light`), `frame` (frames presented), `frame_ms` (last presented frame), `canvas`
 (origin + size of the canvas content area in framebuffer px) and the view transform
 (`scale`, `origin`, `image`, `fit_pending`), the brush and tool the last stroke ran with, the
 document's `history` depths, and its `selection` (`active`, `bounds`, `covered`, `area`, `canvas`,

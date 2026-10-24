@@ -19,6 +19,7 @@ def main() -> int:
     parser.add_argument("--file", type=pathlib.Path, help="optional image or .noise project to open")
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=800)
+    parser.add_argument("--theme", choices=("dark", "light"), default="dark")
     parser.add_argument("--no-start-dialog", action="store_true")
     args = parser.parse_args()
 
@@ -40,6 +41,7 @@ def main() -> int:
             wire = None
             try:
                 wire = wd.Wire(wd.wire_port(runtime, proc, 30.0))
+                wire.call("ui.theme", {"theme": args.theme})
                 if args.file is not None:
                     wd.wait_for_fit(wire)
                 wd.settle(wire, frames=10)

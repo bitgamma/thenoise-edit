@@ -16,6 +16,7 @@
 #include "io/zip.h"
 #include "core/log.h"
 #include "dbg/wire.h"
+#include "io/config.h"
 #include "platform/platform.h"
 
 #include <nlohmann/json.hpp>
@@ -126,7 +127,7 @@ void test_m0_command_surface_is_registered() {
     }
     for (const char* required : {"app.state", "app.quit", "command.list", "command.invoke",
                                  "doc.new", "doc.open", "doc.save", "doc.get", "image.get",
-                                 "screenshot", "pixels.compare", "log.tail", "view.fit",
+                                 "screenshot", "pixels.compare", "log.tail", "ui.theme", "view.fit",
                                  "view.pan", "view.zoom", "view.set"}) {
         CHECK(std::find(ids.begin(), ids.end(), std::string(required)) != ids.end());
     }
@@ -3890,6 +3891,52 @@ void test_the_recent_files_are_the_documents_this_app_touched() {
     ::unsetenv("NOISE_CONFIG_DIR");
 }
 
+void test_theme_switch_persists_without_changing_the_document() {
+    const auto config = std::filesystem::temp_directory_path() /
+                        ("noise-theme-config-" + std::to_string(platform::pid()));
+    std::filesystem::remove_all(config);
+    std::filesystem::create_directories(config);
+    const std::optional<std::string> previous = platform::env("NOISE_CONFIG_DIR");
+    ::setenv("NOISE_CONFIG_DIR", config.c_str(), 1);
+
+    Harness harness;
+    CHECK_EQ(harness.value("ui.theme", json::object())["theme"].get<std::string>(),
+             std::string("dark"));
+    CHECK_EQ(io::load_theme(), io::Theme::dark);
+    harness.value("doc.new", json{{"width", 12}, {"height", 9},
+                                  {"fill", json::array({16, 32, 64, 255})}});
+    const json before = harness.value("doc.get", json::object());
+    const CommandResult changed = harness.run("ui.theme", json{{"theme", "light"}});
+    CHECK_OK(changed);
+    CHECK_EQ(changed.value["theme"].get<std::string>(), std::string("light"));
+    CHECK_EQ(harness.value("ui.theme", json::object())["theme"].get<std::string>(),
+             std::string("light"));
+    CHECK_EQ(harness.value("app.state", json::object())["ui_theme"].get<std::string>(),
+             std::string("light"));
+
+    const json after = harness.value("doc.get", json::object());
+    CHECK_EQ(after["checksum"].get<std::string>(), before["checksum"].get<std::string>());
+    CHECK_EQ(after["revision"].get<std::uint64_t>(), before["revision"].get<std::uint64_t>());
+    CHECK_EQ(after["history"]["undo_depth"].get<int>(),
+             before["history"]["undo_depth"].get<int>());
+    CHECK_EQ(io::load_theme(), io::Theme::light);
+
+    io::remember_recent_file(harness.temp("recent.png"));
+    CHECK_EQ(io::load_theme(), io::Theme::light);
+    const CommandResult invalid = harness.run("ui.theme", json{{"theme", "sepia"}});
+    CHECK(!invalid.ok);
+    CHECK(invalid.error.find("sepia") != std::string::npos);
+    CHECK_EQ(io::load_theme(), io::Theme::light);
+    CHECK_EQ(harness.state.ui_theme, io::Theme::light);
+
+    if (previous.has_value()) {
+        ::setenv("NOISE_CONFIG_DIR", previous->c_str(), 1);
+    } else {
+        ::unsetenv("NOISE_CONFIG_DIR");
+    }
+    std::filesystem::remove_all(config);
+}
+
 int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
@@ -3971,5 +4018,6 @@ int main() {
     test_the_front_door_is_a_state_the_wire_can_open_and_shut();
     test_the_new_document_form_offers_the_sizes_and_refuses_the_impossible();
     test_the_recent_files_are_the_documents_this_app_touched();
+    test_theme_switch_persists_without_changing_the_document();
     return noise::test::summary(__FILE__);
 }

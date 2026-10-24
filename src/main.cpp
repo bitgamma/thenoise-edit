@@ -9,6 +9,7 @@
 #include "dbg/wire.h"
 #include "gfx/checker.h"
 #include "gfx/renderer.h"
+#include "io/config.h"
 #include "platform/platform.h"
 
 #include "imgui.h"
@@ -35,6 +36,7 @@ using nlohmann::json;
 constexpr int kDefaultWidth = 1280;
 constexpr int kDefaultHeight = 800;
 constexpr const char* kWireAddress = "127.0.0.1";
+
 std::optional<std::string> value_after(const std::string& arg, const std::string& prefix) {
     if (arg.rfind(prefix, 0) != 0) {
         return std::nullopt;
@@ -143,6 +145,7 @@ void init(void) {
     simgui.logger.func = slog_func;
     simgui_setup(&simgui);
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    g.state.ui_theme = io::load_theme();
 
     g.state.framebuffer = Extent{sapp_width(), sapp_height()};
     g.state.viewport = g.state.framebuffer;

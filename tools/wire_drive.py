@@ -8,7 +8,8 @@ committed golden.
 
 Run through ctest (`test_view_golden`) or directly:
 
-    python3 tools/wire_drive.py --bin build/noise-edit --golden tests/golden/view_pan_zoom.png
+    python3 tools/wire_drive.py --bin build/noise-edit --theme light \
+        --golden tests/golden/view_pan_zoom.png
 
 Skips loudly (exit 0, "SKIP:" on stdout) when there is neither a display nor Xvfb: a missing
 GPU/display is an unavailable resource, not a regression. With no DISPLAY, `start_app` raises its own
@@ -285,8 +286,10 @@ def start_app(args: argparse.Namespace, runtime_dir: Path, width: int, height: i
               extra: dict[str, str | None] | None = None,
               start_dialog: bool = False) -> subprocess.Popen:
     env = dict(os.environ)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    config_dir = runtime_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
     env["NOISE_RUNTIME_DIR"] = str(runtime_dir)
-    env.pop("NOISE_CONFIG_DIR", None)
     # The AI tables ship in the tree beside this script, and ctest runs probes from the build directory:
     # without this the app under probe has no `roles.json`, and an AI command would refuse for a reason
     # that is about where it was started from rather than about the thing under test.
@@ -298,6 +301,7 @@ def start_app(args: argparse.Namespace, runtime_dir: Path, width: int, height: i
             env.pop(key, None)
         else:
             env[key] = value
+    env["NOISE_CONFIG_DIR"] = str(config_dir)
     if not env.get("DISPLAY") and shutil.which("Xvfb"):
         number, lock = claim_display()
         xvfb_log = open(runtime_dir / "xvfb.log", "wb")
@@ -478,10 +482,11 @@ def settle(wire: Wire, frames: int = FRAME_SETTLE) -> None:
 
 def drive(wire: Wire, args: argparse.Namespace, width: int, height: int, fixture: Path) -> int:
     ids = {entry["id"] for entry in wire.call("command.list")["commands"]}
-    missing = {"doc.open", "view.fit", "view.zoom", "view.pan", "screenshot"} - ids
+    missing = {"doc.open", "view.fit", "view.zoom", "view.pan", "screenshot", "ui.theme"} - ids
     if missing:
         raise WireError(f"wire reached the app but the table lacks {sorted(missing)}")
 
+    wire.call("ui.theme", {"theme": args.theme})
     # The document named on the command line is loaded before the first frame, when the
     # only extent on hand is the framebuffer: its fit must wait for the canvas area.
     startup = wait_for_fit(wire)
@@ -599,6 +604,7 @@ def main() -> int:
     parser.add_argument("--golden", type=Path, required=True, help="golden PNG to compare with")
     parser.add_argument("--width", type=int, default=960)
     parser.add_argument("--height", type=int, default=600)
+    parser.add_argument("--theme", choices=("dark", "light"), required=True)
     parser.add_argument("--startup-timeout", type=float, default=30.0)
     parser.add_argument("--update-golden", action="store_true")
     args = parser.parse_args()
