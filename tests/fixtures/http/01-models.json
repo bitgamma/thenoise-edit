@@ -22,7 +22,8 @@
      "steps": 4,
      "cfg_scale": 1.0,
      "width": 1024,
-     "height": 1024
+     "height": 1024,
+     "soft_pixel_cap": 2097152
     }
    },
    {
@@ -41,7 +42,8 @@
      "steps": 8,
      "cfg_scale": 1.0,
      "width": 1024,
-     "height": 1024
+     "height": 1024,
+     "soft_pixel_cap": 2097152
     }
    },
    {

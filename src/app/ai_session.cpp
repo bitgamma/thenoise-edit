@@ -5,6 +5,7 @@
 
 #include "app/state.h"
 
+#include "ai/provider.h"
 #include "ai/recorded.h"
 #include "ai/transport_curl.h"
 #include "core/log.h"
@@ -42,6 +43,15 @@ ai::ServerProfile session_profile(bool replaying) {
 
 }  // namespace
 
+std::uint64_t take_seed(AiSession& session) {
+    // The draw is whole-width entropy and the field is not, so it is masked here: the number the panel
+    // shows is always one `build_request` will accept.
+    session.last_seed = session.seed_pin.has_value()
+                            ? *session.seed_pin
+                            : session.seed_draw() & ai::kMaxSeed;
+    return session.last_seed;
+}
+
 ai::RegionPolicy AiSession::table_region_policy() const {
     ai::RegionPolicy policy{};
     policy.size_multiple = roles.size_policy.multiple;
@@ -58,6 +68,15 @@ ai::RegionPolicy AiSession::region_policy(const ai::Recipe& recipe) const {
     }
     if (recipe.context_min_px.has_value()) {
         policy.min_context_px = *recipe.context_min_px;
+    }
+    // A model that states its own pixel ceiling overrides the table's, because the table's number is a
+    // stand-in for a server that says nothing: compiling to something smaller than the model that will
+    // answer can serve costs detail the answer never needed to lose.
+    if (registry != nullptr) {
+        const ai::ModelEntry* entry = registry->resolved_model(recipe.role);
+        if (entry != nullptr && entry->image_defaults.soft_pixel_cap > 0) {
+            policy.max_area_px = entry->image_defaults.soft_pixel_cap;
+        }
     }
     return policy;
 }

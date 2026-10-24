@@ -1,8 +1,11 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the tree against the docs: **2026-10-23**, after the native UI redesign and theme preference.
-[PRODUCT.md](PRODUCT.md) states what a person can do; [ARCHITECTURE.md](ARCHITECTURE.md) states how it is
-built; [TESTING.md](TESTING.md) states how it is proven. `AGENTS.md` is normative and outranks this file.
+Last re-read of the tree against the docs: **2026-10-23**, at the request-policy fix below — the AI path
+had two defects that were both invisible to the recorded tier, and the sections of this file that describe
+what a request contains were checked against `ai/provider`, `ai/region` and `app/ai_session` rather than
+against memory. Slice 6 (frames and style) landed earlier; **slice 7 (`doc.crop` / `doc.resize`) is still
+what is next**, blocked on `History::fits_coverage` validating a far-side plane against the current stack
+extent. `AGENTS.md` is normative and outranks this file.
 
 ---
 
@@ -131,9 +134,111 @@ coverage with verbs at the marked area, is next.
    button, the keymap file, autosave.
 
 Seed is not a user-facing concept: **Retry** re-asks the same request with a different seed and lands
-another layer. Roles and recipes are ours to pin for now - the sets are in `assets/roles.json` and
+another layer — which is only true because every request draws one of its own (see 2026-10-23 below); with
+the constant the code had before, a re-ask was a restatement. Roles and recipes are ours to pin for now - the sets are in `assets/roles.json` and
 `assets/recipes/`, loaded from disk, and the plan is that a person edits those files, not a dialog, so
 nothing here needs a settings UI to be foreseen later.
+
+## 2026-10-23 - A re-ask that could not differ, and a Change that only softened
+
+Two reported defects, one seam each, and both invisible to the recorded tier because a recording answers
+whatever you send it.
+
+**Every press sent `seed: 0`.** Two `ai.preview` calls on one mark produced byte-identical requests, so
+pressing Change twice was one request twice — a second GPU charge for the picture already on the canvas.
+`kSessionSeed = 0` was the default and nothing re-rolled it, and the doc claim that *Retry re-asks with a
+different seed* had no code behind it. A request now takes a seed at compile time: the panel's pin, or a
+draw through `AiSession::seed_draw` (`platform::random_seed` — the only place entropy enters the app, and
+the seam a test replaces with a fixed sequence, since nothing a test reaches may read entropy for itself).
+The number and its source (`named` / `pinned` / `random`) travel with the compile, the job and the panel:
+reproducibility comes from recording the seed, not from freezing it, and a per-frame read draws nothing —
+rule A forbids a read from computing an answer, and spending entropy is the same offence.
+
+**Then the probe found the fix had a second bug.** `seed` was one argument doing two jobs, so a verb press
+that carried a number *held* it: `ai.remove {seed: n}` quietly became `seed_pin`, and every ask after it
+was the same request again — the defect I had set out to remove, reintroduced by the press that removed it.
+The recorded tier passed, because the probe's own `ai.preview` pair happened to run before any press. Now
+`seed` belongs to the request the call builds and `seed_pin` is the hold, and the probe asserts both halves
+per verb: two asks draw two seeds, a named seed dies with its press, a held seed survives every ask until
+it is released.
+
+**The engine refused a wide seed, and said the wrong thing about it — twice.** The first live press after
+that change answered `400 Invalid value for 'seed': must be an integer`. The first fix assumed a 32-bit
+unsigned field and masked to `0xFFFFFFFF`, which fixed nothing: the box's *multipart* form parses `seed` as
+a signed 32-bit integer, so the second live press failed the same way with roughly half the draws. Measured
+by asking, at 256², one step: `/images/edits` takes `2147483647` and refuses `3000000000` and `4294967295`
+with that message, while `/images/generations` — a JSON body — takes all of them and `0` as well. The
+upload path therefore sets `ai::kMaxSeed` (`ai/provider.h`, the module that owns the field): the draw is
+masked to it, a named seed above it is refused by name, and `ai_job_probe` asserts the bound on every ask.
+Two lessons, both mine: an inferred bound is a guess, and a guess written into a comment with the word
+"measured" in it is worse than no comment. There is no schema to read here — `/ui-schema` does not exist on
+this box and `/models` carries no seed limits — so the bound has to be probed, which costs nothing because a
+400 runs no model.
+
+**Bigger asks outran the request timeout, and a live server was reported dead.** Raising the pixel ceiling
+made the first job the user then ran fail as `timeout - /images/edits: timeout`. The ETA is keyed on the
+exact `(model, size, steps)`, so a mark never asked before has no sample and its timeout fell to the 60 s
+floor — while a masked edit at the new ceiling measures 71.1 s on this box (1024² at 8 steps masked: 33.5 s;
+the same shape at 4 steps unmasked: 20.2 s, against 29.7 s at 1440x1088). The floor is now 600 s, enough for
+a model load (measured 72–198 s) inside the first request, and the timeout — which is a margin, not the
+promise the panel shows — falls back to scaling the model's best-sampled run by pixels × steps. The ETA
+itself still refuses to guess: a shape nobody has run here has no estimate, which is what its test and its
+thread-safety test both defend.
+
+**A Change over a large mark came back as the same picture, softer.** A 1440x1080 document with a
+1000x700 mark compiled `crop [0,0,1440,1080]` to `requested [1184,896], scale 0.8211`: `roles.json` capped
+a region at 1 MP, a number nobody had measured, so the upload was Lanczos-downscaled and the answer
+Lanczos-upscaled back over a surround that pixel-lock keeps byte-identical — softness everywhere, change
+nowhere. Small marks were unaffected (their grown crop fits 1 MP), which is why it looked intermittent.
+`GET /models` publishes a per-model `soft_pixel_cap` — 2097152 on `Flux-2-Klein-9B-TheNoise`, 4194304 on
+`builtin.Qwen-Image-2.1-Turbo-INT8` — and nothing parsed it. The ceiling is that number when the model
+states one, and the table's only as a stand-in for a model that says nothing, raised to 2 MP: the smallest
+cap this box publishes, so the stand-in does not shrink answers the box would have served. A scale below 1
+is now a fact in the report (`region.resampled`, plus the size it shrank to in the landing log) rather than
+something a person infers by squinting.
+
+**Two of my own fixes were wrong, and only measuring caught them.** Both were in the rescale, and both
+survived a green hermetic suite because the tests asserted the *shape* of the answer rather than the
+promise it carries.
+
+- The shrunken ask was snapped *up* to the size multiple, which put it back over the ceiling it had just
+  been shrunk for: a 2400x1600 mark under a 2097152 cap asked `1776x1184` — 2102784 pixels. The grid is
+  snapped *inside* the ceiling now (down when a shrink is in force, up when there was room, never below
+  one multiple), and `test_region` sweeps 1040 shapes against the invariant `asked ≤ cap`, because the
+  failure needs a particular remainder and the two assertions that used to cover it allowed a factor of
+  two and a slack term.
+- `resampled` never reached the sentence it was supposed to produce. The landing rebuilds its plan from
+  the job record — `plan_of_landing` copies the crop, the asked size and the mask bounds — and a plan
+  rebuilt that way had `resampled == false`, so the automatic landing, which is the path answers actually
+  take, logged a rescaled answer as a plain one. It is a fact the compile decides, carried on `Landing`
+  and restored with the rectangles, which is what the live line now reads: `rescaled to 1760x1168 for the
+  model's pixel ceiling, answered at a different size than requested`.
+
+The general shape: a derived flag travelling beside the numbers it was derived from is a second home, and
+it goes stale the moment one of them is rebuilt from storage. Either carry it or recompute it from the
+same bytes the compositor maps by — do not leave both half-done.
+
+What the box added for free: the engine snaps the size it *answers* (`1760x1168` asked, `1760x1184`
+answered), so `answered_as_requested` is a separate fact from `resampled` and the landing keeps saying
+them apart. Pixel-lock held byte-exact outside the coverage in every case above, at 1:1 and both ways
+around a rescale.
+
+**What the tests talked me out of.** The first cut asked for the crop's exact size, which is what "output
+size equals input size" sounds like. Two `test_region` assertions went red for a reason: the 16-grid exists
+because the engine snaps an off-grid ask itself (measured: asking 500x300 answers 512x304), so an off-grid
+ask trades a snap this side planned for one the engine invented, and the aspect-frame contract — a 16:9
+frame arrives 16:9 — depends on `requested` being on the grid. The grid costs at most 15 pixels; the
+invented ceiling cost 18%. The ceiling was the defect, not the grid.
+
+Also settled, from a claim in an older session that a `style` request field was half-built: it is not
+needed and it would have been a field-policy violation. `style` is a recipe *variable*
+(`assets/recipes/change.local.json`) fed by the panel's style dropdown, and `style` stays among the fields
+never sent ([ARCHITECTURE.md](ARCHITECTURE.md) §field policy).
+
+Hermetic: 40/40 green (including `ai_job_probe`, which now asserts the seed and resample claims per
+verb), `sweep_procs.py` clean. **Owed, not yet spent:** live verification of both fixes —
+two asks over one mark differing in the answer, and a full-HD Change landing 1:1 sharp — four images on
+the dev box, waiting on a yes.
 
 ## 2026-10-19 - The live tier ran for the first time, and it found two things the recordings cannot
 

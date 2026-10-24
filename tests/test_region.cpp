@@ -124,6 +124,9 @@ void test_a_frame_keeps_its_ratio_from_preset_to_pixels() {
               frame.right() <= plan.crop.right() && frame.bottom() <= plan.crop.bottom());
         CHECK(plan.requested.w % kFramePolicy.size_multiple == 0);
         CHECK(plan.requested.h % kFramePolicy.size_multiple == 0);
+        // A frame inside the ceiling is asked at its own size bar the grid it must sit on: nothing of it
+        // is thrown away, so a 16:9 frame does not come back as a shrunk 16:9 frame.
+        CHECK(!plan.resampled);
         // The answer's centre is the crop's centre, so a wide answer cannot land off to one side of the
         // region it was compiled for.
         const Vec2 centre = plan.to_document(
@@ -232,18 +235,64 @@ void test_the_requested_size_honours_the_policy_and_the_budget() {
         CHECK(plan.requested.h >= plan.crop.h);
         CHECK(plan.scale <= 1.0);
         CHECK(plan.requested.w >= static_cast<int>(std::ceil(plan.crop.w * plan.scale)));
+        // Inside the ceiling the ask is the crop, so the answer arrives as the region it was compiled
+        // from. The slack is the grid: one multiple, never a fraction of the region.
+        CHECK(!plan.resampled);
+        CHECK(plan.requested.w - plan.crop.w < multiple);
+        CHECK(plan.requested.h - plan.crop.h < multiple);
     }
 
-    // A region over budget comes down to it: the area asked for is inside the budget plus the slack
-    // the snap to a multiple has to allow for, and no pixel is invented.
+    // A region over budget comes down to it, and *inside* the budget: the grid is snapped to within the
+    // ceiling, not after it.
     RegionPolicy budget = kPolicy;
     budget.max_area_px = kFitAreaPx;
     const Extent canvas{4096, 4096};
     const auto big = plan_region(canvas, mask_of(canvas, Rect{0, 0, 4000, 3000}), budget).value();
     CHECK(big.scale < 1.0);
-    const double slack = static_cast<double>(2 * multiple) * static_cast<double>(4096) * 2.0;
+    // The one case that says so out loud: a shrunk ask means a soft answer over a sharp canvas, and
+    // nothing may discover it by eye.
+    CHECK(big.resampled);
     CHECK(static_cast<double>(big.requested.w) * static_cast<double>(big.requested.h) <=
-          static_cast<double>(budget.max_area_px) + slack);
+          static_cast<double>(budget.max_area_px));
+}
+
+// The ceiling governs the ask whichever way the grid falls. A shrunken ask snapped *up* to the multiple
+// went over the top of it - measured on the dev box, a 2400x1600 mark under a 2097152 cap asked
+// 1776x1184, which is 2102784 pixels - and then the model answered its own size instead, so nothing
+// about the plan held. Swept over caps and shapes because the failure needs a particular remainder.
+void test_the_ceiling_holds_whichever_way_the_grid_falls() {
+    constexpr Extent canvas{512, 384};
+    int sweeps = 0;
+    for (const int cap : {4096, 16384, 65536, 131072, 262144}) {
+        for (int w = 60; w <= canvas.w; w += 29) {
+            for (int h = 60; h <= canvas.h; h += 25) {
+                RegionPolicy policy = kPolicy;
+                policy.max_area_px = cap;
+                const std::optional<RegionPlan> plan =
+                    plan_region(canvas, mask_of(canvas, Rect{20, 16, w, h}), policy);
+                REQUIRE(plan.has_value());
+                ++sweeps;
+                const long long asked = static_cast<long long>(plan->requested.w) *
+                                        static_cast<long long>(plan->requested.h);
+                const long long crop = static_cast<long long>(plan->crop.w) *
+                                       static_cast<long long>(plan->crop.h);
+                CHECK(plan->requested.w % policy.size_multiple == 0);
+                CHECK(plan->requested.h % policy.size_multiple == 0);
+                if (crop > cap) {
+                    CHECK(asked <= cap);
+                }
+                // One fact, reported two ways: the flag says the ask was shrunk, the numbers agree.
+                CHECK(plan->resampled == (plan->scale < 1.0));
+                CHECK(plan->resampled == (asked < crop));
+                // Inside the ceiling the ask is the crop's own size, bar the grid.
+                if (!plan->resampled) {
+                    CHECK(plan->requested.w - plan->crop.w < policy.size_multiple);
+                    CHECK(plan->requested.h - plan->crop.h < policy.size_multiple);
+                }
+            }
+        }
+    }
+    CHECK(sweeps > 1000);
 }
 
 // The map back has to be exact where nothing was rescaled, and inside the crop where something was:
@@ -478,6 +527,7 @@ int main() {
     test_the_crop_grows_for_context_and_stays_on_the_canvas();
     test_the_requested_size_honours_the_policy_and_the_budget();
     test_the_map_back_lands_where_the_crop_was();
+    test_the_ceiling_holds_whichever_way_the_grid_falls();
     test_prep_touches_the_hole_and_never_the_context();
     test_each_prep_keeps_what_it_says_and_loses_what_it_says();
     test_the_prep_vocabulary_is_the_one_home();

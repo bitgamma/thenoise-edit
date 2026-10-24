@@ -233,6 +233,15 @@ std::optional<BuiltRequest> build_request(const RequestInput& input, const SizeP
         return std::nullopt;
     }
 
+    // `seed` goes out as a signed integer and the engines read it as 32 bits, so a larger value leaves
+    // here as a number the answer comes back refusing to parse. Checked here because this is the one
+    // place the field is formed, and the refusal names both numbers.
+    if (input.seed > kMaxSeed) {
+        error = "recipe '" + recipe.id + "': 'seed' is " + std::to_string(input.seed) +
+                ", above the largest the field carries (" + std::to_string(kMaxSeed) + ")";
+        return std::nullopt;
+    }
+
     BuiltRequest request;
     request.endpoint = recipe.endpoint;
     request.path = shape_of(recipe.endpoint).path;

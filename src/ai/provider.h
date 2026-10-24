@@ -90,10 +90,25 @@ struct RequestInput {
     int width = 0;
     int height = 0;
     std::string prompt;
+    // Inside `kMaxSeed`: the field goes out signed, and the builder refuses a value it cannot carry
+    // rather than sending one the engine misreads.
     std::uint64_t seed = 0;
     // The prepped region, PNG-encoded: the upload, and its content hash in `blob_id`.
     std::vector<std::uint8_t> png;
 };
+
+// The largest seed a request may carry: a signed 32-bit integer.
+//
+// Measured on the dev box (2026-10-25), where the two endpoints disagree: `/images/generations` takes a
+// JSON body and answers 200 for 0, 2147483647, 2147483648 and 4294967295, while `/images/edits` - the
+// multipart form, which is the path with an upload on it - answers 200 for 2147483647 and 400
+// `Invalid value for 'seed': must be an integer` for 3000000000 and 4294967295. A range error wearing a
+// type error's clothes, in a form field parser, and the box publishes no bound to read instead
+// (`/models` carries no seed limits, `/ui-schema` does not exist). One field therefore carries one limit,
+// the stricter of the two, so every recipe is asked within what the upload path accepts. Seed 0 is
+// accepted by both: 0 stays out of the app's own draws for being what "no seed yet" means, not because
+// the engine refuses it.
+inline constexpr std::uint64_t kMaxSeed = 0x7FFFFFFFULL;
 
 // The builder. It validates its own values because the server does not: a `seed` of
 // "not-a-number" is answered with 200 and a default, and a misspelt field name is ignored, so the only

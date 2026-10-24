@@ -2,6 +2,7 @@
 #include "test.h"
 
 #include "app/ai_intent.h"
+#include "ai/provider.h"
 #include "app/ai_session.h"
 #include "app/ai_verbs.h"
 #include "app/commands.h"
@@ -2634,10 +2635,13 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     CHECK(!h.run("ai.intent", json{{"vars", json{{"target", 3}}}}).ok);
     CHECK(!h.run("ai.intent", json{{"run", "yes"}}).ok);
 
-    // No seed typed, so the session's is used: the number the panel shows is the number the request
-    // carries, and it is 0 until somebody says otherwise.
+    // Nothing has been asked for yet, so there is no seed to show: the panel reports a number only once a
+    // request carried one.
     CHECK_EQ(read["seed"].get<std::int64_t>(), std::int64_t(0));
+    CHECK(!read["seed_pinned"].get<bool>());
     CHECK(!h.run("ai.intent", json{{"seed", -1}}).ok);
+    CHECK(!h.run("ai.intent", json{{"seed_pin", -1}}).ok);
+    CHECK(!h.run("ai.intent", json{{"seed_pin", "yesterday"}}).ok);
 
     std::fprintf(stderr, "  [mark E]\n");
     h.value("server.connect", json::object());
@@ -2659,16 +2663,19 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     }
     CHECK_EQ(h.state.upload_encodes, encoded);
 
-    // The seed is a request field, so retyping it changes what goes out and nothing about the compile.
+    // Holding a seed is its own argument, because a seed on a press belongs to that press alone. Held, it
+    // changes what every later ask sends and nothing about the compile.
     std::fprintf(stderr, "  [mark F]\n");
-    const json reseeded = h.value("ai.intent", json{{"seed", 1234}});
-    CHECK_EQ(reseeded["seed"].get<std::int64_t>(), std::int64_t(1234));
+    const json held = h.value("ai.intent", json{{"seed_pin", 1234}});
+    CHECK_EQ(held["seed"].get<std::int64_t>(), std::int64_t(1234));
+    CHECK(held["seed_pinned"].get<bool>());
     CHECK_EQ(h.value("server.state", json::object())["seed"].get<std::int64_t>(), std::int64_t(1234));
     const json seeded_preview = h.value("ai.preview", json{{"recipe", "inpaint-remove"}});
     CHECK_EQ(seeded_preview["request"]["seed"].get<std::int64_t>(), std::int64_t(1234));
     CHECK_EQ(seeded_preview["request"]["size"].get<std::string>(),
              exact["request"]["size"].get<std::string>());
-    h.value("ai.intent", json{{"seed", 0}});
+    h.value("ai.intent", json{{"seed_pin", nullptr}});
+    CHECK(!h.value("server.state", json::object())["seed_pinned"].get<bool>());
 
     // The compile is a function of the document and the words, and of nothing the app drew at random:
     // the same marked region twice uploads the same bytes, by hash.
@@ -2766,6 +2773,167 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
 // live server, with green unit tests.
 // The state a person arrives in when they installed the editor and set nothing: the answer names the
 // variable, and the panel knows there is no button that could work.
+// Two asks over the same pixels have to be able to give two answers. The seed is what the model
+// explores from, so a constant seed makes every press restate the first one - and each press is a GPU
+// charge. Entropy arrives through a seam, because a test that drew real bits could not say what it
+// proved: the panel pins a number when the number is the point, and lets go.
+void test_each_ask_takes_its_own_seed_and_a_pin_holds_one() {
+    Harness h;
+    h.value("doc.new", json{{"width", 64}, {"height", 48}, {"fill", json::array({30, 40, 50, 255})}});
+    h.value("select.rect", json{{"rect", json::array({14, 14, 36, 20})}});
+    h.value("server.connect", json::object());
+
+    std::vector<std::uint64_t> drawn{11, 12, 13, 14};
+    std::size_t taken = 0;
+    h.state.ai.seed_draw = [&drawn, &taken] { return drawn.at(taken++); };
+
+    const json first = h.value("ai.preview", json{{"recipe", "inpaint-remove"}});
+    const json second = h.value("ai.preview", json{{"recipe", "inpaint-remove"}});
+    CHECK_EQ(first["request"]["seed"].get<std::uint64_t>(), std::uint64_t(11));
+    CHECK_EQ(second["request"]["seed"].get<std::uint64_t>(), std::uint64_t(12));
+    // The upload is the same bytes both times, so the seed is the only thing that moved: two answers
+    // from one region, not two regions.
+    CHECK_EQ(first["request"]["blob"].get<std::string>(), second["request"]["blob"].get<std::string>());
+    CHECK_EQ(first["seed_source"].get<std::string>(), std::string("random"));
+
+    // A read is not an ask. The panel reads the action every frame and may not burn seeds doing it.
+    const std::size_t after_two_asks = taken;
+    for (int pass = 0; pass < 5; ++pass) {
+        h.value("ai.intent", json::object());
+    }
+    CHECK_EQ(taken, after_two_asks);
+
+    // A held seed pins every later ask, which is how someone iterates on an answer they liked. A seed on
+    // a press is not that: `ai_job_probe` found a verb press quietly holding the session's seed, which
+    // made every ask after it the same request - so the two are different arguments.
+    h.value("ai.intent", json{{"seed_pin", 777}});
+    const json pinned = h.value("ai.preview", json{{"recipe", "inpaint-remove"}});
+    CHECK_EQ(pinned["request"]["seed"].get<std::uint64_t>(), std::uint64_t(777));
+    CHECK_EQ(pinned["seed_source"].get<std::string>(), std::string("pinned"));
+    CHECK(h.value("server.state", json::object())["seed_pinned"].get<bool>());
+    CHECK_EQ(h.value("ai.preview", json{{"recipe", "inpaint-remove"}})["request"]["seed"]
+                 .get<std::uint64_t>(),
+             std::uint64_t(777));
+    CHECK_EQ(taken, after_two_asks);
+
+    // A seed named on the call wins over the pin, and takes no draw: the number on the reply is the
+    // number that went out, and where it came from travels with it.
+    const json named = h.value("ai.preview", json{{"recipe", "inpaint-remove"}, {"seed", 5}});
+    CHECK_EQ(named["request"]["seed"].get<std::uint64_t>(), std::uint64_t(5));
+    CHECK_EQ(named["seed_source"].get<std::string>(), std::string("named"));
+    CHECK_EQ(taken, after_two_asks);
+
+    // Letting go returns to one seed per ask.
+    h.value("ai.intent", json{{"seed_pin", nullptr}});
+    CHECK(!h.value("server.state", json::object())["seed_pinned"].get<bool>());
+    CHECK_EQ(h.value("ai.preview", json{{"recipe", "inpaint-remove"}})["request"]["seed"]
+                 .get<std::uint64_t>(),
+             std::uint64_t(13));
+
+    // A seed the field cannot carry is refused here rather than sent for the engine to misread: the
+    // upload form parses it as a signed 32-bit integer and answers http 400 `must be an integer`.
+    // The draw is 64-bit entropy and the field is not, so the mask happens on the way out: whatever the
+    // entropy source returns, the number that reaches the engine is one it accepts.
+    const CommandResult too_big =
+        h.run("ai.preview", json{{"recipe", "inpaint-remove"}, {"seed", 4294967296LL}});
+    CHECK(!too_big.ok);
+    CHECK(too_big.error.find("seed") != std::string::npos);
+    CHECK(too_big.error.find("4294967296") != std::string::npos);
+    CHECK(!h.run("ai.preview", json{{"recipe", "inpaint-remove"}, {"seed", -1}}).ok);
+
+    // A press that names a seed leaves nothing behind: the ask after it draws again. This is the exact
+    // shape of the bug the probe caught, where the verb's seed became the session's from then on.
+    const json pressed = h.value("ai.remove", json{{"seed", 99}});
+    CHECK(pressed.contains("job"));
+    CHECK(!h.value("server.state", json::object())["seed_pinned"].get<bool>());
+    CHECK_EQ(h.value("ai.preview", json{{"recipe", "inpaint-remove"}})["request"]["seed"]
+                 .get<std::uint64_t>(),
+             std::uint64_t(14));
+    h.value("job.cancel", json{{"id", pressed["job"]["id"].get<std::string>()}});
+
+    // The draw is 64-bit entropy and the field is not, so the mask happens on the way out: whatever the
+    // entropy source returns, the number that reaches the engine is one it accepts.
+    h.state.ai.seed_draw = [] { return 0xFFFFFFFFFFFFFFFFull; };
+    CHECK_EQ(h.value("ai.preview", json{{"recipe", "inpaint-remove"}})["request"]["seed"]
+                 .get<std::uint64_t>(),
+             noise::ai::kMaxSeed);
+}
+
+// The size a region is asked for is its own size, so far as the model can take it. A request shrunk to
+// a budget the model never stated comes back resampled over the crop: the same picture, softer, which a
+// person reads as a Change that did nothing. The ceiling is the model's published `soft_pixel_cap`, and
+// passing it is said out loud rather than left to be inferred from blur.
+void test_a_region_is_asked_at_its_own_size_and_says_when_it_is_not() {
+    const auto asked_size = [](const json& compiled) {
+        const std::string size = compiled["request"]["size"].get<std::string>();
+        const std::size_t x = size.find('x');
+        return std::pair{std::stoi(size.substr(0, x)), std::stoi(size.substr(x + 1))};
+    };
+
+    Harness h;
+    h.value("doc.new",
+            json{{"width", 1440}, {"height", 1080}, {"fill", json::array({30, 40, 50, 255})}});
+    h.value("select.rect", json{{"rect", json::array({200, 200, 1000, 700})}});
+    h.value("server.connect", json::object());
+    const int multiple = h.state.ai.roles.size_policy.multiple;
+
+    // The case that was reported: a mark over a full-HD canvas. Its grown crop is the canvas - 1.56 MP,
+    // inside the 2 MP the models on this box publish - so the ask is the crop, bar the grid the engine
+    // snaps to anyway, and nothing is thrown away.
+    // The ceiling the compile used is on the wire beside the recipe that used it: the model's published
+    // `soft_pixel_cap`, not a number the reader has to remember.
+    bool reported = false;
+    const json recipes_table = h.value("ai.recipes", json::object());
+    for (const json& row : recipes_table["recipes"]) {
+        if (row["id"].get<std::string>() == "inpaint-remove") {
+            reported = true;
+            CHECK_EQ(row["region_max_area_px"].get<int>(), 2097152);
+        }
+    }
+    CHECK(reported);
+
+    const json inside = h.value("ai.preview", json{{"recipe", "inpaint-remove"}});
+    CHECK(!inside["region"]["resampled"].get<bool>());
+    // And the price line says the same thing before the press, not only after it.
+    CHECK(!h.value("ai.intent", json{{"recipe", "inpaint-remove"}})["quote"]["resampled"].get<bool>());
+    CHECK_NEAR(inside["region"]["scale"].get<double>(), 1.0, 1e-12);
+    const int crop_w = inside["region"]["crop"][2].get<int>();
+    const int crop_h = inside["region"]["crop"][3].get<int>();
+    const auto [asked_w, asked_h] = asked_size(inside);
+    CHECK(asked_w >= crop_w && asked_w - crop_w < multiple);
+    CHECK(asked_h >= crop_h && asked_h - crop_h < multiple);
+
+    // Past the ceiling the shrink is real, and the plan says so instead of leaving it to be noticed as
+    // softness. Scaled by area, so the shape of the region survives the trip.
+    Harness wide;
+    wide.value("doc.new",
+               json{{"width", 2400}, {"height", 1600}, {"fill", json::array({30, 40, 50, 255})}});
+    wide.value("select.rect", json{{"rect", json::array({0, 0, 2400, 1600})}});
+    wide.value("server.connect", json::object());
+    const json over = wide.value("ai.preview", json{{"recipe", "inpaint-remove"}});
+    CHECK(over["region"]["resampled"].get<bool>());
+    CHECK(wide.value("ai.intent", json{{"recipe", "inpaint-remove"}})["quote"]["resampled"].get<bool>());
+    CHECK(over["region"]["scale"].get<double>() < 1.0);
+    const auto [shrunk_w, shrunk_h] = asked_size(over);
+    CHECK_NEAR(static_cast<double>(shrunk_w) / static_cast<double>(shrunk_h), 1.5, 0.05);
+    // The ask stays inside the ceiling rather than being snapped back over it on the grid.
+    CHECK(shrunk_w * shrunk_h <= 2097152);
+
+    // And the landing - the path that actually puts the answer on the document, not the preview - says
+    // so too. A plan rebuilt from the job record used to come back unscaled, so the sentence about the
+    // rescale only appeared when someone composited by hand.
+    const json pressed = wide.value("ai.remove", json::object());
+    REQUIRE(pressed.contains("job"));
+    const std::string job_id = pressed["job"]["id"].get<std::string>();
+    const json settled = wide.value("job.wait", json{{"id", job_id}, {"timeout", 30}});
+    CHECK_EQ(settled["state"].get<std::string>(), std::string("succeeded"));
+    const json record = wide.value("job.get", json{{"id", job_id}});
+    CHECK(record["landing"]["resampled"].get<bool>());
+    const std::string log_line = wide.value("log.tail", json{{"count", 40}}).dump();
+    CHECK(log_line.find("rescaled to") != std::string::npos);
+    CHECK(log_line.find("pixel ceiling") != std::string::npos);
+}
+
 void test_an_unconfigured_server_names_the_variable() {
     Harness h{Harness::Config::unconfigured};
     const CommandResult refused = h.run("server.connect", json::object());
@@ -3945,6 +4113,8 @@ int main() {
     test_an_answer_lands_itself_into_the_document_that_asked_for_it();
     test_an_answer_lands_on_the_document_and_undoes_completely();
     test_the_selection_panel_runs_its_intent_through_one_command();
+    test_each_ask_takes_its_own_seed_and_a_pin_holds_one();
+    test_a_region_is_asked_at_its_own_size_and_says_when_it_is_not();
     test_an_unconfigured_server_names_the_variable();
     test_an_option_left_out_keeps_the_policy_the_table_asked_for();
     test_the_remove_key_runs_the_whole_sequence_with_no_words();

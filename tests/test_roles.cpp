@@ -53,7 +53,12 @@ void test_the_shipped_table_states_the_policy_the_compiler_uses() {
     REQUIRE(loaded.has_value());
     const RoleTable& table = *loaded;
     CHECK_EQ(table.size_policy.multiple, 16);
-    CHECK_EQ(table.size_policy.max_area_px, 1024 * 1024);
+    // The ceiling a region is compiled under when the model that will answer publishes no
+    // `soft_pixel_cap` of its own. 2 MP is the smallest cap this box publishes for any image model
+    // (measured 2026-10-23), so standing in for a silent model does not shrink answers it would have
+    // served - and a smaller number here is what made a Change over a large mark come back as the same
+    // picture, softer.
+    CHECK_EQ(table.size_policy.max_area_px, 2097152);
     CHECK_NEAR(table.context_policy.ratio, 0.35, 1e-12);
     CHECK_EQ(table.context_policy.min_px, 64);
     for (const char* role :
@@ -210,7 +215,8 @@ void test_discovery_reads_what_the_server_actually_sends() {
     std::string error;
     const json body = json::parse(R"({"data":[
         {"id":"Klein","recipe":"thenoise","labels":["image","edit"],"downloaded":true,"size":32.5,
-         "image_defaults":{"steps":4,"cfg_scale":1.0,"width":1024,"height":1024}},
+         "image_defaults":{"steps":4,"cfg_scale":1.0,"width":1024,"height":1024,
+                            "soft_pixel_cap":2097152}},
         {"id":"Noprimes","recipe":"thenoise","labels":["image"],"downloaded":0,"size":"3"},
         {"recipe":"thenoise","labels":["image"]},
         {"name":"NamedOnly","recipe":"thenoise","labels":[]}
@@ -220,6 +226,11 @@ void test_discovery_reads_what_the_server_actually_sends() {
     CHECK(!error.empty());  // the row with no id is reported, not fatal
     CHECK(models[0].downloaded);
     CHECK_EQ(models[0].image_defaults.steps, 4);
+    // The pixel ceiling a model serves, which is what a region is compiled under. Dropped on the floor
+    // here, the compiler falls back to the table's stand-in and quietly shrinks answers the model would
+    // have served at full size.
+    CHECK_EQ(models[0].image_defaults.soft_pixel_cap, 2097152);
+    CHECK_EQ(models[1].image_defaults.soft_pixel_cap, 0);
     // `downloaded` arrives as 0/1 on some rows and a bool on others; a string size is not a number.
     CHECK(!models[1].downloaded);
     CHECK_EQ(models[1].size_gb, 0.0);

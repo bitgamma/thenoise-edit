@@ -18,7 +18,12 @@ namespace noise::ai {
 inline constexpr int kConnectTimeoutS = 5;
 // A request timeout is never below this, and never below four times the predicted time - local
 // diffusion is slow by design and the ETA is the only reasonable ceiling.
-inline constexpr int kRequestTimeoutFloorS = 60;
+//
+// The floor is what governs the first ask of a shape this box has never run, and it has to survive one:
+// measured on the dev box, a masked edit at the pixel ceiling (1920x1088, the model's default 8 steps)
+// took 71 s, and a model that is not resident yet loads inside the request at 72-198 s. Cancel is the
+// answer to a wedged server; a floor below a normal first ask makes every new mark fail once.
+inline constexpr int kRequestTimeoutFloorS = 600;
 inline constexpr int kRequestTimeoutEtaFactor = 4;
 
 // A response under this is the server answering from its own cache (~0.1 s measured on the dev box)
@@ -63,10 +68,13 @@ public:
     // cache, and is counted separately rather than learned from.
     void observe(const std::string& model, Extent size, int steps, double seconds);
 
-    // Nothing until this box has answered this shape at least once - a guess would be a lie to the user
-    // about how long to wait.
+    // This box's measured time for this exact shape, and nothing otherwise: the ETA is a promise about
+    // waiting, and a scaled figure is not one this box has observed.
     std::optional<double> predict(const std::string& model, Extent size, int steps) const;
 
+    // The ceiling to wait before calling a request dead. Not a promise, so it may reason where the ETA
+    // cannot: with no run of this exact shape it scales the model's best-sampled run by pixels and steps,
+    // and only falls back to `floor_seconds` when the model has never run here at all.
     int request_timeout_s(const std::string& model, Extent size, int steps,
                           int floor_seconds) const;
 
@@ -85,6 +93,7 @@ private:
     static std::string key(const std::string& model, Extent size, int steps);
     // For the methods that already hold `mutex_`; taking it twice would deadlock.
     std::optional<double> predict_locked(const std::string& model, Extent size, int steps) const;
+    std::optional<double> scaled_locked(const std::string& model, Extent size, int steps) const;
 
     // Guarded by the model's own lock, in every method. The queue's worker writes it the moment an
     // answer arrives and the panel reads an estimate on every frame it draws, and a `std::map`

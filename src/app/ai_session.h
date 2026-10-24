@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "ai/http.h"
@@ -10,6 +13,7 @@
 #include "ai/registry.h"
 #include "ai/server.h"
 #include "ai/transport.h"
+#include "platform/platform.h"
 
 namespace noise {
 struct AppState;
@@ -20,10 +24,6 @@ namespace noise::app {
 // Everything the AI path holds between commands: the two tables, the server, the queue. It is a member
 // of `AppState` rather than a set of globals so a test harness can build one, point it at a fixture
 // directory, and see exactly what the app would do.
-// The seed a request takes when its caller names none. Zero is a seed like any other and it keeps a
-// recipe reproducible across restarts; the panel shows it, `ai.intent {seed}` changes it, and variants
-// ask for `seed + i` explicitly rather than inventing one per attempt.
-inline constexpr std::uint64_t kSessionSeed = 0;
 
 struct AiSession {
     // Where `roles.json` and `recipes/*.json` live. Set by the host, because nothing in the command
@@ -47,9 +47,16 @@ struct AiSession {
     std::unique_ptr<ai::Client> client;
     std::unique_ptr<ai::JobQueue> jobs;
     std::unique_ptr<ai::Registry> registry;
-    // The seed the AI commands use when the call names none. One field, one home: nothing else may
-    // decide what "unseeded" means.
-    std::uint64_t seed = kSessionSeed;
+    // A fresh seed for every request: the model explores from the seed, so a constant seed is a constant
+    // answer, and an ask that cannot differ is a second charge for the picture already on the canvas.
+    // `seed_pin` is the exception a person holds - iterate on an answer you liked - and `seed_draw` is
+    // the seam a test replaces with a fixed sequence, because no logic a test reaches may read entropy
+    // for itself.
+    std::function<std::uint64_t()> seed_draw = &platform::random_seed;
+    std::optional<std::uint64_t> seed_pin;
+    // The seed the last request carried, so the panel and a job name the number that made the picture
+    // they are showing rather than a remembered constant.
+    std::uint64_t last_seed = 0;
 
     // What the last `server.connect` decided. Not a latch: a failed connect leaves the commands refusing
     // with the reason, and the next attempt starts from nothing.
@@ -71,6 +78,10 @@ struct AiSession {
     bool tables_loaded() const { return registry != nullptr && roles_error.empty(); }
     bool serving() const { return client != nullptr && jobs != nullptr; }
 };
+
+// The seed one request takes: the pin when there is one, a fresh draw otherwise. Taken per compile, so
+// what a preview names is the seed that compile used and a press takes another.
+std::uint64_t take_seed(AiSession& session);
 
 // Loads the tables and chooses a transport: recordings if `$NOISE_AI_FIXTURES` names a directory, the
 // live server if `$THENOISE_URL` is set, nothing otherwise. Called once by the host after it has set

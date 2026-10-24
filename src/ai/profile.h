@@ -16,6 +16,11 @@ struct ImageDefaults {
     double cfg_scale = 0.0;
     int width = 0;
     int height = 0;
+    // The largest area this model serves, as the box publishes it (measured 2026-10-23: 2097152 on
+    // Flux-2-Klein-9B-TheNoise, 4194304 on builtin.Qwen-Image-2.1-Turbo-INT8). Zero means the entry
+    // says nothing - which is not a ceiling of zero, and does not become one: a region is then
+    // compiled to its own size instead of being shrunk to a number the app invented.
+    int soft_pixel_cap = 0;
 };
 
 // One `/v1/models` entry, as discovered. Nothing here is a fact the code assumes: whether a model can
