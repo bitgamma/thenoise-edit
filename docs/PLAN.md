@@ -1,10 +1,23 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the tree against the docs: **2026-10-25**, after adding ordered AI references — the full
-architecture was checked against the app, request builder, HTTP transport, recording path and host UI.
-The selected next architecture milestone remains `doc.crop` / `doc.resize`, blocked on
+Last re-read of the tree against the docs: **2026-10-25**, after freehand Lasso — the selection design was
+checked against `Mask`, `maskops`, tool metadata, provisional edits, the canvas and the command table. The
+selected next architecture milestone remains `doc.crop` / `doc.resize`, blocked on
 `History::fits_coverage` validating coverage when a history entry's canvas extent differs from the current
 stack extent. `AGENTS.md` is normative and outranks this file.
+
+## 2026-10-25 - Freehand Lasso
+
+Lasso uses the existing `Mask` bytes and `MaskOp` rules. `maskops::rasterize_lasso` makes a patch only for
+the clipped path bounds, fills self-crossings with even-odd scan conversion, and integrates sixteen
+subscanlines per row for antialiased edges. `tool.pointer` captures the gesture, coverage target and
+operation on press; release commits one marked-area or layer-mask step, while `cancel` drops the
+provisional transaction. The command `select.lasso` reaches the same rasterizer for marked-area edits.
+
+Architecture verdict: no second selection model or persistent document field was needed. The next crop
+and resize milestone still owns the outstanding canvas-extent/history constraint; this feature did not
+change it. Core geometry, command results, exact undo bytes, cancellation, both coverage targets, and
+the real mouse path at two zoom levels are covered by the existing tests and input probe.
 
 ---
 
@@ -882,9 +895,10 @@ disagrees with [PRODUCT.md](PRODUCT.md) or the code, it is the older text.
   contiguous/global, anti-aliased) on composite or active layer
 - new/add/subtract/intersect modifiers; invert; feather; expand/shrink; border
 - **live**: marching ants, `Ctrl+D` clear, invert, save selection ↔ layer mask (and the reverse), and
-  two shapes — rectangle (`M`) and the anti-aliased ellipse inscribed in the drag (`Shift+M`), plus
-  `select.rect` / `select.ellipse` with `replace`/`add`/`subtract`. Missing: lasso, wand, feather,
-  expand/shrink and border
+  three tools — rectangle (`M`), the anti-aliased ellipse inscribed in the drag (`Shift+M`), and
+  freehand Lasso (`L`) with even-odd filling and `Shift`/`Alt` add/subtract. `select.rect`,
+  `select.ellipse` and `select.lasso` expose replace/add/subtract to the command table. Missing: wand,
+  feather, expand/shrink and border
 
 **AI**
 - `New image from prompt` → new layer, aspect presets at the model's native scale,

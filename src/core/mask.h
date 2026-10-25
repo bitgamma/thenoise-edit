@@ -22,6 +22,8 @@ enum class MaskOp {
     subtract,  // what is left of the region's coverage
 };
 
+inline constexpr MaskOp kDefaultSelectionMode = MaskOp::replace;
+
 struct MaskOpInfo {
     MaskOp op;
     const char* name;

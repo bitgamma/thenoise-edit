@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace noise {
 
@@ -21,6 +22,11 @@ enum class MaskShape {
 struct MaskShapeInfo {
     MaskShape shape;
     const char* name;
+};
+
+struct MaskPatch {
+    Rect area;
+    std::vector<std::uint8_t> coverage;
 };
 
 // The rows the tool table, the commands and the error messages read: a shape is added here and
@@ -40,5 +46,7 @@ std::string mask_shape_names();
 // rectangle selected as a rectangle are the same bytes by construction rather than by a test that
 // happens to agree.
 void op_shape(Mask& mask, MaskShape shape, Rect box, MaskOp op);
+std::optional<MaskPatch> rasterize_lasso(Extent canvas, const std::vector<Vec2>& path);
+bool op_lasso(Mask& mask, const std::vector<Vec2>& path, MaskOp op);
 
 }  // namespace noise
