@@ -7,10 +7,12 @@
   "region": "layer",
   "prep": "none",
   "enhance": "never",
+  "include_references_default": false,
   "prompt": [
-    "Repaint the marked object so that it belongs in this scene.",
+    "Harmonize the marked object with the surrounding scene.",
+    "Keep the inserted object recognizable, retaining its identity, silhouette, position, scale and distinctive details.",
     "Match the light, colour temperature, shadow direction, perspective, focus and grain of",
-    "the surrounding {{context_desc}}, and keep what the object is, where it is and how big it is.",
+    "the surrounding {{context_desc}}.",
     "Change nothing outside the marked area."
   ],
   "variables": {

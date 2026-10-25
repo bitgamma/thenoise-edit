@@ -109,8 +109,10 @@ void draw_status_bar(AppState& state, CommandTable& commands, const json& ai_vie
 }
 
 void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
-             const gfx::Checker& checker, CoverageTint& tint, LayerThumbs& thumbs) {
+             const gfx::Checker& checker, CoverageTint& tint, LayerThumbs& thumbs,
+             ReferenceThumbs& reference_thumbs) {
     ui_theme::apply(state.ui_theme);
+    state.ai_references_rect = ScreenRect{};
     // The door is opened here, before the menu bar is drawn, because a menu item's callback is the
     // frame that sets it — and `OpenPopup` from inside a menu attaches the popup to a menu window that
     // closes at the end of that same frame, which is an ImGui assertion rather than a dialog. One
@@ -130,7 +132,8 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
     // what a press would do and what it costs, and asking twice would ask the settle rule to notice a
     // change in half a frame.
     const json ai_view = commands.invoke("ai.intent", json::object()).value;
-    draw_tool_panel(state, commands, ai_view);
+    draw_tool_panel(state, commands, ai_view, reference_thumbs);
+    state.reference_thumb_rebuilds = reference_thumbs.rebuilds;
     draw_layers_panel(state, commands, thumbs);
     draw_log_panel();
     // Last, so the bar sits above the canvas it is anchored to and above the panels it mirrors.

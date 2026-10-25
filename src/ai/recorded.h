@@ -23,8 +23,18 @@ struct CapturedRequest {
     std::string content_type;
     // Multipart text parts and JSON fields alike, so a test asks `field("size")` either way.
     std::map<std::string, std::string> fields;
+    struct ImagePart {
+        std::string field;
+        std::string filename;
+        std::string content_type;
+        std::vector<std::uint8_t> bytes;
+        std::string sha256;
+    };
+    std::vector<std::string> part_names;
+    std::vector<ImagePart> images;
     std::size_t image_bytes = 0;
     std::string image_sha;
+    std::size_t request_body_bytes = 0;
     std::string body_text;
 
     std::string field(const std::string& name) const {
@@ -40,6 +50,7 @@ struct CapturedRequest {
 // A recording is one JSON file:
 //   {"name": "…", "method": "POST", "path": "/images/edits",
 //    "match": {"model": "…", "size": "64x64"},       // every field must be equal
+//    "match_images": ["sha256…", "sha256…"],          // optional ordered file-part digests
 //    "status": 200, "json": {"data": [...]}}         // or "text": "not json"
 // The first recording whose method, path and `match` fields fit answers, and it may answer repeatedly:
 // the same request replayed is the same recording, which is what a cache-miss test needs.
@@ -73,6 +84,7 @@ private:
         std::string method;
         std::string path;
         std::map<std::string, std::string> match;
+        std::optional<std::vector<std::string>> image_sha256s;
         long status = 200;
         std::vector<std::uint8_t> body;
         // Empty for an HTTP answer. Set to `cancelled` / `timeout` / anything else to replay a transfer

@@ -11,6 +11,7 @@
     "min_px": 0
   },
   "enhance": "never",
+  "include_references_default": false,
   "prompt": [
     "{{prompt}}",
     "Compose the whole frame; there is no existing image to preserve."

@@ -31,7 +31,8 @@ bool key_known(const std::string& key) {
                                                    "role",      "region",    "prep",      "enhance",
                                                    "prompt",    "ask",       "variables", "composite",
                                                    "context",   "aspects",   "variants",  "steps",
-                                                   "cfg_scale", "mask",      "model"};
+                                                   "cfg_scale", "mask",      "model",
+                                                   "include_references_default"};
     return std::find(kKnown.begin(), kKnown.end(), key) != kKnown.end();
 }
 
@@ -432,6 +433,16 @@ std::optional<Recipe> parse_recipe(const nlohmann::json& body, const std::string
         error = origin + ": 'enhance' must be 'never' or 'always' (got '" + recipe.enhance + "')";
         return std::nullopt;
     }
+    if (!body.contains("include_references_default")) {
+        error = origin + ": 'include_references_default' is required";
+        return std::nullopt;
+    }
+    if (!body.at("include_references_default").is_boolean()) {
+        error = origin + ": 'include_references_default' must be a boolean, not " +
+                std::string(body.at("include_references_default").type_name());
+        return std::nullopt;
+    }
+    recipe.include_references_default = body.at("include_references_default").get<bool>();
 
     if (body.contains("prompt")) {
         if (!body.at("prompt").is_array()) {

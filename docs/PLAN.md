@@ -1,8 +1,7 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the tree against the docs: **2026-10-24**, after merging current `main` and finishing the
-browser host path — request seed and size policy were checked against `ai/provider`, `ai/region` and
-`app/ai_session`; the WASM target, browser file flow and UI controls were checked against the built tree.
+Last re-read of the tree against the docs: **2026-10-25**, after adding ordered AI references — the full
+architecture was checked against the app, request builder, HTTP transport, recording path and host UI.
 The selected next architecture milestone remains `doc.crop` / `doc.resize`, blocked on
 `History::fits_coverage` validating coverage when a history entry's canvas extent differs from the current
 stack extent. `AGENTS.md` is normative and outranks this file.
@@ -95,13 +94,57 @@ PNG file round trips. Native CTest is 39/40: all GUI probes pass with `DISPLAY` 
 wide-versus-tiled timing assertion in `test_blend` fails, as it did before the merge. `sweep_procs.py`
 reports clean.
 
+## 2026-10-25 — Ordered AI references
+
+An AI edit now compiles its prepared document region as Image 1 and appends only explicitly selected
+file or layer references. The References section owns session-only selection and ordering; the Layers
+panel still owns document composition. The same command table serves the GUI and wire. File bytes are
+encoded once into cached PNGs, linked layer images refresh on content or opacity revisions, and the queue
+owns the submitted image bytes after enqueue. Repeated `image[]` parts carry two or more inputs in order;
+the existing landing, coverage and undo path still owns the result.
+
+Architecture verdict after rereading the full design against the tree: this feature fits at the AI session
+and request-builder seams. It does not add a document format member, modify layer composition or coverage,
+or create a second representation of the document. Request identity and recordings include every image in
+order; refusal from a backend is surfaced without reducing the request. The UI and wire expose the same
+reference actions and diagnostics. The next feature can consume the existing ordered request image list
+without another transport path.
+
+Verification: native CTest passes 40/40. The Emscripten build and browser bridge tests pass; Chromium
+smoke passes in both themes, including paint/undo and project/PNG round trips. Local screenshots show
+the ordered reference rows in Light and Dark Mode. The live check reached no inference: the configured
+dev-box `/health` connection failed, so no edit request was sent and no model was changed.
+
+## 2026-10-25 — Reference inclusion defaults and relinking
+
+Change and Fill now include configured references by default; Blend, Heal and Remove keep them out unless
+the person explicitly enables them for that operation. The References control and `ai.preview` report
+whether the additional images will be sent. Blend's recipe prompt asks for harmonization while retaining
+the inserted object's identity and placement. A linked layer reference keeps its stable layer id and last
+encoded image while that layer is temporarily absent, reconnects after undo, and detaches on a document
+epoch change. Request assembly moves the compiled buffers into the queued snapshot. The reference drop
+rectangle follows the clipped visible panel geometry.
+
+Architecture verdict after rereading the full design against the tree: the fixes stay at the existing
+recipe, intent, reference-session, request-builder and panel seams. They do not change transport structure,
+document pixels, coverage, result landing or model resolution. The explicit operation choice is carried
+through the command table and request preview, and the document epoch makes layer identity safe across
+undo and document switches without another reference store.
+
+Verification: the native build passed. The full native CTest run had 39/40 pass; its only failure was
+`test_provider`'s test-only recipe helper missing the newly required recipe field. After updating that
+fixture, `ctest --rerun-failed` passed the remaining test (1/1); `test_app` and the UI probes passed in the
+full run. The Emscripten build, browser bridge tests and Chromium smoke passed in both themes. The GUI
+probe checked the drop rectangle after scrolling the references panel. The configured endpoint refused
+the connection, so no live Change/Fill inference ran.
+
 ## What is next, in order
 
 Ordered by what makes the thing usable rather than by what is interesting. Each slice is demoable by a
 human without a terminal, ships the wire command that makes it observable, and ends with a step of
 `tools/flow_probe.py` walking [PRODUCT.md](PRODUCT.md)'s scenario. The primary flows in slices 1–4 are
-landed; slice 3 still owes local Heal. Slices 5 and 6 have landed their core UI and image-input behavior,
-with remaining work listed below. The selected next milestone is slice 7, document geometry.
+landed; slice 3 still owes local Heal. Slices 5 and 6 have landed their core UI, image-input and ordered AI
+reference behavior, with remaining work listed below. The selected next milestone is slice 7, document geometry.
 
 **Slices 1 and 2 landed 2026-10-15** — files, and a new image from an idea. The file surface now includes
 New, Open, Save, Save As, Export, Insert, drop, recent files and the quit guard. The New dialog's price

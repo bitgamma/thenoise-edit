@@ -37,6 +37,7 @@ json minimal(const char* id = "test-recipe") {
                 {"operation", "reconstruct"},
                 {"prep", "blur"},
                 {"enhance", "never"},
+                {"include_references_default", false},
                 {"prompt", json::array({"Remove {{target}}.", "Match the {{context_desc}}."})},
                 {"ask", json::array({"target"})},
                 {"composite", json{{"feather", "auto"}}}};
@@ -126,6 +127,15 @@ void test_a_recipe_reads_as_the_policy_it_claims_to_be() {
     CHECK(recipe.region == RegionScope::selection);
     CHECK(!recipe.whole_document());
     CHECK_EQ(recipe.enhance, std::string("never"));
+    CHECK(!recipe.include_references_default);
+    json references_enabled = minimal();
+    references_enabled["include_references_default"] = true;
+    CHECK(parse_or_fail(references_enabled).include_references_default);
+    references_enabled["include_references_default"] = "yes";
+    CHECK(parse_refusal(references_enabled).find("include_references_default") != std::string::npos);
+    references_enabled = minimal();
+    references_enabled.erase("include_references_default");
+    CHECK(parse_refusal(references_enabled).find("include_references_default") != std::string::npos);
     // Two lines, joined in order: a prompt written as a paragraph cannot be varied line by line, and a
     // recipe file that reads like prose is the thing the doc asked for.
     std::string error;

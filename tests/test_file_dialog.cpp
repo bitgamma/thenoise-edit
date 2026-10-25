@@ -109,6 +109,14 @@ void test_the_filters_are_the_formats_the_codecs_write() {
     }
     CHECK(app::pick_kind(app::FileSet::image) == platform::PickKind::open);
 
+    const std::vector<platform::FileFilter> references = app::file_filters(app::FileSet::reference);
+    REQUIRE(!references.empty());
+    CHECK_EQ(references.front().extensions, images);
+    CHECK(app::pick_kind(app::FileSet::reference) == platform::PickKind::open);
+    CHECK(app::file_set_from_name("reference") == app::FileSet::reference);
+    CHECK(app::file_set_name(app::FileSet::reference) == std::string("reference"));
+    CHECK(app::file_set_label(app::FileSet::reference).find("AI reference") != std::string::npos);
+
     CHECK(app::file_set_from_name("nonsense").has_value() == false);
     CHECK(app::file_set_from_name("flat").has_value());
     CHECK(app::pick_kind(app::FileSet::open) == platform::PickKind::open);

@@ -174,12 +174,14 @@ void draw_ai_status_line(AppState& state, CommandTable& commands, const json& vi
 
 // Every widget here is a front-end for a command: the panel, a key and a wire client cannot
 // drift apart because there is nothing else to keep in step.
-void draw_tool_panel(AppState& state, CommandTable& commands, const json& intent) {
+void draw_tool_panel(AppState& state, CommandTable& commands, const json& intent,
+                     ReferenceThumbs& reference_thumbs) {
     ImGui::Begin(kWindowTool);
     draw_file_row(state, commands);
     ImGui::Separator();
     draw_tool_picker(state, commands);
     draw_coverage_controls(state, commands);
+    draw_ai_references(state, commands, reference_thumbs, intent);
     draw_verb_section(commands, intent, state.ui_theme);
     if (tool_mode(state.tool).has_value()) {
         draw_brush_sliders(state, commands);

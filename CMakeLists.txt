@@ -197,6 +197,7 @@ add_library(noise_app STATIC
     src/app/ai_job_commands.cpp
     src/app/ai_intent.cpp
     src/app/ai_landing.cpp
+    src/app/ai_references.cpp
     src/app/ai_session.cpp
     src/app/ai_verbs.cpp
     src/app/command_args.cpp
@@ -241,9 +242,11 @@ add_library(noise_ui STATIC
     src/app/ui_theme.cpp
     src/app/ui_tool_panel.cpp
     src/app/ui_verbs.cpp
+    src/app/ui_references.cpp
     src/app/verb_bar_draw.cpp
     src/app/coverage_tint.cpp
-    src/app/layer_thumbs.cpp)
+    src/app/layer_thumbs.cpp
+    src/app/reference_thumbs.cpp)
 target_include_directories(noise_ui PUBLIC src)
 target_link_libraries(noise_ui PUBLIC noise_app noise_gfx imgui sokol)
 

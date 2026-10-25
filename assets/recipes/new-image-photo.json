@@ -11,6 +11,7 @@
     "min_px": 0
   },
   "enhance": "never",
+  "include_references_default": false,
   "prompt": [
     "{{prompt}}",
     "Photograph: natural lighting, plausible optics and depth of field, fine texture.",
