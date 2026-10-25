@@ -82,20 +82,6 @@ double number_member(const nlohmann::json& object, const char* key, double missi
     return object.at(key).get<double>();
 }
 
-// The first preference that the box could supply but did not have downloaded: the one row that turns
-// an unresolved role into a resolved one, in the order we would have used it.
-std::string missing_preference(const RoleDefinition& role,
-                               const std::vector<ModelEntry>& models) {
-    for (const std::string& wanted : role.preference) {
-        for (const ModelEntry& entry : models) {
-            if (entry.id == wanted && !entry.downloaded) {
-                return wanted;
-            }
-        }
-    }
-    return {};
-}
-
 bool satisfies(const ModelEntry& entry, const RoleDefinition& role) {
     if (!role.recipe.empty() && entry.recipe != role.recipe) {
         return false;
@@ -106,6 +92,46 @@ bool satisfies(const ModelEntry& entry, const RoleDefinition& role) {
         }
     }
     return true;
+}
+
+// Lemonade exposes the bare name for the winning catalog entry and a canonical ID (user., extra.,
+// builtin.) for shadowed entries. roles.json predates this and names bare preferences. Match either
+// form for ordering, but always return the exact ID the server advertised for load/inference.
+const ModelEntry* preferred_model(const RoleDefinition& role, const std::vector<ModelEntry>& models,
+                                  const std::string& wanted, bool downloaded) {
+    const auto find_id = [&](const std::string& id) -> const ModelEntry* {
+        for (const ModelEntry& entry : models) {
+            if (entry.id == id && entry.downloaded == downloaded && satisfies(entry, role)) {
+                return &entry;
+            }
+        }
+        return nullptr;
+    };
+    if (const ModelEntry* exact = find_id(wanted)) {
+        return exact;
+    }
+    for (const char* prefix : {"user.", "extra.", "builtin."}) {
+        if (wanted.rfind(prefix, 0) == 0) {
+            return nullptr;  // An explicit canonical preference must not select another source.
+        }
+    }
+    // Match Lemonade's bare-name precedence if more than one source owns the same name.
+    for (const char* prefix : {"user.", "extra.", "builtin."}) {
+        if (const ModelEntry* entry = find_id(std::string(prefix) + wanted)) {
+            return entry;
+        }
+    }
+    return nullptr;
+}
+
+std::string missing_preference(const RoleDefinition& role,
+                               const std::vector<ModelEntry>& models) {
+    for (const std::string& wanted : role.preference) {
+        if (const ModelEntry* entry = preferred_model(role, models, wanted, false)) {
+            return entry->id;
+        }
+    }
+    return {};
 }
 
 }  // namespace
@@ -250,6 +276,13 @@ void Registry::update(const std::vector<ModelEntry>& models) {
     }
 }
 
+void Registry::set_resident(const std::string& id) {
+    resident_ = id;
+    for (const RoleDefinition& role : table_.roles) {
+        resolved_[role.id] = resolve_one(role);
+    }
+}
+
 const Resolution& Registry::resolve(const std::string& role) const {
     const auto found = resolved_.find(role);
     if (found != resolved_.end()) {
@@ -303,7 +336,11 @@ Resolution Registry::resolve_one(const RoleDefinition& role) const {
             return resolution;
         }
         resolution.reason = "'" + missing + "' is what '" + role.id + "' wants and is not downloaded";
-        resolution.fix_command = std::string(kFixPrefix) + missing;
+        // A canonical builtin./extra. ID may be shadowed by a different bare-name model: do not
+        // suggest a bare-name import command that could install the wrong source.
+        if (missing.rfind("builtin.", 0) != 0 && missing.rfind("extra.", 0) != 0) {
+            resolution.fix_command = std::string(kFixPrefix) + missing;
+        }
         return resolution;
     }
 
@@ -318,11 +355,26 @@ Resolution Registry::resolve_one(const RoleDefinition& role) const {
     }
 
     for (const std::string& wanted : role.preference) {
-        if (std::find(resolution.candidates.begin(), resolution.candidates.end(), wanted) !=
-            resolution.candidates.end()) {
-            resolution.model_id = wanted;
+        if (const ModelEntry* entry = preferred_model(role, models_, wanted, true)) {
+            resolution.model_id = entry->id;
             resolution.from_preference = true;
             resolution.reason = "preference order in roles.json";
+            // The bare name can be owned by a user model while its built-in twin is
+            // already resident. For an automatic (non-assigned) preference, keep the
+            // resident model when it has the same preferred name and capabilities.
+            // Use its actual canonical ID, not the bare alias which may route elsewhere.
+            if (entry->id == wanted) {
+                const ModelEntry* resident = model(resident_);
+                if (resident != nullptr && resident->downloaded && satisfies(*resident, role)) {
+                    for (const char* prefix : {"user.", "extra.", "builtin."}) {
+                        if (resident_ == std::string(prefix) + wanted) {
+                            resolution.model_id = resident_;
+                            resolution.reason = "same preferred model already resident";
+                            break;
+                        }
+                    }
+                }
+            }
             return resolution;
         }
     }

@@ -6,7 +6,9 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
+#include "app/ai_references.h"
 #include "ai/http.h"
 #include "ai/queue.h"
 #include "ai/recipes.h"
@@ -57,6 +59,10 @@ struct AiSession {
     // The seed the last request carried, so the panel and a job name the number that made the picture
     // they are showing rather than a remembered constant.
     std::uint64_t last_seed = 0;
+    std::vector<AiReference> references;
+    std::uint64_t next_reference_id = 1;
+    std::uint64_t reference_encodes = 0;
+    std::string references_error;
 
     // What the last `server.connect` decided. Not a latch: a failed connect leaves the commands refusing
     // with the reason, and the next attempt starts from nothing.

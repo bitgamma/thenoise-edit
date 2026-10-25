@@ -31,6 +31,7 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -107,6 +108,7 @@ struct Runtime {
     gfx::Checker checker;
     app::CoverageTint coverage_tint;
     app::LayerThumbs layer_thumbs;
+    app::ReferenceThumbs reference_thumbs;
     CommandTable commands;
     dbg::DebugWire wire{commands};
     Args args;
@@ -257,7 +259,7 @@ void frame(void) {
     // its answer becomes an editing command.
     app::pump_picked_files(g.state, g.commands);
     app::draw_ui(g.state, g.commands, g.canvas_texture, g.checker, g.coverage_tint,
-                 g.layer_thumbs);
+                 g.layer_thumbs, g.reference_thumbs);
     const app::PointerRequest request = app::pointer_request(g.state.pointer);
     // sokol_imgui applies ImGui's own cursor request at new-frame, before the canvas has decided what
     // it needs, so this is the frame's last word - and only over the canvas, so a text field in a panel
@@ -340,6 +342,19 @@ void event(const sapp_event* ev) {
     // to put the picture under the pointer. XDND is sokol's job; the placement and the layer are the
     // same command a wire client or a future picker calls.
     if (ev->type == SAPP_EVENTTYPE_FILES_DROPPED) {
+        const ScreenRect& target = g.state.ai_references_rect;
+        const bool over_references = !target.empty() &&
+                                     ev->mouse_x >= target.x && ev->mouse_y >= target.y &&
+                                     ev->mouse_x < target.x + target.w &&
+                                     ev->mouse_y < target.y + target.h;
+        if (over_references) {
+            json paths = json::array();
+            for (int i = 0; i < sapp_get_num_dropped_files(); ++i) {
+                paths.push_back(sapp_get_dropped_file_path(i));
+            }
+            invoke_command("ai.references.add", json{{"paths", paths}}, "dropped AI reference");
+            return;
+        }
         const Vec2 at = g.state.view.view_to_world(
             {static_cast<double>(ev->mouse_x) - g.state.canvas_origin.x,
              static_cast<double>(ev->mouse_y) - g.state.canvas_origin.y});

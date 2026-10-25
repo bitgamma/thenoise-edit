@@ -185,7 +185,9 @@ src/
                        footprint
     ui_front_door.cpp  file actions, theme picker, recent files, new-document and quit dialogs
     ui_layers_panel.cpp layer cards, thumbnails, stack actions, mask controls and log panel
-    ui_tool_panel.cpp  tool selection, coverage controls, brush controls and AI status
+    ui_tool_panel.cpp  tool selection, coverage controls, brush controls, AI references and AI status
+    ui_references.cpp  ordered reference rows, thumbnails, file/layer actions and drop target
+    reference_thumbs.{h,cpp} GPU thumbnails keyed by reference id and content revision
     ui_verbs.cpp       recipe-backed verb rows, their fields, aspect/style selectors and model-swap
                        confirmation; owns no parallel verb list or prompt state
     ui_theme.{h,cpp}   shared semantic palette and ImGui style for dark and light themes
@@ -199,6 +201,9 @@ src/
     ai_commands.cpp     `ai.compose` (land a result file), `ai.roles`, `ai.recipes`, `ai.preview`
                        (the compiled request, unsent) and `ai.run` (queue it): each reports what the
                        policy and the coverage resolved to
+    ai_references.{h,cpp} session-only independent references from files or one selected layer;
+                       caches lossless PNG bytes and a thumbnail, tracks linked layer content revisions,
+                       and exposes add/remove/move/read through the command table
     ai_job_commands.cpp `server.connect/state/load`, `job.list/get/wait/cancel/apply`,
                        the queue and the session, observable and driveable. No `job.retry`: pressing the
                        verb again *is* the retry, against what the document is now
@@ -243,16 +248,17 @@ src/
                        command that would fix it. The file also carries the size and context policy the
                        region compiler and the request builder are not allowed to invent
     recipes.{h,cpp}    `recipes/*.json`: endpoint, role, operation, region scope, hole prep, enhance,
-                       prompt lines, variables, composite policy, the `aspects` a generation offers and
+                       additional-reference default, prompt lines, variables, composite policy,
+                       the `aspects` a generation offers and
                        the `variants` that stand in for it at its key. A recipe names a role,
                        never a model, refuses keys that belong to the model (`steps`) or to nothing
                        (`mask`), refuses any pairing of `operation` with a hole it may not cut, and
                        `variant_errors` refuses a family whose members are not interchangeable once the
                        whole table exists to resolve them
     provider.{h,cpp}   THE request builder and the only place a field can be added: one ordered field
-                       list per request, encoded as JSON or multipart by the transport, and the readable
-                       summary (`fields`, `size`, `image_bytes`, `allowed_fields`) that `ai.preview`
-                       answers with before anything is sent
+                       list plus an ordered image collection, encoded as JSON or multipart by the
+                       transport, and the readable per-image summary that `ai.preview` answers with
+                       before anything is sent
     transport.h        the HTTP seam: method, URL, headers, body, timeouts, a cancel flag. Everything
                        above it is the same whether the answer comes from libcurl or a recording
     http.{h,cpp}       `Client`: health / models / load / run, and the failure classes - cancelled,
@@ -261,8 +267,8 @@ src/
     http_curl.cpp      the libcurl easy transport: TLS verification, timeouts, bearer header,
                        cancellation from the transfer callback
     recorded.{h,cpp}   the same transport from committed JSON recordings, answering on the caller's
-                       thread: captures what was sent (fields, PNG digest), replays delays, transport
-                       errors and every refusal shape. The default `ctest` run is this and nothing else
+                       thread: captures ordered multipart parts and exact PNG bytes, replays delays,
+                       transport errors and every refusal shape. The default `ctest` run is this
     server.{h,cpp}     ServerProfile (base URL, key, TLS, auth form, `/v1` vs `/api/v1`) read from
                        `$THENOISE_URL` / `$THENOISE_API_KEY`, and the latency EMA that turns a shape
                        into an ETA and a request timeout
@@ -749,7 +755,7 @@ a person is doing while that runs is [PRODUCT.md](PRODUCT.md); how it is proven 
 
 ### Golden rule
 
-> **The backend is a dumb `image + words → image` function. All spatial precision is ours.**
+> **The backend is a dumb ordered `images + words → image` function. All spatial precision is ours.**
 
 Non-negotiable, and this is now a hard engine fact rather than a portability preference:
 
@@ -762,11 +768,13 @@ Non-negotiable, and this is now a hard engine fact rather than a portability pre
   guarantee *nothing outside the selection changed*, which is the property users actually
   want.
 
-So every AI command compiles to the same pipeline:
+So every AI edit compiles the primary image through the same pipeline. Selected references follow it as
+independent inputs and never alter the coverage or the landing plan:
 
 ```
 bbox(mask) → grow for context → snap to size policy → crop from a flattened base
   → PREP (destroy target identity, preserve scene statistics)
+  → Image 1: prepared primary, Image 2…N: explicitly selected references
   → prompt template → POST /v1/images/edits → resample back to the crop rect
   → out = orig*(1-m) + result*m   with m = feathered mask   [+ colour match, + lock band]
 ```
@@ -922,7 +930,7 @@ both, so 0 staying unused is our convention for "no seed yet", not an engine rul
 | Endpoint | Content type | Fields |
 |---|---|---|
 | `POST /v1/images/generations` | JSON | `model`, `prompt`, `size`, `steps`, `cfg_scale`, `seed`, `response_format="b64_json"` |
-| `POST /v1/images/edits` | `multipart/form-data` | `model`, `image` (PNG part), `prompt`, `size`, `steps`, `cfg_scale`, `seed`, `response_format="b64_json"` |
+| `POST /v1/images/edits` | `multipart/form-data` | `model`, one `image` PNG part for a single-image request; for two or more images, one repeated `image[]` PNG part per image, in order; `prompt`, `size`, `steps`, `cfg_scale`, `seed`, `response_format="b64_json"` |
 | `POST /v1/images/upscale` | JSON | `image` (b64 PNG), `model` |
 | `GET /v1/models`, `GET /v1/models/{id}` | — | — |
 | `POST /v1/chat/completions` | JSON | `model`, `messages`, `stream=false` — reserved for the `enhance` role, unused in MVP |
@@ -951,6 +959,34 @@ code that can put a field on a request, it checks every name against the endpoin
 table and a way for a recipe to ask for it — which is the point: a knob that works cannot be reached
 by accident. When it is added, the gate is intended to be per-server rather than per-model, and a
 rejected field dropped with the deduction recorded rather than the job failed.
+
+For `/images/edits`, one image keeps the existing `image` part. With two or more, every image including
+the primary uses a repeated `image[]` part; `image` and `image[]` are never mixed. The primary is always
+Image 1: the current document composite prepared for the recipe's editing region. Additional references
+are appended in the order shown in the References section. They are independent images, never a flattened
+substitute for the document and never an instruction to widen local coverage. No reference-count limit is
+assumed from model labels; a backend refusal is reported with its response and the request is not retried
+with fewer images.
+
+Each recipe's `include_references_default` supplies the starting choice: Change and Fill enable it;
+Blend, Heal and Remove leave references configured but out of the request until explicitly enabled in
+the References section. `ai.intent`, `ai.preview` and `ai.run` share this choice, and the preview reports
+both the configured count and the number actually transmitted. Switching recipes restores the selected
+recipe's default unless that operation is explicitly changed again.
+
+The request preview lists each image's order, source name, dimensions, PNG byte count, SHA-256, content
+type and multipart filename, along with the actual image field names and total body size. The request
+identity hashes every image's bytes in order, so reordering references changes the body boundary and the
+recording match. Image payloads and base64 are never written to request diagnostics.
+
+`AiSession` owns these references for the current app run; they are not saved in `.noise` or mixed into
+document pixels. File references are decoded from PNG/JPEG/WebP and encoded once as lossless PNG at their
+decoded dimensions. A selected layer is isolated from other layers, cropped to pixels with nonzero
+effective alpha, and carries its pixel alpha, mask and opacity. Transparent RGB hidden by alpha or mask is
+zeroed. Layer references refresh only when that layer's content revision or opacity changes. If the layer
+is temporarily absent in the same document, its stable id and cached image are retained so undo can restore
+the link; switching documents detaches the reference before another document's ids are considered. A queued
+request already owns its image bytes, so a later reorder, removal or layer edit cannot change what it sends.
 
 #### `n`: we do not use it
 
@@ -1386,7 +1422,7 @@ included. `target` is gone from the masked recipes: the masked pixels are what t
 describes, and prefilling it with "the marked area" produced answers that commented on the selection
 instead of editing it.
 
-**Built today.** `assets/roles.json` + `assets/recipes/*.json` (10 recipes; `free-command` is the one
+**Built today.** `assets/roles.json` + `assets/recipes/*.json` (11 recipes; `free-command` is the one
 row of the table not shipped), loaded by `ai/registry` and `ai/recipes` from `$NOISE_EDIT_ASSETS`, the
 installed asset directory relative to the executable, `assets` in the working directory, or the runtime
 directory — in that order, one lookup, reported by `server.state` as `tables`. `ai.recipes` lists each
@@ -1475,11 +1511,11 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 
 | Group | Commands | Why |
 |---|---|---|
-| state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `server.state`, `job.list`, `job.get {id}`, `ai.roles`, `ai.recipes`, `log.tail` | read what the app believes, cheaply |
+| state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `ai.references`, `server.state`, `job.list`, `job.get {id}`, `ai.roles`, `ai.recipes`, `log.tail` | read what the app believes, cheaply |
 | drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `ui.theme {theme?}`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
  `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
-| ai | `ai.verbs` (the verb rows: id, command, key, recipe, label, operation, `ask`, scope, `ready`, `reason`, `model`, `resident`, `swap`), `ai.heal` / `ai.remove` / `ai.fill` / `ai.change` / `ai.generate` / `ai.blend` `{vars?, seed?, confirm?}` (one verb row pressed - they call `ai.intent` with their recipe named, so a key and a scripted intent cannot diverge), `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}`, `ai.intent {recipe?, vars?, aspect?, seed?, seed_pin?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pinned}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.apply {id, feather?, colour_match?}` (the idempotent landing door - answers land by themselves, so this one brings one back or overrides the policy, and says `already_landed` otherwise), | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact field list, size and blob digest before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel and land without a UI; `ai.intent` is the whole surface of the action, so a scripted run and a key press cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command; absent, the request takes the panel's pin or a fresh draw, and every report says which (`seed`, `seed_source`) |
+| ai | `ai.verbs` (the verb rows: id, command, key, recipe, label, operation, `ask`, scope, `ready`, `reason`, `model`, `resident`, `swap`), `ai.heal` / `ai.remove` / `ai.fill` / `ai.change` / `ai.generate` / `ai.blend` `{vars?, seed?, confirm?, include_references?}` (one verb row pressed - they call `ai.intent` with their recipe named, so a key and a scripted intent cannot diverge), `ai.references {}`, `ai.references.add {path?, paths?, layer?}`, `ai.references.remove {id}`, `ai.references.move {id, to}`, `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?, include_references?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?, include_references?}`, `ai.intent {recipe?, vars?, aspect?, include_references?, seed?, seed_pin?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pinned}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.apply {id, feather?, colour_match?}` (the idempotent landing door - answers land by themselves, so this one brings one back or overrides the policy, and says `already_landed` otherwise), | `ai.references` reads ordered session references; its add/remove/move commands are the same actions the GUI uses, and `ai.preview` shows every image's order, source, dimensions, hash and encoded size plus the actual request field names and body size. It also reports whether configured references are included for the selected operation. `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact request before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel and land without a UI; `ai.intent` is the whole surface of the action, so a scripted run and a key press cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command; absent, the request takes the panel's pin or a fresh draw, and every report says which (`seed`, `seed_source`) |
 
 Live now: every row. The AI row is driven end to end by `tools/ai_job_probe.py` against
 `tests/fixtures/http` (a recorded server), so the whole path - discovery, role resolution, the compiled
@@ -1507,6 +1543,8 @@ the pixels and answers with a checksum; `app.state` deliberately does not, becau
 polls it every frame. `fit_pending` is true while a fit waits for a
 frame to publish a canvas area wide enough to hold the document: the framebuffer is not the
 canvas, and fitting against it latches a scale that spills past the panel.
+It also reports the References section's screen rectangle for file drops and the cached thumbnail rebuild
+count; `ai.references` reports the session-only source list, order, dimensions, cache revisions and errors.
 `ui_vertices` / `ui_vertex_limit` report the geometry the last frame demanded against the
 buffer simgui stages it into — past the limit simgui drops the frame's draw commands, so any
 feature generating one element per canvas square or per log line shows up here first.

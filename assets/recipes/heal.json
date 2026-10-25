@@ -7,6 +7,7 @@
   "region": "selection",
   "prep": "average",
   "enhance": "never",
+  "include_references_default": false,
   "prompt": [
     "Repair the marked area so it becomes a seamless continuation of the surrounding",
     "{{context_desc}}, with the same colour, brightness, texture and grain.",

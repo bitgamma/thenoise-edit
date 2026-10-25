@@ -113,10 +113,11 @@ BuiltRequest edits_request_for(const RecipeSet& recipes, const std::string& mode
     input.height = height;
     input.prompt = "remove the object, match the wall";
     input.seed = 1234;
-    input.png = region_png();
+    const std::vector<std::uint8_t> image = region_png();
+    input.images.push_back(noise::ai::RequestImageInput{"document", "region", width, height, image});
     std::string error;
     const std::optional<BuiltRequest> built =
-        build_request(input, SizePolicy{16, 1024 * 1024}, error);
+        build_request(std::move(input), SizePolicy{16, 1024 * 1024}, error);
     REQUIRE(built.has_value());
     return *built;
 }
@@ -140,10 +141,11 @@ BuiltRequest edits_request(const RecipeSet& recipes, int width = 64, int height 
     input.height = height;
     input.prompt = "remove the object, match the wall";
     input.seed = 1234;
-    input.png = region_png();
+    const std::vector<std::uint8_t> image = region_png();
+    input.images.push_back(noise::ai::RequestImageInput{"document", "region", width, height, image});
     std::string error;
     const std::optional<BuiltRequest> built =
-        build_request(input, SizePolicy{16, 1024 * 1024}, error);
+        build_request(std::move(input), SizePolicy{16, 1024 * 1024}, error);
     REQUIRE(built.has_value());
     return *built;
 }
@@ -242,7 +244,9 @@ void test_an_answer_comes_back_from_the_recorded_edit() {
     CHECK(wire.image_bytes > std::size_t(0));
     // The bytes that left are the bytes that were built, by hash: a transport that re-encoded or
     // truncated the region would change the cache key's meaning.
-    CHECK_EQ(wire.image_sha, noise::sha256_hex(std::span<const std::uint8_t>(request.png)));
+    CHECK_EQ(wire.images.front().sha256, request.images.front().sha256);
+    CHECK_EQ(wire.images.front().bytes, request.images.front().png);
+    CHECK_EQ(wire.images.front().content_type, std::string("image/png"));
     // No mask field, ever: the engine has none, and precision is region plus prep.
     CHECK(string_of(bytes_of(wire.body_text)).find("mask") == std::string::npos);
     CHECK(transport->misses().empty());
@@ -290,10 +294,11 @@ void test_each_failure_the_server_gives_is_a_different_answer() {
         input.height = 64;
         input.prompt = "do the thing";
         input.seed = 3;
-        input.png = region_png();
+        const std::vector<std::uint8_t> image = region_png();
+        input.images.push_back(noise::ai::RequestImageInput{"document", "region", 64, 64, image});
         std::string build_error;
         const std::optional<BuiltRequest> built =
-            build_request(input, SizePolicy{16, 1024 * 1024}, build_error);
+            build_request(std::move(input), SizePolicy{16, 1024 * 1024}, build_error);
         REQUIRE(built.has_value());
 
         AiError error;
@@ -340,10 +345,11 @@ void test_cancellation_and_unmatched_requests_are_honest() {
     input.width = 64;
     input.height = 64;
     input.prompt = "do the thing";
-    input.png = region_png();
+    const std::vector<std::uint8_t> image = region_png();
+    input.images.push_back(noise::ai::RequestImageInput{"document", "region", 64, 64, image});
     std::string build_error;
     const std::optional<BuiltRequest> built =
-        build_request(input, SizePolicy{16, 1024 * 1024}, build_error);
+        build_request(std::move(input), SizePolicy{16, 1024 * 1024}, build_error);
     REQUIRE(built.has_value());
 
     AiError error;

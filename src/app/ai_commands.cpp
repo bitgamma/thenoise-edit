@@ -3,6 +3,7 @@
 
 #include "app/ai_intent.h"
 #include "app/ai_landing.h"
+#include "app/ai_references.h"
 #include "app/ai_session.h"
 #include "app/command_args.h"
 #include "app/state.h"
@@ -21,6 +22,7 @@
 
 #include <map>
 #include <optional>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -43,6 +45,7 @@ struct Assembly {
     // The prepped region, written out so a person can look at the exact image that is being uploaded.
     std::string prepped_path;
     ai::BuiltRequest request{};
+    bool include_references;
     // Which of the three ways a seed is chosen this one came from: `named`, `pinned` or `random`.
     std::string seed_source;
 };
@@ -184,6 +187,14 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
                                          join_ids(state.ai.recipes))};
     }
 
+    bool include_references = recipe->include_references_default;
+    if (state.ai_intent.recipe == recipe_id && state.ai_intent.include_references.has_value()) {
+        include_references = *state.ai_intent.include_references;
+    }
+    if (!arg_bool(args, "include_references", include_references)) {
+        return Attempt{false, Assembly{}, fail(command, "'include_references' must be a boolean")};
+    }
+
     // Refused rather than ignored: compiling the whole canvas while the panel says 16:9 spends a model's
     // time on the wrong picture and reports a region nobody asked for.
     std::optional<AspectRatio> aspect;
@@ -242,6 +253,7 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
         return prepped;
     }
     Assembly& assembled = prepped.assembled;
+    assembled.include_references = include_references;
 
     // The role resolves against what this server answered. Previewing without a connection is allowed
     // only when the caller supplies the numbers the model would have supplied, because guessing them
@@ -276,6 +288,23 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
         return Attempt{false, Assembly{}, fail(command, message)};
     }
 
+    refresh_ai_references(state);
+    const bool uploads_document_image = recipe->endpoint == ai::Endpoint::edits ||
+                                        recipe->endpoint == ai::Endpoint::upscale;
+    if (include_references && !uploads_document_image && !state.ai.references.empty()) {
+        return Attempt{false, Assembly{},
+                       fail(command, "recipe '" + recipe->id + "' uses endpoint '" +
+                                         ai::endpoint_name(recipe->endpoint) +
+                                         "', which cannot accept the configured AI references; "
+                                         "choose an edit recipe or remove them")};
+    }
+    for (const AiReference& reference : state.ai.references) {
+        if (include_references && !reference.error.empty()) {
+            return Attempt{false, Assembly{},
+                           fail(command, "AI reference '" + reference.name + "': " + reference.error)};
+        }
+    }
+
     ai::RequestInput input;
     input.recipe = recipe;
     input.server_name = state.ai.client != nullptr ? state.ai.client->profile().name : "none";
@@ -287,14 +316,36 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
     input.height = assembled.plan.requested.h;
     input.prompt = assembled.prompt;
     input.seed = static_cast<std::uint64_t>(seed);
-    input.png = assembled.png;
+    if (uploads_document_image) {
+        const std::string document_name = state.doc.path().empty()
+                                              ? "Current image"
+                                              : std::filesystem::path(state.doc.path())
+                                                    .filename()
+                                                    .string();
+        input.images.push_back(ai::RequestImageInput{"document", document_name,
+                                                    assembled.plan.requested.w,
+                                                    assembled.plan.requested.h,
+                                                    std::move(assembled.png)});
+        if (recipe->endpoint == ai::Endpoint::edits && include_references) {
+            for (const AiReference& reference : state.ai.references) {
+                input.images.push_back(ai::RequestImageInput{reference.source, reference.name,
+                                                            reference.size.w, reference.size.h,
+                                                            reference.png});
+            }
+        } else if (recipe->endpoint == ai::Endpoint::upscale && include_references &&
+                   !state.ai.references.empty()) {
+            return Attempt{false, Assembly{},
+                           fail(command, "the upscale endpoint accepts one document image; remove "
+                                         "the configured AI references before running it")};
+        }
+    }
 
-    const std::optional<ai::BuiltRequest> request =
-        ai::build_request(input, state.ai.roles.size_policy, error);
+    std::optional<ai::BuiltRequest> request =
+        ai::build_request(std::move(input), state.ai.roles.size_policy, error);
     if (!request.has_value()) {
         return Attempt{false, Assembly{}, fail(command, error)};
     }
-    assembled.request = *request;
+    assembled.request = std::move(*request);
     Attempt done;
     done.ok = true;
     done.assembled = std::move(assembled);
@@ -303,6 +354,8 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
 
 nlohmann::json assembly_json(const AppState& state, const Assembly& assembled,
                    const std::string& role_reason) {
+    const std::size_t transmitted_references =
+        assembled.request.images.empty() ? 0 : assembled.request.images.size() - 1;
     return json{{"recipe", assembled.recipe->id},
                 {"role", assembled.recipe->role},
                 {"role_resolution", role_reason},
@@ -311,6 +364,15 @@ nlohmann::json assembly_json(const AppState& state, const Assembly& assembled,
                 {"prep", ai::prep_name(assembled.recipe->prep)},
                 {"seed", assembled.request.params.seed},
                 {"seed_source", assembled.seed_source},
+                {"additional_references",
+                 {{"configured_count", state.ai.references.size()},
+                  {"transmitted_count", transmitted_references},
+                  {"include_references", assembled.include_references},
+                  {"will_transmit", transmitted_references != 0},
+                  {"status", transmitted_references != 0
+                                  ? "included"
+                                  : (state.ai.references.empty() ? "none_configured"
+                                                                  : "configured_not_included")}}},
                 {"region", region_plan_json(assembled.plan, assembled.coverage_source)},
                 {"request",
                  ai::outgoing_preview(state.ai.client != nullptr
@@ -487,7 +549,8 @@ void register_ai_commands(AppState& state, CommandTable& table) {
     // request half of the wire, observable before it costs anyone's GPU time.
     table.add("ai.preview",
               "Compile a recipe against the document and report the exact request", {},
-              {"recipe", "vars", "aspect", "seed", "steps", "cfg_scale"},
+              {"recipe", "vars", "aspect", "seed", "steps", "cfg_scale",
+               "include_references"},
               [&state](const json& args) -> CommandResult {
         const Attempt attempt = build_assembly("ai.preview", state, args, /*needs_server=*/false);
         if (!attempt.ok) {
@@ -502,13 +565,14 @@ void register_ai_commands(AppState& state, CommandTable& table) {
     });
 
     table.add("ai.run", "Queue a recipe against the document", {},
-              {"recipe", "vars", "aspect", "seed", "steps", "cfg_scale"},
+              {"recipe", "vars", "aspect", "seed", "steps", "cfg_scale",
+               "include_references"},
               [&state](const json& args) -> CommandResult {
-        const Attempt attempt = build_assembly("ai.run", state, args, /*needs_server=*/true);
+        Attempt attempt = build_assembly("ai.run", state, args, /*needs_server=*/true);
         if (!attempt.ok) {
             return attempt.failure;
         }
-        const Assembly& assembled = attempt.assembled;
+        Assembly& assembled = attempt.assembled;
         const ai::Recipe& recipe = *assembled.recipe;
 
         ai::Landing landing;
@@ -524,11 +588,13 @@ void register_ai_commands(AppState& state, CommandTable& table) {
         landing.document_checksum_before = state.doc.composite().checksum_hex();
         landing.document_epoch = state.document_epoch;
 
-        const std::string id = state.ai.jobs->enqueue(assembled.request, recipe.id, recipe.role,
-                                                      landing, coverage_png(assembled.coverage));
+        const std::string request_path = assembled.request.path;
+        const std::string id = state.ai.jobs->enqueue(
+            std::move(assembled.request), recipe.id, recipe.role, landing,
+            coverage_png(assembled.coverage));
         log::info("queued " + recipe.id + " as job " + id + " (" +
                   std::to_string(assembled.plan.requested.w) + "x" +
-                  std::to_string(assembled.plan.requested.h) + " at " + assembled.request.path + ")");
+                  std::to_string(assembled.plan.requested.h) + " at " + request_path + ")");
         const std::optional<ai::JobRecord> record = state.ai.jobs->find(id);
         return command_ok(json{{"job", record.has_value() ? record->json() : json::object()},
                                {"prepped", assembled.prepped_path},

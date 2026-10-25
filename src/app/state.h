@@ -201,6 +201,8 @@ struct AppState {
     std::uint64_t layer_thumb_rebuilds = 0;
     std::vector<LayerCard> layer_cards{};
     LayerPanelControls layer_panel{};
+    ScreenRect ai_references_rect{};
+    std::uint64_t reference_thumb_rebuilds = 0;
     // And the same for the phrase box the bar opens, so a driver can read the box's own rect rather
     // than deriving it from the bar's.
     ScreenRect verb_ask{};

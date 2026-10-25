@@ -57,6 +57,12 @@ Working on an existing file is the same story with fewer steps: open, do, save.
 - **Document** - the picture and its layers, at one size. Saved as `.noise`.
 - **Layer** - a rectangle of pixels with opacity, visibility and an optional mask. Answers always land on
   one. The Layers panel is **always visible**: it is where a person goes to understand what an edit did.
+- **AI reference** - an independent image explicitly added from a local PNG/JPEG/WebP file or one document
+  layer. The References section numbers these after Image 1, lets the person reorder and remove them, and
+  keeps them for this app session only. Adding a file here does not insert a document layer; inserting a
+  layer does not make it a reference. References give the model information and do not expand the marked
+  area or change where an answer lands. Change and Fill include them by default; Blend, Heal and Remove
+  leave them configured but excluded until the user turns them on for that operation.
 - **Coverage** - one concept, two lifetimes. The *marked area* is transient tool state, painted, marquee'd
   or lassoed, drawn as marching ants; a layer's *mask* is the same paintable thing, stored in the document.
   One editor, one shape language, one maths: the target switch says which one the brush is working on.
@@ -76,7 +82,7 @@ Working on an existing file is the same story with fewer steps: open, do, save.
 2. **Pixel-lock.** Outside the coverage - and the feather the recipe asked for - the document is byte
    identical to what it was. Whole-image diff, not a sampled point.
 3. **Document and job state follow different lifetimes.** The `.noise` document persists when saved;
-   jobs, prompts, selections and undo history die with the run, and re-asking is the retry. App
+   jobs, prompts, selections, AI references and undo history die with the run, and re-asking is the retry. App
    preferences such as the UI theme and recent-file list live in config and do not alter a document.
 4. **Every request is priced before it is sent**, and its fields are chosen by one policy the UI cannot
    widen.

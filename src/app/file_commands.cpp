@@ -96,6 +96,9 @@ std::optional<FileSet> file_set_from_name(const std::string& name) {
     if (name == "image") {
         return FileSet::image;
     }
+    if (name == "reference") {
+        return FileSet::reference;
+    }
     return std::nullopt;
 }
 
@@ -109,6 +112,8 @@ std::string file_set_name(FileSet set) {
             return "flat";
         case FileSet::image:
             return "image";
+        case FileSet::reference:
+            return "reference";
     }
     return "open";
 }
@@ -123,6 +128,8 @@ std::string file_set_label(FileSet set) {
             return "an image";
         case FileSet::image:
             return "a picture to insert";
+        case FileSet::reference:
+            return "AI reference images";
     }
     return "a file";
 }
@@ -133,6 +140,7 @@ platform::PickKind pick_kind(FileSet set) {
     switch (set) {
         case FileSet::open:
         case FileSet::image:
+        case FileSet::reference:
             return platform::PickKind::open;
         case FileSet::project:
         case FileSet::flat:
@@ -144,7 +152,7 @@ platform::PickKind pick_kind(FileSet set) {
 std::string file_set_names() {
     std::string out;
     for (const FileSet set :
-         {FileSet::open, FileSet::project, FileSet::flat, FileSet::image}) {
+         {FileSet::open, FileSet::project, FileSet::flat, FileSet::image, FileSet::reference}) {
         if (!out.empty()) {
             out += ", ";
         }
@@ -157,8 +165,9 @@ std::vector<platform::FileFilter> file_filters(FileSet set) {
     const std::vector<std::string> images = io::flat_export_extension_list();
     switch (set) {
         case FileSet::image:
+        case FileSet::reference:
             // The reader sniffs bytes, so what it can put into a layer is exactly what the codecs
-            // write — no separate list to keep honest, and no `.noise` in an insert dialog.
+            // write — no separate list to keep honest, and no `.noise` in an image dialog.
             return {{"Images", images}, {"All files", {"*"}}};
         case FileSet::open: {
             // A dialog shows its first filter, and someone opening a file has not decided which of the
@@ -381,7 +390,7 @@ void register_file_commands(AppState& state, CommandTable& table) {
     // and get the same thing done. The routing lives here rather than in the widget because the frame
     // that opens a picker and the frame that receives an answer are minutes apart — and because a
     // command a person can click has to be one a probe can call.
-    table.add("file.answer", "Do what a picked path means for that file set", {}, {"for", "path"},
+    table.add("file.answer", "Do what a picked path means for that file set", {}, {"for", "path", "paths"},
               [&state, &table](const json& args) -> CommandResult {
                   std::string set_name = "open";
                   if (!arg_name(args, "for", set_name)) {
@@ -394,7 +403,10 @@ void register_file_commands(AppState& state, CommandTable& table) {
                                                     file_set_names() + ")");
                   }
                   std::string path;
-                  if (!arg_text(args, "path", path) || path.empty()) {
+                  if (args.contains("path") && !arg_text(args, "path", path)) {
+                      return fail("file.answer", "'path' must be a string");
+                  }
+                  if (*set != FileSet::reference && path.empty()) {
                       return fail("file.answer", "expected a non-empty string 'path'");
                   }
                   const json picked{{"path", path}};
@@ -407,6 +419,26 @@ void register_file_commands(AppState& state, CommandTable& table) {
                           return table.invoke("doc.export", picked);
                       case FileSet::image:
                           break;
+                      case FileSet::reference: {
+                          if (args.contains("path") && args.contains("paths")) {
+                              return fail("file.answer", "'path' and 'paths' cannot be used together");
+                          }
+                          if (args.contains("paths")) {
+                              if (!args.at("paths").is_array() || args.at("paths").empty()) {
+                                  return fail("file.answer", "'paths' must be a non-empty array of paths");
+                              }
+                              for (const json& item : args.at("paths")) {
+                                  if (!item.is_string() || item.get<std::string>().empty()) {
+                                      return fail("file.answer", "every 'paths' entry must be a non-empty string");
+                                  }
+                              }
+                              return table.invoke("ai.references.add", json{{"paths", args.at("paths")}});
+                          }
+                          if (path.empty()) {
+                              return fail("file.answer", "expected a non-empty string 'path' or array 'paths'");
+                          }
+                          return table.invoke("ai.references.add", json{{"path", path}});
+                      }
                   }
                   if (state.doc.empty()) {
                       return fail("file.answer",
@@ -434,7 +466,7 @@ void pump_picked_files(AppState& state, CommandTable& table) {
     }
 #endif
     std::string set;
-    std::string path;
+    std::vector<std::string> paths;
     {
         std::lock_guard lock(state.pick_mutex);
         if (!state.pick_needs_route || state.pick_running || !state.pick_answer.has_value()) {
@@ -455,9 +487,15 @@ void pump_picked_files(AppState& state, CommandTable& table) {
             state.pick_note = "picker: no path came back";
             return;
         }
-        path = answer.paths.front();
+        paths = answer.paths;
     }
-    const CommandResult done = table.invoke("file.answer", json{{"for", set}, {"path", path}});
+    json route{{"for", set}};
+    if (set == "reference") {
+        route["paths"] = paths;
+    } else {
+        route["path"] = paths.front();
+    }
+    const CommandResult done = table.invoke("file.answer", route);
     if (done.ok) {
         state.pick_note.clear();
     } else {

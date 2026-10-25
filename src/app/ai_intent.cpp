@@ -164,6 +164,9 @@ CommandResult start_intent(AppState& state, CommandTable& table, const ai::Recip
     // Passed to `ai.run` rather than read back out of the intent, so the run door takes what a press
     // meant - the seed included, because a seed that stayed behind in the intent would be a pin.
     json run{{"recipe", recipe->id}, {"vars", effective_vars(*recipe, state.ai_intent.given)}};
+    if (state.ai_intent.include_references.has_value()) {
+        run["include_references"] = *state.ai_intent.include_references;
+    }
     if (state.ai_intent.aspect.has_value()) {
         run["aspect"] = aspect_name(*state.ai_intent.aspect);
     }
@@ -203,8 +206,26 @@ std::string missing_region(const ai::Recipe& recipe, noise::AppState& state) {
 }
 
 bool needs_swap(const noise::AppState& state, const Readiness& readiness) {
-    return readiness.ready && !readiness.model.empty() && !state.ai.health.model_loaded.empty() &&
-           readiness.model != state.ai.health.model_loaded;
+    if (!readiness.ready || readiness.model.empty() || state.ai.health.model_loaded.empty()) {
+        return false;
+    }
+    const std::string& selected = readiness.model;
+    const std::string& resident = state.ai.health.model_loaded;
+    if (selected == resident) {
+        return false;
+    }
+    // /models may publish the unprefixed winner while /health reports its canonical ID.
+    // Only treat those as the same model when /models does NOT also list the canonical
+    // ID: if both exist, the bare name and builtin./user./extra. identify distinct models.
+    if (state.ai.registry != nullptr && state.ai.registry->model(selected) != nullptr &&
+        state.ai.registry->model(resident) == nullptr) {
+        for (const char* prefix : {"user.", "extra.", "builtin."}) {
+            if (resident == std::string(prefix) + selected) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 Readiness assess(noise::AppState& state, const ai::Recipe* recipe) {
@@ -258,6 +279,13 @@ nlohmann::json intent_json(AppState& state) {
     const ai::Recipe* recipe = intent_recipe(state);
     const AiIntent& intent = state.ai_intent;
     const Readiness readiness = assess(state, recipe);
+    const bool include_references =
+        recipe != nullptr &&
+        intent.include_references.value_or(recipe->include_references_default);
+    const bool can_include_references = recipe != nullptr &&
+                                        recipe->endpoint == ai::Endpoint::edits;
+    const std::size_t transmitted_references =
+        include_references && can_include_references ? state.ai.references.size() : 0;
 
     json intents = json::array();
     // Two conditions, two lists: what the mark offers and what a layer's own coverage offers. *Blend*
@@ -303,6 +331,20 @@ nlohmann::json intent_json(AppState& state) {
                 {"ask", recipe != nullptr ? json(recipe->ask) : json::array()},
                 {"vars", recipe != nullptr ? effective_vars(*recipe, intent.given)
                                            : json::object()},
+                {"include_references_default", recipe != nullptr
+                                                    ? json(recipe->include_references_default)
+                                                    : json(false)},
+                {"include_references", include_references},
+                {"additional_references",
+                 {{"configured_count", state.ai.references.size()},
+                  {"transmitted_count", transmitted_references},
+                  {"include_references", include_references},
+                  {"will_transmit", transmitted_references != 0},
+                  {"status", state.ai.references.empty()
+                                  ? "none_configured"
+                                  : (!include_references ? "configured_not_included"
+                                     : (can_include_references ? "included"
+                                                               : "unsupported_endpoint"))}}},
                 {"intents", intents},
                 {"aspects", recipe != nullptr ? json([&] {
                                json names = json::array();
@@ -375,6 +417,7 @@ CommandResult apply_intent(AppState& state, CommandTable& table, const json& arg
                                              ")");
             }
             intent.recipe = requested;
+            intent.include_references = std::nullopt;
             // Values typed for one intent carry over only where the next asks the same question,
             // so a `replacement` cannot ride silently into a recipe that never asked for one.
             std::erase_if(intent.given, [chosen](const auto& entry) {
@@ -385,6 +428,17 @@ CommandResult apply_intent(AppState& state, CommandTable& table, const json& arg
                 intent.aspect = std::nullopt;
             }
         }
+    }
+
+    if (args.contains("include_references")) {
+        bool include_references = false;
+        if (!arg_bool(args, "include_references", include_references)) {
+            return fail("ai.intent", "'include_references' must be a boolean");
+        }
+        if (const ai::Recipe* chosen = intent_recipe(state); chosen != nullptr) {
+            intent.recipe = chosen->id;
+        }
+        intent.include_references = include_references;
     }
 
     if (args.contains("vars")) {
@@ -512,8 +566,8 @@ void register_ai_intent_commands(AppState& state, CommandTable& table) {
     // was typed - a field its recipe never asked for, a recipe that no longer exists - draws nothing,
     // and the person is left typing into a widget connected to nothing.
     table.add("ai.intent", "Read or set what the selection panel is asking for", {},
-              {"recipe", "vars", "aspect", "seed", "seed_pin", "job", "run", "confirm",
-               "connect"},
+              {"recipe", "vars", "aspect", "include_references", "seed", "seed_pin", "job",
+               "run", "confirm", "connect"},
               [&state, &table](const json& args) -> CommandResult {
         const CommandResult applied = apply_intent(state, table, args);
         if (!applied.ok && !args.empty()) {

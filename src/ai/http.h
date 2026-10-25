@@ -111,8 +111,7 @@ private:
 // serialized bytes rather than on a double. No credentials: this is displayable.
 nlohmann::json outgoing_preview(const ServerProfile& profile, const BuiltRequest& request);
 
-// The multipart body of an `edits` request. The boundary must not occur inside any part; it is derived
-// from the request's own blob hash so a replayed request is byte-identical to the original.
+// The multipart body of an `edits` request. Image parts follow the request's ordered image list.
 std::vector<std::uint8_t> multipart_body(const BuiltRequest& request, const std::string& boundary);
 std::string multipart_boundary(const BuiltRequest& request);
 

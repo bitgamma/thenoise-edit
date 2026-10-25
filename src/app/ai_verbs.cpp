@@ -235,7 +235,7 @@ void register_ai_verb_commands(AppState& state, CommandTable& table) {
         // One argument list for every verb, because what a verb *is* lives in the row and its recipe:
         // the fields, the region and the price all come from there.
         table.add(id, "Run the '" + std::string(verb_name(verb.id)) + "' verb",
-                  {verb.key}, {"vars", "seed", "confirm"},
+                  {verb.key}, {"vars", "seed", "confirm", "include_references"},
                   [&state, &table, id, verb_id = verb.id](const json& args) -> CommandResult {
             if (!state.ai.verbs_error.empty()) {
                 return fail(id, state.ai.verbs_error);
@@ -250,7 +250,7 @@ void register_ai_verb_commands(AppState& state, CommandTable& table) {
             // The same door the window and a driver share, with this verb's recipe named: a press and a
             // `ai.intent {recipe, run}` cannot mean different things.
             json intent{{"recipe", recipe->id}, {"run", true}};
-            for (const char* name : {"vars", "seed", "confirm"}) {
+            for (const char* name : {"vars", "seed", "confirm", "include_references"}) {
                 if (args.contains(name)) {
                     intent[name] = args.at(name);
                 }

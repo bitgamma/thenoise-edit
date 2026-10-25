@@ -24,6 +24,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                        const HostHooks& hooks) {
     register_document_commands(state, table);
     register_ai_commands(state, table);
+    register_ai_reference_commands(state, table);
     register_ai_job_commands(state, table);
     register_ai_intent_commands(state, table);
     register_ai_verb_commands(state, table);
@@ -68,6 +69,12 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                                               state.layers_window.h})},
                                {"layer_cards", layer_cards_json(state)},
                                {"layer_panel", layer_panel_json(state)},
+                               {"ai_references_rect", json::array({state.ai_references_rect.x,
+                                                                   state.ai_references_rect.y,
+                                                                   state.ai_references_rect.w,
+                                                                   state.ai_references_rect.h})},
+                               {"reference_thumbs", json{{"rebuilds",
+                                                           state.reference_thumb_rebuilds}}},
                                // How often the panel had to resample a picture: the caching rule as a
                                // number, so "dragging opacity rebuilds nothing" is a reading and not a
                                // promise.

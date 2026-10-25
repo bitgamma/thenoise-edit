@@ -7,6 +7,7 @@
   "region": "selection",
   "prep": "white",
   "enhance": "never",
+  "include_references_default": true,
   "prompt": [
     "Draw {{prompt}} in the marked area of this image.",
     "Match the colour, brightness, light direction, perspective, focus and grain of the",

@@ -191,6 +191,53 @@ void test_resolution_follows_assignment_then_preference_then_capability() {
     CHECK(unknown.reason.find("offered") != std::string::npos);
 }
 
+void test_canonical_model_ids_keep_preference_order_without_changing_server_ids() {
+    const RoleTable table = table_or_fail(json{{"roles", json::array({
+        json{{"id", "edit"}, {"recipe", "thenoise"},
+             {"requires", json::array({"image", "edit"})},
+             {"preference", json::array({"Qwen-Image-2.1-Turbo-INT8"})}}
+    })}});
+    Registry registry(table);
+
+    // A shadowed built-in model must not lose to a smaller unrelated capable model.
+    registry.update({entry("Other", "thenoise", {"image", "edit"}, true, 1.0),
+                     entry("builtin.Qwen-Image-2.1-Turbo-INT8", "thenoise",
+                           {"image", "edit"}, true, 16.1)});
+    CHECK_EQ(registry.resolve("edit").model_id,
+             std::string("builtin.Qwen-Image-2.1-Turbo-INT8"));
+    CHECK(registry.resolve("edit").from_preference);
+
+    // If the same model name exists in two sources, prefer the server's bare-name winner.
+    registry.update({entry("builtin.Qwen-Image-2.1-Turbo-INT8", "thenoise",
+                           {"image", "edit"}, true, 16.1),
+                     entry("user.Qwen-Image-2.1-Turbo-INT8", "thenoise",
+                           {"image", "edit"}, true, 30.0)});
+    CHECK_EQ(registry.resolve("edit").model_id,
+             std::string("user.Qwen-Image-2.1-Turbo-INT8"));
+    registry.set_assignment("edit", "builtin.Qwen-Image-2.1-Turbo-INT8");
+    CHECK_EQ(registry.resolve("edit").model_id,
+             std::string("builtin.Qwen-Image-2.1-Turbo-INT8"));
+    registry.set_assignment("edit", "");
+
+    // An exact bare-name winner still takes precedence over any canonical variant.
+    registry.update({entry("Qwen-Image-2.1-Turbo-INT8", "thenoise",
+                           {"image", "edit"}, true, 30.0),
+                     entry("builtin.Qwen-Image-2.1-Turbo-INT8", "thenoise",
+                           {"image", "edit"}, true, 16.1)});
+    CHECK_EQ(registry.resolve("edit").model_id, std::string("Qwen-Image-2.1-Turbo-INT8"));
+
+    // A non-downloaded shadowed entry is visible as such, but must not invent a command to import
+    // it by an ambiguous bare name. Wrong recipe/labels cannot impersonate a preferred model.
+    registry.update({entry("builtin.Qwen-Image-2.1-Turbo-INT8", "thenoise",
+                           {"image", "edit"}, false, 16.1),
+                     entry("user.Qwen-Image-2.1-Turbo-INT8", "sd-cpp",
+                           {"image", "edit"}, false, 4.0)});
+    const auto missing = registry.resolve("edit");
+    CHECK(!missing.resolved());
+    CHECK(missing.reason.find("builtin.Qwen-Image-2.1-Turbo-INT8") != std::string::npos);
+    CHECK(missing.fix_command.empty());
+}
+
 void test_a_model_that_cannot_serve_a_role_is_not_a_candidate() {
     RoleTable table = table_or_fail(json{{"roles",
                                           json::array({json{{"id", "edit"},
@@ -267,6 +314,7 @@ int main() {
     test_the_shipped_table_states_the_policy_the_compiler_uses();
     test_a_role_table_refuses_to_be_half_read();
     test_resolution_follows_assignment_then_preference_then_capability();
+    test_canonical_model_ids_keep_preference_order_without_changing_server_ids();
     test_a_model_that_cannot_serve_a_role_is_not_a_candidate();
     test_discovery_reads_what_the_server_actually_sends();
     return noise::test::summary(__FILE__);
