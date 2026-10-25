@@ -49,6 +49,8 @@ enum class ToolAction {
     select,   // the marquee, aimed at whichever lifetime the target names
 };
 
+enum class SelectionGesture { rectangle, ellipse, lasso };
+
 // One tool per row: the id a request carries, what it does to the pixels, and the key
 // that selects it. The command table, the pointer and the panels all read this, so a tool
 // that is not here does not exist.
@@ -68,9 +70,7 @@ struct ToolInfo {
     // Set only by a row that paints. A tool that moves pixels has no paint mode, and nullopt is
     // how the row says so rather than a mode it happens to ignore.
     std::optional<PaintMode> paint;
-    // Set only by a row whose action is `select`: the shape its marquee puts down. Two marquee
-    // tools are two rows over this one field, so the pointer never has to ask which tool is active.
-    std::optional<MaskShape> marquee;
+    std::optional<SelectionGesture> selection_gesture;
     const char* select_key;
     const char* title;
     PointerShape cursor;
@@ -84,8 +84,8 @@ std::optional<PaintMode> tool_mode(const std::string& id);
 // nullopt only for an id with no row, which is a request to refuse rather than a tool to guess.
 std::optional<ToolAction> tool_action(const std::string& id);
 
-// The shape a select tool draws, or nullopt for a tool that draws no marquee.
-std::optional<MaskShape> tool_marquee(const std::string& id);
+std::optional<SelectionGesture> tool_selection_gesture(const std::string& id);
+const char* selection_gesture_name(SelectionGesture gesture);
 std::optional<PointerShape> tool_cursor(const std::string& id);
 
 const char* pointer_shape_name(PointerShape shape);

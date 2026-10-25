@@ -63,8 +63,9 @@ Working on an existing file is the same story with fewer steps: open, do, save.
   layer does not make it a reference. References give the model information and do not expand the marked
   area or change where an answer lands. Change and Fill include them by default; Blend, Heal and Remove
   leave them configured but excluded until the user turns them on for that operation.
-- **Coverage** - one concept, two lifetimes. The *marked area* is transient tool state, painted, marquee'd
-  or lassoed, drawn as marching ants; a layer's *mask* is the same paintable thing, stored in the document.
+- **Coverage** - one concept, two lifetimes. The *marked area* is transient tool state, painted, selected
+  with a rectangle, ellipse or freehand Lasso, and drawn as marching ants; a layer's *mask* is the same
+  coverage plane, stored in the document.
   One editor, one shape language, one maths: the target switch says which one the brush is working on.
 - **Verb** - a named request with a question: *Fix*, *Insert*, *Edit*, *Erase*, *Blend*, *Generate*,
   *Upscale*. A verb is a row in `assets/recipes/`, not a branch in code. It has a scope - the marked area,

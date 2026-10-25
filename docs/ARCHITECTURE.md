@@ -118,11 +118,12 @@ src/
                        `scale_by_coverage(mask, …)` the same mix with nothing underneath, which is
                        how a composite reads a layer through its mask.
     maskops.{h,cpp}    coverage producers: `MaskShape` (`rect`, `ellipse`) applied to a `Rect` with a
-                       `MaskOp`, and the table `kMaskShapeInfo` naming the shapes (and so naming the commands
-                       and the tools that draw them). A shape writes the same coverage plane and is
-                       never a mask type of its own, so an added shape costs a row here and nothing in
-                       the document, the composite, the format or the overlay. The ellipse is
-                       anti-aliased by exact vertical strips, 16 samples for the width a pixel straddles.
+                       `MaskOp`, and `rasterize_lasso` which fills document-coordinate paths with an
+                       even-odd scanline rule into a bounded `MaskPatch`. Both write the existing
+                       coverage plane; neither introduces a selection type. Shape names come from
+                       `kMaskShapeInfo`; lasso is a path command and a row in `kTools`. The ellipse
+                       uses 16 vertical strips per boundary pixel and the lasso uses 16 subscanlines
+                       per row for deterministic antialiased coverage.
     blur.{h,cpp}       the box blur over an RGBA-ish plane, and `feathered_mask`: three passes of odd
                        box sizes, because anything wider is a different kernel. Radius 0 is the
                        identity, so "no feather" is a number rather than a branch, and the plane is
@@ -171,12 +172,12 @@ src/
     paint_commands.cpp tool.stroke/pointer/set, tool.<name>, the brush step commands, edit.undo/redo
     view_commands.cpp  view.*, and the fit that waits for a real canvas area
     tools/             one file per tool: brush.cpp (press/drag/release over the provisional edit),
-                       move.cpp (the same gesture, sliding the layer's pixels), select.cpp (the
-                       marquee, which becomes the document's selection live during the drag). Which
-                       file the pointer talks to is the `action` column of `core::kTools`
-                       (`paint` / `move` / `select`), and which shape a marquee tool drags is its
-                       `marquee` column - read when the button goes down, so switching tools
-                       mid-gesture cannot change the shape already being drawn
+                       move.cpp (the same gesture, sliding the layer's pixels), select.cpp (rectangle,
+                       ellipse and freehand path gestures over either coverage lifetime). Lasso paths
+                       stay in document coordinates and are rasterized once on release. Which file
+                       the pointer talks to is the `action` column of `core::kTools`; selection rows
+                       also name their gesture there, while `PointerSelection` holds the gesture,
+                       operation and coverage target captured at press.
     shortcuts.{h,cpp}  platform key event -> canonical shortcut text (the only sokol-aware
                        part of the app layer)
     ui.cpp             docking layout and status bar; it reads the AI intent once per frame and shares
@@ -477,13 +478,11 @@ keep it cheap and honest:
   double-precision scaling of the write, and pins the two ends exactly: coverage 0 leaves the pixel
   untouched, coverage 255 leaves the write whole, and in between alpha is within 1 LSB and colour
   within 2 of scaled arithmetic — two roundings, the blend's and this one's.
-* **Shapes are producers of coverage, never kinds of selection.** `core/maskops` turns a `MaskShape`
-and a `Rect` into coverage bytes and hands them to `Mask::op`, so the rectangle and the anti-aliased
-ellipse go through the same `combined()` arithmetic as everything else that writes a mask. That is why
-the two commands, the two marquee tools and the file format exist at all: a row in `kMaskShapeInfo`
-plus a row in `kTools`, with no new type anywhere. It is also what makes an ellipse's soft edge
-meaningful — a stroke landing half on a half-covered pixel happens half, and `add`/`subtract` compose
-curves and boxes without a case for the pair.
+* **Selections are coverage, never a second plane.** `core/maskops` turns a `MaskShape` and a `Rect`
+  into bytes or fills a freehand path into a bounded patch, then hands either to `Mask::op`. The lasso
+  uses even-odd scan conversion, including for self-crossings, and antialiases by integrating sixteen
+  vertical subscanlines per pixel row. `replace`, `add` and `subtract` therefore keep the same coverage
+  arithmetic for a path, a rectangle, an ellipse, a layer mask and the marked area.
 
 * **A layer mask hides, and never edits.** `Layer` holds `std::optional<Mask>`, and the composite
   reads the layer through it (`scale_by_coverage`, the same premultiplied mix as `restrict_to`, with
@@ -1512,8 +1511,8 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | Group | Commands | Why |
 |---|---|---|
 | state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `ai.references`, `server.state`, `job.list`, `job.get {id}`, `ai.roles`, `ai.recipes`, `log.tail` | read what the app believes, cheaply |
-| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `ui.theme {theme?}`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
- `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
+| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.lasso {points, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `ui.theme {theme?}`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at?, mode?}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
+ `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. Its `cancel` phase closes a provisional selection without committing it; Lasso press may also carry `mode: replace|add|subtract`. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
 | ai | `ai.verbs` (the verb rows: id, command, key, recipe, label, operation, `ask`, scope, `ready`, `reason`, `model`, `resident`, `swap`), `ai.heal` / `ai.remove` / `ai.fill` / `ai.change` / `ai.generate` / `ai.blend` `{vars?, seed?, confirm?, include_references?}` (one verb row pressed - they call `ai.intent` with their recipe named, so a key and a scripted intent cannot diverge), `ai.references {}`, `ai.references.add {path?, paths?, layer?}`, `ai.references.remove {id}`, `ai.references.move {id, to}`, `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?, include_references?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?, include_references?}`, `ai.intent {recipe?, vars?, aspect?, include_references?, seed?, seed_pin?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pinned}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.apply {id, feather?, colour_match?}` (the idempotent landing door - answers land by themselves, so this one brings one back or overrides the policy, and says `already_landed` otherwise), | `ai.references` reads ordered session references; its add/remove/move commands are the same actions the GUI uses, and `ai.preview` shows every image's order, source, dimensions, hash and encoded size plus the actual request field names and body size. It also reports whether configured references are included for the selected operation. `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact request before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel and land without a UI; `ai.intent` is the whole surface of the action, so a scripted run and a key press cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command; absent, the request takes the panel's pin or a fresh draw, and every report says which (`seed`, `seed_source`) |
 
@@ -1528,9 +1527,9 @@ model answers; it is registered under the `live` label and skips without `$THENO
 document's `history` depths, and its `selection` (`active`, `bounds`, `covered`, `area`, `canvas`,
 with `canvas` present only while one exists, because a sized mask that covers nothing is a real state
 and must not read as no selection). `covered` counts pixels touched, `area` adds the coverage bytes
-up: for a rectangle they are equal, for an anti-aliased curve `area` is what the ellipse measures and
+up: for a rectangle they are equal, for an anti-aliased curve `area` measures partial coverage and
 `covered` is the pixels it grazes. While a pointer gesture is down, `stroke` also reports `marquee` —
-the box the select tool is drawing, live, `marquee_shape`, which of them it is, and `marquee_coverage`,
+the box a rectangle or ellipse tool is drawing, live, `marquee_shape`, which gesture is active, `lasso_points` in document coordinates for Lasso, `selection_mode`, and `marquee_coverage`,
 which lifetime that press opened: the only way to tell a marquee that tracks the pointer from one that
 appears on release, and the only way to see which tool row a gesture was started with and which coverage
 it will commit to when the button lifts. The mask is reported the same way a selection is - `layer.list`

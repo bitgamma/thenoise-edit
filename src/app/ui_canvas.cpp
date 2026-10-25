@@ -21,8 +21,12 @@ using nlohmann::json;
 namespace {
 constexpr ImU32 kAntLight = IM_COL32(255, 255, 255, 255);
 constexpr ImU32 kAntDark = IM_COL32(20, 20, 20, 255);
+constexpr ImU32 kLassoUnderlay = IM_COL32(0, 0, 0, 220);
+constexpr ImU32 kLassoLine = IM_COL32(255, 255, 255, 255);
 constexpr ImU32 kFootprint = IM_COL32(255, 255, 255, 235);
 constexpr float kFootprintOutlinePx = 1.0f;
+constexpr float kLassoUnderlayWidthPx = 3.0f;
+constexpr float kLassoLineWidthPx = 1.0f;
 
 // Hand the dashes to ImGui: one-device-pixel filled rectangles with their ends snapped to whole
 // pixels, never antialiased lines. A line centred on a pixel edge spreads over two rows at partial
@@ -179,7 +183,8 @@ ImVec2 image_screen_min(const AppState& state, const ImVec2& origin) {
 }
 
 void draw_marquee(ImDrawList* list, const AppState& state, const ImVec2& origin) {
-    if (!state.select.active || state.select.rect.empty()) {
+    if (!state.select.active || state.select.gesture == SelectionGesture::lasso ||
+        state.select.rect.empty()) {
         return;
     }
     const Vec2 corner = state.view.world_to_view(
@@ -192,6 +197,24 @@ void draw_marquee(ImDrawList* list, const AppState& state, const ImVec2& origin)
                   ImVec2(static_cast<float>(far.x) + origin.x,
                          static_cast<float>(far.y) + origin.y),
                   kAntLight, 0.0f, 0, 1.0f);
+}
+
+void draw_lasso_path(ImDrawList* list, const AppState& state, const ImVec2& origin) {
+    if (!state.select.active || state.select.gesture != SelectionGesture::lasso ||
+        state.select.path.size() < 2u) {
+        return;
+    }
+    std::vector<ImVec2> points;
+    points.reserve(state.select.path.size());
+    for (const Vec2 point : state.select.path) {
+        const Vec2 screen = state.view.world_to_view(point);
+        points.emplace_back(origin.x + static_cast<float>(screen.x),
+                            origin.y + static_cast<float>(screen.y));
+    }
+    list->AddPolyline(points.data(), static_cast<int>(points.size()), kLassoUnderlay,
+                      ImDrawFlags_None, kLassoUnderlayWidthPx);
+    list->AddPolyline(points.data(), static_cast<int>(points.size()), kLassoLine,
+                      ImDrawFlags_None, kLassoLineWidthPx);
 }
 
 void draw_document(ImDrawList* list, AppState& state, gfx::Texture& canvas_texture,
@@ -214,6 +237,7 @@ void draw_document(ImDrawList* list, AppState& state, gfx::Texture& canvas_textu
                        state.pointer.footprint_px, state.pointer.core_px);
     }
     draw_marquee(list, state, origin);
+    draw_lasso_path(list, state, origin);
 }
 
 bool update_canvas_pointer(AppState& state, const ImVec2& origin, const ImGuiIO& io) {
@@ -232,9 +256,16 @@ void handle_canvas_input(AppState& state, CommandTable& commands, const ImVec2& 
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         const Vec2 at = state.view.view_to_world(
             {io.MousePos.x - origin.x, io.MousePos.y - origin.y});
-        commands.invoke("tool.pointer",
-                        json{{"phase", "press"}, {"at", json::array({at.x, at.y})}});
-    } else if (hovered && ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+        json args{{"phase", "press"}, {"at", json::array({at.x, at.y})}};
+        if (tool_selection_gesture(state.tool) == SelectionGesture::lasso) {
+            if (io.KeyShift && !io.KeyAlt) {
+                args["mode"] = "add";
+            } else if (io.KeyAlt && !io.KeyShift) {
+                args["mode"] = "subtract";
+            }
+        }
+        commands.invoke("tool.pointer", args);
+    } else if ((hovered || state.gesturing()) && ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
                (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)) {
         const Vec2 at = state.view.view_to_world(
             {io.MousePos.x - origin.x, io.MousePos.y - origin.y});
@@ -242,7 +273,13 @@ void handle_canvas_input(AppState& state, CommandTable& commands, const ImVec2& 
                         json{{"phase", "drag"}, {"at", json::array({at.x, at.y})}});
     }
     if (state.gesturing() && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-        commands.invoke("tool.pointer", json{{"phase", "release"}});
+        json args{{"phase", "release"}};
+        if (state.select.active) {
+            const Vec2 at = state.view.view_to_world(
+                {io.MousePos.x - origin.x, io.MousePos.y - origin.y});
+            args["at"] = json::array({at.x, at.y});
+        }
+        commands.invoke("tool.pointer", args);
     }
     if (hovered && ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
         commands.invoke("view.pan", json{{"dx", static_cast<double>(io.MouseDelta.x)},

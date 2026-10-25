@@ -13,14 +13,10 @@
 namespace noise::app {
 namespace {
 
-// What `select.rect` does when the caller does not say: the marquee the pointer draws replaces, and a
-// client that means to combine shapes says so.
-constexpr MaskOp kSelectOpDefault = MaskOp::replace;
-
 // The operation to apply, from `args`. A name the table does not have is refused with the names it
 // does have, because "mode": "intersect" reads as if it were obvious.
 bool want_op(const json& args, MaskOp& op, std::string& why) {
-    op = kSelectOpDefault;
+    op = kDefaultSelectionMode;
     if (!args.contains("mode")) {
         return true;
     }
@@ -67,7 +63,7 @@ CommandResult select_with_shape(AppState& state, const std::string& id, MaskShap
         return fail(id, "'rect' must have a positive width and height, got " +
                             std::to_string(rect.w) + "x" + std::to_string(rect.h));
     }
-    MaskOp op = kSelectOpDefault;
+    MaskOp op = kDefaultSelectionMode;
     std::string why;
     if (!want_op(args, op, why)) {
         return fail(id, why);
@@ -83,6 +79,28 @@ CommandResult select_with_shape(AppState& state, const std::string& id, MaskShap
                             std::to_string(state.doc.size().w) + "x" +
                             std::to_string(state.doc.size().h));
     }
+    return command_ok(selection_json(state));
+}
+
+CommandResult select_lasso(AppState& state, const json& args) {
+    CommandResult guard = require_document(state);
+    if (!guard.ok) {
+        return guard;
+    }
+    std::vector<Vec2> points;
+    if (!arg_points(args, "points", points)) {
+        return fail("select.lasso", "'points' must be an array of document-coordinate [x,y] pairs");
+    }
+    MaskOp op = kDefaultSelectionMode;
+    std::string why;
+    if (!want_op(args, op, why)) {
+        return fail("select.lasso", why);
+    }
+    Mask selection = op == MaskOp::replace ? Mask(state.doc.size()) : current_or_empty(state);
+    if (!op_lasso(selection, points, op)) {
+        return fail("select.lasso", "'points' must enclose at least one canvas pixel");
+    }
+    state.doc.set_selection(std::move(selection));
     return command_ok(selection_json(state));
 }
 
@@ -103,6 +121,11 @@ void register_select_commands(AppState& state, CommandTable& table) {
                 return select_with_shape(state, id, shape, args);
             });
     }
+
+    table.add("select.lasso", "Set, add to or subtract from the selection with a freehand lasso", {},
+              {"points", "mode"}, [&state](const json& args) -> CommandResult {
+        return select_lasso(state, args);
+    });
 
     table.add("select.all", "Select the whole canvas", {}, {}, [&state](const json&) -> CommandResult {
         CommandResult guard = require_document(state);

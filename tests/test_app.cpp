@@ -147,7 +147,8 @@ void test_m0_command_surface_is_registered() {
                                  "doc.new", "doc.open", "doc.save", "doc.get", "image.get",
                                  "screenshot", "pixels.compare", "log.tail", "ui.theme", "view.fit",
                                  "view.pan", "view.zoom", "view.set", "ai.references",
-                                 "ai.references.add", "ai.references.remove", "ai.references.move"}) {
+                                 "ai.references.add", "ai.references.remove", "ai.references.move",
+                                 "select.lasso"}) {
         CHECK(std::find(ids.begin(), ids.end(), std::string(required)) != ids.end());
     }
     for (const json& entry : listed["commands"]) {
@@ -174,6 +175,7 @@ void test_the_keymap_is_reported_with_the_commands() {
     CHECK_EQ(bound["edit.redo"], std::string("Ctrl+Y "));
     CHECK_EQ(bound["doc.save"], std::string("Ctrl+S "));
     CHECK_EQ(bound["app.quit"], std::string("Escape Ctrl+Q "));
+    CHECK_EQ(bound["tool.lasso"], std::string("L "));
 }
 
 // The refusal of unread arguments lives in the table, so it has to hold across the whole surface:
@@ -1921,6 +1923,175 @@ void test_a_marquee_gesture_is_one_step_in_whichever_coverage() {
     CHECK_EQ(undo_depth(h), unswitched + 1);
     CHECK_EQ(h.value("mask.get", json::object())["mask"].dump(), mask_before);
     CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 8 * 6);
+}
+
+void test_lasso_command_combines_coverage_and_never_changes_pixels() {
+    Harness h;
+    h.value("doc.new", json{{"width", 24}, {"height", 16},
+                            {"fill", json::array({12, 34, 56, 255})}});
+    const std::string pixels = checksum_of(h);
+    const json triangle = json::array({json::array({2.0, 2.0}), json::array({10.0, 2.0}),
+                                       json::array({2.0, 10.0})});
+    const json first = h.value("select.lasso", json{{"points", triangle}});
+    CHECK(first["active"].get<bool>());
+    CHECK_EQ(h.state.doc.selection()->coverage(3, 3), kMaskIn);
+    CHECK_EQ(h.state.doc.selection()->coverage(9, 9), kMaskOut);
+    CHECK(std::any_of(h.state.doc.selection()->plane().begin(),
+                      h.state.doc.selection()->plane().end(), [](std::uint8_t value) {
+                          return value != kMaskOut && value != kMaskIn;
+                      }));
+    h.value("server.connect", json::object());
+    const json preview = h.value("ai.preview", json{{"recipe", "inpaint-remove"}, {"seed", 3}});
+    CHECK(preview["region"]["mask_bounds"] == json::array({2, 2, 8, 8}));
+    const json square = json::array({json::array({14.0, 2.0}), json::array({21.0, 2.0}),
+                                     json::array({21.0, 9.0}), json::array({14.0, 9.0})});
+    h.value("select.lasso", json{{"points", square}, {"mode", "add"}});
+    CHECK_EQ(h.state.doc.selection()->coverage(3, 3), kMaskIn);
+    CHECK_EQ(h.state.doc.selection()->coverage(18, 5), kMaskIn);
+    h.value("select.lasso", json{{"points", triangle}, {"mode", "subtract"}});
+    CHECK_EQ(h.state.doc.selection()->coverage(3, 3), kMaskOut);
+    CHECK_EQ(h.state.doc.selection()->coverage(18, 5), kMaskIn);
+
+    const Mask before = *h.state.doc.selection();
+    for (const json& args : {json{{"points", json::array({json::array({1.0, 1.0}),
+                                                           json::array({5.0, 5.0})})}},
+                             json{{"points", triangle}, {"mode", "intersect"}}}) {
+        CHECK(!h.run("select.lasso", args).ok);
+        CHECK(*h.state.doc.selection() == before);
+    }
+    h.value("select.lasso", json{{"points", square}});
+    CHECK_EQ(h.state.doc.selection()->coverage(3, 3), kMaskOut);
+    CHECK_EQ(h.state.doc.selection()->coverage(18, 5), kMaskIn);
+    CHECK_EQ(checksum_of(h), pixels);
+}
+
+void test_lasso_pointer_commits_once_and_undo_redo_restore_exact_coverage() {
+    Harness h;
+    h.value("doc.new", json{{"width", 24}, {"height", 16},
+                            {"fill", json::array({12, 34, 56, 255})}});
+    h.value("select.rect", json{{"rect", json::array({1, 1, 5, 5})}});
+    const Mask before = *h.state.doc.selection();
+    const std::string pixels = checksum_of(h);
+    const int depth = undo_depth(h);
+    h.value("tool.set", json{{"tool", "lasso"}});
+    CHECK_EQ(h.state.tool, std::string("lasso"));
+
+    const std::vector<Vec2> path{{10.0, 2.0}, {20.0, 2.0}, {20.0, 12.0}, {10.0, 12.0}};
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({10.0, 2.0})},
+                                  {"mode", "add"}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({20.0, 2.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({20.0, 12.0})}});
+    const json during = h.value("app.state", json::object())["stroke"];
+    CHECK(during["active"].get<bool>());
+    CHECK_EQ(during["marquee_shape"].get<std::string>(), std::string("lasso"));
+    CHECK_EQ(during["lasso_points"].size(), 3u);
+    CHECK(*h.state.doc.selection() == before);
+    CHECK_EQ(undo_depth(h), depth);
+
+    h.value("tool.set", json{{"tool", "brush"}});
+    h.value("coverage.target", json{{"to", "mask"}});
+    h.value("tool.pointer", json{{"phase", "release"}, {"at", json::array({10.0, 12.0})}});
+    Mask expected = before;
+    CHECK(op_lasso(expected, path, MaskOp::add));
+    const Mask after = *h.state.doc.selection();
+    CHECK(after == expected);
+    CHECK_EQ(undo_depth(h), depth + 1);
+    CHECK_EQ(checksum_of(h), pixels);
+    CHECK(!h.state.select.active);
+    CHECK(!h.state.doc.in_provisional());
+    CHECK(h.state.doc.layer(0).mask == std::nullopt);
+
+    CHECK(h.run("edit.undo", json::object()).ok);
+    CHECK(*h.state.doc.selection() == before);
+    CHECK(h.run("edit.redo", json::object()).ok);
+    CHECK(*h.state.doc.selection() == after);
+
+    const int before_cancel = undo_depth(h);
+    h.value("coverage.target", json{{"to", "marked"}});
+    h.value("tool.set", json{{"tool", "lasso"}});
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({3.0, 12.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({8.0, 12.0})}});
+    h.value("tool.pointer", json{{"phase", "cancel"}});
+    CHECK(!h.state.select.active);
+    CHECK(!h.state.doc.in_provisional());
+    CHECK(*h.state.doc.selection() == after);
+    CHECK_EQ(undo_depth(h), before_cancel);
+}
+
+void test_lasso_edits_a_layer_mask_through_its_provisional_transaction() {
+    Harness h;
+    h.value("doc.new", json{{"width", 20}, {"height", 16},
+                            {"fill", json::array({40, 50, 60, 255})}});
+    h.value("mask.add", json::object());
+    h.value("mask.fill", json{{"to", "hide"}});
+    h.value("coverage.target", json{{"to", "mask"}});
+    h.value("tool.set", json{{"tool", "lasso"}});
+    const Mask before = *h.state.doc.layer(0).mask;
+    const std::string pixels = h.state.doc.layer(0).pixels.checksum_hex();
+    const int depth = undo_depth(h);
+    const std::vector<Vec2> path{{3.0, 3.0}, {15.0, 3.0}, {15.0, 12.0}, {3.0, 12.0}};
+
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({3.0, 3.0})}});
+    CHECK(h.state.doc.provisional_area() == Rect{3, 3, 1, 1});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({15.0, 3.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({15.0, 12.0})}});
+    h.value("tool.pointer", json{{"phase", "release"}, {"at", json::array({3.0, 12.0})}});
+    Mask expected(h.state.doc.size());
+    CHECK(op_lasso(expected, path, MaskOp::replace));
+    const Mask after = *h.state.doc.layer(0).mask;
+    CHECK(after == expected);
+    CHECK(!h.state.doc.selection().has_value());
+    CHECK_EQ(undo_depth(h), depth + 1);
+    CHECK_EQ(h.state.doc.layer(0).pixels.checksum_hex(), pixels);
+    CHECK(!h.state.doc.in_provisional());
+    CHECK(h.run("edit.undo", json::object()).ok);
+    CHECK(*h.state.doc.layer(0).mask == before);
+    CHECK(h.run("edit.redo", json::object()).ok);
+    CHECK(*h.state.doc.layer(0).mask == after);
+
+    const int before_cancel = undo_depth(h);
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({4.0, 4.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({10.0, 10.0})}});
+    h.value("tool.pointer", json{{"phase", "cancel"}});
+    CHECK(*h.state.doc.layer(0).mask == after);
+    CHECK_EQ(undo_depth(h), before_cancel);
+    CHECK(!h.state.doc.in_provisional());
+
+    h.value("mask.remove", json::object());
+    h.value("coverage.target", json{{"to", "mask"}});
+    const int without_mask = undo_depth(h);
+    const CommandResult refused = h.run(
+        "tool.pointer", json{{"phase", "press"}, {"at", json::array({4.0, 4.0})}});
+    CHECK(!refused.ok);
+    CHECK(!h.state.select.active);
+    CHECK_EQ(undo_depth(h), without_mask);
+}
+
+// Replacing a nonempty layer mask must clear its old coverage, not reveal the old bounds.
+void test_lasso_mask_replace_discards_previous_visible_pixels() {
+    Harness h;
+    h.value("doc.new", json{{"width", 20}, {"height", 16},
+                            {"fill", json::array({40, 50, 60, 255})}});
+    h.value("mask.add", json::object());
+    h.value("mask.fill", json{{"to", "show"}});
+    h.value("coverage.target", json{{"to", "mask"}});
+    h.value("tool.set", json{{"tool", "lasso"}});
+    const Mask before = *h.state.doc.layer(0).mask;
+    CHECK_EQ(before.coverage(16, 12), kMaskIn);
+    const int depth = undo_depth(h);
+
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({2.0, 2.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({8.0, 2.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({8.0, 8.0})}});
+    h.value("tool.pointer", json{{"phase", "release"}, {"at", json::array({2.0, 8.0})}});
+    const Mask after = *h.state.doc.layer(0).mask;
+    CHECK_EQ(after.coverage(4, 4), kMaskIn);
+    CHECK_EQ(after.coverage(16, 12), kMaskOut);
+    CHECK_EQ(undo_depth(h), depth + 1);
+    CHECK(h.run("edit.undo", json::object()).ok);
+    CHECK(*h.state.doc.layer(0).mask == before);
+    CHECK(h.run("edit.redo", json::object()).ok);
+    CHECK(*h.state.doc.layer(0).mask == after);
 }
 
 // The selection fences every write, and a mask stroke is a write: what the brush did to coverage
@@ -4636,6 +4807,10 @@ int main() {
     test_the_coverage_target_decides_where_a_stroke_lands();
     test_the_marquee_lands_on_whichever_coverage_is_named();
     test_a_marquee_gesture_is_one_step_in_whichever_coverage();
+    test_lasso_command_combines_coverage_and_never_changes_pixels();
+    test_lasso_pointer_commits_once_and_undo_redo_restore_exact_coverage();
+    test_lasso_edits_a_layer_mask_through_its_provisional_transaction();
+    test_lasso_mask_replace_discards_previous_visible_pixels();
     test_a_selection_limits_a_mask_stroke();
     test_the_mask_controls_name_the_layer_they_refused();
     test_a_selection_becomes_a_mask_and_a_mask_becomes_a_selection();

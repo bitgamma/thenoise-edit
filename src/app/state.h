@@ -124,16 +124,16 @@ struct PointerMove {
     Rect content{};
 };
 
-// The gesture the pointer is making with the select tool. The rectangle is the marquee in document
-// pixels and it is live: the document holds it during the drag, so a state report taken mid-gesture
-// says what is selected rather than what was selected before the button went down.
+// The gesture the pointer is making with the selection tool. `path` and `rect` stay in document
+// coordinates, so changing the view while tracing cannot change the shape being selected.
 struct PointerSelection {
     bool active = false;
     Vec2 origin{};
     Rect rect{};
-    // Held from the moment the button goes down rather than read again on every drag: switching
-    // tools mid-marquee must not change the shape of the one already being drawn.
-    MaskShape shape = MaskShape::rect;
+    SelectionGesture gesture = SelectionGesture::rectangle;
+    MaskOp mode = kDefaultSelectionMode;
+    std::vector<Vec2> path;
+    Rect mask_bounds{};
     // The same argument for the lifetime: the press opened one door - the layer's provisional bytes or
     // the document's marked coverage - and releasing has to shut that one, however the switch was
     // aimed by then.

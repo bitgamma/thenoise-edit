@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace noise {
@@ -15,6 +17,7 @@ namespace {
 // the pi/4 of coverage the pixel really holds. A two-dimensional grid needed sixty-four samples per
 // axis to do as well, on every boundary pixel.
 constexpr int kStrips = 16;
+constexpr int kLassoSubscanlines = 16;
 // The distance from a point to an interval, zero when it lies inside it.
 double to_interval(double point, double from, double to) {
     return std::max({from - point, 0.0, point - to});
@@ -149,6 +152,211 @@ std::vector<std::uint8_t> ellipse_patch(Rect box, Rect area) {
     return patch;
 }
 
+struct LassoEdge {
+    Vec2 from;
+    Vec2 to;
+    int first_scan = 0;
+    int past_scan = 0;
+    std::size_t order = 0;
+};
+
+struct Crossing {
+    double x = 0.0;
+    std::size_t edge = 0;
+};
+
+int scan_index(double y, int top, int count) {
+    const double position = (y - static_cast<double>(top)) * kLassoSubscanlines - 0.5;
+    if (position <= 0.0) {
+        return 0;
+    }
+    if (position >= static_cast<double>(count)) {
+        return count;
+    }
+    return static_cast<int>(std::ceil(position));
+}
+
+double edge_x(const LassoEdge& edge, double sample_y) {
+    const double scale = std::max({std::abs(edge.from.y), std::abs(edge.to.y),
+                                   std::abs(sample_y)});
+    const double from = edge.from.y / scale;
+    const double to = edge.to.y / scale;
+    const double sample = sample_y / scale;
+    const double fraction = std::clamp((sample - from) / (to - from), 0.0, 1.0);
+    return std::lerp(edge.from.x, edge.to.x, fraction);
+}
+
+void accumulate_span(double from, double to, double sample_height, Rect area,
+                     std::vector<double>& edge_coverage,
+                     std::vector<double>& full_coverage_delta) {
+    from = std::max(from, static_cast<double>(area.x));
+    to = std::min(to, static_cast<double>(area.right()));
+    if (to <= from) {
+        return;
+    }
+
+    const int first = static_cast<int>(std::floor(from));
+    const int past = static_cast<int>(std::ceil(to));
+    const int first_local = first - area.x;
+    const int past_local = past - area.x;
+    if (past_local <= first_local + 1) {
+        edge_coverage[static_cast<std::size_t>(first_local)] += (to - from) * sample_height;
+        return;
+    }
+
+    edge_coverage[static_cast<std::size_t>(first_local)] +=
+        (static_cast<double>(first + 1) - from) * sample_height;
+    edge_coverage[static_cast<std::size_t>(past_local - 1)] +=
+        (to - static_cast<double>(past - 1)) * sample_height;
+    const int full_from = first_local + 1;
+    const int full_to = past_local - 1;
+    if (full_to > full_from) {
+        full_coverage_delta[static_cast<std::size_t>(full_from)] += sample_height;
+        full_coverage_delta[static_cast<std::size_t>(full_to)] -= sample_height;
+    }
+}
+
+std::optional<MaskPatch> make_lasso_patch(Extent canvas, const std::vector<Vec2>& path) {
+    if (canvas.w <= 0 || canvas.h <= 0 || path.size() < 3u) {
+        return std::nullopt;
+    }
+
+    std::vector<Vec2> vertices;
+    vertices.reserve(path.size());
+    for (const Vec2 point : path) {
+        if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+            return std::nullopt;
+        }
+        if (vertices.empty() || point.x != vertices.back().x || point.y != vertices.back().y) {
+            vertices.push_back(point);
+        }
+    }
+    if (vertices.size() > 1u && vertices.front().x == vertices.back().x &&
+        vertices.front().y == vertices.back().y) {
+        vertices.pop_back();
+    }
+    if (vertices.size() < 3u) {
+        return std::nullopt;
+    }
+    const Vec2 first = vertices.front();
+    std::optional<Vec2> second;
+    bool has_third = false;
+    for (const Vec2 point : vertices) {
+        if (point.x == first.x && point.y == first.y) {
+            continue;
+        }
+        if (!second) {
+            second = point;
+        } else if (point.x != second->x || point.y != second->y) {
+            has_third = true;
+            break;
+        }
+    }
+    if (!has_third) {
+        return std::nullopt;
+    }
+
+    double min_x = vertices.front().x;
+    double min_y = vertices.front().y;
+    double max_x = min_x;
+    double max_y = min_y;
+    for (const Vec2 point : vertices) {
+        min_x = std::min(min_x, point.x);
+        min_y = std::min(min_y, point.y);
+        max_x = std::max(max_x, point.x);
+        max_y = std::max(max_y, point.y);
+    }
+    const double left = std::clamp(std::floor(min_x), 0.0, static_cast<double>(canvas.w));
+    const double top = std::clamp(std::floor(min_y), 0.0, static_cast<double>(canvas.h));
+    const double right = std::clamp(std::ceil(max_x), 0.0, static_cast<double>(canvas.w));
+    const double bottom = std::clamp(std::ceil(max_y), 0.0, static_cast<double>(canvas.h));
+    const Rect area{static_cast<int>(left), static_cast<int>(top),
+                    static_cast<int>(right - left), static_cast<int>(bottom - top)};
+    if (area.empty()) {
+        return std::nullopt;
+    }
+
+    const int scan_count = area.h * kLassoSubscanlines;
+    std::vector<LassoEdge> edges;
+    edges.reserve(vertices.size());
+    for (std::size_t i = 0; i < vertices.size(); ++i) {
+        Vec2 from = vertices[i];
+        Vec2 to = vertices[(i + 1u) % vertices.size()];
+        if (from.y == to.y) {
+            continue;
+        }
+        if (from.y > to.y) {
+            std::swap(from, to);
+        }
+        const int first_scan = scan_index(from.y, area.y, scan_count);
+        const int past_scan = scan_index(to.y, area.y, scan_count);
+        if (past_scan > first_scan) {
+            edges.push_back(LassoEdge{from, to, first_scan, past_scan, i});
+        }
+    }
+    if (edges.empty()) {
+        return std::nullopt;
+    }
+    std::stable_sort(edges.begin(), edges.end(), [](const LassoEdge& a, const LassoEdge& b) {
+        return a.first_scan < b.first_scan;
+    });
+
+    MaskPatch patch{area, std::vector<std::uint8_t>(noise::area(area), kMaskOut)};
+    const std::size_t width = static_cast<std::size_t>(area.w);
+    std::vector<std::size_t> active;
+    std::vector<Crossing> crossings;
+    std::vector<double> edge_coverage(width, 0.0);
+    std::vector<double> full_coverage_delta(width + 1u, 0.0);
+    std::size_t next_edge = 0;
+    bool has_coverage = false;
+    for (int scan = 0; scan < scan_count; ++scan) {
+        if (scan % kLassoSubscanlines == 0) {
+            std::fill(edge_coverage.begin(), edge_coverage.end(), 0.0);
+            std::fill(full_coverage_delta.begin(), full_coverage_delta.end(), 0.0);
+        }
+        while (next_edge < edges.size() && edges[next_edge].first_scan <= scan) {
+            active.push_back(next_edge++);
+        }
+        std::erase_if(active, [&edges, scan](std::size_t edge) {
+            return edges[edge].past_scan <= scan;
+        });
+
+        const double sample_y = static_cast<double>(area.y) +
+                                (static_cast<double>(scan % kLassoSubscanlines) + 0.5) /
+                                    kLassoSubscanlines +
+                                static_cast<double>(scan / kLassoSubscanlines);
+        crossings.clear();
+        crossings.reserve(active.size());
+        for (const std::size_t edge : active) {
+            crossings.push_back(Crossing{edge_x(edges[edge], sample_y), edge});
+        }
+        std::sort(crossings.begin(), crossings.end(), [&edges](const Crossing& a,
+                                                              const Crossing& b) {
+            return a.x != b.x ? a.x < b.x : edges[a.edge].order < edges[b.edge].order;
+        });
+        for (std::size_t i = 1; i < crossings.size(); i += 2u) {
+            accumulate_span(crossings[i - 1u].x, crossings[i].x,
+                            1.0 / kLassoSubscanlines, area, edge_coverage,
+                            full_coverage_delta);
+        }
+
+        if (scan % kLassoSubscanlines != kLassoSubscanlines - 1) {
+            continue;
+        }
+        double full_coverage = 0.0;
+        const std::size_t row = static_cast<std::size_t>(scan / kLassoSubscanlines) * width;
+        for (std::size_t x = 0; x < width; ++x) {
+            full_coverage += full_coverage_delta[x];
+            const double coverage = std::clamp(edge_coverage[x] + full_coverage, 0.0, 1.0);
+            const std::uint8_t value = static_cast<std::uint8_t>(
+                std::lround(coverage * static_cast<double>(kMaskIn)));
+            patch.coverage[row + x] = value;
+            has_coverage = has_coverage || value != kMaskOut;
+        }
+    }
+    return has_coverage ? std::optional<MaskPatch>(std::move(patch)) : std::nullopt;
+}
+
 }  // namespace
 
 std::optional<MaskShape> mask_shape_from_name(const std::string& name) {
@@ -196,6 +404,15 @@ void op_shape(Mask& mask, MaskShape shape, Rect box, MaskOp op) {
         return;
     }
     mask.op(area, ellipse_patch(box, area), op);
+}
+
+std::optional<MaskPatch> rasterize_lasso(Extent canvas, const std::vector<Vec2>& path) {
+    return make_lasso_patch(canvas, path);
+}
+
+bool op_lasso(Mask& mask, const std::vector<Vec2>& path, MaskOp op) {
+    std::optional<MaskPatch> patch = rasterize_lasso(mask.size(), path);
+    return patch.has_value() && mask.op(patch->area, patch->coverage, op);
 }
 
 

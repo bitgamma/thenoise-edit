@@ -381,6 +381,11 @@ void event(const sapp_event* ev) {
             invoke_command("front_door", json{{"show", "close"}}, "close the front door");
             return;
         }
+        if (g.state.select.active) {
+            invoke_command("tool.pointer", json{{"phase", "cancel"}},
+                           "cancel the selection gesture");
+            return;
+        }
     }
     // A widget that owns the keyboard (text entry, later) keeps the key: a shortcut fired
     // through it would move the canvas while the user types.

@@ -116,6 +116,25 @@ async function checkTheme(browser, theme) {
     await page.waitForTimeout(150);
     const afterUndo = await page.screenshot({ clip: editRegion });
     assert.deepEqual(afterUndo, beforeStroke, `${theme}: undo restores canvas pixels`);
+
+    const beforeLasso = await page.screenshot({ clip: editRegion });
+    await page.keyboard.press('l');
+    await page.mouse.move(300, 180);
+    await page.mouse.down();
+    for (const point of [[500, 180], [430, 250], [520, 350], [340, 400], [300, 180]]) {
+      await page.mouse.move(point[0], point[1], { steps: 4 });
+    }
+    await page.waitForTimeout(100);
+    const lassoPreview = await page.screenshot({ clip: editRegion });
+    assert.notDeepEqual(lassoPreview, beforeLasso, `${theme}: Lasso draws a live outline`);
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+    const lassoSelection = await page.screenshot({ clip: editRegion });
+    assert.notDeepEqual(lassoSelection, beforeLasso, `${theme}: Lasso commits marching ants`);
+    await page.keyboard.press('Control+z');
+    await page.waitForTimeout(150);
+    assert.deepEqual(await page.screenshot({ clip: editRegion }), beforeLasso,
+                     `${theme}: one undo removes the Lasso selection`);
     assert.deepEqual(errors, [], `${theme}: browser errors`);
     await page.screenshot({ path: path.join(output, `${theme}.png`) });
     console.log(`${theme}: WebGL2, WASM startup, create, brush, undo, screenshot OK`);
