@@ -27,6 +27,25 @@ def check(condition: bool, message: str) -> None:
         raise wd.WireError(message)
 
 
+class XWindowAttributes(ctypes.Structure):
+    """XGetWindowAttributes layout, including map_state (IsViewable == 2)."""
+
+    _fields_ = [
+        ("x", ctypes.c_int), ("y", ctypes.c_int),
+        ("width", ctypes.c_int), ("height", ctypes.c_int),
+        ("border_width", ctypes.c_int), ("depth", ctypes.c_int),
+        ("visual", ctypes.c_void_p), ("root", ctypes.c_ulong),
+        ("class_", ctypes.c_int), ("bit_gravity", ctypes.c_int),
+        ("win_gravity", ctypes.c_int), ("backing_store", ctypes.c_int),
+        ("backing_planes", ctypes.c_ulong), ("backing_pixel", ctypes.c_ulong),
+        ("save_under", ctypes.c_int), ("colormap", ctypes.c_ulong),
+        ("map_installed", ctypes.c_int), ("map_state", ctypes.c_int),
+        ("all_event_masks", ctypes.c_long), ("your_event_mask", ctypes.c_long),
+        ("do_not_propagate_mask", ctypes.c_long),
+        ("override_redirect", ctypes.c_int), ("screen", ctypes.c_void_p),
+    ]
+
+
 class NativeWindows:
     """Find and move top-level X11 windows, including windows reparented by a WM."""
 
@@ -52,6 +71,9 @@ class NativeWindows:
         self.x11.XFetchName.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
                                         ctypes.POINTER(ctypes.c_void_p)]
         self.x11.XFetchName.restype = ctypes.c_int
+        self.x11.XGetWindowAttributes.argtypes = [
+            ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(XWindowAttributes)]
+        self.x11.XGetWindowAttributes.restype = ctypes.c_int
         self.x11.XFree.argtypes = [ctypes.c_void_p]
         self.x11.XTranslateCoordinates.argtypes = [
             ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_int, ctypes.c_int,
@@ -110,12 +132,20 @@ class NativeWindows:
         self.x11.XFree(value)
         return title
 
+    def viewable(self, window: int) -> bool:
+        attributes = XWindowAttributes()
+        return (self.x11.XGetWindowAttributes(self.dpy, window,
+                                             ctypes.byref(attributes)) != 0
+                and attributes.map_state == 2)
+
     def find(self, title: str) -> int | None:
         pending = [self.root]
         while pending:
             parent = pending.pop()
             for window in self._children(parent):
-                if title in self._title(window):
+                # GTK sets the title before mapping its transient dialog. Focusing that
+                # window immediately raises X11 BadMatch; wait for IsViewable instead.
+                if title in self._title(window) and self.viewable(window):
                     return window
                 pending.append(window)
         return None
@@ -184,6 +214,8 @@ class NativeWindows:
         time.sleep(0.1)
 
     def focus(self, window: int) -> None:
+        if not self.viewable(window):
+            raise wd.WireError("native dialog is not viewable yet; cannot focus")
         self.x11.XSetInputFocus(self.dpy, window, self.REVERT_TO_PARENT, 0)
         self.x11.XSync(self.dpy, 0)
 

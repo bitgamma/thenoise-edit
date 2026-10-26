@@ -133,6 +133,13 @@ if(Python3_Interpreter_FOUND)
                          TIMEOUT 120
                          DEPENDS noise-edit)
 
+    # GTK can expose a titled but unmapped transient chooser; focusing it is BadMatch.
+    add_test(NAME test_file_dialog_probe_visibility
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/file_dialog_visibility_test.py)
+    set_tests_properties(test_file_dialog_probe_visibility PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 30)
+
     # M1 acceptance: a 5000-dab stroke over 2048^2 with the app still drivable, and undo
     # returning every byte. Records timings; asserts only wide behavioural bounds.
     add_test(NAME test_stroke_probe
