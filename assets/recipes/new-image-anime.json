@@ -11,6 +11,7 @@
     "min_px": 0
   },
   "enhance": "never",
+  "include_references_default": false,
   "prompt": [
     "{{prompt}}",
     "Illustration: clean linework, flat or softly shaded colour, no photographic grain.",

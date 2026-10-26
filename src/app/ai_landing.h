@@ -111,6 +111,10 @@ bool arg_recipe_vars(const nlohmann::json& args, const char* key,
 struct RequestQuote {
     std::string endpoint;
     Extent size{0, 0};
+    // True when the region will be shrunk to the model's pixel ceiling: the answer comes back resampled
+    // over the region rather than as the region. The price line says so before the press, because the
+    // alternative is discovering it as softness afterwards.
+    bool resampled = false;
     std::string model;
     std::optional<int> steps;
 };

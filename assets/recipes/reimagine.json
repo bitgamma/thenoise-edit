@@ -7,6 +7,7 @@
   "region": "document",
   "prep": "none",
   "enhance": "never",
+  "include_references_default": false,
   "prompt": [
     "Rework this image in the same composition, subject and palette.",
     "Refine the rendering: detail, edges, lighting.",

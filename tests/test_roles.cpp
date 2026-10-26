@@ -53,7 +53,12 @@ void test_the_shipped_table_states_the_policy_the_compiler_uses() {
     REQUIRE(loaded.has_value());
     const RoleTable& table = *loaded;
     CHECK_EQ(table.size_policy.multiple, 16);
-    CHECK_EQ(table.size_policy.max_area_px, 1024 * 1024);
+    // The ceiling a region is compiled under when the model that will answer publishes no
+    // `soft_pixel_cap` of its own. 2 MP is the smallest cap this box publishes for any image model
+    // (measured 2026-10-23), so standing in for a silent model does not shrink answers it would have
+    // served - and a smaller number here is what made a Change over a large mark come back as the same
+    // picture, softer.
+    CHECK_EQ(table.size_policy.max_area_px, 2097152);
     CHECK_NEAR(table.context_policy.ratio, 0.35, 1e-12);
     CHECK_EQ(table.context_policy.min_px, 64);
     for (const char* role :
@@ -186,6 +191,53 @@ void test_resolution_follows_assignment_then_preference_then_capability() {
     CHECK(unknown.reason.find("offered") != std::string::npos);
 }
 
+void test_canonical_model_ids_keep_preference_order_without_changing_server_ids() {
+    const RoleTable table = table_or_fail(json{{"roles", json::array({
+        json{{"id", "edit"}, {"recipe", "thenoise"},
+             {"requires", json::array({"image", "edit"})},
+             {"preference", json::array({"Qwen-Image-2.1-Turbo-INT8"})}}
+    })}});
+    Registry registry(table);
+
+    // A shadowed built-in model must not lose to a smaller unrelated capable model.
+    registry.update({entry("Other", "thenoise", {"image", "edit"}, true, 1.0),
+                     entry("builtin.Qwen-Image-2.1-Turbo-INT8", "thenoise",
+                           {"image", "edit"}, true, 16.1)});
+    CHECK_EQ(registry.resolve("edit").model_id,
+             std::string("builtin.Qwen-Image-2.1-Turbo-INT8"));
+    CHECK(registry.resolve("edit").from_preference);
+
+    // If the same model name exists in two sources, prefer the server's bare-name winner.
+    registry.update({entry("builtin.Qwen-Image-2.1-Turbo-INT8", "thenoise",
+                           {"image", "edit"}, true, 16.1),
+                     entry("user.Qwen-Image-2.1-Turbo-INT8", "thenoise",
+                           {"image", "edit"}, true, 30.0)});
+    CHECK_EQ(registry.resolve("edit").model_id,
+             std::string("user.Qwen-Image-2.1-Turbo-INT8"));
+    registry.set_assignment("edit", "builtin.Qwen-Image-2.1-Turbo-INT8");
+    CHECK_EQ(registry.resolve("edit").model_id,
+             std::string("builtin.Qwen-Image-2.1-Turbo-INT8"));
+    registry.set_assignment("edit", "");
+
+    // An exact bare-name winner still takes precedence over any canonical variant.
+    registry.update({entry("Qwen-Image-2.1-Turbo-INT8", "thenoise",
+                           {"image", "edit"}, true, 30.0),
+                     entry("builtin.Qwen-Image-2.1-Turbo-INT8", "thenoise",
+                           {"image", "edit"}, true, 16.1)});
+    CHECK_EQ(registry.resolve("edit").model_id, std::string("Qwen-Image-2.1-Turbo-INT8"));
+
+    // A non-downloaded shadowed entry is visible as such, but must not invent a command to import
+    // it by an ambiguous bare name. Wrong recipe/labels cannot impersonate a preferred model.
+    registry.update({entry("builtin.Qwen-Image-2.1-Turbo-INT8", "thenoise",
+                           {"image", "edit"}, false, 16.1),
+                     entry("user.Qwen-Image-2.1-Turbo-INT8", "sd-cpp",
+                           {"image", "edit"}, false, 4.0)});
+    const auto missing = registry.resolve("edit");
+    CHECK(!missing.resolved());
+    CHECK(missing.reason.find("builtin.Qwen-Image-2.1-Turbo-INT8") != std::string::npos);
+    CHECK(missing.fix_command.empty());
+}
+
 void test_a_model_that_cannot_serve_a_role_is_not_a_candidate() {
     RoleTable table = table_or_fail(json{{"roles",
                                           json::array({json{{"id", "edit"},
@@ -210,7 +262,8 @@ void test_discovery_reads_what_the_server_actually_sends() {
     std::string error;
     const json body = json::parse(R"({"data":[
         {"id":"Klein","recipe":"thenoise","labels":["image","edit"],"downloaded":true,"size":32.5,
-         "image_defaults":{"steps":4,"cfg_scale":1.0,"width":1024,"height":1024}},
+         "image_defaults":{"steps":4,"cfg_scale":1.0,"width":1024,"height":1024,
+                            "soft_pixel_cap":2097152}},
         {"id":"Noprimes","recipe":"thenoise","labels":["image"],"downloaded":0,"size":"3"},
         {"recipe":"thenoise","labels":["image"]},
         {"name":"NamedOnly","recipe":"thenoise","labels":[]}
@@ -220,6 +273,11 @@ void test_discovery_reads_what_the_server_actually_sends() {
     CHECK(!error.empty());  // the row with no id is reported, not fatal
     CHECK(models[0].downloaded);
     CHECK_EQ(models[0].image_defaults.steps, 4);
+    // The pixel ceiling a model serves, which is what a region is compiled under. Dropped on the floor
+    // here, the compiler falls back to the table's stand-in and quietly shrinks answers the model would
+    // have served at full size.
+    CHECK_EQ(models[0].image_defaults.soft_pixel_cap, 2097152);
+    CHECK_EQ(models[1].image_defaults.soft_pixel_cap, 0);
     // `downloaded` arrives as 0/1 on some rows and a bool on others; a string size is not a number.
     CHECK(!models[1].downloaded);
     CHECK_EQ(models[1].size_gb, 0.0);
@@ -256,6 +314,7 @@ int main() {
     test_the_shipped_table_states_the_policy_the_compiler_uses();
     test_a_role_table_refuses_to_be_half_read();
     test_resolution_follows_assignment_then_preference_then_capability();
+    test_canonical_model_ids_keep_preference_order_without_changing_server_ids();
     test_a_model_that_cannot_serve_a_role_is_not_a_candidate();
     test_discovery_reads_what_the_server_actually_sends();
     return noise::test::summary(__FILE__);

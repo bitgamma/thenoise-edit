@@ -34,6 +34,11 @@ struct Landing {
     // What the request asked for, which is what the answer is resampled from. `answered_as_requested`
     // at landing time compares this to what came back.
     Extent requested{};
+    // The compile shrank the ask to the model's pixel ceiling, so the answer is resampled over a region
+    // it holds fewer pixels of. Carried rather than re-derived because the landing rebuilds its plan from
+    // this record, and a plan assembled from two rectangles has no way to know the ask was cut - which is
+    // how a rescale went unreported on the path that actually lands answers.
+    bool resampled = false;
     Extent canvas{};
     // Where the coverage the region was compiled from lives: a canvas-sized PNG with the coverage in
     // the alpha channel, written by `enqueue` beside the job. Kept because a result that lands in a
@@ -136,7 +141,7 @@ public:
     // change under it while it waits - the latency model itself guards its own contents.
     // `coverage_png` is the canvas-sized PNG the answer lands under; the queue stores it and records
     // where it put it.
-    std::string enqueue(const BuiltRequest& request, const std::string& recipe_id,
+    std::string enqueue(BuiltRequest request, const std::string& recipe_id,
                         const std::string& role, const Landing& landing,
                         std::vector<std::uint8_t> coverage_png);
 
@@ -210,7 +215,9 @@ private:
     bool running_ = false;
     bool stopping_ = false;
 
+#ifndef __EMSCRIPTEN__
     std::thread worker_;
+#endif
 };
 
 }  // namespace noise::ai

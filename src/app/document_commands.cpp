@@ -12,6 +12,9 @@
 #include "io/flat.h"
 #include "io/png.h"
 #include "io/project.h"
+#ifdef __EMSCRIPTEN__
+#include "platform/web.h"
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -116,7 +119,11 @@ void register_document_commands(AppState& state, CommandTable& table) {
     });
 
     table.add("doc.save", "Save the project (defaults to its current path)", {"Ctrl+S"}, {"path"},
+#ifdef __EMSCRIPTEN__
+              [&state, &table](const json& args) -> CommandResult {
+#else
               [&state](const json& args) -> CommandResult {
+#endif
         CommandResult guard = require_document(state);
         if (!guard.ok) {
             return guard;
@@ -128,6 +135,12 @@ void register_document_commands(AppState& state, CommandTable& table) {
             }
             path = args.at("path").get<std::string>();
         }
+#ifdef __EMSCRIPTEN__
+        if (!args.contains("path") &&
+            (path.empty() || io::extension_of(path) != io::kProjectExtension)) {
+            return table.invoke("file.pick", json{{"for", "project"}});
+        }
+#endif
         if (path.empty()) {
             return fail("doc.save", "document has no path and none was given");
         }
@@ -149,6 +162,11 @@ void register_document_commands(AppState& state, CommandTable& table) {
                               error)) {
             return fail("doc.save", error);
         }
+#ifdef __EMSCRIPTEN__
+        if (!platform::download_file(path, error)) {
+            return fail("doc.save", error);
+        }
+#endif
         state.doc.set_path(path);
         state.doc.mark_saved();
         io::remember_recent_file(path);
@@ -195,6 +213,11 @@ void register_document_commands(AppState& state, CommandTable& table) {
         if (!io::save_flat_image(path, flat, quality, error)) {
             return fail("doc.export", error);
         }
+#ifdef __EMSCRIPTEN__
+        if (!platform::download_file(path, error)) {
+            return fail("doc.export", error);
+        }
+#endif
         // A format with no alpha channel did not fail to write the transparency - it discarded it -
         // and the caller is told rather than left to notice later. `screenshot` and `image.get` keep
         // writing PNG, which loses nothing.

@@ -30,6 +30,7 @@ using noise::ai::failure_name;
 using noise::ai::JobQueue;
 using noise::ai::JobState;
 using noise::ai::Landing;
+using noise::ai::kRequestTimeoutFloorS;
 using noise::ai::LatencyModel;
 using noise::ai::load_recipes;
 using noise::ai::ModelEntry;
@@ -112,10 +113,11 @@ BuiltRequest edits_request_for(const RecipeSet& recipes, const std::string& mode
     input.height = height;
     input.prompt = "remove the object, match the wall";
     input.seed = 1234;
-    input.png = region_png();
+    const std::vector<std::uint8_t> image = region_png();
+    input.images.push_back(noise::ai::RequestImageInput{"document", "region", width, height, image});
     std::string error;
     const std::optional<BuiltRequest> built =
-        build_request(input, SizePolicy{16, 1024 * 1024}, error);
+        build_request(std::move(input), SizePolicy{16, 1024 * 1024}, error);
     REQUIRE(built.has_value());
     return *built;
 }
@@ -139,10 +141,11 @@ BuiltRequest edits_request(const RecipeSet& recipes, int width = 64, int height 
     input.height = height;
     input.prompt = "remove the object, match the wall";
     input.seed = 1234;
-    input.png = region_png();
+    const std::vector<std::uint8_t> image = region_png();
+    input.images.push_back(noise::ai::RequestImageInput{"document", "region", width, height, image});
     std::string error;
     const std::optional<BuiltRequest> built =
-        build_request(input, SizePolicy{16, 1024 * 1024}, error);
+        build_request(std::move(input), SizePolicy{16, 1024 * 1024}, error);
     REQUIRE(built.has_value());
     return *built;
 }
@@ -241,7 +244,9 @@ void test_an_answer_comes_back_from_the_recorded_edit() {
     CHECK(wire.image_bytes > std::size_t(0));
     // The bytes that left are the bytes that were built, by hash: a transport that re-encoded or
     // truncated the region would change the cache key's meaning.
-    CHECK_EQ(wire.image_sha, noise::sha256_hex(std::span<const std::uint8_t>(request.png)));
+    CHECK_EQ(wire.images.front().sha256, request.images.front().sha256);
+    CHECK_EQ(wire.images.front().bytes, request.images.front().png);
+    CHECK_EQ(wire.images.front().content_type, std::string("image/png"));
     // No mask field, ever: the engine has none, and precision is region plus prep.
     CHECK(string_of(bytes_of(wire.body_text)).find("mask") == std::string::npos);
     CHECK(transport->misses().empty());
@@ -289,10 +294,11 @@ void test_each_failure_the_server_gives_is_a_different_answer() {
         input.height = 64;
         input.prompt = "do the thing";
         input.seed = 3;
-        input.png = region_png();
+        const std::vector<std::uint8_t> image = region_png();
+        input.images.push_back(noise::ai::RequestImageInput{"document", "region", 64, 64, image});
         std::string build_error;
         const std::optional<BuiltRequest> built =
-            build_request(input, SizePolicy{16, 1024 * 1024}, build_error);
+            build_request(std::move(input), SizePolicy{16, 1024 * 1024}, build_error);
         REQUIRE(built.has_value());
 
         AiError error;
@@ -339,10 +345,11 @@ void test_cancellation_and_unmatched_requests_are_honest() {
     input.width = 64;
     input.height = 64;
     input.prompt = "do the thing";
-    input.png = region_png();
+    const std::vector<std::uint8_t> image = region_png();
+    input.images.push_back(noise::ai::RequestImageInput{"document", "region", 64, 64, image});
     std::string build_error;
     const std::optional<BuiltRequest> built =
-        build_request(input, SizePolicy{16, 1024 * 1024}, build_error);
+        build_request(std::move(input), SizePolicy{16, 1024 * 1024}, build_error);
     REQUIRE(built.has_value());
 
     AiError error;
@@ -606,8 +613,9 @@ void test_the_latency_model_learns_only_from_real_runs() {
     CHECK_NEAR(*latency.predict(kModel, size, 4), 60.0, 1e-9);
     CHECK(latency.request_timeout_s(kModel, size, 4, 60) >= 60);
 
-    // Another shape on the same model is another question: 512x512 at 4 steps does not inherit the
-    // 1024x1024 timing.
+    // Another shape on the same model is another question the ETA does not answer: 512x512 at 4 steps
+    // has not been run here, and a scaled figure shown as a promise would be a guess wearing a
+    // measurement's clothes. The timeout is a margin, not a promise, and does scale - see below.
     CHECK(!latency.predict(kModel, Extent{512, 512}, 4).has_value());
     CHECK(!latency.predict(kUpscaler, size, 4).has_value());
 
@@ -616,6 +624,45 @@ void test_the_latency_model_learns_only_from_real_runs() {
     CHECK(mixed > 60.0);
     CHECK(mixed < 120.0);
     CHECK_EQ(latency.entries()[0].samples, 2);
+}
+
+// Measured on the dev box with its resident edit model: a masked edit at the pixel ceiling (1920x1088,
+// 8 steps) took 71.1 s. A model that is not resident loads inside the request, which measured 72-198 s.
+constexpr double kMeasuredCeilingEditS = 71.1;
+constexpr double kMeasuredColdAskS = 71.1 + 198.0;
+
+// The size policy asks a region at its own size, so a new mark is a shape this box has never recorded -
+// and the timeout for it used to be the floor, which a full-canvas inpaint then outran and reported as
+// `timeout`. The extrapolation and the floor exist for this, not for tidiness.
+void test_the_timeout_survives_a_shape_the_box_has_never_run() {
+    // A slow enough shape that the scaled margin clears the floor and can be seen working.
+    LatencyModel latency;
+    latency.observe(kModel, Extent{1024, 1024}, 20, 240.0);
+    const Extent ceiling{1920, 1088};
+
+    // The promise stays a measurement: nobody has run this shape here, so the panel says there is no
+    // estimate rather than showing this number.
+    CHECK(!latency.predict(kModel, ceiling, 20).has_value());
+
+    // The margin is per pixel per step of the model's own measured run: 240 s at 1.05 MP is 478 s at
+    // 2.09 MP, and four times that is the wait the app will tolerate before calling the server dead.
+    CHECK_NEAR(latency.request_timeout_s(kModel, ceiling, 20, kRequestTimeoutFloorS), 1912.0, 5.0);
+
+    // The shape that was measured keeps its own figure.
+    CHECK_EQ(latency.request_timeout_s(kModel, Extent{1024, 1024}, 20, kRequestTimeoutFloorS), 4 * 240);
+
+    // Scaling raises a margin and never lowers one: a quick model asking a small shape still waits on the
+    // floor, which is what covers a model load nobody has measured yet.
+    LatencyModel quick;
+    quick.observe(kModel, Extent{256, 256}, 1, 2.0);
+    CHECK_EQ(quick.request_timeout_s(kModel, Extent{512, 512}, 2, kRequestTimeoutFloorS),
+             kRequestTimeoutFloorS);
+
+    // With nothing measured at all the floor is the only ceiling there is, so it must cover a cold ask:
+    // a model load and the largest edit the policy can ask for.
+    LatencyModel cold;
+    CHECK(!cold.predict(kModel, ceiling, 20).has_value());
+    CHECK(cold.request_timeout_s(kModel, ceiling, 20, kRequestTimeoutFloorS) > kMeasuredColdAskS);
 }
 
 }  // namespace
@@ -683,6 +730,7 @@ int main() {
     test_a_new_queue_never_reads_the_run_before_it();
     test_a_queued_and_a_running_job_are_both_stoppable();
     test_the_latency_model_learns_only_from_real_runs();
+    test_the_timeout_survives_a_shape_the_box_has_never_run();
     test_the_latency_model_survives_the_thread_that_reads_it();
     return noise::test::summary(__FILE__);
 }

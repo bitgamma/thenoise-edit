@@ -21,8 +21,10 @@ public:
     int accept();
 
 private:
+#ifndef __EMSCRIPTEN__
     int fd_ = -1;
     std::uint16_t port_ = 0;
+#endif
 };
 
 // Writes everything or fails; on a non-blocking socket a full send buffer is

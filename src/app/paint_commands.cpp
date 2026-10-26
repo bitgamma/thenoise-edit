@@ -14,6 +14,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
+#include <optional>
+
 namespace noise::app {
 
 namespace {
@@ -178,9 +181,10 @@ void register_paint_commands(AppState& state, CommandTable& table) {
                 touched = paint_stroke_mask(mask, path, brush, mode);
             });
         } else if (coverage_stroke) {
-            // The marked area takes the same stroke through the same mask, and stays outside history
-            // because a mark is not a change to the picture — putting it down is not undoable today
-            // either, so a freehand mark and a marquee behave alike.
+            // The marked area takes the same stroke through the same mask, and the whole polyline is
+            // painted into one copy of it, so the command is one coat at the brush's own opacity and
+            // `set_selection` records the coverage it replaces as one step - the same thing the pointer
+            // gesture commits at release, which is what makes a freehand mark and a marquee alike.
             Mask marked = state.doc.selection().has_value() ? *state.doc.selection()
                                                             : Mask(state.doc.size());
             touched = paint_stroke_mask(marked, path, brush, mode);
@@ -204,22 +208,67 @@ void register_paint_commands(AppState& state, CommandTable& table) {
     });
 
     table.add("tool.pointer",
-              "Feed one pointer phase (press, drag, release) to the current tool", {}, {"phase", "at"},
+              "Feed one pointer phase (press, drag, release, cancel) to the current tool", {},
+              {"phase", "at", "mode"},
               [&state](const json& args) -> CommandResult {
         if (!args.contains("phase") || !args.at("phase").is_string()) {
-            return fail("tool.pointer", "'phase' must be one of press, drag, release");
+            return fail("tool.pointer", "'phase' must be one of press, drag, release, cancel");
         }
         const std::string phase = args.at("phase").get<std::string>();
-        Vec2 point;
-        if (phase != "release" && !arg_vec2(args, "at", point)) {
+        if (phase != "press" && phase != "drag" && phase != "release" && phase != "cancel") {
+            return fail("tool.pointer", "unknown phase '" + phase +
+                                            "' (press, drag, release, cancel)");
+        }
+        std::optional<Vec2> point;
+        if (args.contains("at")) {
+            Vec2 parsed;
+            if (!arg_vec2(args, "at", parsed) || !std::isfinite(parsed.x) ||
+                !std::isfinite(parsed.y)) {
+                return fail("tool.pointer", "'at' must be finite [x,y] document pixels");
+            }
+            point = parsed;
+        }
+        if ((phase == "press" || phase == "drag") && !point) {
             return fail("tool.pointer", "'at' must be [x,y] in document pixels");
+        }
+        if (args.contains("mode") && phase != "press") {
+            return fail("tool.pointer", "'mode' is only valid on a selection press");
         }
         // Which function runs is the tool table's answer, not a name compared here: a tool that is
         // in the table is reachable through this command, and one that is not has no command either.
-        const std::optional<ToolAction> action = tool_action(state.tool);
+        const std::optional<ToolAction> action = state.select.active
+                                                     ? std::optional<ToolAction>(ToolAction::select)
+                                                     : tool_action(state.tool);
         if (!action) {
             return fail("tool.pointer", "tool '" + state.tool + "' is not in the tool table (" +
                                             tool_names() + ")");
+        }
+        if (phase == "cancel") {
+            if (!state.select.active) {
+                return fail("tool.pointer", "no selection gesture is active to cancel");
+            }
+            select_cancel(state);
+            return command_ok(stroke_json(state));
+        }
+        if (phase == "press" && state.gesturing()) {
+            return fail("tool.pointer", "a pointer gesture is already active");
+        }
+        MaskOp mode = kDefaultSelectionMode;
+        if (args.contains("mode")) {
+            const std::optional<SelectionGesture> gesture = tool_selection_gesture(state.tool);
+            if (*action != ToolAction::select || !gesture ||
+                *gesture != SelectionGesture::lasso) {
+                return fail("tool.pointer", "'mode' is only accepted by the lasso tool");
+            }
+            if (!args.at("mode").is_string()) {
+                return fail("tool.pointer", "'mode' must be a mask operation");
+            }
+            const std::optional<MaskOp> parsed =
+                mask_op_from_name(args.at("mode").get<std::string>());
+            if (!parsed) {
+                return fail("tool.pointer", "'mode' must be one of " + mask_op_names());
+            }
+            mode = *parsed;
         }
         switch (*action) {
             case ToolAction::coverage: {
@@ -231,9 +280,9 @@ void register_paint_commands(AppState& state, CommandTable& table) {
                                                     "' has none (mask.add)");
                 }
                 if (phase == "press") {
-                    cover_press(state, point);
+                    cover_press(state, *point);
                 } else if (phase == "drag") {
-                    cover_drag(state, point);
+                    cover_drag(state, *point);
                 } else if (phase == "release") {
                     cover_release(state);
                 } else {
@@ -244,9 +293,9 @@ void register_paint_commands(AppState& state, CommandTable& table) {
             }
             case ToolAction::paint:
                 if (phase == "press") {
-                    brush_press(state, point);
+                    brush_press(state, *point);
                 } else if (phase == "drag") {
-                    brush_drag(state, point);
+                    brush_drag(state, *point);
                 } else if (phase == "release") {
                     brush_release(state);
                 } else {
@@ -256,11 +305,19 @@ void register_paint_commands(AppState& state, CommandTable& table) {
                 break;
             case ToolAction::select:
                 if (phase == "press") {
-                    select_press(state, point);
+                    if (!select_press(state, *point, mode)) {
+                        if (state.coverage_target == CoverageTarget::mask &&
+                            !state.coverage_writable()) {
+                            return fail("tool.pointer", "the coverage target is 'mask' and layer '" +
+                                                             state.active_layer().name +
+                                                             "' has none (mask.add)");
+                        }
+                        return fail("tool.pointer", "the selection gesture could not start");
+                    }
                 } else if (phase == "drag") {
-                    select_drag(state, point);
+                    select_drag(state, *point);
                 } else if (phase == "release") {
-                    select_release(state);
+                    select_release(state, point);
                 } else {
                     return fail("tool.pointer", "unknown phase '" + phase +
                                                     "' (press, drag, release)");
@@ -268,9 +325,9 @@ void register_paint_commands(AppState& state, CommandTable& table) {
                 break;
             case ToolAction::move:
                 if (phase == "press") {
-                    move_press(state, point);
+                    move_press(state, *point);
                 } else if (phase == "drag") {
-                    move_drag(state, point);
+                    move_drag(state, *point);
                 } else if (phase == "release") {
                     move_release(state);
                 } else {

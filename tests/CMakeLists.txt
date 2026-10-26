@@ -95,8 +95,7 @@ target_compile_definitions(test_app
 target_compile_options(test_app PRIVATE -Wall -Wextra -Werror -Wshadow)
 add_test(NAME test_app COMMAND test_app)
 
-# Asking the desktop for a path: the argv the dialog is given, and the answer that comes back through
-# the pipe, driven by a stand-in program so no hermetic run depends on a desktop being installed.
+# File request and answer routing stay testable without opening a desktop dialog.
 target_link_libraries(test_file_dialog PRIVATE noise_app noise_core noise_dbg)
 target_include_directories(test_file_dialog PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(test_file_dialog
@@ -125,6 +124,21 @@ if(Python3_Interpreter_FOUND)
                          SKIP_REGULAR_EXPRESSION "SKIP:"
                          TIMEOUT 120
                          DEPENDS noise-edit)
+
+    add_test(NAME test_file_dialog_ui
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/file_dialog_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_file_dialog_ui PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 120
+                         DEPENDS noise-edit)
+
+    # GTK can expose a titled but unmapped transient chooser; focusing it is BadMatch.
+    add_test(NAME test_file_dialog_probe_visibility
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/file_dialog_visibility_test.py)
+    set_tests_properties(test_file_dialog_probe_visibility PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 30)
 
     # M1 acceptance: a 5000-dab stroke over 2048^2 with the app still drivable, and undo
     # returning every byte. Records timings; asserts only wide behavioural bounds.
@@ -187,6 +201,17 @@ if(Python3_Interpreter_FOUND)
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/coverage_view_probe.py
                      --bin $<TARGET_FILE:noise-edit>)
     set_tests_properties(test_coverage_view_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 420
+                         DEPENDS noise-edit)
+
+    # That the boundary walk, windowed to the selection's own bounds, still outlines all four sides of a
+    # selection that sits far from the origin of a large document. `test_ants` checks the geometry; only a
+    # capture says the window drew what the geometry described.
+    add_test(NAME test_ants_window_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ants_window_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_ants_window_probe PROPERTIES
                          SKIP_REGULAR_EXPRESSION "SKIP:"
                          TIMEOUT 420
                          DEPENDS noise-edit)
@@ -254,6 +279,7 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME test_view_golden
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/wire_drive.py
                      --bin $<TARGET_FILE:noise-edit>
+                     --theme dark
                      --golden ${CMAKE_SOURCE_DIR}/tests/golden/view_pan_zoom.png)
     set_tests_properties(test_view_golden PROPERTIES
                          SKIP_REGULAR_EXPRESSION "SKIP:"

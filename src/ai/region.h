@@ -23,8 +23,10 @@ struct RegionPolicy {
     // size (asking 500x300 answers 512x304), so sending multiples is what makes the crop you planned
     // the crop you get - and returned dims still differ, which the result compositor handles.
     int size_multiple;
-    // The area a region is never compiled above, in source pixels. A bigger box is scaled down rather
-    // than truncated, and never scaled up: the source has no detail to give.
+    // The area a region is compiled at or under, in source pixels. A bigger box is scaled down rather
+    // than truncated, and never scaled up: the source has no detail to give. This is the model's own
+    // published `soft_pixel_cap` whenever the server says one, and the table's `size_policy` only for a
+    // model that says nothing - a ceiling of our invention shrinks answers the box would have served.
     int max_area_px;
 };
 
@@ -47,15 +49,23 @@ std::string prep_names();
 struct RegionPlan {
     Rect mask_bounds{};  // the mask's own tight box, before any growth
     Rect crop{};         // document pixels the request covers: grown, clamped to the canvas, snapped
-    Extent requested{};  // the `size` field: `crop` scaled down for the budget, rounded up to the
-                         // policy multiple, so it is always a multiple and never smaller than the
-                         // crop it came from
-    double scale = 1.0;  // <= 1: how much the crop was shrunk to fit the budget
+    // The `size` field: `crop` rounded up to the policy multiple, so it is always a multiple and never
+    // smaller than the crop it came from - the crop's own size whenever the crop is already on the grid,
+    // which a grown crop normally is. Above the pixel ceiling it is `crop` scaled down first, and
+    // `resampled` says so.
+    Extent requested{};
+    // <= 1: how much the crop was shrunk to fit the ceiling. Below 1 exactly when `resampled`.
+    double scale = 1.0;
     // The axes where a snap was impossible because the canvas itself is shorter than one multiple.
     // Reported rather than hidden: the engine will snap those for us, and a caller comparing dims
     // against the policy needs to know which mismatch is theirs to expect.
     bool snapped_width = true;
     bool snapped_height = true;
+    // True when the region was shrunk to the pixel ceiling (`scale < 1.0`): the answer is built from
+    // fewer pixels than the region holds and resampled back over it, which costs detail. The grid snap is
+    // not this - `snapped_*` covers the axes the grid could not be kept on - and choosing a mark size is
+    // choosing it, so it travels with the plan wherever the plan is reported.
+    bool resampled = false;
 
     // Request pixels to document pixels and back. The map is by the two sizes - the request's and
     // the crop's - and not by `scale`, because the answer covers the crop and arrives at `requested`

@@ -1,0 +1,27 @@
+{
+  "id": "blend",
+  "label": "Blend",
+  "operation": "in_place",
+  "endpoint": "edits",
+  "role": "edit",
+  "region": "layer",
+  "prep": "none",
+  "enhance": "never",
+  "include_references_default": false,
+  "prompt": [
+    "Harmonize the marked object with the surrounding scene.",
+    "Keep the inserted object recognizable, retaining its identity, silhouette, position, scale and distinctive details.",
+    "Match the light, colour temperature, shadow direction, perspective, focus and grain of",
+    "the surrounding {{context_desc}}.",
+    "Change nothing outside the marked area."
+  ],
+  "variables": {
+    "context_desc": "background"
+  },
+  "ask": [],
+  "composite": {
+    "feather": "auto",
+    "colour_match": true,
+    "lock_band_px": 6
+  }
+}

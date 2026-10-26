@@ -19,6 +19,7 @@ const std::vector<VerbInfo> kVerbs{
     {VerbId::fill, "region-fill", "Ctrl+Shift+F"},
     {VerbId::change, "inpaint-replace", "Ctrl+Shift+C"},
     {VerbId::generate, "new-image", "Ctrl+G"},
+    {VerbId::blend, "blend", "Ctrl+B"},
 };
 
 namespace {
@@ -38,6 +39,9 @@ std::string expectation(VerbId id) {
             return "an 'in_place' that asks for one field (what should change)";
         case VerbId::generate:
             return "a 'from_words' that asks for one field (the picture)";
+        case VerbId::blend:
+            return "an 'in_place' over the layer's own coverage that asks for nothing - the pasted "
+                   "thing is painted into the scene it sits on";
     }
     return "an unknown verb";
 }
@@ -56,6 +60,8 @@ const char* verb_name(VerbId id) {
             return "change";
         case VerbId::generate:
             return "generate";
+        case VerbId::blend:
+            return "blend";
     }
     return "?";
 }
@@ -117,6 +123,9 @@ bool verb_matches(const VerbInfo& verb, const ai::Recipe& recipe) {
             return recipe.operation == ai::Operation::in_place && recipe.ask.size() == 1;
         case VerbId::generate:
             return recipe.operation == ai::Operation::from_words && recipe.ask.size() == 1;
+        case VerbId::blend:
+            return recipe.operation == ai::Operation::in_place && recipe.ask.empty() &&
+                   recipe.region == ai::RegionScope::layer;
     }
     return false;
 }
@@ -178,7 +187,7 @@ void register_ai_verb_commands(AppState& state, CommandTable& table) {
                                 {"ask", recipe != nullptr ? json(recipe->ask) : json::array()},
                                 {"scope", recipe == nullptr
                                               ? "unknown"
-                                              : (recipe->whole_document() ? "document" : "selection")},
+                                              : ai::region_scope_name(recipe->region)},
                                 // The frames this key can be pressed at, and the recipes it can be
                                 // pressed with: the panel draws both from here and owns neither.
                                 {"aspects", recipe != nullptr
@@ -226,7 +235,7 @@ void register_ai_verb_commands(AppState& state, CommandTable& table) {
         // One argument list for every verb, because what a verb *is* lives in the row and its recipe:
         // the fields, the region and the price all come from there.
         table.add(id, "Run the '" + std::string(verb_name(verb.id)) + "' verb",
-                  {verb.key}, {"vars", "seed", "confirm"},
+                  {verb.key}, {"vars", "seed", "confirm", "include_references"},
                   [&state, &table, id, verb_id = verb.id](const json& args) -> CommandResult {
             if (!state.ai.verbs_error.empty()) {
                 return fail(id, state.ai.verbs_error);
@@ -241,7 +250,7 @@ void register_ai_verb_commands(AppState& state, CommandTable& table) {
             // The same door the window and a driver share, with this verb's recipe named: a press and a
             // `ai.intent {recipe, run}` cannot mean different things.
             json intent{{"recipe", recipe->id}, {"run", true}};
-            for (const char* name : {"vars", "seed", "confirm"}) {
+            for (const char* name : {"vars", "seed", "confirm", "include_references"}) {
                 if (args.contains(name)) {
                     intent[name] = args.at(name);
                 }

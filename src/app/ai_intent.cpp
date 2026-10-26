@@ -126,11 +126,19 @@ nlohmann::json family_json(AppState& state, const ai::Recipe& recipe) {
     return members;
 }
 
+// A seed as an argument, read wide: `int` would truncate a value the provider is there to refuse.
+std::optional<std::int64_t> seed_argument(const json& value) {
+    if (!value.is_number_integer()) {
+        return std::nullopt;
+    }
+    return value.get<std::int64_t>();
+}
+
 // The Run button. A swap is the expensive thing in this design, so it is confirmed rather than
 // discovered: the refusal says which model, which model is resident and what it costs, and the same
 // call with `confirm` goes ahead.
 CommandResult start_intent(AppState& state, CommandTable& table, const ai::Recipe* recipe,
-                          const Readiness& readiness, bool confirm) {
+                          const Readiness& readiness, bool confirm, const json& args) {
     const std::string id = recipe != nullptr ? recipe->id : std::string();
     if (recipe == nullptr) {
         return fail("ai.intent", "nothing to run: " + readiness.reason);
@@ -139,6 +147,14 @@ CommandResult start_intent(AppState& state, CommandTable& table, const ai::Recip
         return fail("ai.intent", "cannot run '" + id + "': " + readiness.reason +
                                      (readiness.fix.empty() ? "" : " - " + readiness.fix));
     }
+    // Rendered before the swap is priced, because the swap is the expensive refusal and this one is
+    // free: a request with no words in it must never ask a shared box to load a model first. The dev
+    // box found the reverse order - a bare *Generate* refused for the resident model, which read as if
+    // loading Flux would have made the button work.
+    std::string words_error;
+    if (!ai::build_prompt(*recipe, state.ai_intent.given, words_error).has_value()) {
+        return fail("ai.intent", words_error);
+    }
     if (needs_swap(state, readiness) && !confirm) {
         return fail("ai.intent",
                     "'" + id + "' needs " + readiness.model + " and the server is running " +
@@ -146,10 +162,16 @@ CommandResult start_intent(AppState& state, CommandTable& table, const ai::Recip
                         "shared box. Re-run with confirm, or load it yourself with server.load");
     }
     // Passed to `ai.run` rather than read back out of the intent, so the run door takes what a press
-    // meant.
+    // meant - the seed included, because a seed that stayed behind in the intent would be a pin.
     json run{{"recipe", recipe->id}, {"vars", effective_vars(*recipe, state.ai_intent.given)}};
+    if (state.ai_intent.include_references.has_value()) {
+        run["include_references"] = *state.ai_intent.include_references;
+    }
     if (state.ai_intent.aspect.has_value()) {
         run["aspect"] = aspect_name(*state.ai_intent.aspect);
+    }
+    if (args.contains("seed")) {
+        run["seed"] = args.at("seed");
     }
     const CommandResult started = table.invoke("ai.run", run);
     if (!started.ok) {
@@ -168,7 +190,14 @@ CommandResult start_intent(AppState& state, CommandTable& table, const ai::Recip
 // Whether this intent could run here, and what stops it if it cannot. The panel greys the button from
 // this and the refusal repeats it, so a disabled control and an error message cannot disagree.
 std::string missing_region(const ai::Recipe& recipe, noise::AppState& state) {
-    if (recipe.whole_document() || state.doc.selection().has_value()) {
+    // A layer-scope recipe is ready whenever there is an active layer, which is deliberately optimistic:
+    // "does that layer cover anything" is a scan over the canvas, and readiness is asked every frame the
+    // verb bar is drawn. The empty case is refused where it costs something - `plan_region` already
+    // refuses a coverage with nothing in it, on press and on preview, and says which layer.
+    if (recipe.whole_document() || recipe.coverage_from_layer()) {
+        return {};
+    }
+    if (state.doc.selection().has_value()) {
         return {};
     }
     return "recipe '" + recipe.id + "' works on a selection and there is none: mark the area (" +
@@ -177,8 +206,26 @@ std::string missing_region(const ai::Recipe& recipe, noise::AppState& state) {
 }
 
 bool needs_swap(const noise::AppState& state, const Readiness& readiness) {
-    return readiness.ready && !readiness.model.empty() && !state.ai.health.model_loaded.empty() &&
-           readiness.model != state.ai.health.model_loaded;
+    if (!readiness.ready || readiness.model.empty() || state.ai.health.model_loaded.empty()) {
+        return false;
+    }
+    const std::string& selected = readiness.model;
+    const std::string& resident = state.ai.health.model_loaded;
+    if (selected == resident) {
+        return false;
+    }
+    // /models may publish the unprefixed winner while /health reports its canonical ID.
+    // Only treat those as the same model when /models does NOT also list the canonical
+    // ID: if both exist, the bare name and builtin./user./extra. identify distinct models.
+    if (state.ai.registry != nullptr && state.ai.registry->model(selected) != nullptr &&
+        state.ai.registry->model(resident) == nullptr) {
+        for (const char* prefix : {"user.", "extra.", "builtin."}) {
+            if (resident == std::string(prefix) + selected) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 Readiness assess(noise::AppState& state, const ai::Recipe* recipe) {
@@ -232,10 +279,23 @@ nlohmann::json intent_json(AppState& state) {
     const ai::Recipe* recipe = intent_recipe(state);
     const AiIntent& intent = state.ai_intent;
     const Readiness readiness = assess(state, recipe);
+    const bool include_references =
+        recipe != nullptr &&
+        intent.include_references.value_or(recipe->include_references_default);
+    const bool can_include_references = recipe != nullptr &&
+                                        recipe->endpoint == ai::Endpoint::edits;
+    const std::size_t transmitted_references =
+        include_references && can_include_references ? state.ai.references.size() : 0;
 
     json intents = json::array();
-    for (const ai::Recipe* candidate : state.ai.recipes.selection_intents()) {
-        intents.push_back(json{{"id", candidate->id}, {"label", candidate->label}});
+    // Two conditions, two lists: what the mark offers and what a layer's own coverage offers. *Blend*
+    // is in the second, so it appears whether or not anything is marked - which is the point of it.
+    const std::vector<const ai::Recipe*> on_the_mark = state.ai.recipes.selection_intents();
+    const std::vector<const ai::Recipe*> on_the_layer = state.ai.recipes.layer_intents();
+    for (const std::vector<const ai::Recipe*>& group : {on_the_mark, on_the_layer}) {
+        for (const ai::Recipe* candidate : group) {
+            intents.push_back(json{{"id", candidate->id}, {"label", candidate->label}});
+        }
     }
 
     json selection{{"whole_document", !state.doc.selection().has_value()},
@@ -261,6 +321,7 @@ nlohmann::json intent_json(AppState& state) {
     if (quote.has_value()) {
         quote_json = json{{"endpoint", quote->endpoint},
                           {"size", json::array({quote->size.w, quote->size.h})},
+                          {"resampled", quote->resampled},
                           {"steps", quote->steps.has_value() ? json(*quote->steps) : json(nullptr)}};
     }
     const std::optional<double> estimate = estimate_seconds(state, readiness.model, quote);
@@ -270,6 +331,20 @@ nlohmann::json intent_json(AppState& state) {
                 {"ask", recipe != nullptr ? json(recipe->ask) : json::array()},
                 {"vars", recipe != nullptr ? effective_vars(*recipe, intent.given)
                                            : json::object()},
+                {"include_references_default", recipe != nullptr
+                                                    ? json(recipe->include_references_default)
+                                                    : json(false)},
+                {"include_references", include_references},
+                {"additional_references",
+                 {{"configured_count", state.ai.references.size()},
+                  {"transmitted_count", transmitted_references},
+                  {"include_references", include_references},
+                  {"will_transmit", transmitted_references != 0},
+                  {"status", state.ai.references.empty()
+                                  ? "none_configured"
+                                  : (!include_references ? "configured_not_included"
+                                     : (can_include_references ? "included"
+                                                               : "unsupported_endpoint"))}}},
                 {"intents", intents},
                 {"aspects", recipe != nullptr ? json([&] {
                                json names = json::array();
@@ -282,7 +357,8 @@ nlohmann::json intent_json(AppState& state) {
                 {"aspect", intent.aspect.has_value() ? json(aspect_name(*intent.aspect))
                                                      : json(nullptr)},
                 {"family", recipe != nullptr ? family_json(state, *recipe) : json::array()},
-                {"seed", static_cast<std::int64_t>(state.ai.seed)},
+                {"seed", static_cast<std::int64_t>(state.ai.last_seed)},
+                {"seed_pinned", state.ai.seed_pin.has_value()},
                 {"selection", selection},
                 {"connected", state.ai.connected},
                 // Whether a server is configured at all: `$THENOISE_URL` unset means there is nothing
@@ -341,6 +417,7 @@ CommandResult apply_intent(AppState& state, CommandTable& table, const json& arg
                                              ")");
             }
             intent.recipe = requested;
+            intent.include_references = std::nullopt;
             // Values typed for one intent carry over only where the next asks the same question,
             // so a `replacement` cannot ride silently into a recipe that never asked for one.
             std::erase_if(intent.given, [chosen](const auto& entry) {
@@ -351,6 +428,17 @@ CommandResult apply_intent(AppState& state, CommandTable& table, const json& arg
                 intent.aspect = std::nullopt;
             }
         }
+    }
+
+    if (args.contains("include_references")) {
+        bool include_references = false;
+        if (!arg_bool(args, "include_references", include_references)) {
+            return fail("ai.intent", "'include_references' must be a boolean");
+        }
+        if (const ai::Recipe* chosen = intent_recipe(state); chosen != nullptr) {
+            intent.recipe = chosen->id;
+        }
+        intent.include_references = include_references;
     }
 
     if (args.contains("vars")) {
@@ -392,17 +480,30 @@ CommandResult apply_intent(AppState& state, CommandTable& table, const json& arg
     }
     intent.aspect = aspect;
 
-    // The seed the panel shows is the session's, so typing one changes what every later run
-    // without an explicit seed would send. That is deliberate: the number on the screen is the
-    // number the request carried.
-    int seed = static_cast<int>(state.ai.seed);
-    if (!arg_int(args, "seed", seed)) {
-        return fail("ai.intent", "'seed' must be an integer");
+    // A seed and a held seed are different things and the argument names say which. `seed` belongs to the
+    // run this call starts and nothing after it - a driver pressing a verb with a number in hand means
+    // *this* request. `seed_pin` is the hold: every later ask takes that number, which is how someone
+    // iterates on an answer they liked, and `null` lets go. Conflating them made one press with a seed
+    // quietly fix the seed of every press after it - found by `ai_job_probe`, not by the unit test that
+    // pinned on purpose.
+    if (args.contains("seed") && !args.at("seed").is_null()) {
+        const std::optional<std::int64_t> given = seed_argument(args.at("seed"));
+        if (!given.has_value() || *given < 0) {
+            return fail("ai.intent", "'seed' must be a non-negative integer or null");
+        }
     }
-    if (seed < 0) {
-        return fail("ai.intent", "'seed' must not be negative (got " + std::to_string(seed) + ")");
+    if (args.contains("seed_pin")) {
+        if (args.at("seed_pin").is_null()) {
+            state.ai.seed_pin = std::nullopt;
+        } else {
+            const std::optional<std::int64_t> held = seed_argument(args.at("seed_pin"));
+            if (!held.has_value() || *held < 0) {
+                return fail("ai.intent", "'seed_pin' must be a non-negative integer or null");
+            }
+            state.ai.seed_pin = static_cast<std::uint64_t>(*held);
+            state.ai.last_seed = *state.ai.seed_pin;
+        }
     }
-    state.ai.seed = static_cast<std::uint64_t>(seed);
 
     if (args.contains("job")) {
         if (!args.at("job").is_string()) {
@@ -439,7 +540,7 @@ CommandResult apply_intent(AppState& state, CommandTable& table, const json& arg
     if (run) {
         const CommandResult started =
             start_intent(state, table, intent_recipe(state), assess(state, intent_recipe(state)),
-                         confirm);
+                         confirm, args);
         if (!started.ok) {
             return started;
         }
@@ -465,7 +566,8 @@ void register_ai_intent_commands(AppState& state, CommandTable& table) {
     // was typed - a field its recipe never asked for, a recipe that no longer exists - draws nothing,
     // and the person is left typing into a widget connected to nothing.
     table.add("ai.intent", "Read or set what the selection panel is asking for", {},
-              {"recipe", "vars", "aspect", "seed", "job", "run", "confirm", "connect"},
+              {"recipe", "vars", "aspect", "include_references", "seed", "seed_pin", "job",
+               "run", "confirm", "connect"},
               [&state, &table](const json& args) -> CommandResult {
         const CommandResult applied = apply_intent(state, table, args);
         if (!applied.ok && !args.empty()) {

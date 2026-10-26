@@ -31,17 +31,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import wire_drive as wd  # noqa: E402
 import wire_input as wi  # noqa: E402
 
-# A window tall enough that the whole verb block is above the fold: the panel scrolls, and a sweep that
-# had to scroll to reach a row would be claiming the scroll worked rather than that the row does.
-WIDTH, HEIGHT = 1100, 900
-SWEEP_STEP = 14
-SWEEP_EDGE = 26  # px in from the right edge: inside a dropdown, outside a left-aligned button
+# The tool panel is scrollable; the controls under test follow the file and tool controls.
 # Entries of an opened list, counted from the row that opened it. The first entry is skipped: it is
 # "canvas" for aspects and the row's own recipe for styles, and picking what is already held commits
 # nothing. `ai.verbs` reports both lists head-first, so entry 2 is the first real choice.
 LIST_ENTRIES = (2, 3, 4)
-LIST_ROW = 22  # the height ImGui draws a list entry at, with this style's frame padding
-ENTRY_DROP = 12  # the list starts under the row that opened it, not at it
+LIST_ROW_HEIGHT = 22
+ENTRY_CENTER = LIST_ROW_HEIGHT // 2
 
 
 class Probe:
@@ -70,21 +66,21 @@ def click(inj: wi.Injector, x: int, y: int) -> None:
     inj.move(x, y)
 
 
-def find_row(wire: wd.Wire, inj: wi.Injector, reads, p: Probe, what: str,
-             start: int = 80, stop: int = HEIGHT - 160) -> int | None:
-    """Click down the right edge until opening a dropdown and picking an entry changes `reads()`.
+def find_row(wire: wd.Wire, inj: wi.Injector, reads, p: Probe, what: str, x: int,
+             start: int, stop: int) -> int | None:
+    """Click through the tool panel until a dropdown commits a change to `reads()`.
 
     The list is reopened for every entry tried: picking an entry closes it, so a second attempt after a
     no-op pick (the entry already held) would otherwise click on the panel behind. Returns the y of the
     row that worked, so a later claim points at the same widget.
     """
-    x = WIDTH - SWEEP_EDGE
-    for y in range(start, stop, SWEEP_STEP):
+    step = max(1, min(LIST_ROW_HEIGHT // 2, (stop - start) // 4))
+    for y in range(start, stop, step):
         for entry in LIST_ENTRIES:
             before = reads()
             click(inj, x, y)
             wd.settle(wire, 1)
-            click(inj, x, y + entry * LIST_ROW + ENTRY_DROP)
+            click(inj, x, y + entry * LIST_ROW_HEIGHT + ENTRY_CENTER)
             wd.settle(wire, 2)
             if reads() != before:
                 p.check(True, f"the {what} row commits from a click", f"y={y} entry {entry}")
@@ -95,7 +91,7 @@ def find_row(wire: wd.Wire, inj: wi.Injector, reads, p: Probe, what: str,
     return None
 
 
-def run(wire: wd.Wire, inj_display: str, p: Probe) -> None:
+def run(wire: wd.Wire, inj_display: str, p: Probe, tmp: pathlib.Path) -> None:
     inj = wi.Injector(inj_display)
     try:
         wire.call("doc.new", {"width": 512, "height": 512})
@@ -108,7 +104,22 @@ def run(wire: wd.Wire, inj_display: str, p: Probe) -> None:
                 str([m["id"] for m in row.get("variants", [])]))
         p.check(row["active"] == "new-image", "and names what a press would run")
 
-        y_aspect = find_row(wire, inj, lambda: wire.call("ai.intent", {})["aspect"], p, "aspect")
+        state = wire.call("app.state")
+        framebuffer_width, framebuffer_height = state["framebuffer"]
+        layers_x, tool_bottom, layers_width, _ = state["layers_window"]
+        tool_x = round(layers_x + layers_width / 2)
+        tool_bottom = round(tool_bottom)
+        if not (0 < tool_x < framebuffer_width and 0 < tool_bottom < framebuffer_height):
+            raise wd.WireError(
+                f"invalid tool panel geometry: x={tool_x}, bottom={tool_bottom}, "
+                f"framebuffer={framebuffer_width}x{framebuffer_height}")
+        inj.move(tool_x, round(tool_bottom * 0.5))
+        inj.wheel(-10)
+        wd.settle(wire)
+
+        y_aspect = find_row(wire, inj, lambda: wire.call("ai.intent", {})["aspect"], p, "aspect",
+                            x=tool_x, start=round(tool_bottom * 0.18),
+                            stop=round(tool_bottom * 0.62))
         if y_aspect is None:
             return
         chosen = wire.call("ai.intent", {})["aspect"]
@@ -130,10 +141,12 @@ def run(wire: wd.Wire, inj_display: str, p: Probe) -> None:
         # The list the aspect sweep left open hangs down over the row beneath it, so it is put away
         # first: the status bar has nothing to press, and a sweep that started below the entries would
         # miss a style row that sits right where the aspect row's neighbour belongs.
-        click(inj, WIDTH - 30, HEIGHT - 10)
+        click(inj, framebuffer_width // 2, framebuffer_height - 1)
         wd.settle(wire)
+        style_start = y_aspect + LIST_ROW_HEIGHT * 2
+        style_stop = min(y_aspect + LIST_ROW_HEIGHT * 4, tool_bottom - 8)
         style_y = find_row(wire, inj, lambda: wire.call("ai.intent", {})["recipe"], p, "style",
-                           start=y_aspect + SWEEP_STEP, stop=y_aspect + 200)
+                           x=tool_x, start=style_start, stop=style_stop)
         if style_y is None:
             return
         style = wire.call("ai.intent", {})["recipe"]
@@ -161,6 +174,37 @@ def run(wire: wd.Wire, inj_display: str, p: Probe) -> None:
             stacked = wire.call("layer.list")["layers"]
             p.check(len(stacked) == 2, "and the next answer landed on a layer of its own",
                     f"{len(stacked)} layers")
+
+        # A long References group can extend beyond the scrollable tool window. The published drop
+        # target must be the visible intersection, so a drop over another panel or the canvas keeps its
+        # ordinary routing.
+        wire.call("doc.new", {"width": 512, "height": 512})
+        reference_dir = tmp / "references"
+        reference_dir.mkdir()
+        paths = []
+        for index in range(8):
+            path = reference_dir / f"reference-{index}.png"
+            wd.write_fixture_png(path, 12, 10)
+            paths.append(str(path))
+        wire.call("ai.references.add", {"paths": paths})
+        inj.move(tool_x, max(1, tool_bottom // 2))
+        inj.wheel(-4)
+        wd.settle(wire, 3)
+        state = wire.call("app.state")
+        drop_x, drop_y, drop_w, drop_h = state["ai_references_rect"]
+        panel_x, panel_y, panel_width, _ = state["layers_window"]
+        framebuffer_width, framebuffer_height = state["framebuffer"]
+        visible_bottom = round(panel_y)
+        rect_inside_visible_tool = (
+            drop_w > 0 and drop_h > 0
+            and drop_x >= panel_x and drop_y >= 0
+            and drop_x + drop_w <= panel_x + panel_width
+            and drop_y + drop_h <= min(visible_bottom, framebuffer_height)
+            and drop_x + drop_w <= framebuffer_width
+        )
+        p.check(rect_inside_visible_tool,
+                "the reference drop target stays within its visible clipped tool-panel area",
+                f"rect={[drop_x, drop_y, drop_w, drop_h]}, panel-bottom={visible_bottom}")
     finally:
         inj.close()
 
@@ -168,6 +212,8 @@ def run(wire: wd.Wire, inj_display: str, p: Probe) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bin", default="build/noise-edit")
+    parser.add_argument("--width", type=int, default=1100)
+    parser.add_argument("--height", type=int, default=900)
     args = parser.parse_args()
     args.bin = pathlib.Path(args.bin)
     reason = skip_reason(args)
@@ -175,7 +221,7 @@ def main() -> int:
         print(f"SKIP: {reason}")
         return 0
     try:
-        display = wd.ensure_display(WIDTH, HEIGHT)
+        display = wd.ensure_display(args.width, args.height)
     except wd.WireError as exc:
         print(f"SKIP: {exc}")
         return 0
@@ -187,7 +233,7 @@ def main() -> int:
     p = Probe()
     print("the panel's own door: clicks on the aspect and style dropdowns")
     stderr_log = tmp / "app.stderr"
-    proc = wd.start_app(args, runtime, WIDTH, HEIGHT, None, open(stderr_log, "wb"),
+    proc = wd.start_app(args, runtime, args.width, args.height, None, open(stderr_log, "wb"),
                         {"NOISE_AI_FIXTURES": str(root / "tests" / "fixtures" / "http"),
                          "THENOISE_URL": None, "THENOISE_API_KEY": None})
     wire = None
@@ -195,7 +241,7 @@ def main() -> int:
         wire = wd.Wire(wd.wire_port(runtime, proc, 60.0))
         wd.wait_for_fit(wire)
         try:
-            run(wire, inj_display=display, p=p)
+            run(wire, inj_display=display, p=p, tmp=tmp)
         except wd.WireError as exc:
             # The app exiting mid-sweep looks like a wire bug; its own last words say otherwise.
             p.check(False, "the panel answered the wire",

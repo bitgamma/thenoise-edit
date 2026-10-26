@@ -31,6 +31,14 @@ int round_up_to(int value, int multiple) {
     return ((value + multiple - 1) / multiple) * multiple;
 }
 
+// Never below one multiple: a shape the grid is wider than still has to ask for something.
+int round_down_to(int value, int multiple) {
+    if (multiple <= 1 || value <= 0) {
+        return value;
+    }
+    return std::max(multiple, (value / multiple) * multiple);
+}
+
 bool is_multiple_of(int value, int multiple) {
     return multiple <= 1 || value % multiple == 0;
 }
@@ -181,14 +189,33 @@ std::optional<RegionPlan> plan_region(Extent canvas, const Mask& mask, const Reg
     RegionPlan plan;
     plan.mask_bounds = mask.bounds();
     plan.crop = grown_crop(plan.mask_bounds, canvas, policy);
+    // The size asked for is the crop's, kept on the policy grid. The grid is not decoration: an off-grid
+    // ask is snapped by the engine anyway (measured: asking 500x300 answers 512x304), so sending the
+    // crop's exact size would trade a snap this side planned for one the engine invented, and the answer
+    // would stop matching the mapping the crop was compiled against. Grown crops land on the grid already,
+    // so normally this asks the crop's own size and nothing is resampled at either end.
+    //
+    // Shrinking is the other thing, and it happens only above the ceiling - which is the model's own
+    // `soft_pixel_cap` when the box publishes one, never a number this app prefers. A scale below 1 means
+    // the answer is built from fewer pixels than the region holds and resampled back over it: the same
+    // picture, softer. That is what `resampled` reports, because a Change that visibly did nothing is
+    // otherwise indistinguishable from a Change that failed.
     const double area = static_cast<double>(plan.crop.w) * static_cast<double>(plan.crop.h);
     if (area > static_cast<double>(policy.max_area_px)) {
         plan.scale = std::sqrt(static_cast<double>(policy.max_area_px) / area);
     }
     const int wanted_w = static_cast<int>(std::ceil(static_cast<double>(plan.crop.w) * plan.scale));
     const int wanted_h = static_cast<int>(std::ceil(static_cast<double>(plan.crop.h) * plan.scale));
-    plan.requested = Extent{round_up_to(wanted_w, policy.size_multiple),
-                            round_up_to(wanted_h, policy.size_multiple)};
+    // Snapped up when there was room, down when there was not: the grid is what the engine wants, the
+    // ceiling is what the model said it could take, and rounding a shrunken ask up past it asks for more
+    // than the plan just gave up (measured: 2400x1600 against a 2097152 cap came out 1776x1184 -
+    // 2102784 pixels, over the top of the number it was shrunk for).
+    plan.requested = plan.scale < 1.0
+                         ? Extent{round_down_to(wanted_w, policy.size_multiple),
+                                  round_down_to(wanted_h, policy.size_multiple)}
+                         : Extent{round_up_to(wanted_w, policy.size_multiple),
+                                  round_up_to(wanted_h, policy.size_multiple)};
+    plan.resampled = plan.scale < 1.0;
     plan.snapped_width = is_multiple_of(plan.crop.w, policy.size_multiple);
     plan.snapped_height = is_multiple_of(plan.crop.h, policy.size_multiple);
     return plan;

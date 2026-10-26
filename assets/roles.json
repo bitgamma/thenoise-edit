@@ -2,7 +2,7 @@
   "format": 1,
   "size_policy": {
     "multiple": 16,
-    "max_area_px": 1048576
+    "max_area_px": 2097152
   },
   "context_policy": {
     "ratio": 0.35,
@@ -45,12 +45,12 @@
         "edit"
       ],
       "preference": [
+        "Qwen-Image-2.1-Turbo-INT8",
+        "Qwen-Image-2.1-Turbo",
         "Flux-2-Klein-9B-TheNoise-KV-INT8",
         "Flux-2-Klein-9B-TheNoise",
         "Flux-2-Klein-4B-TheNoise",
-        "Qwen-Image-Edit-2511-4steps",
-        "Qwen-Image-2.1-Turbo-INT8",
-        "Qwen-Image-2.1-Turbo"
+        "Qwen-Image-Edit-2511-4steps"
       ]
     },
     {

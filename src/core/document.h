@@ -81,15 +81,19 @@ public:
     // An empty `name` gets the next generated one. The new layer goes directly above the active
     // layer, which is where a painter expects it, and becomes active. Returns its index, or -1
     // when there is no canvas to size it from.
+    // One step, like the layer an answer lands on - and the arrival is the whole of it: undo hands the
+    // layer, wearing whatever `fill` gave it, to the redo side, so a fill costs no bytes beside the step.
     int add_layer(std::string name, Rgba8 fill);
-    // A new layer that **undo takes away again**: its creation and everything `write` puts into it are one
-    // undo step, so an AI answer is a single edit - `Ctrl+Z` removes the result together with the layer it
+    // A new layer where the creation and everything `write` puts into it are one step, rather than the
+    // arrival alone as `add_layer` records, so an AI answer is a single edit - `Ctrl+Z` removes the result together with the layer it
     // arrived on, instead of leaving an empty one named after a job. The layer is transparent, goes
     // directly above the active one and becomes active. `write` gets the layer's own pixels; a `false`
     // means it refused, and then nothing is added and nothing is recorded. Returns the new index, or -1.
     int add_layer_written(std::string name, Rect bounds,
                           const std::function<bool(Image&)>& write);
-    // False when `index` is out of range or it is the last layer standing.
+    // False when `index` is out of range or it is the last layer standing. The step holds the whole
+    // layer, so undo returns its picture, mask, mode and opacity as well as its name - and the steps
+    // written on it stay reachable underneath, which is why nothing invalidates them.
     bool remove_layer(int index);
 
     // The layer at `index` to `to`, both stack indices, bottom-first, with the moved layer left active.
@@ -142,13 +146,33 @@ public:
     // write. Both are needed, because inverting an empty selection selects everything and subtracting
     // everything leaves nothing, and one value cannot tell those apart.
     //
-    // The selection changes no pixel and enters no undo step, exactly like a layer's visibility: a
-    // step puts pixels back, and one that also moved the selection would undo something the user never
-    // asked about. It is part of the document, so it is saved with it and it marks the document dirty.
+    // The marked area is a document property - it is saved with the document, so it marks it dirty -
+    // changing it is an edit: `set_selection` records the coverage it replaces as one undo step. What
+    // that step puts back is coverage and never a pixel, so undoing a mark re-uploads nothing and
+    // resamples no thumbnail; see `Applied::coverage`.
     const std::optional<Mask>& selection() const { return selection_; }
     // False when the mask is not the size of the canvas. A selection is a claim about these pixels, so
     // cropping or padding one to fit would move the claim; the caller fixes the size or is told.
+    // While a marked gesture is open the write still happens but the step does not, because the
+    // gesture holds the one step for the whole of itself.
     bool set_selection(std::optional<Mask> selection);
+
+    // A gesture over the marked area - the marquee from press to release, `cover` and `un-cover` aimed
+    // at it. One gesture, one step, by the same door a pixel stroke uses: `begin_marked` holds the
+    // coverage the press found, writes during the drag record nothing, `commit_marked` records what the
+    // press found if the gesture changed anything, and `cancel_marked` puts it back and records nothing.
+    // Without the held-aside copy a stroke would either compound its own ink once per event or push a
+    // canvas-sized step per frame, and a marquee would push one per pixel it moved over.
+    // False when there is no canvas, or when a gesture already holds a layer's plane - a press writes
+    // one lifetime of one thing.
+    bool begin_marked();
+    // Restores the coverage the press found inside `dirty` and lets `paint` write into that region, so
+    // the event costs what it added and the coat is the stroke's own opacity rather than one coat per
+    // frame. Does nothing outside a gesture.
+    void repaint_marked(Rect dirty, const std::function<void(Mask&, Rect)>& paint);
+    void commit_marked();
+    void cancel_marked();
+    bool in_marked() const;
 
     // What the composite is made of, changed without touching a pixel. All three bump the
     // revision - the canvas shows the composite, so a renderer that re-uploads on it would
@@ -165,9 +189,10 @@ public:
 
     // The layer's mask: what the composite hides. A mask must be the size of the canvas, and a
     // different size is false rather than a resized mask - a mask that quietly shifted would hide
-    // pixels nobody asked about. Like visibility it changes no pixel and enters no undo step, but it
-    // does change the canvas, so it bumps the revision, marks the document dirty and widens the
-    // pending region to the whole canvas, because what a mask hides is outside its bounds too.
+    // pixels nobody asked about. Putting one on and taking one off record the *plane* (`Kind::mask_replaced`);
+    // writing coverage into one records pixels (`paint_mask`). Neither moves the layer's picture, and both
+    // change the canvas, so both bump the revision, mark the document dirty and widen the pending region
+    // to the whole canvas, because what a mask hides is outside its bounds too.
     bool set_layer_mask(int index, std::optional<Mask> mask);
 
     bool set_layer_visible(int index, bool visible);
@@ -249,8 +274,10 @@ private:
         std::variant<Image, Mask> held;
     };
 
-    // Every change to the document leaves through one of these three, so "what the canvas shows moved"
-    // and "which layer's own content moved" cannot drift apart. The second is what a viewer of a single
+    // Every change to a **canvas** leaves through one of these three, so "what the canvas shows moved"
+    // and "which layer's own content moved" cannot drift apart. The marked coverage is in none of them:
+    // the composite does not read it, so a mark moves no texture and no thumbnail, and the overlay
+    // reads the plane per frame. The second is what a viewer of a single
     // layer - a thumbnail - caches against, which is why a reorder and a layer arriving or going are the
     // first one's business only: they move no layer's content, and a card rebuilt for them would
     // re-sample the stack on a change that changed no picture. The third is for a step whose reach the
@@ -286,6 +313,13 @@ private:
     void retarget_active(std::uint64_t preferred);
     std::optional<Provisional> provisional_;
     std::optional<Mask> selection_;
+    // The gesture `begin_marked` opened. `marked_held_` is the coverage the press found, always
+    // materialised because a stroke needs a plane to write into, and `marked_had_selection_` says
+    // whether the document had one at all — the plane covering nothing and no plane are different
+    // documents, and the gesture puts back whichever it found.
+    bool marked_gesture_ = false;
+    bool marked_had_selection_ = false;
+    Mask marked_held_;
     // What the gesture has actually painted, which is smaller than the held-aside rectangle: the
     // undo step records this, and discarding restores this.
     Rect painted_;

@@ -21,6 +21,7 @@ Every claim here is either in the tree or marked **(planned)** / **(out)**. What
 | GPU | **sokol_gfx**, backend `SG_BACKEND_GL3` first | Metal/D3D11/WGPU one flag away; GL3.3 is the boring, works-everywhere choice |
 | Platform | **sokol_app** (decided: no pen/tablet in MVP) | zero extra deps, same API shape; if tablet pressure ever becomes a requirement, SDL3 goes behind the same shim |
 | UI toolkit | **Dear ImGui** + docking branch, via `sokol_glue.h` + `sokol_imgui.h` | fastest path to a full editor chrome |
+| Native file dialogs | **Native File Dialog Extended 1.4.1** | separate OS-owned windows, with a parent handle from Sokol |
 | Image codecs | **libpng** (lossless, alpha), **libwebp** (opaque payloads), **libjpeg** (JPEG export) | system libraries found by `pkg-config`, all present on this machine; `libjpeg-turbo` is a drop-in if export speed ever matters |
 | HTTP | **libcurl** (easy interface, worker threads) | ubiquitous, no TLS surprises |
 | JSON | **nlohmann/json** | config, model profiles, manifests |
@@ -29,22 +30,28 @@ Every claim here is either in the tree or marked **(planned)** / **(out)**. What
 | Vector overlay | **the ImGui draw list** today; **sokol_gl** (immediate) or a tiny instanced-quad path if an overlay ever has to be shaded | marching ants and the selection outline are line segments on `ImDrawList`, with the *geometry* - which pixel of the mask boundary is on which side - from `app/ants.{h,cpp}`. A draw-list element per dash is fine at a mask's perimeter and would not be at one per canvas square, which is the mistake `ui_vertices` exists to catch |
 | Inference backend | **Lemonade Server**, `thenoise` recipe only | we are a client; the model box is AMD/ROCm, usually on the LAN, bearer-keyed |
 
-Build: CMake + `FetchContent` (sokol, imgui, miniz, nlohmann). System libs via `pkg-config`, all
-required: libpng16, libjpeg, libwebp and libcurl (the AI transport - there is no build of this app
-without it, and no network call at build time). Everything statically linkable into one binary. No OpenCV (heavy, wrong
+Build: CMake + `FetchContent` (sokol, imgui, miniz, nlohmann, Native File Dialog Extended). System
+libs via `pkg-config`, all required for the native target: libpng16, libjpeg, libwebp, libcurl (the
+AI transport) and GTK 3 development files for Linux native dialogs.
+The optional Emscripten target uses Emscripten codec ports and WebGL2, without libcurl or a
+worker thread; it is a local-only editor until an asynchronous browser AI transport exists.
+Everything statically linkable into one binary on Linux or a WASM/JS asset bundle in the browser. No OpenCV (heavy, wrong
 licence gravity for what we need; the ~400 lines of healing/filtering we want are ours).
 
 **Cross-platform by design, Linux-first in practice.** No Windows/macOS build scripts yet,
 but nothing may foreclose them:
 
 * one `CMakeLists.txt`, no hand-written makefiles, no shell-only build steps;
-* platform-specific code quarantined in `src/platform/` behind one header per concern. Two concerns have
-  implementations: `posix.cpp` (+`posix_net.cpp`) for time, paths and the wire's sockets, and
-  `file_dialog_{argv,linux}.cpp` for asking the desktop for a path - the argv is built portably so it is
-  testable everywhere, and only the spawn is Linux (`zenity`, replaced by `$NOISE_PICKER_PROGRAM`).
-  `file_dialog_none.cpp` is what any other target links: an error naming the unwritten seam, never a
-  cancel that did not happen. The header is the seam, a port adds a file rather than an `#ifdef` in
-  shared code, and anything above `src/platform/` is portable C++;
+* platform-specific code remains behind the `src/platform/` boundary for time,
+  paths and sockets. `file.pick` uses Native File Dialog Extended through
+  `src/platform/file_dialog_nfd.cpp`: requests can be posted from the debug wire,
+  and the host opens a parented OS dialog on the main thread. The dialog is a
+  separate movable native window; the command and result routing stay in the
+  shared file command table.
+  `file.pick.state` and `file.answer` remain the shared command interface. The
+  WASM build retains the separate JavaScript file picker and browser downloads.
+  The rest of the application is still Linux-first, and a full Windows/macOS
+  application build will require separate platform/backend work;
 * UTF-8 internally, `std::filesystem::path` (from/to UTF-8) at the boundary;
 * no POSIX-only primitives outside the shim: std threads/mutexes/atomics, no `fork`, no
   `poll`, no signal-based shutdown, no `dlopen`;
@@ -83,8 +90,11 @@ src/
                        planes - `pixels`, `mask` - a write or a step belongs to, and its name table is
                        the vocabulary `mask.target` and `stroke.plane` speak
     history.{h,cpp}    undo/redo as stacked (layer, plane, rectangle) deltas, budgeted by stored bytes,
-                       and as structural entries that put a stack back, move one, put a layer back or take
-                       one away - an edit that created a layer is one step, not a layer plus a write
+                       as structural entries that put a layer back, take one away, reorder the stack or
+                       replace it whole, as swapped planes for the two coverages - the document's marked
+                       area and one layer's mask, present or absent - and as a swapped name, so an edit
+                       that created a layer is one step, not a layer plus a write, and so is a gesture that
+                       moved the mark, put a mask on, or mistyped a name
     brush.{h,cpp}      dabs, stamp coverage, stroke compositing (the CPU paint path), and the same
                        coverage handed to the other plane: `scratch_coverage` as bytes for the mask
                        door, `mask_ink` as the coverage statement of `PaintMode`, and
@@ -125,11 +135,12 @@ src/
                        `scale_by_coverage(mask, …)` the same mix with nothing underneath, which is
                        how a composite reads a layer through its mask.
     maskops.{h,cpp}    coverage producers: `MaskShape` (`rect`, `ellipse`) applied to a `Rect` with a
-                       `MaskOp`, and the table `kMaskShapeInfo` naming the shapes (and so naming the commands
-                       and the tools that draw them). A shape writes the same coverage plane and is
-                       never a mask type of its own, so an added shape costs a row here and nothing in
-                       the document, the composite, the format or the overlay. The ellipse is
-                       anti-aliased by exact vertical strips, 16 samples for the width a pixel straddles.
+                       `MaskOp`, and `rasterize_lasso` which fills document-coordinate paths with an
+                       even-odd scanline rule into a bounded `MaskPatch`. Both write the existing
+                       coverage plane; neither introduces a selection type. Shape names come from
+                       `kMaskShapeInfo`; lasso is a path command and a row in `kTools`. The ellipse
+                       uses 16 vertical strips per boundary pixel and the lasso uses 16 subscanlines
+                       per row for deterministic antialiased coverage.
     blur.{h,cpp}       the box blur over an RGBA-ish plane, and `feathered_mask`: three passes of odd
                        box sizes, because anything wider is a different kernel. Radius 0 is the
                        identity, so "no feather" is a number rather than a branch, and the plane is
@@ -184,29 +195,32 @@ src/
     paint_commands.cpp tool.stroke/pointer/set, tool.<name>, the brush step commands, edit.undo/redo
     view_commands.cpp  view.*, and the fit that waits for a real canvas area
     tools/             one file per tool: brush.cpp (press/drag/release over the provisional edit),
-                       move.cpp (the same gesture, sliding the layer's pixels), select.cpp (the
-                       marquee, which becomes the document's selection live during the drag). Which
-                       file the pointer talks to is the `action` column of `core::kTools`
-                       (`paint` / `move` / `select`), and which shape a marquee tool drags is its
-                       `marquee` column - read when the button goes down, so switching tools
-                       mid-gesture cannot change the shape already being drawn
+                       move.cpp (the same gesture, sliding the layer's pixels), select.cpp (rectangle,
+                       ellipse and freehand path gestures over either coverage lifetime). Lasso paths
+                       stay in document coordinates and are rasterized once on release. Which file
+                       the pointer talks to is the `action` column of `core::kTools`; selection rows
+                       also name their gesture there, while `PointerSelection` holds the gesture,
+                       operation and coverage target captured at press.
     shortcuts.{h,cpp}  platform key event -> canonical shortcut text (the only sokol-aware
                        part of the app layer)
-    ui.cpp             the window: canvas, the tool panel (tools, selection, mask, the verb rows - each
-                       one whose recipe asks for words carrying a box for that field, committed through
-                       `ai.intent` as it is typed - and brush fields for the tools that paint), layers
-                       (one card per layer inside a scrolling list, the stack's own add / delete / flatten
-                       row pinned below it so it is never the thing a person has to scroll to reach, and
-                       two fields that stand in for what they edit while it is being typed - a name in a
-                       card's title row, a factor in the place of the card's `Scale` button, each of them
-                       confirming through the command that does the work and holding its text in `AppState`
-                       until then),
-                       log, and a two-line status bar whose second line is the AI line: the verb's label,
-                       the model, the size and seed a press would send, ~seconds where the box has
-                       measured that shape, a swap warning, and where a finished answer landed. The panel
-                       owns no verb list, no keymap and no copy of the words; it draws `ai.verbs` and
-                       `ai.intent` and writes back through them
-    select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
+    ui.cpp             docking layout and status bar; it reads the AI intent once per frame and shares
+                       that answer between the tool panel and the status line
+    ui_canvas.cpp      checker, document composite, pointer interaction, selection overlays and brush
+                       footprint
+    ui_front_door.cpp  file actions, theme picker, recent files, new-document and quit dialogs
+    ui_layers_panel.cpp layer cards in a scrolling list with the stack's own add / delete / flatten row
+                       pinned below it, so the verbs for the whole stack are never the thing a person has
+                       to wheel to; a name typed in a card's title row and a factor typed in the place of
+                       the card's `Scale` button, each holding its text in `AppState` until the command
+                       that does the work confirms it, so nothing half-typed reaches the document;
+                       thumbnails, stack actions, mask controls and log panel
+    ui_tool_panel.cpp  tool selection, coverage controls, brush controls, AI references and AI status
+    ui_references.cpp  ordered reference rows, thumbnails, file/layer actions and drop target
+    reference_thumbs.{h,cpp} GPU thumbnails keyed by reference id and content revision
+    ui_verbs.cpp       recipe-backed verb rows, their fields, aspect/style selectors and model-swap
+                       confirmation; owns no parallel verb list or prompt state
+    ui_theme.{h,cpp}   shared semantic palette and ImGui style for dark and light themes
+    ui_internal.h     declarations shared by the UI translation units    select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
     coverage.cpp        the two lifetimes coverage has (`marked`, `mask`): one id, one title each
     coverage_commands.cpp `coverage.target`, read and set, answering with what the target can do
     verb_bar.cpp          the verbs the mark is an instruction for, `verb.bar` and `verb.ask`
@@ -215,6 +229,9 @@ src/
     ai_commands.cpp     `ai.compose` (land a result file), `ai.roles`, `ai.recipes`, `ai.preview`
                        (the compiled request, unsent) and `ai.run` (queue it): each reports what the
                        policy and the coverage resolved to
+    ai_references.{h,cpp} session-only independent references from files or one selected layer;
+                       caches lossless PNG bytes and a thumbnail, tracks linked layer content revisions,
+                       and exposes add/remove/move/read through the command table
     ai_job_commands.cpp `server.connect/state/load`, `job.list/get/wait/cancel/apply`,
                        the queue and the session, observable and driveable. No `job.retry`: pressing the
                        verb again *is* the retry, against what the document is now
@@ -227,7 +244,7 @@ src/
                        whose `document_epoch` the job was queued under
     ai_intent.{h,cpp}  `ai.intent`: the AI action's state (which recipe the last verb chose, the values
                        typed for the fields it asks about, the aspect chosen for a recipe that offers
-                       them, the session seed, the job) and its one action,
+                       them, the seed pinned, if any, the job) and its one action,
                        plus the readiness every door forecasts from (`assess`, `missing_region`,
                        `needs_swap`). A refusal is recorded on the intent by the command wrapper, so the
                        next read - the panel's, every frame - still carries the sentence: a words box that
@@ -237,8 +254,9 @@ src/
                        geometry and the model's own defaults - and `upload_encodes` counts every prep +
                        resample + PNG encode, so "not running costs nothing" is a number on the wire. The window draws this command's answer and owns nothing else, so a
                        scripted run of an intent and a click are the same call sequence
-    ai_verbs.{h,cpp}   `kVerbs`: one row per verb - `{VerbId, recipe, key}` - generating `ai.remove`,
-                       `ai.fill`, `ai.change`, `ai.generate` and the readable `ai.verbs`. A row names no
+    ai_verbs.{h,cpp}   `kVerbs`: one row per verb - `{VerbId, recipe, key}` - generating `ai.heal`,
+                       `ai.remove`, `ai.fill`, `ai.change`, `ai.generate`, `ai.blend` and the readable
+                       `ai.verbs`. A row names no
                        label, no words and no scope of its own: those are the recipe's, and
                        `verb_table_error` refuses the table at session open when a row has drifted from
                        what its recipe does - including a variant that would stand in at the key and mean
@@ -258,16 +276,17 @@ src/
                        command that would fix it. The file also carries the size and context policy the
                        region compiler and the request builder are not allowed to invent
     recipes.{h,cpp}    `recipes/*.json`: endpoint, role, operation, region scope, hole prep, enhance,
-                       prompt lines, variables, composite policy, the `aspects` a generation offers and
+                       additional-reference default, prompt lines, variables, composite policy,
+                       the `aspects` a generation offers and
                        the `variants` that stand in for it at its key. A recipe names a role,
                        never a model, refuses keys that belong to the model (`steps`) or to nothing
                        (`mask`), refuses any pairing of `operation` with a hole it may not cut, and
                        `variant_errors` refuses a family whose members are not interchangeable once the
                        whole table exists to resolve them
     provider.{h,cpp}   THE request builder and the only place a field can be added: one ordered field
-                       list per request, encoded as JSON or multipart by the transport, and the readable
-                       summary (`fields`, `size`, `image_bytes`, `allowed_fields`) that `ai.preview`
-                       answers with before anything is sent
+                       list plus an ordered image collection, encoded as JSON or multipart by the
+                       transport, and the readable per-image summary that `ai.preview` answers with
+                       before anything is sent
     transport.h        the HTTP seam: method, URL, headers, body, timeouts, a cancel flag. Everything
                        above it is the same whether the answer comes from libcurl or a recording
     http.{h,cpp}       `Client`: health / models / load / run, and the failure classes - cancelled,
@@ -276,8 +295,8 @@ src/
     http_curl.cpp      the libcurl easy transport: TLS verification, timeouts, bearer header,
                        cancellation from the transfer callback
     recorded.{h,cpp}   the same transport from committed JSON recordings, answering on the caller's
-                       thread: captures what was sent (fields, PNG digest), replays delays, transport
-                       errors and every refusal shape. The default `ctest` run is this and nothing else
+                       thread: captures ordered multipart parts and exact PNG bytes, replays delays,
+                       transport errors and every refusal shape. The default `ctest` run is this
     server.{h,cpp}     ServerProfile (base URL, key, TLS, auth form, `/v1` vs `/api/v1`) read from
                        `$THENOISE_URL` / `$THENOISE_API_KEY`, and the latency EMA that turns a shape
                        into an ETA and a request timeout
@@ -316,13 +335,10 @@ src/
     flat.{h,cpp}       those formats as one table - extension, sniffed magic, whether it holds
                        alpha, whether `quality` means anything - plus the default export quality
     project.{h,cpp}    .noise read/write (the only layered format we read or write)
-    config.{h,cpp}     (planned) settings, keymap file, keyring access: prefs are `$NOISE_CONFIG_DIR`
-                       and the environment today, and nothing is written to disk between runs
-assets/        the shipped tables, read by `ai/registry` and `ai/recipes` and by no code path that
-               invents a value: `roles.json` (role → candidate models, the size and context policy) and
-               `recipes/*.json` (endpoint, role, operation, region scope, prep, `ask`, prompt lines,
-               composite policy). `$NOISE_EDIT_ASSETS` points at this tree from outside the build
-               directory, which is where the probes run from
+    config.{h,cpp}     app preferences: recent files and `ui_theme` in `$NOISE_CONFIG_DIR`; keymap and
+                       keyring access remain planned
+assets/        shipped role and recipe tables; CMake installs this tree in the native
+               install prefix's shared data directory (the GUI uses ImGui's default font)
 tests/         core + ai unit tests (no GPU), golden-image tests, and `fixtures/http` - the recorded
                server the default `ctest` run answers from
 tools/         the probes that drive the running app over the wire, and the shared harness
@@ -336,8 +352,8 @@ Shader sources are inline in the module that compiles them (renderer, checker, a
 uniform layout true.
 
 Dependency direction: `app → {core, gfx, ai, io}`; `gfx → core`; `ai → core, io`; `io → core`.
-Nothing imports ImGui except `app/ui`. That keeps the door open for a different UI later and
-makes `core`+`ai` testable headless.
+Only `src/main.cpp`, `src/app/ui_*.cpp`, `src/app/ui_theme.h` and the UI-specific
+`src/app/verb_bar_draw.cpp` import ImGui. `core`+`ai` stay testable headless.
 
 ## Threading model
 
@@ -489,13 +505,11 @@ keep it cheap and honest:
   double-precision scaling of the write, and pins the two ends exactly: coverage 0 leaves the pixel
   untouched, coverage 255 leaves the write whole, and in between alpha is within 1 LSB and colour
   within 2 of scaled arithmetic — two roundings, the blend's and this one's.
-* **Shapes are producers of coverage, never kinds of selection.** `core/maskops` turns a `MaskShape`
-and a `Rect` into coverage bytes and hands them to `Mask::op`, so the rectangle and the anti-aliased
-ellipse go through the same `combined()` arithmetic as everything else that writes a mask. That is why
-the two commands, the two marquee tools and the file format exist at all: a row in `kMaskShapeInfo`
-plus a row in `kTools`, with no new type anywhere. It is also what makes an ellipse's soft edge
-meaningful — a stroke landing half on a half-covered pixel happens half, and `add`/`subtract` compose
-curves and boxes without a case for the pair.
+* **Selections are coverage, never a second plane.** `core/maskops` turns a `MaskShape` and a `Rect`
+  into bytes or fills a freehand path into a bounded patch, then hands either to `Mask::op`. The lasso
+  uses even-odd scan conversion, including for self-crossings, and antialiases by integrating sixteen
+  vertical subscanlines per pixel row. `replace`, `add` and `subtract` therefore keep the same coverage
+  arithmetic for a path, a rectangle, an ellipse, a layer mask and the marked area.
 
 * **A layer mask hides, and never edits.** `Layer` holds `std::optional<Mask>`, and the composite
   reads the layer through it (`scale_by_coverage`, the same premultiplied mix as `restrict_to`, with
@@ -537,7 +551,16 @@ a brush does.
 * **`select.from_mask` and `mask.from_selection` are copies**, which is why a selection and a layer
   mask are one type rather than two with an adapter between them: an adapter needs rules, and rules
   are where "the mask moved by a pixel" and "the partial coverage got rounded" come from. Converting
-  costs no undo step on either side and leaves the source where it was.
+  leaves the source where it was. The copy is one undo step wherever it lands: the marked area's is the
+  coverage it replaced, a layer's is the mask plane it replaced - including no mask at all (§Undo).
+* **Marking is an edit, and a gesture of it is one step.** One press — marquee, `cover`, `un-cover` —
+  holds the coverage it found and commits it once at release (`begin_marked`, `repaint_marked`,
+  `commit_marked`, `cancel_marked`), which is the door the layer's provisional edit uses for its own
+  bytes and buys the same two things: one step rather than one per pointer event, and one **coat** at
+  the brush's opacity rather than one coat per frame. `select.all`, `select.invert`, `select.clear` and
+  `select.from_mask` are each the one step a command is. Writing the coverage that is already there is
+  not an edit, by the rule every write follows; a `cover` press that would rub out a mark and a brush
+  press that would paint colour are separate presses, because one gesture holds one plane.
 * **An edit that changes nothing is not an edit.** A stroke the selection stopped entirely writes no
   bytes, so it marks nothing dirty, bumps no revision and costs no undo step — otherwise painting
   against a small selection would spend the history restoring bytes that already match, and the undo
@@ -551,7 +574,8 @@ a brush does.
 layer additions, selection moves, undo, redo, a deletion, a hidden layer and a faded one, the
 incrementally repaired composite equals one built from scratch, byte for byte. Hiding and fading
 are in that list because they change what the composite is made of without changing a pixel, and
-they are not in history: like adding and removing a layer, they enter no undo step.
+they are not in history, the one kind of change the timeline does not carry: a layer arriving, going,
+reordering or having its mask put on or taken off is a step, a visibility click is not.
 
 Two ways out if a document gets big enough for the whole-texture upload to dominate, cheapest
 first: a dirty-rect upload (the composite already knows which rectangles changed; the backend
@@ -582,35 +606,65 @@ panel`, "Regenerate with same params", kept variants) and nothing in the tree st
   displaces to the redo stack instead of keeping a second copy. Budget by stored bytes
   (`kHistoryBudgetBytes`, 128 MB) dropping **whole steps oldest-first**: losing an old step is
   a shorter history, losing part of a step would be a half-restored edit. Tiles become the
-  storage granularity when partial texture uploads need them. Deleting a layer drops the entries
-  naming it from both stacks: a change to a layer that is gone cannot be put back, and the
-  unrelated steps around it are worth more than the half-restored one that would remain.
-  Structural commands are planned to store the inverse command. Three are in the timeline today, as entries
+  storage granularity when partial texture uploads need them.
+  Structural commands are planned to store the inverse command. Seven are in the timeline today, as entries
   of their own rather than as pixels: a reorder (`layer.move`) records the stack's ids in order and keeps
-  the order it displaced, because no pixel moved and what the composite shows changed everywhere; a merge
-  down (`layer.merge`) records the **whole** layer that went away, so undo returns its pixels, mask, mode
-  and opacity rather than an empty layer wearing the right name; and a flatten (`layer.flatten`) records the
-  **whole stack** and applies it as a swap, so undo and redo are the same operation - the only encoding that
-  needs no position for a layer, since a removal sees a stack shrinking while an insert needs one growing.
-  Such a step carries every pixel of both sides and therefore records nothing else, and it is the only entry
-  that names no layer, so deleting a layer leaves it alone. A rename (`layer.rename`, the field on a card
-  opened by `F2`) records the one name that is not current and swaps it back, so undo and redo are the same
-  operation again: a name is the only property of a layer worth a step of its own, because typing one should
-  not cost the person the stroke under it, while hiding, fading or re-modding a layer is a state checked by
-  looking rather than a mistake undone. A scale (`layer.scale`, the field on a card behind its `Scale`
-  button) is the one operation that rewrites a layer's pixels *and* its coverage as a single step: what it
-  resamples is the picture - `Image::content_bounds`, not the layer's canvas-sized rectangle - about the
-  middle of that picture, with a mask that covers something but not everything going through the same
-  factor so the two keep covering the same part of the document. Chained scales are two resamples rather
-  than an identity: doubled then halved, a hard-edged stroke came back in the box it started, flat inside
-  and differing along a one-pixel rim (measured: 4411 px, worst 112 of 255, no byte changed anywhere else).
-  A round trip of round factors is therefore not a way to lose nothing, and undo is what is exact.
-  A layer that holds nothing, a factor that
+  the order it displaced, because no pixel moved and what the composite shows changed everywhere; a
+  **layer arriving** (`layer.add`, and the layer an answer lands on) records the arrival alone - the entry
+  that takes the layer away carries the whole layer, so what it arrived wearing comes back with it, and a
+  layer created *and then written* records that write beside it because the write has a `before` of its own;
+  a **layer departing** (`layer.remove`, `layer.merge`) records the whole
+  layer that went away, so undo returns its pixels, mask, mode, opacity and name rather than an empty layer
+  wearing the right name; a flatten (`layer.flatten`) records the **whole stack** and applies it as a swap,
+  so undo and redo are the same operation - the only encoding that needs no position for a layer, since a
+  removal sees a stack shrinking while an insert needs one growing; changing the **marked coverage** records
+  the coverage that is not current; changing **which plane a layer has** (`Kind::mask_replaced`) records
+  its mask, `nullopt` included, so a mask put on is taken off by undo and a mask taken off comes back with
+  the coverage it was hiding; and a **rename** (`layer.rename`, the field a card's title row turns into)
+  records the one name that is not current, and is the only property of a layer worth a step of its own -
+  typing a name should not cost the person the stroke under it, while hiding, fading or re-modding a layer
+  is a state checked by looking rather than a mistake undone. The last four are applied by swapping, as a
+  replaced stack is: the entry holds the state that is not current, so the two directions are one operation
+  and neither has to assert where the thing went.
+  A flatten carries every pixel of both sides and therefore records nothing else, and neither it nor a
+  coverage entry names a layer, because the stack and the mark outlive any one layer. A coverage entry is not
+  `structure` either — it puts coverage back and no pixel, so undoing one re-uploads no texture and resamples
+  no thumbnail, and a rename entry is not either, for the same reason. What the document reads is therefore
+  "no rectangle painted and no layer moved" - `!structure` with an empty `rect` - rather than a flag that
+  would have to be kept in step with the kinds that paint nothing. A mask entry *is* `structure`, because
+  what a mask hides is everywhere the layer composites, not only inside the mask's bounds.
+  A scale (`layer.scale`, the field on a card behind its `Scale` button) is the one operation that rewrites
+  a layer's pixels *and* its coverage as a single step: what it resamples is the picture -
+  `Image::content_bounds`, not the layer's canvas-sized rectangle - about the middle of that picture, with a
+  mask that covers something but not everything going through the same factor so the two keep covering the
+  same part of the document. Chained scales are two resamples rather than an identity: doubled then halved,
+  a hard-edged stroke came back in the box it started, flat inside and differing along a one-pixel rim
+  (measured: 4411 px, worst 112 of 255, no byte changed anywhere else). A round trip of round factors is
+  therefore not a way to lose nothing, and undo is what is exact. A layer that holds nothing, a factor that
   is not a finite positive number, and a factor that would push either plane off the canvas are all refused
   without a step, the last of those quoting the largest factor that does fit. A factor of exactly 1 changes
-  nothing, records nothing and costs no revision. Adding or deleting a layer still does not enter the timeline - and
-  deleting is now one entry away, since the entry a merge needs is the entry deletion needs, which is a
-  decision not yet taken.
+  nothing, records nothing and costs no revision.
+* **Nothing is invalidated by layer id, and that is what recording the departure bought.** `History` has no
+  `drop_layer` and no `drop_mask`: they existed because a layer or a mask that could only go forever made
+  every step naming it unrestorable, and dropping the unrelated steps around it was the least bad answer.
+  With every arrival, departure and plane change recorded, a step naming a layer that is not there *for the
+  moment* is one undo away from being applicable rather than a lie - the paint on a deleted layer is
+  reached by undoing the deletion first, and the layer comes back to be painted on. The fence that remains
+  is the one nothing can reach by editing: `step_back` validates every entry against the stack it is about
+  to walk, and a layer that went missing **without** a recorded departure drops the timeline whole rather
+  than writing bytes into a layer that is not there (`test_a_history_that_no_longer_fits_its_layers_is_dropped`).
+  Steps written into a mask before it went stay in the timeline for the same reason: they are reached by
+  undoing the plane's step first, which returns the mask with the coverage the writes ended on.
+* What a layer *is*, as opposed to what it holds or where it sits, enters no step but one: its name, and
+  only because a mistyped one is a mistake a person should be able to take back without losing the stroke
+  under it. Visibility, opacity and blend mode are composite state the stack carries, restored only as part
+  of a layer that arrives, goes or is replaced. That is the whole of what is outside the timeline now.
+* **The boundary of the coverage rule is therefore one gesture, not one kind of coverage.** Coverage
+  written *into* a layer's mask is a pixel entry against that plane (`mask.fill`, `mask.invert`, a `cover`
+  stroke, a marquee aimed at the mask); the plane arriving or going is the plane entry above; the mark on
+  the document is the coverage entry. So *one gesture that changes coverage is one undo step* holds with
+  no exception, and what stays outside the timeline is the layer's *properties* - visibility, opacity,
+  mode - which the stack carries rather than the plane.
 * Undo and redo are commands like any other (`edit.undo`, `edit.redo`, bound to `Ctrl+Z` and
   `Ctrl+Y`), so a driver can put the pixels back and compare checksums without a keyboard.
 * **(planned)** `history.jsonl` — append-only *journal*: every op with timestamp, params, prompt,
@@ -677,7 +731,7 @@ added enum value would make the number mean "the day someone edited a table" and
 | member | written | read |
 |---|---|---|
 | `mimetype` | stored, first member, no extra fields | must match exactly or the file is not ours |
-| `manifest.json` | `format`, `size: [w,h]`, `layers: [{name, src, visible, opacity, mode}]`, and `selection: {src}` when there is one | `format` must be 3; `size` must agree with the PNG, and both numbers are named if they do not; `src`/`visible`/`opacity`/`mode` are required, `name` is not, because a file from elsewhere may not have named its layers |
+| `manifest.json` | `format`, `size: [w,h]`, `layers: [{name, src, visible, opacity, mode, mask?}]`, and `selection: {src}` when there is one | `format` must be 4; `size` must agree with the PNG, and both numbers are named if they do not; `src`/`visible`/`opacity`/`mode` are required, `name` is not, because a file from elsewhere may not have named its layers |
 | `layers/<n>/mask.m8` | a layer's mask plane, same shape, written only when that layer has one and named by that layer's row | read only when the row declares it: no row is no mask, and `covered == 0` is a mask that hides the layer, so the two must not collapse |
 | `selection.m8` | the selection's coverage plane, one byte per pixel, canvas-sized, written only when the document has a selection | read only when the manifest declares it: **no row is no selection, and a declared plane that is missing or the wrong size is refused** — guessing which would turn a corrupt file into a silently unclamped document |
 | `layers/<n>/layer.png` | one per layer, bottom-first | one PNG per declared row, each covering the whole canvas: a layer of another size is refused naming both sizes, because cropping or padding it silently is data loss |
@@ -743,7 +797,7 @@ a person is doing while that runs is [PRODUCT.md](PRODUCT.md); how it is proven 
 
 ### Golden rule
 
-> **The backend is a dumb `image + words → image` function. All spatial precision is ours.**
+> **The backend is a dumb ordered `images + words → image` function. All spatial precision is ours.**
 
 Non-negotiable, and this is now a hard engine fact rather than a portability preference:
 
@@ -756,11 +810,13 @@ Non-negotiable, and this is now a hard engine fact rather than a portability pre
   guarantee *nothing outside the selection changed*, which is the property users actually
   want.
 
-So every AI command compiles to the same pipeline:
+So every AI edit compiles the primary image through the same pipeline. Selected references follow it as
+independent inputs and never alter the coverage or the landing plan:
 
 ```
 bbox(mask) → grow for context → snap to size policy → crop from a flattened base
   → PREP (destroy target identity, preserve scene statistics)
+  → Image 1: prepared primary, Image 2…N: explicitly selected references
   → prompt template → POST /v1/images/edits → resample back to the crop rect
   → out = orig*(1-m) + result*m   with m = feathered mask   [+ colour match, + lock band]
 ```
@@ -855,9 +911,17 @@ Input: `(document composite, selection mask, recipe)` → one compiled request.
              crop you get, and expect returned dims != requested dims regardless (the resample
              below already handles it). The number lives in roles.json / the recipe policy,
              nowhere else
-5. FIT       if area > region_budget (default 1024×1024 equivalent) → uniform scale down;
-             record `scale` *and* `requested` = that scale rounded **up** to the multiple, because
-             the two are not proportional and the inverse map needs the size, not the scale
+5. FIT       a crop inside the model's pixel ceiling is asked for at its **own** size — the upload,
+             the `size` field and the answer describe the same pixels, so nothing is resampled at
+             either end. Only above the ceiling does it scale down, uniformly by area; record
+             `scale` *and* `requested` = that scale rounded **up** to the multiple, because the two
+             are not proportional and the inverse map needs the size, not the scale.
+             The ceiling is the model's `soft_pixel_cap` from `/v1/models` (2 MP on
+             `Flux-2-Klein-9B-TheNoise`, measured 2026-10-23) and `roles.json`'s `max_area_px` only
+             for a model that publishes none — a ceiling invented here shrinks answers the box would
+             have served at full size, and a shrunk ask resampled back over a locked surround is the
+             same picture, softer: a Change that visibly did nothing. When it happens the plan says
+             so (`region.resampled`, in the preview, the landing and the log)
 6. CROP      flattened base = visible layers below ∪ active layer (`Document::flatten_over`),
              alpha flattened over a colour sampled from the mask ring (never over plain
              white/black) — `flatten_over_ring(crop, coverage_in_crop)`
@@ -893,14 +957,22 @@ field, and it refuses tier-2 unless the model profile opts in.
 
 **The builder also validates its own values, because nobody downstream does.** `seed:
 "not-a-number"` is answered with `200` and a default (measured). A misspelt field name is
-therefore silent rather than loud, and the one place that can catch it is here.
+therefore silent rather than loud, and the one place that can catch it is here. The seed's
+*range* is caught here too, and the two endpoints disagree about it (measured 2026-10-25):
+`/images/generations`, a JSON body, answers `200` for `0`, `2147483647`, `2148483648` and
+`4294967295`; `/images/edits`, a multipart form, answers `200` for `2147483647` and `400
+Invalid value for 'seed': must be an integer` for `3000000000` — a range error wearing a type
+error's clothes, in a form-field parser that reads a signed 32-bit integer. The form therefore
+sets `ai::kMaxSeed`, since one field carries one limit; the box publishes no schema to read it
+from (`/ui-schema` does not exist, `/models` carries no seed bounds). `seed: 0` is accepted by
+both, so 0 staying unused is our convention for "no seed yet", not an engine rule.
 
 **Tier 1 — OpenAI-level, used in MVP**
 
 | Endpoint | Content type | Fields |
 |---|---|---|
 | `POST /v1/images/generations` | JSON | `model`, `prompt`, `size`, `steps`, `cfg_scale`, `seed`, `response_format="b64_json"` |
-| `POST /v1/images/edits` | `multipart/form-data` | `model`, `image` (PNG part), `prompt`, `size`, `steps`, `cfg_scale`, `seed`, `response_format="b64_json"` |
+| `POST /v1/images/edits` | `multipart/form-data` | `model`, one `image` PNG part for a single-image request; for two or more images, one repeated `image[]` PNG part per image, in order; `prompt`, `size`, `steps`, `cfg_scale`, `seed`, `response_format="b64_json"` |
 | `POST /v1/images/upscale` | JSON | `image` (b64 PNG), `model` |
 | `GET /v1/models`, `GET /v1/models/{id}` | — | — |
 | `POST /v1/chat/completions` | JSON | `model`, `messages`, `stream=false` — reserved for the `enhance` role, unused in MVP |
@@ -930,6 +1002,34 @@ table and a way for a recipe to ask for it — which is the point: a knob that w
 by accident. When it is added, the gate is intended to be per-server rather than per-model, and a
 rejected field dropped with the deduction recorded rather than the job failed.
 
+For `/images/edits`, one image keeps the existing `image` part. With two or more, every image including
+the primary uses a repeated `image[]` part; `image` and `image[]` are never mixed. The primary is always
+Image 1: the current document composite prepared for the recipe's editing region. Additional references
+are appended in the order shown in the References section. They are independent images, never a flattened
+substitute for the document and never an instruction to widen local coverage. No reference-count limit is
+assumed from model labels; a backend refusal is reported with its response and the request is not retried
+with fewer images.
+
+Each recipe's `include_references_default` supplies the starting choice: Change and Fill enable it;
+Blend, Heal and Remove leave references configured but out of the request until explicitly enabled in
+the References section. `ai.intent`, `ai.preview` and `ai.run` share this choice, and the preview reports
+both the configured count and the number actually transmitted. Switching recipes restores the selected
+recipe's default unless that operation is explicitly changed again.
+
+The request preview lists each image's order, source name, dimensions, PNG byte count, SHA-256, content
+type and multipart filename, along with the actual image field names and total body size. The request
+identity hashes every image's bytes in order, so reordering references changes the body boundary and the
+recording match. Image payloads and base64 are never written to request diagnostics.
+
+`AiSession` owns these references for the current app run; they are not saved in `.noise` or mixed into
+document pixels. File references are decoded from PNG/JPEG/WebP and encoded once as lossless PNG at their
+decoded dimensions. A selected layer is isolated from other layers, cropped to pixels with nonzero
+effective alpha, and carries its pixel alpha, mask and opacity. Transparent RGB hidden by alpha or mask is
+zeroed. Layer references refresh only when that layer's content revision or opacity changes. If the layer
+is temporarily absent in the same document, its stable id and cached image are retained so undo can restore
+the link; switching documents detaches the reference before another document's ids are considered. A queued
+request already owns its image bytes, so a later reorder, removal or layer edit cannot change what it sends.
+
 #### `n`: we do not use it
 
 The adapter implements `n` as a **sequential loop inside one request**, for generations too
@@ -951,15 +1051,16 @@ image checkpoints a box of this class holds are 17–35 GB, the same size class 
 swap is a real event: the first request that followed an unloaded model on the dev box cost
 32.0 s for a 512² image. Tens of seconds, sometimes minutes, on a LAN box. Therefore:
 
-* The app has a **session model** concept, shown persistently in the status bar:
-  `server · model · loaded/pinned · ETA seed`.
+* The app has a **session model** concept, available through `server.state` and `ai.intent`. The UI
+  status line shows the active verb, quoted size and estimate; a model name appears when a press would
+  switch the server, and the line reports job progress, cancellation, landing and errors.
 * Recipes declare a preferred *role* (`generate` / `edit`), not a model. The picker resolves
   role → user's chosen model for that role.
 * **Swap is explicit and priced.** When a command's role resolves to a model that isn't
   loaded, the confirm dialog says "this switches the server model (~Xs)" and offers to pin.
 * We call `POST /v1/load {model_name, pinned:true}` when the user pins, and
   `GET /v1/health` (`model_loaded`, `all_models_loaded[] {model_name, recipe, device,
-  pinned, last_use}`) to keep the status line honest. Never auto-swap silently.
+  pinned, last_use}`) to keep the session state honest. Never auto-swap silently.
 * **Warm-up** (a 256×256/1-step request right after a swap, so the first real generation is not the
   one that pays model init): designed, not built. What is built is `server.load {model, pin?}`, so the
   swap is at least something the user chooses a moment for.
@@ -991,7 +1092,11 @@ ServerProfile (N of them, one active):
   api_key           from $THENOISE_API_KEY today (the keyring and the 0600 config file are designed
                     and not built) — never in a .noise file, never in the repo, never in a log line
   timeout_connect   5 s
-  timeout_request   adaptive: max(60 s, predicted ETA × 4)   ← local diffusion is slow by design
+  timeout_request   max(600 s, 4 × wait), where the wait is this box's measured time for the exact shape
+                    or, when the shape is new, its measured time for the model scaled by pixels × steps
+                    ← local diffusion is slow by design, and a compiled region is a shape that has never
+                    been run before: a masked edit at the pixel ceiling measured 71.1 s on the dev box,
+                    which a 60 s floor reported as a dead server
   verify_tls        on by default; per-profile opt-out for self-signed LAN certs
   prefixes          try /v1, fall back to /api/v1 (both documented)
 ```
@@ -1262,15 +1367,36 @@ hard-coded palette:
   a key that never asks it. `RecipeSet::family` and `family_head` are what the surface reads, so a row
   still offers the whole family after a style has been chosen.
 
+Three scopes exist for a region's coverage: `selection` (the marked area), `document` (the frame) and
+`layer` (the active layer's own alpha, byte for byte, through `coverage_of` - no threshold, so a soft edge
+stays soft and the coverage a paste already has is what gets answered). `ai.verbs` reports which one a row
+has through `region_scope_name`, the one place a scope becomes a word, and the panel's intent list is
+`selection_intents()` plus `layer_intents()` - the second offered whether or not anything is marked.
+
 The palette of selection operations is therefore `recipes/*.json` filtered to `region: selection` with
 an `edits` or `upscale` endpoint (`RecipeSet::selection_intents`): adding an operation means adding a
 file, and a recipe that stops being a selection operation leaves the palette by itself.
 
 Variables come from the user's instruction (whatever the recipe's `ask` lists) and the layer name. A
-chosen `aspect` is not one of them: it never enters the words, only the size the request asks for. **The seed is the session's**: `ai.preview` and `ai.run` take `seed` optionally and use
-`AiSession::seed` when the call names none, and the status line shows that number. Nothing
-draws a random seed inside a request path - the number on the screen is the number the request carried,
-which is what makes "run that again" and "why does this one look different" answerable. Variants are the
+chosen `aspect` is not one of them: it never enters the words, only the size the request asks for.
+
+**Every request takes a seed of its own.** The model explores from the seed, so two asks over the same
+pixels with the same seed are the *same request twice* — a second charge for the picture already on the
+canvas, and a verb that cannot improve. `ai.preview` and `ai.run` take `seed` optionally; a call that
+names none takes the panel's pin (`ai.intent {seed: n}` pins, `{seed: null}` lets go) or a draw from
+`AiSession::seed_draw`, which is `platform::random_seed` and nothing else. Reproducibility comes from
+*recording*, not from a constant: the number and its source (`named` / `pinned` / `random`) travel with
+the compile and the job record, so "what made this" is answered afterwards.
+
+`seed` and `seed_pin` are different arguments because they are different claims. `seed` belongs to the
+request the call builds — `ai.change {seed: n}`, `ai.run {seed: n}`, `ai.intent {seed: n, run: true}` all
+carry *that* request and nothing after it. `seed_pin` is the hold: `ai.intent {seed_pin: n}` makes every
+later ask take that number (how someone iterates on an answer they liked), `{seed_pin: null}` lets go.
+They were one argument for an hour, and `ai_job_probe` caught what that meant: a verb press carrying a
+seed quietly held it for every press that followed, which is the original defect wearing the fix's clothes.
+The panel shows the seed of the ask that produced the current answer, labelled pinned or random — never a
+number the next press promises to reuse — and reading the intent draws nothing, because a rule that
+forbids a per-frame read from computing an answer forbids it spending entropy too. Variants stay the
 explicit case: `seed + i`, asked for by name. The
 `enhance` **role** (one `chat/completions` call on a downscaled crop — *"describe the
 background surface, lighting and palette in two lines"*) is designed in but switched off in
@@ -1291,6 +1417,7 @@ fidelity is not a server knob.
 | `new-image-photo` | generations | generate | from_words | none | full doc | stands in for `new-image` at its key and row: photographic tail, `generate.photo` |
 | `inpaint-remove` | edits | edit | reconstruct | blur | mask bbox | the flagship: the only operation whose blur is a feature |
 | `inpaint-replace` | edits | edit | in_place | none | mask bbox | one field of words from the person (`instruction`): "Change this picture: …" |
+| `blend` | edits | edit | in_place | none | **layer alpha** | the pasted thing painted into its scene, with no words asked: the coverage is the active layer's own alpha and the upload the document flattened up to and including it, so the model is shown the scene the object has to fit. Nothing is destroyed in the upload, because destroying it removes the thing to keep |
 | `region-fill` | edits | edit | reconstruct | average | mask bbox | generate into the region from one field of words (`prompt`); the fill takes the surrounding colour, never the hole's own |
 | `heal` | edits | edit | reconstruct | average | selection | the in-process Telea/Chan path for a box with no edit model is designed and **not built**, so `heal` refuses when the edit role is unresolved |
 | `flatten-colorize` | edits | edit | in_place | none | full doc | e.g. "colorize this line art" — the highest-value raster trick for illustration workflows |
@@ -1337,10 +1464,11 @@ included. `target` is gone from the masked recipes: the masked pixels are what t
 describes, and prefilling it with "the marked area" produced answers that commented on the selection
 instead of editing it.
 
-**Built today.** `assets/roles.json` + `assets/recipes/*.json` (10 recipes; `free-command` is the one
-row of the table not shipped), loaded by `ai/registry` and `ai/recipes` from `$NOISE_EDIT_ASSETS`, `assets`
-beside the app, or the runtime directory — in that order, one lookup, reported by `server.state` as
-`tables`. `ai.recipes` lists each recipe with the policy it states and the model its role resolved to, so
+**Built today.** `assets/roles.json` + `assets/recipes/*.json` (11 recipes; `free-command` is the one
+row of the table not shipped), loaded by `ai/registry` and `ai/recipes` from `$NOISE_EDIT_ASSETS`, the
+installed asset directory relative to the executable, `assets` in the working directory, or the runtime
+directory — in that order, one lookup, reported by `server.state` as `tables`. `ai.recipes` lists each
+recipe with the policy it states and the model its role resolved to, so
 "a recipe that behaves oddly" is answerable from the wire. A recipe file whose name and `id` disagree is a
 refusal, not two ids for one policy.
 
@@ -1425,28 +1553,29 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 
 | Group | Commands | Why |
 |---|---|---|
-| state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `server.state`, `job.list`, `job.get {id}`, `ai.roles`, `ai.recipes`, `log.tail` | read what the app believes, cheaply |
-| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add {name?, fill?}/remove/select {index?}`, `layer.set {index?, visible?, opacity?, mode?}`, `layer.move {index?, to}`, `layer.merge {index?}`, `layer.flatten`, `layer.rename {index?, name}`, `layer.rename.begin {index?}` (`F2`), `layer.scale {index?, factor}`, `layer.import {path, at?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
- `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
+| state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `ai.references`, `server.state`, `job.list`, `job.get {id}`, `ai.roles`, `ai.recipes`, `log.tail` | read what the app believes, cheaply |
+| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.lasso {points, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `ui.theme {theme?}`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at?, mode?}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `layer.move {index?, to}`, `layer.merge {index?}`, `layer.flatten`, `layer.rename {index?, name}`, `layer.rename.begin {index?}` (`F2`), `layer.scale {index?, factor}`, `layer.import {path, at}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
+ `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. Its `cancel` phase closes a provisional selection without committing it; Lasso press may also carry `mode: replace|add|subtract`. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
-| ai | `ai.verbs` (the verb rows: id, command, key, recipe, label, operation, `ask`, scope, `ready`, `reason`, `model`, `resident`, `swap`), `ai.remove` / `ai.fill` / `ai.change` / `ai.generate` `{vars?, seed?, confirm?}` (one verb row pressed - they call `ai.intent` with their recipe named, so a key and a scripted intent cannot diverge), `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?}`, `ai.intent {recipe?, vars?, seed?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pinned}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.apply {id, feather?, colour_match?}` (the idempotent landing door - answers land by themselves, so this one brings one back or overrides the policy, and says `already_landed` otherwise), | `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact field list, size and blob digest before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel and land without a UI; `ai.intent` is the whole surface of the action, so a scripted run and a key press cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command and means the session seed when absent - nothing draws a random one inside a request path |
+| ai | `ai.verbs` (the verb rows: id, command, key, recipe, label, operation, `ask`, scope, `ready`, `reason`, `model`, `resident`, `swap`), `ai.heal` / `ai.remove` / `ai.fill` / `ai.change` / `ai.generate` / `ai.blend` `{vars?, seed?, confirm?, include_references?}` (one verb row pressed - they call `ai.intent` with their recipe named, so a key and a scripted intent cannot diverge), `ai.references {}`, `ai.references.add {path?, paths?, layer?}`, `ai.references.remove {id}`, `ai.references.move {id, to}`, `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?, include_references?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?, include_references?}`, `ai.intent {recipe?, vars?, aspect?, include_references?, seed?, seed_pin?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pinned}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.apply {id, feather?, colour_match?}` (the idempotent landing door - answers land by themselves, so this one brings one back or overrides the policy, and says `already_landed` otherwise), | `ai.references` reads ordered session references; its add/remove/move commands are the same actions the GUI uses, and `ai.preview` shows every image's order, source, dimensions, hash and encoded size plus the actual request field names and body size. It also reports whether configured references are included for the selected operation. `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact request before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel and land without a UI; `ai.intent` is the whole surface of the action, so a scripted run and a key press cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command; absent, the request takes the panel's pin or a fresh draw, and every report says which (`seed`, `seed_source`) |
 
 Live now: every row. The AI row is driven end to end by `tools/ai_job_probe.py` against
 `tests/fixtures/http` (a recorded server), so the whole path - discovery, role resolution, the compiled
 request, the queue, the landing, the pixels the report claims - is checked in the default `ctest`
 without a socket. `--live` runs the same probe against the dev box and asserts only what holds whatever
 model answers; it is registered under the `live` label and skips without `$THENOISE_URL`.
-`app.state` reports `frame` (frames presented), `frame_ms` (last presented frame), `canvas`
+`app.state` reports `ui_theme` (`dark` or `light`), `frame` (frames presented), `frame_ms` (last presented frame), `canvas`
 (origin + size of the canvas content area in framebuffer px) and the view transform
 (`scale`, `origin`, `image`, `fit_pending`), the brush and tool the last stroke ran with, the
 document's `history` depths, and its `selection` (`active`, `bounds`, `covered`, `area`, `canvas`,
 with `canvas` present only while one exists, because a sized mask that covers nothing is a real state
 and must not read as no selection). `covered` counts pixels touched, `area` adds the coverage bytes
-up: for a rectangle they are equal, for an anti-aliased curve `area` is what the ellipse measures and
+up: for a rectangle they are equal, for an anti-aliased curve `area` measures partial coverage and
 `covered` is the pixels it grazes. While a pointer gesture is down, `stroke` also reports `marquee` —
-the box the select tool is drawing, live, and `marquee_shape`, which of them it is: the only way to
-tell a marquee that tracks the pointer from one that appears on release, and the only way to see which
-tool row a gesture was started with. The mask is reported the same way a selection is - `layer.list`
+the box a rectangle or ellipse tool is drawing, live, `marquee_shape`, which gesture is active, `lasso_points` in document coordinates for Lasso, `selection_mode`, and `marquee_coverage`,
+which lifetime that press opened: the only way to tell a marquee that tracks the pointer from one that
+appears on release, and the only way to see which tool row a gesture was started with and which coverage
+it will commit to when the button lifts. The mask is reported the same way a selection is - `layer.list`
 rows carry `mask` (`covered`, `area`, `bounds`, or `null` for none), `mask.get` answers with the mask
 itself, and `brush.coverage_target` with `writable` says which lifetime the next stroke writes - so a
 driver can tell a mask that hides everything from a layer that has no mask, and a stroke that painted
@@ -1463,6 +1592,8 @@ the pixels and answers with a checksum; `app.state` deliberately does not, becau
 polls it every frame. `fit_pending` is true while a fit waits for a
 frame to publish a canvas area wide enough to hold the document: the framebuffer is not the
 canvas, and fitting against it latches a scale that spills past the panel.
+It also reports the References section's screen rectangle for file drops and the cached thumbnail rebuild
+count; `ai.references` reports the session-only source list, order, dimensions, cache revisions and errors.
 `ui_vertices` / `ui_vertex_limit` report the geometry the last frame demanded against the
 buffer simgui stages it into — past the limit simgui drops the frame's draw commands, so any
 feature generating one element per canvas square or per log line shows up here first.

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -259,6 +260,87 @@ void test_the_facts_are_recomputed_after_a_patch() {
     CHECK(mask.bounds() == Rect{3, 3, 2, 2});
 }
 
+void test_a_lasso_rasterizes_a_clipped_triangle_with_partial_edges() {
+    const std::vector<Vec2> triangle{{1.0, 1.0}, {9.0, 1.0}, {1.0, 9.0}};
+    const std::optional<MaskPatch> patch = rasterize_lasso(Extent{12, 12}, triangle);
+    CHECK(patch.has_value());
+    CHECK(patch->area == Rect{1, 1, 8, 8});
+    Mask mask{Extent{12, 12}};
+    CHECK(op_lasso(mask, triangle, MaskOp::replace));
+    CHECK_EQ(mask.coverage(2, 2), kMaskIn);
+    CHECK_EQ(mask.coverage(8, 8), kMaskOut);
+    CHECK_NEAR(mask.area(), 32.0, 0.35);
+    CHECK(partial_cells(mask) > 0u);
+
+    Mask clipped{Extent{6, 5}};
+    const std::optional<MaskPatch> clipped_patch =
+        rasterize_lasso(clipped.size(), {{-3.0, 1.0}, {4.0, 1.0}, {4.0, 4.0}, {-3.0, 4.0}});
+    CHECK(clipped_patch.has_value());
+    CHECK(clipped_patch->area == Rect{0, 1, 4, 3});
+    CHECK(clipped.op(clipped_patch->area, clipped_patch->coverage, MaskOp::replace));
+    CHECK_EQ(clipped.coverage(0, 2), kMaskIn);
+    CHECK_EQ(clipped.coverage(3, 3), kMaskIn);
+    CHECK_EQ(clipped.coverage(4, 2), kMaskOut);
+    CHECK_EQ(clipped.covered(), 12u);
+}
+
+void test_a_lasso_fills_concave_and_self_intersecting_paths_even_odd() {
+    const std::vector<Vec2> concave{{1.0, 1.0}, {9.0, 1.0}, {9.0, 3.0}, {4.0, 3.0},
+                                    {4.0, 7.0}, {9.0, 7.0}, {9.0, 9.0}, {1.0, 9.0}};
+    Mask shape{Extent{12, 12}};
+    CHECK(op_lasso(shape, concave, MaskOp::replace));
+    CHECK_EQ(shape.coverage(2, 5), kMaskIn);
+    CHECK_EQ(shape.coverage(7, 2), kMaskIn);
+    CHECK_EQ(shape.coverage(7, 5), kMaskOut);
+    CHECK_NEAR(shape.area(), 44.0, 0.2);
+
+    const std::vector<Vec2> bow_tie{{1.0, 1.0}, {9.0, 9.0}, {1.0, 9.0}, {9.0, 1.0}};
+    Mask crossed{Extent{11, 10}};
+    CHECK(op_lasso(crossed, bow_tie, MaskOp::replace));
+    CHECK(crossed.coverage(2, 2) > kMaskOut);
+    CHECK(crossed.coverage(2, 7) > kMaskOut);
+    CHECK_EQ(crossed.coverage(2, 5), kMaskOut);
+    CHECK(crossed.coverage(4, 4) > kMaskOut);
+}
+
+void test_lasso_uses_the_existing_replace_add_and_subtract_rules() {
+    const std::vector<Vec2> square{{2.0, 2.0}, {7.0, 2.0}, {7.0, 7.0}, {2.0, 7.0}};
+    Mask added{Extent{10, 10}};
+    added.fill(100);
+    CHECK(op_lasso(added, square, MaskOp::add));
+    CHECK_EQ(added.coverage(4, 4), kMaskIn);
+    CHECK_EQ(added.coverage(0, 0), 100);
+
+    Mask removed{Extent{10, 10}};
+    removed.fill(kMaskIn);
+    CHECK(op_lasso(removed, square, MaskOp::subtract));
+    CHECK_EQ(removed.coverage(4, 4), kMaskOut);
+    CHECK_EQ(removed.coverage(0, 0), kMaskIn);
+
+    Mask replaced{Extent{10, 10}};
+    CHECK(op_lasso(replaced, square, MaskOp::replace));
+    CHECK_EQ(replaced.coverage(4, 4), kMaskIn);
+    CHECK_EQ(replaced.coverage(0, 0), kMaskOut);
+}
+
+void test_degenerate_lassos_leave_the_mask_unchanged() {
+    Mask mask{Extent{10, 10}};
+    mask.fill(77);
+    const Mask before = mask;
+    for (const std::vector<Vec2>& path : {
+             std::vector<Vec2>{},
+             std::vector<Vec2>{{1.0, 1.0}},
+             std::vector<Vec2>{{1.0, 1.0}, {8.0, 8.0}},
+             std::vector<Vec2>{{1.0, 1.0}, {8.0, 8.0}, {1.0, 1.0}, {8.0, 8.0}},
+             std::vector<Vec2>{{1.0, 3.0}, {4.0, 3.0}, {9.0, 3.0}},
+             std::vector<Vec2>{{20.0, 20.0}, {24.0, 20.0}, {24.0, 24.0}, {20.0, 24.0}},
+             std::vector<Vec2>{{1.0, 1.0}, {std::numeric_limits<double>::infinity(), 2.0},
+                               {3.0, 4.0}}}) {
+        CHECK(!op_lasso(mask, path, MaskOp::replace));
+        CHECK(mask == before);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -272,5 +354,9 @@ int main() {
     test_the_smallest_ellipses_stay_honest();
     test_a_patch_of_the_wrong_shape_writes_nothing();
     test_the_facts_are_recomputed_after_a_patch();
+    test_a_lasso_rasterizes_a_clipped_triangle_with_partial_edges();
+    test_a_lasso_fills_concave_and_self_intersecting_paths_even_odd();
+    test_lasso_uses_the_existing_replace_add_and_subtract_rules();
+    test_degenerate_lassos_leave_the_mask_unchanged();
     return noise::test::summary("maskops");
 }

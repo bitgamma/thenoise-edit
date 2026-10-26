@@ -87,6 +87,27 @@ const nlohmann::json* image_part(const nlohmann::json& body) {
     return &first;
 }
 
+std::size_t multipart_size(const BuiltRequest& request, const std::string& boundary) {
+    std::size_t total = 0;
+    const std::string dash = "--" + boundary;
+    for (const RequestField& field : request.fields) {
+        const std::string head = "\r\nContent-Disposition: form-data; name=\"" + field.name +
+                                 "\"\r\n\r\n";
+        total += dash.size() + head.size() + field.text().size() + 2;
+    }
+    for (std::size_t i = 0; i < request.images.size(); ++i) {
+        const std::string field = request.images.size() > 1 ? "image[]" : "image";
+        const std::string filename = request.images.size() > 1
+                                         ? "image-" + std::to_string(i + 1) + ".png"
+                                         : "image.png";
+        const std::string head = "\r\nContent-Disposition: form-data; name=\"" + field +
+                                 "\"; filename=\"" + filename +
+                                 "\"\r\nContent-Type: image/png\r\n\r\n";
+        total += dash.size() + head.size() + request.images[i].png.size() + 2;
+    }
+    return total + dash.size() + 4;
+}
+
 }  // namespace
 
 const char* failure_name(FailureClass kind) {
@@ -137,10 +158,7 @@ bool failure_is_terminal(FailureClass kind) {
 }
 
 std::string multipart_boundary(const BuiltRequest& request) {
-    // Derived from the request rather than random: a replayed request then produces the same bytes,
-    // which is what lets a fixture and a live capture be compared at all. The blob hash is in the
-    // boundary and the PNG is the blob, so a collision means the body contained its own hash - the
-    // probability of which is not a design concern.
+    // Derived from every ordered image rather than random, so a replay has stable multipart bytes.
     return "----noise-" + request.params.blob_id.substr(0, 16);
 }
 
@@ -154,14 +172,21 @@ std::vector<std::uint8_t> multipart_body(const BuiltRequest& request, const std:
             field.text() + "\r\n";
         out.insert(out.end(), head.begin(), head.end());
     }
-    out.insert(out.end(), dash.begin(), dash.end());
-    const std::string image_head =
-        "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"image.png\"\r\n"
-        "Content-Type: image/png\r\n\r\n";
-    out.insert(out.end(), image_head.begin(), image_head.end());
-    out.insert(out.end(), request.png.begin(), request.png.end());
-    const std::string crlf = "\r\n";
-    out.insert(out.end(), crlf.begin(), crlf.end());
+    for (std::size_t i = 0; i < request.images.size(); ++i) {
+        out.insert(out.end(), dash.begin(), dash.end());
+        const RequestImage& image = request.images[i];
+        const std::string field = request.images.size() > 1 ? "image[]" : "image";
+        const std::string filename = request.images.size() > 1
+                                         ? "image-" + std::to_string(i + 1) + ".png"
+                                         : "image.png";
+        const std::string image_head = "\r\nContent-Disposition: form-data; name=\"" + field +
+                                       "\"; filename=\"" + filename +
+                                       "\"\r\nContent-Type: image/png\r\n\r\n";
+        out.insert(out.end(), image_head.begin(), image_head.end());
+        out.insert(out.end(), image.png.begin(), image.png.end());
+        const std::string crlf = "\r\n";
+        out.insert(out.end(), crlf.begin(), crlf.end());
+    }
     const std::string closing = dash + "--\r\n";
     out.insert(out.end(), closing.begin(), closing.end());
     return out;
@@ -174,7 +199,11 @@ nlohmann::json outgoing_preview(const ServerProfile& profile, const BuiltRequest
     out["transport"] = request.endpoint == Endpoint::edits ? "multipart/form-data"
                                                            : "application/json";
     if (request.endpoint == Endpoint::edits) {
-        out["boundary"] = multipart_boundary(request);
+        const std::string boundary = multipart_boundary(request);
+        out["boundary"] = boundary;
+        out["request_body_bytes"] = multipart_size(request, boundary);
+    } else {
+        out["request_body_bytes"] = request.json_body().dump().size();
     }
     // The header's *name* and whether it is sent, never its value: a preview is something the app prints.
     out["auth"] = profile.api_key.empty() ? "none"

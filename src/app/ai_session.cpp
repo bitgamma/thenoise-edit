@@ -5,8 +5,11 @@
 
 #include "app/state.h"
 
+#include "ai/provider.h"
 #include "ai/recorded.h"
+#ifndef __EMSCRIPTEN__
 #include "ai/transport_curl.h"
+#endif
 #include "core/log.h"
 #include "platform/platform.h"
 
@@ -19,6 +22,7 @@ namespace noise::app {
 
 namespace {
 
+#ifndef __EMSCRIPTEN__
 constexpr const char* kFixturesVariable = "NOISE_AI_FIXTURES";
 // A recording has no host, but a request still needs a URL to be shaped: `.invalid` is reserved and
 // can never resolve, so a replay session carries an address that says what it is and cannot leak a
@@ -39,8 +43,18 @@ ai::ServerProfile session_profile(bool replaying) {
     log::warn("ai: " + error);
     return ai::ServerProfile{};
 }
+#endif
 
 }  // namespace
+
+std::uint64_t take_seed(AiSession& session) {
+    // The draw is whole-width entropy and the field is not, so it is masked here: the number the panel
+    // shows is always one `build_request` will accept.
+    session.last_seed = session.seed_pin.has_value()
+                            ? *session.seed_pin
+                            : session.seed_draw() & ai::kMaxSeed;
+    return session.last_seed;
+}
 
 ai::RegionPolicy AiSession::table_region_policy() const {
     ai::RegionPolicy policy{};
@@ -59,6 +73,15 @@ ai::RegionPolicy AiSession::region_policy(const ai::Recipe& recipe) const {
     if (recipe.context_min_px.has_value()) {
         policy.min_context_px = *recipe.context_min_px;
     }
+    // A model that states its own pixel ceiling overrides the table's, because the table's number is a
+    // stand-in for a server that says nothing: compiling to something smaller than the model that will
+    // answer can serve costs detail the answer never needed to lose.
+    if (registry != nullptr) {
+        const ai::ModelEntry* entry = registry->resolved_model(recipe.role);
+        if (entry != nullptr && entry->image_defaults.soft_pixel_cap > 0) {
+            policy.max_area_px = entry->image_defaults.soft_pixel_cap;
+        }
+    }
     return policy;
 }
 
@@ -66,14 +89,18 @@ void open_ai_session(noise::AppState& state) {
     AiSession& ai = state.ai;
 
     if (ai.resource_dir.empty()) {
-        // The tables ship with the tree. `$NOISE_EDIT_ASSETS` says where explicitly, which is what a
-        // packaged build and a probe do; otherwise the first place a `roles.json` actually is wins, and
-        // a session with none reports that rather than resolving roles against an empty table.
-        const std::vector<std::string> candidates = {
-            platform::env("NOISE_EDIT_ASSETS").value_or(std::string()),
-            "assets",
-            state.runtime_dir + "/assets",
-        };
+        std::vector<std::string> candidates;
+        if (const auto override_dir = platform::env("NOISE_EDIT_ASSETS");
+            override_dir && !override_dir->empty()) {
+            candidates.push_back(*override_dir);
+        }
+        const std::string executable = platform::executable_path();
+        if (!executable.empty()) {
+            candidates.push_back((std::filesystem::path(executable).parent_path() /
+                                  NOISE_INSTALL_ASSET_RELATIVE).string());
+        }
+        candidates.push_back("assets");
+        candidates.push_back(state.runtime_dir + "/assets");
         for (const std::string& candidate : candidates) {
             if (candidate.empty()) {
                 continue;
@@ -84,7 +111,7 @@ void open_ai_session(noise::AppState& state) {
             }
         }
         if (ai.resource_dir.empty()) {
-            ai.resource_dir = candidates.back();
+            ai.resource_dir = state.runtime_dir + "/assets";
         }
     }
 
@@ -114,6 +141,13 @@ void open_ai_session(noise::AppState& state) {
         ai.recipes_error = error;
         log::error("ai: " + error);
     }
+
+#ifdef __EMSCRIPTEN__
+    // Browser builds have no blocking libcurl transport or worker: editing remains fully local.
+    // A browser Fetch transport requires a separate asynchronous job path and server CORS support.
+    ai.connect_error = "AI generation is unavailable in the browser build; use the native editor";
+    return;
+#else
 
     // Recordings first: a probe that means to replay must never reach the network by accident, and a
     // fixture directory that fails to load is reported rather than falling through to a live server.
@@ -145,6 +179,7 @@ void open_ai_session(noise::AppState& state) {
             ai::JobQueue::Deps{ai.client.get(), state.runtime_dir + "/ai/jobs"},
             [] { return platform::now_seconds(); });
     }
+#endif
 }
 
 }  // namespace noise::app

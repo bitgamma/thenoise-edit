@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Look at what the model is actually shown.
 
 Two claims, whole-image, on the bytes that would go on the wire:
@@ -90,6 +91,12 @@ def main() -> int:
     parser.add_argument("--fixtures", default=REPO / "tests/fixtures/http")
     parser.add_argument("--out", default=pathlib.Path(tempfile.mkdtemp(prefix="prep-proof-")))
     args = parser.parse_args()
+    if not pathlib.Path(args.bin).exists():
+        print(f"FAIL: no binary at {args.bin}")
+        return 1
+    if reason := wd.display_skip():
+        print(f"SKIP: {reason}")
+        return 0
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -106,6 +113,7 @@ def main() -> int:
     failures: list[str] = []
     rows: list[str] = []
     strip: list[Image.Image] = []
+    wire = None
     try:
         wire = wd.Wire(wd.wire_port(runtime, proc, 40.0))
         wd.wait_for_fit(wire)

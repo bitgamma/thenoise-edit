@@ -22,6 +22,8 @@ enum class MaskOp {
     subtract,  // what is left of the region's coverage
 };
 
+inline constexpr MaskOp kDefaultSelectionMode = MaskOp::replace;
+
 struct MaskOpInfo {
     MaskOp op;
     const char* name;
@@ -181,7 +183,6 @@ private:
     mutable std::vector<RowFacts> rows_;
     mutable std::vector<bool> row_dirty_;
     mutable MaskFacts facts_{};
-    mutable bool facts_ready_ = false;
     mutable std::optional<std::vector<MaskRun>> boundary_;
 };
 
@@ -211,6 +212,13 @@ void restrict_to(const Mask& mask, Rect at, const Image& before, Rect before_at,
 // premultiplied, colour-preserving, within 1 LSB of alpha and 2 of colour of scaled arithmetic.
 // Masking straight-alpha channels instead would turn a half-masked red pixel into a darker red one.
 void scale_by_coverage(const Mask& mask, Rect at, const Image& layer, Image& out);
+
+// The coverage a picture already has: its own alpha, byte for byte, with no threshold anywhere. A
+// dropped image covers the canvas wherever it is not the absent pixel, so "what does this layer cover"
+// is answered by the alpha itself - which keeps a soft edge soft, the thing a threshold would throw
+// away. Nothing normalises 254 to 255: a layer that covers 254/255 of a pixel gets answered 254/255 of
+// the way, because that is the claim its own bytes make.
+Mask coverage_of(const Image& picture);
 
 
 }  // namespace noise

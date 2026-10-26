@@ -200,6 +200,7 @@ KEY_V = 0x0076         # XK_v
 KEY_M = 0x006D         # XK_m
 KEY_D = 0x0064         # XK_d
 KEY_I = 0x0069         # XK_i
+KEY_L = 0x006C         # XK_l, freehand lasso
 KEY_BACKSPACE = 0xFF08  # XK_BackSpace, `ai.remove` with Ctrl
 # One press of a step key, as `core/brush.h` defines it: the probe asserts a step happened rather
 # than recomputing the value, so this is the width of "one", not a copy of the arithmetic.
@@ -425,6 +426,79 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
         fails.append("the dragged curve filled its own box")
     wire.call("screenshot", {"name": "ellipse-ants"})
 
+    # `L` selects the Lasso row, and the outline is drawn from document coordinates at two zooms.
+    # Capturing while the button is down proves the preview exists; the committed mask bounds and
+    # area then prove view-to-document mapping did not scale the selection with the screen.
+    lasso_points = [(8.0, 8.0), (52.0, 8.0), (44.0, 18.0), (54.0, 36.0),
+                    (22.0, 39.0), (8.0, 28.0)]
+    lasso_results = []
+    for scale, theme in ((2.0, "dark"), (4.0, "light")):
+        wire.call("select.clear", {})
+        wire.call("ui.theme", {"theme": theme})
+        wire.call("view.set", {"scale": scale, "origin": [0.0, 0.0]})
+        wd.settle(wire)
+        inj.key(KEY_L)
+        wd.settle(wire)
+        state = wire.call("app.state")
+        if state["brush"]["tool"] != "lasso":
+            fails.append(f"L selected '{state['brush']['tool']}', expected 'lasso'")
+        doc = wd.document_screen_rect(state)
+        actual_scale = state["view"]["scale"]
+        screen_points = [(doc[0] + x * actual_scale, doc[1] + y * actual_scale)
+                         for x, y in lasso_points]
+        inj.move(*screen_points[0])
+        inj.button(1, True)
+        wd.settle(wire)
+        for point in screen_points[1:]:
+            inj.move(*point)
+            time.sleep(0.04)
+        mid = wire.call("app.state")["stroke"]
+        preview = wire.call("screenshot", {"name": f"lasso-{theme}-preview"})
+        inj.button(1, False)
+        wd.settle(wire)
+        selection = wire.call("select.get", {})
+        ants = wire.call("screenshot", {"name": f"lasso-{theme}-ants"})
+        print(f"Lasso {theme} at {actual_scale:.2f}x: {len(mid['lasso_points'])} preview points, "
+              f"bounds {selection['bounds']}, area {selection['area']:.1f}; "
+              f"captures {preview['path']} and {ants['path']}")
+        if not mid["active"] or mid["marquee_shape"] != "lasso" or len(mid["lasso_points"]) < 5:
+            fails.append("Lasso did not expose its freehand preview while the button was down")
+        if not selection["active"] or selection["covered"] == 0:
+            fails.append("Lasso release left no marked area")
+        if selection["area"] >= selection["covered"]:
+            fails.append("Lasso coverage has no antialiased boundary")
+        lasso_results.append(selection)
+    if lasso_results:
+        first, last = lasso_results
+        if max(abs(a - b) for a, b in zip(first["bounds"], last["bounds"])) > 1:
+            fails.append(f"Lasso bounds changed with zoom: {first['bounds']} -> {last['bounds']}")
+        if abs(first["area"] - last["area"]) > 0.05 * first["area"]:
+            fails.append(f"Lasso area changed with zoom: {first['area']:.1f} -> {last['area']:.1f}")
+    selection_before_cancel = wire.call("select.get", {})
+    state = wire.call("app.state")
+    doc = wd.document_screen_rect(state)
+    scale = state["view"]["scale"]
+    start = (doc[0] + 12.0 * scale, doc[1] + 12.0 * scale)
+    finish = (doc[0] + 38.0 * scale, doc[1] + 30.0 * scale)
+    inj.move(*start)
+    inj.button(1, True)
+    wd.settle(wire)
+    inj.move(*finish)
+    wd.settle(wire)
+    inj.key(KEY_ESCAPE)
+    wd.settle(wire)
+    cancelled = wire.call("app.state")
+    inj.button(1, False)
+    wd.settle(wire)
+    if cancelled["stroke"]["active"]:
+        fails.append("Escape left the Lasso gesture active")
+    if wire.call("select.get", {}) != selection_before_cancel:
+        fails.append("Escape changed the previous selection instead of cancelling the Lasso")
+    if proc.poll() is not None:
+        fails.append("Escape quit the editor instead of cancelling the active Lasso")
+    wire.call("view.fit", {})
+    wd.settle(wire)
+
     # The select tool: `M`, a marquee drawn by the pointer, and then proof that the selection holds
     # the paint - all of it through events, because what the app does with a real drag is what the
     # canvas window decides, not what a wire client asks for.
@@ -512,9 +586,10 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
     wire.call("edit.undo", {})
 
     # The mask conversions, after a marquee drawn by the pointer: the composite changes, the layer's
-    # own bytes do not, and neither direction costs an undo step. The composite is only visible
-    # through a written image, so that is what is compared - hashed, because "different" has to mean
-    # different bytes rather than a different filename.
+    # own bytes do not, and the plane arriving is exactly one undo step - one that undo takes off again,
+    # back to the bytes the canvas was showing. The composite is only visible through a written image,
+    # so that is what is compared - hashed, because "different" has to mean different bytes rather than
+    # a different filename.
     # `layer.list` is the command that reports a layer's own pixel digest, which is the claim being
     # made here: the document digest counts mask bytes on purpose, so comparing that would say
     # "something changed" without saying whether the pixels moved.
@@ -538,8 +613,24 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
         fails.append("the composite is unchanged by a mask, so the mask is not reaching the canvas")
     if pixels_after != pixels_before:
         fails.append("masking edited the layer's pixels; a mask is meant to hide, not to erase")
-    if steps_after != steps_before:
-        fails.append("applying a layer mask cost an undo step")
+    if steps_after != steps_before + 1:
+        fails.append(f"applying a layer mask cost {steps_after - steps_before} undo steps, expected one")
+
+    # The step holds the plane rather than a pixel, so undoing it returns the composite by taking the
+    # mask off - not by repainting anything - and redo hides the layer again.
+    wire.call("edit.undo", {})
+    undone_pixels, undone_shown = view()
+    print(f"edit.undo of the mask: composite {undone_shown[:8]}, back to what was shown "
+          f"{undone_shown == shown_before}, layer bytes still unchanged "
+          f"{undone_pixels == pixels_before}")
+    if undone_shown != shown_before:
+        fails.append("undoing the mask did not return the composite it changed")
+    if undone_pixels != pixels_before:
+        fails.append("undoing the mask moved the layer's own bytes")
+    wire.call("edit.redo", {})
+    _, redone_shown = view()
+    if redone_shown != shown_masked:
+        fails.append(f"redoing the mask showed {redone_shown[:8]} instead of {shown_masked[:8]}")
 
     loaded_back = wire.call("select.from_mask", {})
     if loaded_back["bounds"] != masked["bounds"] or loaded_back["covered"] != masked["covered"]:
@@ -782,7 +873,9 @@ def run(args: argparse.Namespace) -> int:
             env = dict(os.environ)
             env["DISPLAY"] = display
             env["NOISE_RUNTIME_DIR"] = str(runtime)
-            env.pop("NOISE_CONFIG_DIR", None)
+            config_dir = runtime / "config"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            env["NOISE_CONFIG_DIR"] = str(config_dir)
             # The verb-key section runs the AI path, and it must run it against the recordings even on a
             # shell that exports the dev-box credentials: the recorded transport answers before a socket
             # is opened, and this test spends no requests.

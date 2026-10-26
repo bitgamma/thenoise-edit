@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """One command to the running app: `python3 tools/wire_call.py server.connect`.
 
 The debug wire is the window's own command table, so this is not a side door: it is the same

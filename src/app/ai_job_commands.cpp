@@ -77,6 +77,7 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
         state.ai.connected = true;
         state.ai.connect_error.clear();
         state.ai.registry->update(*models);
+        state.ai.registry->set_resident(health->model_loaded);
         log::info(std::string(state.ai.replaying
                                   ? "handshake answered by the recordings in $NOISE_AI_FIXTURES"
                                   : "connected to " + state.ai.client->profile().base_url) +
@@ -117,9 +118,10 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
         if (state.ai.jobs != nullptr) {
             server["latency"] = state.ai.jobs->latency().json();
         }
-        // The seed a request takes when its caller names none, so "what made this picture" is
-        // answerable from the session rather than from memory.
-        server["seed"] = state.ai.seed;
+        // The seed the last request carried and whether the next one is pinned to a number or draws
+        // its own, so "what made this picture" is answerable from the session rather than memory.
+        server["seed"] = state.ai.last_seed;
+        server["seed_pinned"] = state.ai.seed_pin.has_value();
         return command_ok(server);
     });
 
@@ -145,6 +147,9 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
             return fail("server.load", error.message + (error.hint.empty() ? "" : " - " + error.hint));
         }
         state.ai.health.model_loaded = model;
+        if (state.ai.registry != nullptr) {
+            state.ai.registry->set_resident(model);
+        }
         log::info("loaded " + model + (pinned ? " (pinned)" : ""));
         return command_ok(json{{"model", model}, {"pinned", pinned}});
     });

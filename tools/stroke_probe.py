@@ -131,6 +131,9 @@ def measure_gesture(wire: wd.Wire, port: int, doc: int, layers: int,
     # drag, not the one frame after a structural change.
     wd.settle(wire)
     before = wire.call("doc.get", {})["checksum"]
+    # The stack was built for this run, and building it is history now too, so the gesture's own steps are
+    # counted from here rather than from an empty timeline.
+    steps_before = int(wire.call("app.state", {})["document"]["history"]["undo_depth"])
     sampler = FrameSampler(port)
     sampler.start()
     event_ms: list[float] = []
@@ -149,7 +152,7 @@ def measure_gesture(wire: wd.Wire, port: int, doc: int, layers: int,
     sampler.join(timeout=5)
 
     painted = wire.call("doc.get", {})["checksum"]
-    steps = int(wire.call("app.state", {})["document"]["history"]["undo_depth"])
+    steps = int(wire.call("app.state", {})["document"]["history"]["undo_depth"]) - steps_before
     history = wire.call("edit.undo", {})
     restored = wire.call("doc.get", {})["checksum"]
     peak = max(sampler.frame_ms, default=0.0)

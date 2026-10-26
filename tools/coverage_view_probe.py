@@ -35,6 +35,9 @@ def main() -> int:
     if not args.bin.exists():
         print(f'FAIL: no binary at {args.bin}')
         return 1
+    if reason := wd.display_skip():
+        print(f'SKIP: {reason}')
+        return 0
     runtime = Path(tempfile.mkdtemp(prefix='noise-coverage-view-'))
     fixture = runtime / 'fixture.png'
     wd.write_fixture_png(fixture, *DOC)

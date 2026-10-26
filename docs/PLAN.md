@@ -1,9 +1,77 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the tree against the docs: **2026-10-15**, when the product was rewritten around what a
-person does ([PRODUCT.md](PRODUCT.md)) and the other design documents were merged into this one,
-[ARCHITECTURE.md](ARCHITECTURE.md) and [TESTING.md](TESTING.md). `AGENTS.md` is normative and outranks this
-file.
+Last re-read of the tree against the docs: **2026-10-26**, after the merge of the inline-rename and
+layer-scale branch back over the UI module split — the layers panel, its two inline fields and the history
+kinds were checked against `docs/ARCHITECTURE.md`, the command table and the probe. The file
+selection path was last checked against the command table, host loop, platform boundary and WASM bridge in
+the movable-native-picker note. The selected next architecture milestone remains `doc.crop` /
+`doc.resize`, blocked on `History::fits_coverage` validating coverage when a history entry's canvas extent
+differs from the current stack extent. `AGENTS.md` is normative and outranks this file.
+
+## 2026-10-26 - The name and the factor land on top of the module split
+
+Two weeks of parallel work met here: this branch wrote inline rename (`layer.rename`) and layer scaling
+(`layer.scale`) into the single `ui.cpp`, while `origin/main` emptied that file into `ui_canvas` /
+`ui_layers_panel` / `ui_tool_panel` / `ui_references` / `ui_verbs` / `ui_front_door` / `ui_theme` and, in
+the same window, put a layer's arrival, departure and mask plane into the timeline. Merging was a port, not
+a line merge, and three of the collisions were design questions rather than text.
+
+**The panel's two fields live in the module now, not in the file they were written in.** `draw_layer_title`
+holds the name field where the name was, `draw_layer_preview` holds the factor field where the `Scale`
+button was, and `draw_layers_panel` wraps the cards in the `layer-list` child with the stack's verbs pinned
+under it. The card colours came out of the merge and into `ui_theme::Palette`: the branch had been pushing
+hardcoded `IM_COL32` card backgrounds, upstream had moved exactly those into the semantic palette with a
+light theme beside them, and a second home for the same colour is the kind of thing that shows up as a dark
+card in a light window. `InlineField` and `typing_in_layer_field` stayed in `state.h`, so the command door
+(`layer.rename.begin`, so `F2`, so the wire) and the card's double-click still share one seeding rule.
+
+**A rename step and the deleted `Stacked::name` were the real conflict.** The rename entry stores the name
+that is not current in `Stacked::name`; upstream deleted that field on the rule that a layer's name travels
+inside `whole`. Both rules were kept, because they answer different edits: a departing layer carries its
+whole self, and a rename carries one string — routing a rename through `whole` would carry both pixel planes
+of the layer through an operation that must move no pixel and resample no thumbnail (the probe asserts
+exactly that). `Kind::layer_renamed` therefore owns a `name` field with that argument on it.
+
+**`Applied::coverage` is gone, and that is what made room for the rename.** The flag meant "no texture was
+repainted" only because a moving mark was the single kind that paints nothing; a rename is the second, so
+the class is now real and the document derives it - `!structure && rect.empty()` - instead of a flag that
+can fall out of step with the kinds. A third kind costs one line in `step_back` and no change in
+`Document`. The `Applied` contract in ARCHITECTURE §Undo says it that way now.
+
+**The mask section scrolls with the cards, so a driver asks the list where it is.** Upstream's probe waited
+for `layer_panel.mask_add` to be inside the panel window and then pressed it, which worked while the panel
+itself scrolled. It is inside the pinned list now, so a row the list clipped still reported a box inside the
+window, and a wheel over the pinned row scrolled the panel, which has nothing to scroll: the wait is against
+`layer_panel.list` and the wheel is aimed at it, which is the same rule a card's title row was already held
+to.
+
+**Running the suite under `xvfb-run` makes the click probes lie.** `wire_drive` starts its own Xvfb at the
+size a probe asked for only when `DISPLAY` is unset, so `xvfb-run -a ctest` hands every probe the wrapper's
+server instead and every injected press lands somewhere else - three probe tests red on a tree with nothing
+wrong with it. Run plain `ctest` on a box with no `DISPLAY`. Both trees were then compared claim by claim:
+`ctest` 41/42, with `test_file_dialog_ui` the one failure, identical on `origin/main` before the merge (the
+GTK chooser opens but cannot be driven here - no `Xvfb` of its own to move, and `dconf` cannot write
+`/run/user/1000`), and `tools/layer_panel_probe.py` fully green including the rename and scale claims, which
+upstream does not have.
+
+**What the next feature touches.** A gesture for `layer.scale` goes on the canvas in `ui_canvas.cpp` and
+sends the command that exists; a third card field goes in `draw_layer_*` with one `InlineField` in
+`AppState`; any entry that changes no pixel is already in the no-repaint class and needs no new flag; and
+the panel's scroll region is `layer_panel.list` for every control inside the list, so a driver never has to
+know the panel's height.
+
+## 2026-10-25 - Freehand Lasso
+
+Lasso uses the existing `Mask` bytes and `MaskOp` rules. `maskops::rasterize_lasso` makes a patch only for
+the clipped path bounds, fills self-crossings with even-odd scan conversion, and integrates sixteen
+subscanlines per row for antialiased edges. `tool.pointer` captures the gesture, coverage target and
+operation on press; release commits one marked-area or layer-mask step, while `cancel` drops the
+provisional transaction. The command `select.lasso` reaches the same rasterizer for marked-area edits.
+
+Architecture verdict: no second selection model or persistent document field was needed. The next crop
+and resize milestone still owns the outstanding canvas-extent/history constraint; this feature did not
+change it. Core geometry, command results, exact undo bytes, cancellation, both coverage targets, and
+the real mouse path at two zoom levels are covered by the existing tests and input probe.
 
 ---
 
@@ -18,11 +86,12 @@ Not preferences. Each one exists because breaking it was observed as a bug.
    it quotes (endpoint, size, model, steps, measured ~s) from geometry and tables and preps / resamples /
    PNG-encodes nothing. `AppState::upload_encodes` counts every upload encode and a test fails if a read
    raises it. `ai.preview` is the only pre-flight compile, and it is for drivers and probes, not a frame.
-3. **Nothing persists except the document.** No answer cache, no job file, no `job.retry`, no durable
-   queue. The runtime directory is scratch — startup deletes the previous run's `ai/` and `captures/` —
-   and nothing is read back from it. Pressing the verb again *is* the retry: it recompiles against what
-   the document is now and costs a second request. Any future store states its identity scheme and its
-   eviction policy before it gets a writer.
+3. **Documents, jobs and app preferences have separate lifetimes.** No answer cache, no job file, no
+   `job.retry`, no durable queue. The runtime directory is scratch — startup deletes the previous run's
+   `ai/` and `captures/` — and nothing is read back from it. Pressing the verb again *is* the retry: it
+   recompiles against what the document is now and costs a second request. The UI theme and recent-file
+   list are app preferences in config, not document or job state. Any future durable store states its
+   identity scheme and eviction policy before it gets a writer.
 4. **The words an operation asks for are typed.** An `ask` field has no default anywhere; a run with a
    blank or whitespace-only asked-for field is refused, naming the recipe and the field.
 5. **Every feature is observable on the debug wire, through the same command table the UI uses.** If the
@@ -39,28 +108,44 @@ Not preferences. Each one exists because breaking it was observed as a bug.
    | prompts, region/prep/composite policy | `assets/recipes/*.json` |
    | document model and its defaults | `core/document` |
    | blend maths | `core/blend`'s reference, mirrored only in `tests/test_blend` |
-   | prefs, session state | `io/config` (planned), `manifest.json`, the environment |
+   | app preferences | `io/config` (`ui_theme`, recent files), the environment |
+   | document state | `core/document`, `manifest.json` |
 7. **The default `ctest` run is hermetic and opens no sockets.** `$NOISE_AI_FIXTURES` selects the recorded
    transport. Live-tier tests are labelled `live`, registered only with `-DNOISE_LIVE_TESTS=ON`, skip
    loudly without `$THENOISE_URL` / `$THENOISE_API_KEY`, assert contract and invariants and never model
    output, and put the resident model back (`server.load`'s argument is `pinned`). No URL, host or key
    ever enters the repo.
 
+## 2026-10-23 — UI module split and theme preference
+
+The original Dear ImGui editor layout, default font, tool list, welcome dialog and dark
+palette remain unchanged. UI implementation is split by panel responsibility (canvas,
+front door, layers, tools, verbs and theme), but this is not a visual redesign.
+The optional light/dark switch uses the `ui.theme` command, with its persisted value
+owned by `io/config` alongside recent files. The dark-mode viewport golden explicitly
+selects `--theme dark`; GUI probes use an isolated `NOISE_CONFIG_DIR`.
+
+The module split changes no document, AI request, recipe or pixel-write interface.
+Installed asset lookup resolves the role and recipe files relative to the executable.
+The browser build reuses these UI modules and its own platform-specific file handling.
+The remaining product roadmap is unchanged.
+
 ## What is next, in order
 
 Ordered by what makes the thing usable rather than by what is interesting. Each slice is demoable by a
 human without a terminal, ships the wire command that makes it observable, and ends with a step of
-`tools/flow_probe.py` walking [PRODUCT.md](PRODUCT.md)'s scenario. Until slice 3 the scenario is walked
-partly over the wire; after it, by clicking.
+`tools/flow_probe.py` walking [PRODUCT.md](PRODUCT.md)'s scenario. The primary flows in slices 1–4 are
+landed; slice 3 still owes local Heal. Slices 5 and 6 have landed their core UI, image-input and ordered AI
+reference behavior, with remaining work listed below. The selected next milestone is slice 7, document geometry.
 
-**Slices 1 and 2 landed 2026-10-15** — files, and a new image from an idea — with two deliberate gaps: the
-New dialog quotes no price, because that was cut by decision, and *Blend* belongs to slice 5. Slice 3, one
-coverage with verbs at the marked area, is next.
+**Slices 1 and 2 landed 2026-10-15** — files, and a new image from an idea. The file surface now includes
+New, Open, Save, Save As, Export, Insert, drop, recent files and the quit guard. The New dialog's price
+quote remains deliberately cut. Slice 3's coverage and verb bar are in place; local Heal remains owed.
 
-1. **Files.** Start dialog (New / Open + recent), Open, Save, Save As, Export (png / jpg / webp),
-   drag-and-drop onto a new layer, dirty title, quit guard. Native picker through the desktop portal or
-   `zenity`, one file in `src/platform/`, with the in-app browser as the fallback. `doc.new`, `doc.open`,
-   `doc.save` and `doc.export` already exist as commands; what does not exist is a way to reach them.
+1. **Files.** Landed: Start dialog (New / Open + recent), Open, Save, Save As, Export (png / jpg / webp),
+   Insert and drag-and-drop onto a new layer, dirty title, and quit guard. Native pickers live in
+   `src/platform/`; the browser picker, import and download path lives in `src/platform/*_web.cpp` and
+   `web/bridge.js`.
 2. **New image from an idea.** The New dialog's prompt, kind (a recipe family's `variants`) and size -
    preset ratios plus explicit pixels - and the dialog **quoting the price** the way the status line does.
    OK generates into the document's first layer. Progress, coarse or indefinite, plus Cancel.
@@ -76,32 +161,29 @@ coverage with verbs at the marked area, is next.
    **Still owed**: local `heal` (in-process Telea/Chan, below), because *Heal* on a small area should
    not pay for a round trip.
 
-   **Owed, and decided**: coverage edits enter the history. The marked area is already a document
-   property (`Document::selection_`, saved with the project); what it lacks is undo. The rule to hold to:
-   *one gesture that changes coverage is one undo step* — marquee press to release, `cover` and
-   `un-cover`, All / None / Invert, to-mask and from-mask — and a pixel write carries no coverage with
-   it, because it did not move any. That reverses the claim in `core/document.h` that a selection enters
-   no step "exactly like a layer's visibility"; its worry was a step undoing something the user never
-   touched, and the answer is a step that snapshots only what it touched (`pixels`, `layer mask`,
-   `marked coverage`) rather than the whole document. Shape: a payload kind in `core/history`, a writing
-   variant of `Document::set_selection` that pushes the previous coverage and marks the document dirty
-   (it is saved), the marquee committing once on release with the drag provisional until then. The claims
-   to flip are the ones made this week that marking costs no undo step, plus the invariant bullets in
-   `core/document.h` and `docs/ARCHITECTURE.md`.
+   **Landed 2026-10-19, below**: coverage edits enter the history. The rule holds — *one gesture that
+   changes coverage is one undo step*: marquee press to release, `cover` and `un-cover`, All / None /
+   Invert, and `select.from_mask` — and a pixel write carries no coverage with it, because it did not
+   move any. The other half landed in the note after it: a layer mask **appearing or going** (`mask.add`,
+   `mask.remove`, `mask.from_selection` onto a layer that has none) is `Kind::mask_replaced`, so the rule
+   now holds for every coverage change. A layer's own arrival and deletion landed with the note after that
+   one, which also deleted the invalidation `History` used to keep; what is left outside the timeline is a
+   layer's visibility, opacity and blend mode.
 4. **The pointer says which tool it is.** Landed 2026-10-16, below: the host cursor takes the tool's
    shape and the canvas draws the dab's footprint, measured against the size the app reports.
 5. **Layers you can see.** Landed since 2026-10-16: thumbnails of the layer and its mask, one bordered card
    per layer holding its own controls, visibility, opacity, blend mode, reorder (`Up`/`Down` on the card,
    `layer.move`), **Merge down** (`layer.merge`) and **Flatten** of the whole stack (`layer.flatten`, whose
-   history entry is the replaced stack itself - see *The stack becomes one layer* below), the panel's own row
-   of buttons pinned clear of the scrolling card list, and a name typed on the card itself (`F2`,
-   `layer.rename` - see *A layer's name is typed where the layer is shown* below). What the slice owes:
-   moving and scaling a layer's picture. The panel is always visible: it is where a person goes to
+   history entry is the replaced stack itself - see *The stack becomes one layer* below), the panel's own
+   row of buttons pinned clear of the scrolling card list, a name typed on the card itself (`F2`,
+   `layer.rename` - see *A layer's name is typed where the layer is shown* below), and a factor typed in the
+   place of the card's `Scale` button (`layer.scale` - see *A layer's picture is resized by a number, typed
+   on the card* below). What the slice owes: a gesture for that scale - a handle on the layer's picture
+   driving the command that already exists. The panel is always visible: it is where a person goes to
    understand what an edit did.
-6. **Blend, and images as input.** Drop an image → its own layer → *Blend* with no prompt repaints it into
-   the scene on that layer. Needs the third recipe scope, `region: layer`, whose source is the layer's
-   pixels and whose coverage is its alpha. *Blend* with a prompt, then control images (openpose), come in
-   through the same door.
+6. **Blend, and images as input.** Landed: Insert/drop places an image on its own layer; no-prompt *Blend*
+   uses `region: layer`, whose source is the layer's pixels and whose coverage is its alpha. *Blend* with a
+   prompt and control images (openpose) remain future work through the same input path.
 7. **Document geometry.** `doc.crop`, `doc.resize` for the canvas - with *AI fill* on the grown strip, the
    outpaint mechanism below - and *Image size* with a method: Lanczos, `AI upscale (fast)` (ESRGAN),
    `AI upscale (best)` (an edit model, so one `roles.json` row and one recipe). The seam to think about
@@ -117,9 +199,300 @@ coverage with verbs at the marked area, is next.
    button, the keymap file, autosave.
 
 Seed is not a user-facing concept: **Retry** re-asks the same request with a different seed and lands
-another layer. Roles and recipes are ours to pin for now - the sets are in `assets/roles.json` and
+another layer — which is only true because every request draws one of its own (see 2026-10-23 below); with
+the constant the code had before, a re-ask was a restatement. Roles and recipes are ours to pin for now - the sets are in `assets/roles.json` and
 `assets/recipes/`, loaded from disk, and the plan is that a person edits those files, not a dialog, so
 nothing here needs a settings UI to be foreseen later.
+
+## 2026-10-23 - A re-ask that could not differ, and a Change that only softened
+
+Two reported defects, one seam each, and both invisible to the recorded tier because a recording answers
+whatever you send it.
+
+**Every press sent `seed: 0`.** Two `ai.preview` calls on one mark produced byte-identical requests, so
+pressing Change twice was one request twice — a second GPU charge for the picture already on the canvas.
+`kSessionSeed = 0` was the default and nothing re-rolled it, and the doc claim that *Retry re-asks with a
+different seed* had no code behind it. A request now takes a seed at compile time: the panel's pin, or a
+draw through `AiSession::seed_draw` (`platform::random_seed` — the only place entropy enters the app, and
+the seam a test replaces with a fixed sequence, since nothing a test reaches may read entropy for itself).
+The number and its source (`named` / `pinned` / `random`) travel with the compile, the job and the panel:
+reproducibility comes from recording the seed, not from freezing it, and a per-frame read draws nothing —
+rule A forbids a read from computing an answer, and spending entropy is the same offence.
+
+**Then the probe found the fix had a second bug.** `seed` was one argument doing two jobs, so a verb press
+that carried a number *held* it: `ai.remove {seed: n}` quietly became `seed_pin`, and every ask after it
+was the same request again — the defect I had set out to remove, reintroduced by the press that removed it.
+The recorded tier passed, because the probe's own `ai.preview` pair happened to run before any press. Now
+`seed` belongs to the request the call builds and `seed_pin` is the hold, and the probe asserts both halves
+per verb: two asks draw two seeds, a named seed dies with its press, a held seed survives every ask until
+it is released.
+
+**The engine refused a wide seed, and said the wrong thing about it — twice.** The first live press after
+that change answered `400 Invalid value for 'seed': must be an integer`. The first fix assumed a 32-bit
+unsigned field and masked to `0xFFFFFFFF`, which fixed nothing: the box's *multipart* form parses `seed` as
+a signed 32-bit integer, so the second live press failed the same way with roughly half the draws. Measured
+by asking, at 256², one step: `/images/edits` takes `2147483647` and refuses `3000000000` and `4294967295`
+with that message, while `/images/generations` — a JSON body — takes all of them and `0` as well. The
+upload path therefore sets `ai::kMaxSeed` (`ai/provider.h`, the module that owns the field): the draw is
+masked to it, a named seed above it is refused by name, and `ai_job_probe` asserts the bound on every ask.
+Two lessons, both mine: an inferred bound is a guess, and a guess written into a comment with the word
+"measured" in it is worse than no comment. There is no schema to read here — `/ui-schema` does not exist on
+this box and `/models` carries no seed limits — so the bound has to be probed, which costs nothing because a
+400 runs no model.
+
+**Bigger asks outran the request timeout, and a live server was reported dead.** Raising the pixel ceiling
+made the first job the user then ran fail as `timeout - /images/edits: timeout`. The ETA is keyed on the
+exact `(model, size, steps)`, so a mark never asked before has no sample and its timeout fell to the 60 s
+floor — while a masked edit at the new ceiling measures 71.1 s on this box (1024² at 8 steps masked: 33.5 s;
+the same shape at 4 steps unmasked: 20.2 s, against 29.7 s at 1440x1088). The floor is now 600 s, enough for
+a model load (measured 72–198 s) inside the first request, and the timeout — which is a margin, not the
+promise the panel shows — falls back to scaling the model's best-sampled run by pixels × steps. The ETA
+itself still refuses to guess: a shape nobody has run here has no estimate, which is what its test and its
+thread-safety test both defend.
+
+**A Change over a large mark came back as the same picture, softer.** A 1440x1080 document with a
+1000x700 mark compiled `crop [0,0,1440,1080]` to `requested [1184,896], scale 0.8211`: `roles.json` capped
+a region at 1 MP, a number nobody had measured, so the upload was Lanczos-downscaled and the answer
+Lanczos-upscaled back over a surround that pixel-lock keeps byte-identical — softness everywhere, change
+nowhere. Small marks were unaffected (their grown crop fits 1 MP), which is why it looked intermittent.
+`GET /models` publishes a per-model `soft_pixel_cap` — 2097152 on `Flux-2-Klein-9B-TheNoise`, 4194304 on
+`builtin.Qwen-Image-2.1-Turbo-INT8` — and nothing parsed it. The ceiling is that number when the model
+states one, and the table's only as a stand-in for a model that says nothing, raised to 2 MP: the smallest
+cap this box publishes, so the stand-in does not shrink answers the box would have served. A scale below 1
+is now a fact in the report (`region.resampled`, plus the size it shrank to in the landing log) rather than
+something a person infers by squinting.
+
+**Two of my own fixes were wrong, and only measuring caught them.** Both were in the rescale, and both
+survived a green hermetic suite because the tests asserted the *shape* of the answer rather than the
+promise it carries.
+
+- The shrunken ask was snapped *up* to the size multiple, which put it back over the ceiling it had just
+  been shrunk for: a 2400x1600 mark under a 2097152 cap asked `1776x1184` — 2102784 pixels. The grid is
+  snapped *inside* the ceiling now (down when a shrink is in force, up when there was room, never below
+  one multiple), and `test_region` sweeps 1040 shapes against the invariant `asked ≤ cap`, because the
+  failure needs a particular remainder and the two assertions that used to cover it allowed a factor of
+  two and a slack term.
+- `resampled` never reached the sentence it was supposed to produce. The landing rebuilds its plan from
+  the job record — `plan_of_landing` copies the crop, the asked size and the mask bounds — and a plan
+  rebuilt that way had `resampled == false`, so the automatic landing, which is the path answers actually
+  take, logged a rescaled answer as a plain one. It is a fact the compile decides, carried on `Landing`
+  and restored with the rectangles, which is what the live line now reads: `rescaled to 1760x1168 for the
+  model's pixel ceiling, answered at a different size than requested`.
+
+The general shape: a derived flag travelling beside the numbers it was derived from is a second home, and
+it goes stale the moment one of them is rebuilt from storage. Either carry it or recompute it from the
+same bytes the compositor maps by — do not leave both half-done.
+
+What the box added for free: the engine snaps the size it *answers* (`1760x1168` asked, `1760x1184`
+answered), so `answered_as_requested` is a separate fact from `resampled` and the landing keeps saying
+them apart. Pixel-lock held byte-exact outside the coverage in every case above, at 1:1 and both ways
+around a rescale.
+
+**What the tests talked me out of.** The first cut asked for the crop's exact size, which is what "output
+size equals input size" sounds like. Two `test_region` assertions went red for a reason: the 16-grid exists
+because the engine snaps an off-grid ask itself (measured: asking 500x300 answers 512x304), so an off-grid
+ask trades a snap this side planned for one the engine invented, and the aspect-frame contract — a 16:9
+frame arrives 16:9 — depends on `requested` being on the grid. The grid costs at most 15 pixels; the
+invented ceiling cost 18%. The ceiling was the defect, not the grid.
+
+Also settled, from a claim in an older session that a `style` request field was half-built: it is not
+needed and it would have been a field-policy violation. `style` is a recipe *variable*
+(`assets/recipes/change.local.json`) fed by the panel's style dropdown, and `style` stays among the fields
+never sent ([ARCHITECTURE.md](ARCHITECTURE.md) §field policy).
+
+Hermetic: 40/40 green (including `ai_job_probe`, which now asserts the seed and resample claims per
+verb), `sweep_procs.py` clean. **Owed, not yet spent:** live verification of both fixes —
+two asks over one mark differing in the answer, and a full-HD Change landing 1:1 sharp — four images on
+the dev box, waiting on a yes.
+
+## 2026-10-19 - The live tier ran for the first time, and it found two things the recordings cannot
+
+`$THENOISE_URL` / `$THENOISE_API_KEY` are exported, so `cmake -B build -DNOISE_LIVE_TESTS=ON` and
+`ctest -L live` are available. First run: `tn_probe_live` passed and taught the box's contract again
+(`2026.42.1`, one model per class, explicit size honoured, 512² in 25.6 s cold and 1024² in 8.6 s warm);
+`ai_job_probe_live` and its `generate` sibling **failed**, and both failures were real.
+
+**The expensive refusal was winning the cheap one.** A bare *Generate* with no words answered
+`'new-image' needs Flux-2-Klein-9B-TheNoise and the server is running Flux-…` — a model-swap
+confirmation, for a request that could never have been built. In the recordings the resident model always
+matches the role, so the swap branch is never reached and the blank-field refusal inside `build_prompt`
+was the only one anyone ever saw. `start_intent` now renders the prompt *before* pricing a swap: a
+request with no words in it must not ask a shared box to load 32 GB first, and `confirm` cannot buy its
+way past a blank field either. The hermetic test is the ordering itself — swap pending *and*
+`instruction` blank → the error names `'instruction'` and does **not** contain `confirm` — because that
+is the half the fixtures are structurally unable to show.
+
+**A live probe that refuses is a green run of nothing.** Every verb then went through the same swap
+refusal, which is a guard for a hand on a key, not for a driver that intends the work: the probe now
+loads the model the role resolves to, says it did (`Flux-2-Klein-4B-TheNoise → Qwen-Image-2.1-INT8`), and
+the existing `finally` puts back what was resident (`the model the box was running is back`). After that
+the remove cell passed against a real answer: 2 images, the answer landed itself as `Remove j0001`,
+`0 pixels beyond [134, 88, 152, 136]`, colour ratio 1.04 against the band, and undo byte-for-byte.
+
+**What was not a bug, and what both of them were.** The first run resolved `edit` to
+`Flux-2-Klein-9B-TheNoise`, the second to `Qwen-Image-2.1-INT8`, and the obvious reading — a resolution
+that moves on its own — was wrong: `assets/roles.json` was edited in the working tree *between the two
+runs*, by a hand that is not mine, and `git status` still carries it uncommitted. The preference list
+moved, so the answer moved. Two things follow. The live tier reads `assets/roles.json` from the working
+tree, so on a shared box a run's meaning can change under it while it is in flight — which is why the
+`ai_job_probe` output prints the resolved model rather than assuming it, and why that print stayed. And
+`tools/tn_probe.py` answers "which model?" with its own "smallest edit-capable" rule instead of asking
+the registry, so the same question has two answers in this repo; the probe's is a cost rule about the
+box and the registry's is the app's assignment, and anyone reading one report needs to know whose answer
+they are looking at.
+
+Not fixed here: the duplicated rule in `tn_probe.py`, because the probe deliberately spends the cheap
+model while probing a shared box, and making it agree with the registry would make it swap models to
+probe a contract. The fix is to label its answer, which is a docs-and-print change, not a rule change.
+
+## 2026-10-19 - A layer's arrival and departure are steps, and the timeline stops invalidating things
+
+`layer.remove` used to call `History::drop_layer`, and `layer.add` recorded nothing at all. Both are steps
+now: the departure files the **whole** layer under the entry `layer.merge` already had, and the arrival files
+one `layer_created` - nothing beside it, for the reason below.
+
+**What a step that takes a layer away actually carries.** The header said a creation "comes back empty and
+gets its pixels from the pixel entries of the same step", so the first version of this change recorded the
+`fill` beside the arrival — a whole canvas of bytes per Add, and wrong twice over. Undoing a creation moves
+the **live layer** into the entry, and `record_layer_removed` files one the same way, so every
+`layer_absent` re-inserts the layer it was handed: `layer.add` with `fill: [9,8,7,255]` undone and redone
+returns the opaque layer with nothing recorded but the arrival. `add_layer_written` still records the answer
+beside its arrival, because an answer is a *write* whose `before` has to exist for the step to be undone in
+order — not because the shell needs filling. The command-level test reads the bytes back after the redo,
+because "the layer came back" is a claim an empty shell would also satisfy, and it is that test which said
+the comment was wrong rather than the code.
+
+What fell out of it: `step_structure`'s empty-shell branch, `Stacked::name` and `record_layer_created`'s
+`name` argument. Every entry that brings a layer back carries the layer, so a name stored beside it was a
+second representation of a fact already in the thing — and a branch that no road reaches is not a safety
+net, it is a place where a wrong layer can be manufactured quietly.
+
+**What recording the departure made unnecessary.** `History::drop_layer`, `drop_entries`, `drop_where` and
+`names_layer` are **gone** — four functions and the rule they carried, that a step naming a layer which is
+not there must be thrown away with the unrelated steps around it. They were only ever right because a
+departure was irreversible. Recorded, a departure is a step *above* the layer's own paint, so undoing it
+first hands that paint a layer to land on: `test_deleting_a_layer_is_one_step_that_gives_it_back_whole`
+walks five steps back and five forward through a deletion and lands every one of them, and the panel probe
+clicks `Delete layer`, presses `Ctrl+Z`, and finds the card in the same pixels holding the same picture —
+the thumbnail is keyed to the layer's id, which the deletion released and the undo re-used.
+
+`step_back`'s validation stays, and its meaning changed: it is no longer a workflow (`delete a layer, then
+try to undo its paint`) but the fence under the timeline — a layer that went missing *without* a recorded
+departure drops the history whole rather than writing bytes into a layer that is not there. Same for a
+plane of another canvas.
+
+**Half a rule is worse than none, which is why `layer.add` is in this change and not a later one.** With
+the departure recorded and the arrival not, `Ctrl+Z` after Add would silently undo the *previous* edit —
+the surprise is worse than the missing step, and it is the same surprise the coverage rule was written to
+remove.
+
+**Observed, first run with a display.** `Xvfb` is installed, so the whole suite ran including the
+app-over-the-wire tier: **40 tests, 0 failed, 0 skipped** (322 s), and the two coverage commits landed
+earlier today passed over the wire for the first time. The panel probe's new claim was itself wrong on its
+first run and taught something: a card's `picture` box is clipped by the panel's viewport, so a thumbnail
+grabbed after the wheel moved the list is a *different region* (44×29 against 44×25) and comparing the two
+pixels is comparing nothing. The claim now pins the reported box before and after, so the measurement fails
+loudly if the layout moved instead of quietly comparing two different pictures.
+
+**Owed from here**: nothing in the history rule except a layer's visibility, opacity and blend mode — and
+that is a decision about whether those belong in a timeline at all, not a missing entry. The next slice is
+6, *Blend*, whose seam is `region: layer`.
+
+## 2026-10-19 - A mask plane is a step, and the coverage rule has no exception left
+
+The note below left one hole: `mask.add`, `mask.remove` and `mask.from_selection` onto a bare layer moved
+coverage and entered nothing. They are in the timeline now as `Kind::mask_replaced`, which holds the layer's
+mask that is *not* current — `nullopt` being one of the two states it carries — and applies it by swapping,
+the third entry built that way after `stack_replaced` and `coverage`. The rule it was checked against is
+not "does undo move the pixels back" but "does undo bring back **the** mask, with the coverage it was
+hiding": `mask.add` over a layer whose mask had a corner hidden, then undo, returns that corner, which an
+entry recording "a mask exists" cannot promise.
+
+**Two things the entry does not need, and one it must not lose.** It wants no `layer_created`/
+`layer_absent` twin: those two exist because a *layer* has a position in a stack and the frames of a
+removal and an insert disagree (see the flatten note). A plane has no position — it is a field of one
+layer — so one kind swapping `optional<Mask>` covers both directions and the pair would be two encodings
+of one fact. And `History::drop_mask` is **gone**, not kept: it existed because a plane that could only go
+forever made every coverage step underneath it unrestorable. Once the removal is a step, those steps are
+reachable again by undoing the removal first, and `test_taking_the_mask_off_ends_the_gesture_and_is_itself_undoable`
+walks the removal, the colour step and the plane's arrival in one timeline to show nothing was thrown away.
+
+**What it catches by construction.** `fits` asks two questions of a plane entry — the layer is there, and
+the plane is the size of that layer's picture — and `step_back` validates in the same order it applies, so
+a mask of another canvas clears the timeline instead of draping a layer with coverage that does not fit it.
+The interaction that was worth the walk is the one between kinds: `layer.merge` puts a layer back and the
+step *underneath* it names that layer's mask, so undo hands the mask off to a layer the merge had just
+re-inserted, and redo takes it back off. `test_merging_down_shows_what_the_canvas_already_showed` and
+`test_flattening_leaves_one_layer_that_shows_what_the_stack_showed` now walk through it, both directions.
+
+**`Applied::structure` is the right flag here, and a second flag would not have been.** A mask change moves
+no pixel of any layer, but it changes what the composite shows everywhere the layer reaches — which is what
+`structure` already means, and what makes `Document::undo` widen the pending region to the whole canvas. The
+kinds that need saying the other way round - a mark moving, a name going back - are read from the absence:
+`structure` false with an empty `rect`, so nothing has to be kept in step as entries are added.
+
+**What is left outside the timeline is now one thing, not a family.** A layer's arrival and deletion landed
+in the note above this one; visibility, opacity and blend mode are the remainder — composite state the stack
+carries, which undo restores only as part of a layer that arrives, goes or is replaced. ARCHITECTURE §Undo
+states the boundary that way: the *coverage* rule and the *stack* rule are closed, the properties are the
+open half.
+
+**On this box**: as the note below — no `Xvfb`, no root, so the wire tier skipped and `wire_input`'s
+`mask.from_selection` claim was rewritten to the new rule without being run. `ctest --test-dir build`: 40
+tests, 0 failed, 15 skipped.
+
+## 2026-10-19 - One gesture that changes coverage is one undo step
+
+The marked area is a document property — it is saved with the project — and it had no undo. It does now.
+`Kind::coverage` in `core/history` holds the coverage that is **not** current and applying it *swaps* it,
+exactly as a replaced stack does, and `History::undo` is handed the document's plane next to the layer
+stack. `Document::set_selection` is the one write door: outside a gesture it records what it replaces,
+inside one the gesture owns the step. `begin_marked` / `repaint_marked` / `commit_marked` /
+`cancel_marked` are the bracket the marquee and `cover` press open and shut around the coverage the press
+found.
+
+**What the change found, rather than what it needed.** Four things, all in the drag path:
+
+* A marquee aimed at a *layer mask* called `paint_mask` once per pointer event, so a 20-event drag pushed
+  20 undo steps and repainted the canvas with each. It runs through the layer's provisional door now —
+  the one the `cover` stroke has always used — so the drag is one step committed at release.
+* The same marquee wrote its shape into the live mask instead of drawing it onto what the press found, so
+  a drag that changed its mind left the earlier box's coverage behind: 256 px marked where the person
+  described 48. Both lifetimes now replace the coverage they are aimed at, from the held bytes.
+* `cover` aimed at the marked area stamped its accumulated scratch onto the *current* selection every
+  event, so the coat compounded and a held pointer darkened the dab once per frame. It restores what the
+  press found inside the event's rectangle first, which is what the colour path does; the new test pins
+  it — three overlapping events equal one coat, byte for byte.
+* A marquee took its lifetime from `coverage.target` on every event *and* on release, so a target switch
+  mid-drag wrote the box into one door and shut the other: the marked gesture was never closed, and from
+  then on every selection command wrote coverage without recording it. `PointerSelection` now carries the
+  lifetime the press opened, as it already carried the shape, and `stroke.marquee_coverage` says which one
+  a running drag holds.
+
+**The step moves coverage and nothing else**, which is a fact the renderer needs: `structure` is not set and
+the entry's `rect` is empty, so `Document::undo` neither widens the pending region nor calls
+`changed_all_layers`. Bumping the stack's revision for a mark would re-upload a texture nobody repainted
+and resample every layer card — invisible, and a per-frame cost — so the tests hold `revision` and every
+layer's `content_revision` unchanged across a mark's undo and redo.
+
+**A marked gesture and a layer gesture are different presses**: `begin_marked` refuses when a provisional
+edit already holds a layer's plane and `begin_provisional` refuses the other way round, naming what is
+held. One gesture, one set of held-aside bytes; the alternative is a commit that restores neither.
+
+**Owed, and landed the same day below.** A mask appearing or going was still coverage that could not be
+undone, because the entry it wants is the pair restated for a *plane*. That is the next note.
+
+**What it changes for the next slice.** Slice 6 gives a recipe a third scope, `region: layer`, whose
+coverage is the layer's own alpha. Coverage that a person *edits* is now undoable per gesture; coverage
+the layer *has* by being painted is the same plane, so the seam to watch is a verb whose answer arrives as
+a layer whose alpha is the coverage: landing it writes pixels and no coverage step, and the rule that a
+step prices only what it touched is what keeps that landing from snapshotting the mark along with it.
+
+**On this box**: no `Xvfb` and no root, so the app-over-the-wire tier *skips* and none of this was seen
+through a window — the claims are unit and command-table level (`test_document`, `test_history`,
+`test_app`), and `coverage_view_probe`, `verb_bar_probe`, `layer_panel_probe` and `wire_input` have not
+run since. `ctest --test-dir build`: 40 tests, 0 failed, 15 skipped. Getting there needed the harness
+fixed first — see the note below on `prep_proof` and `coverage_view_probe` aborting instead of skipping.
 
 ## 2026-10-16 - The stack becomes one layer, and the history entry that can say so
 
@@ -421,11 +794,13 @@ fine a minute before.
 | `ai/queue` | one worker, cancellable, in-memory; a job's timeout is predicted when it is queued so it cannot change under it; **a re-ask is another request** | `test_backend` |
 | `ai/server` | latency EMA per `(model, w×h, steps)` → ETA and `timeout_request`; a reply inside 1 s is the box's own answer and never a sample | `test_backend`, `docs/probes/` |
 | `app::kVerbs` + `ai.verbs` | five verbs bound to recipes; a row whose recipe contradicts it — wrong operation, an `ask` that grew, two verbs on one recipe — makes the row not-ready at session open | `test_app`, `ai.verbs` |
-| `app/coverage.h` (`coverage.target`) | one coverage, two lifetimes: `cover` and the marquee write whichever `marked`/`mask` says, a gesture keeps the lifetime it was pressed on, marking costs no pixel write and no undo step, and colour stays a tool rather than a target | `test_app`, `wire_input`, `mask_speed_probe` |
+| `app/coverage.h` (`coverage.target`) | one coverage, two lifetimes: `cover` and the marquee write whichever `marked`/`mask` says, a gesture keeps the lifetime it was pressed on, marking writes no pixel byte and costs one undo step per gesture, and colour stays a tool rather than a target | `test_app`, `wire_input`, `mask_speed_probe` |
+| `Document::set_layer_mask` + `Kind::mask_replaced` | a layer's mask plane has one write door: putting one on, taking one off and replacing one are each one step that *swaps* the plane, so the coverage the layer was hidden by comes back rather than a fresh mask, the writes underneath it stay reachable, and `History` needs no `drop_mask` | `test_document`, `test_history`, `test_app` |
+| `Document::set_selection` + `begin_marked` | the marked area is one write door and one step per gesture: the marquee from press to release and a `cover` stroke commit once, in one coat, and undoing a mark puts coverage back without moving a pixel, a revision or a thumbnail | `test_document`, `test_history`, `test_app` |
 | `app/verb_bar.cpp` (`verb.bar`) | the bar offers exactly the verbs whose recipe has `scope: selection`, hangs off the mark and clear of it, and presses the panel's command; where it drew itself is read back rather than remembered by the caller | `test_app`, `verb_bar_probe` |
 | `ai.intent` | the whole action surface (intents, values, price, aspect, style, seed, job, session) in one command; a refusal is recorded so the next read shows it; the handshake lives here too | `test_app`, the status line, `panel_aspect_probe` |
 | `ai/recipes` (`aspects`, `variants`) | a frame is offered only by a document-scope `from_words` recipe, and a variant is interchangeable with its head at the key it shares (operation, endpoint, `ask`, `aspects`) or the table does not load | `test_recipes` |
-| `layer.move`, `layer.merge` (`core/document` + `core/history`) | a reorder is one step that writes no pixel and repaints everything; a merge leaves the canvas as the blend already showed it, to within one 8-bit step at soft edges; undo returns a whole layer - pixels, mask, mode, opacity - not an empty one | `test_document`, `layer_panel_probe` |
+| `layer.add`, `layer.move`, `layer.merge`, `layer.remove` (`core/document` + `core/history`) | a reorder is one step that writes no pixel and repaints everything; a merge leaves the canvas as the blend already showed it, to within one 8-bit step at soft edges; a layer arriving and a layer departing are each one step, and undo returns a whole layer - pixels, mask, mode, opacity, name - not an empty one; nothing in `History` invalidates steps by layer id | `test_document`, `test_history`, `test_app`, `layer_panel_probe` |
 | `app/ui.cpp` layer cards | every control reports the box it was drawn in, no control lies outside its card and no two claim the same pixel, and a control that cannot apply does nothing at all when pressed | `layer_panel_probe` |
 | `app/layer_thumbs` | a picture is keyed to the layer it is a picture *of*: opacity, order and a layer arriving resample nothing, a write to the layer resamples one, and the count is on the wire | `layer_panel_probe` through `app.state.layer_thumbs.rebuilds` |
 | `pump_ai_landings` | a succeeded job lands itself at the first door that reads the queue; it never re-lands what undo removed; a job lands only in the `document_epoch` it was queued under | `test_app`, `wire_input` |
@@ -529,6 +904,13 @@ invariant) carry the rest. Suite: 37/37 with `test_verb_bar_probe` added.
   out of an `InputText` — measured, text keeps appending — so a verb key pressed with a box active is
   correctly swallowed until `Enter` / `Escape` / a click elsewhere. `WantCaptureKeyboard` being true
   looks like a bug in the gate and is not one; prove it with injected keys before changing the gate.
+* **A live gesture must write onto the bytes it found, not onto what it has already written.** Both halves
+  of coverage failed this way in one pass: the marquee aimed at a mask wrote its shape into the live mask,
+  so the leftovers of every earlier box in the sweep stayed marked, and `cover` aimed at the marked area
+  re-stamped its accumulated scratch onto the current selection, so a still pointer darkened the dab once
+  per frame. Restore the held-aside region first, then paint what the event touched — the rule the colour
+  path has followed since the paint-cost probe, and the reason the marked coverage was given the same door
+  instead of a shortcut.
 * **Undo takes the marked area with it.** A probe that undoes an answer must mark the area again before
   asking whether a verb could run, or it reads its own bookkeeping instead of the verb.
 * **`nlohmann` two-step**: an object literal whose key is a *variable* can deduce an array — build the
@@ -618,9 +1000,10 @@ disagrees with [PRODUCT.md](PRODUCT.md) or the code, it is the older text.
   contiguous/global, anti-aliased) on composite or active layer
 - new/add/subtract/intersect modifiers; invert; feather; expand/shrink; border
 - **live**: marching ants, `Ctrl+D` clear, invert, save selection ↔ layer mask (and the reverse), and
-  two shapes — rectangle (`M`) and the anti-aliased ellipse inscribed in the drag (`Shift+M`), plus
-  `select.rect` / `select.ellipse` with `replace`/`add`/`subtract`. Missing: lasso, wand, feather,
-  expand/shrink and border
+  three tools — rectangle (`M`), the anti-aliased ellipse inscribed in the drag (`Shift+M`), and
+  freehand Lasso (`L`) with even-odd filling and `Shift`/`Alt` add/subtract. `select.rect`,
+  `select.ellipse` and `select.lasso` expose replace/add/subtract to the command table. Missing: wand,
+  feather, expand/shrink and border
 
 **AI**
 - `New image from prompt` → new layer, aspect presets at the model's native scale,
@@ -762,3 +1145,30 @@ The prompt box was a lesson in where truth lives. It held a `char` buffer filled
 a prompt set over the wire stored correctly and rendered empty forever: the buffer is a *view* of
 `new_document` and is refilled from the form whenever the keyboard is not holding it — the rule the verb
 fields already used, discovered by looking at the working case instead of inventing a second one.
+
+## 2026-10-25 — Native ImGuiFileDialog (superseded)
+
+The external Linux-only picker is replaced with the native ImGuiFileDialog v0.6.8
+modal. `file.pick` queues `PickRequest`, the frame renders the browser, and the
+existing `pump_picked_files()` routes `PickResult` through `file.answer`.
+The native picker shares the app's Light/Dark theme and uses Sokol thumbnails;
+Open, Save As, Export, Insert and multi-image references share one implementation.
+WASM retained the browser file bridge. This picker was replaced on 2026-10-26 to meet the movable-window
+requirement; see the newer file-dialog entry below.
+
+## 2026-10-26 — Movable native file picker
+
+Native File Dialog Extended v1.4.1 replaces the embedded browser. The `file.pick` command still queues
+the same request, then the host consumes it on the main thread, passes the Sokol parent-window handle,
+and waits for the OS dialog to return. The native modal pauses the host frame loop and debug-wire polling;
+after it closes, `file.pick.state` reports the result and `file.answer` still owns file operations. The
+WASM browser bridge is unchanged. Linux builds use NFD's
+GTK 3 backend; the native host remains Linux-first, while the dependency also supplies Windows and macOS
+backends for the host ports.
+
+Architecture verdict: file ownership is now on the platform side instead of being drawn into the one
+Sokol window. A native modal window solves detachment without adding secondary Sokol contexts, changing
+the app command protocol, or moving file routing into the platform adapter. The test seam still separates
+the queued request/result from file operations, and the existing selection order is deterministic after
+the NFD path set is collected. The crop/resize milestone and the document/history constraint it needs are
+unchanged. See `docs/FILE_BROWSER.md`.

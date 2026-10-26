@@ -211,7 +211,10 @@ json layer_panel_json(const AppState& state) {
                 {"add", screen_json(controls.add)},
                 {"remove", screen_json(controls.remove)},
                 {"flatten", screen_json(controls.flatten)},
-                {"can_flatten", controls.can_flatten}};
+                {"mask_add", screen_json(controls.mask_add)},
+                {"mask_remove", screen_json(controls.mask_remove)},
+                {"can_flatten", controls.can_flatten},
+                {"has_mask", controls.has_mask}};
 }
 
 json image_json(const Image& image, const std::string& label) {
@@ -329,6 +332,12 @@ json document_json(const AppState& state) {
 }
 
 json stroke_json(const AppState& state) {
+    json lasso_points = json::array();
+    if (state.select.active && state.select.gesture == SelectionGesture::lasso) {
+        for (const Vec2 point : state.select.path) {
+            lasso_points.push_back(json::array({point.x, point.y}));
+        }
+    }
     return json{{"active", state.gesturing()},
                 {"dabs", state.stroke.dabs},
                 // Which plane this press has been writing since the button went down, which is the
@@ -349,7 +358,12 @@ json stroke_json(const AppState& state) {
                                                state.select.rect.w, state.select.rect.h})},
                 // Which shape the marquee is drawing, so a screenshot of an elliptical selection can
                 // be told from a rectangular one with the same bounds.
-                {"marquee_shape", mask_shape_name(state.select.shape)},
+                {"marquee_shape", selection_gesture_name(state.select.gesture)},
+                {"lasso_points", std::move(lasso_points)},
+                {"selection_mode", mask_op_name(state.select.mode)},
+                // The lifetime the marquee's press opened, which outlives wherever the switch has been
+                // aimed by now.
+                {"marquee_coverage", coverage_target_name(state.select.coverage)},
                 {"provisional_area",
                  json::array({state.doc.provisional_area().x, state.doc.provisional_area().y,
                               state.doc.provisional_area().w, state.doc.provisional_area().h})}};

@@ -2,10 +2,17 @@
 #include "platform/platform.h"
 
 #include <ctime>
+#include <random>
 #include <unistd.h>
 #include <cstdlib>
 #include <filesystem>
+#include <system_error>
 #include <thread>
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <cstring>
+#endif
 
 #if !defined(__linux__) && !defined(__APPLE__)
 #error "noise has no platform implementation for this target (see docs/ARCHITECTURE.md)"
@@ -50,6 +57,22 @@ std::string runtime_dir() {
     return ensure_dir(root / "noise-edit").string();
 }
 
+std::string executable_path() {
+#if defined(__linux__)
+    std::error_code error;
+    return std::filesystem::read_symlink("/proc/self/exe", error).string();
+#elif defined(__APPLE__)
+    std::uint32_t size = 0;
+    static_cast<void>(_NSGetExecutablePath(nullptr, &size));
+    std::string path(size, '\0');
+    if (_NSGetExecutablePath(path.data(), &size) != 0) {
+        return {};
+    }
+    path.resize(std::strlen(path.c_str()));
+    return path;
+#endif
+}
+
 std::optional<std::string> env(const std::string& name) {
     if (const char* raw = std::getenv(name.c_str())) {
         return std::string(raw);
@@ -75,6 +98,13 @@ void sleep_ms(int ms) {
 
 std::int64_t pid() {
     return static_cast<std::int64_t>(::getpid());
+}
+
+std::uint64_t random_seed() {
+    // Two draws: libstdc++ hands out 32 bits at a time, so one call would leave the upper half of the
+    // return value constant.
+    std::random_device device;
+    return (static_cast<std::uint64_t>(device()) << 32) | static_cast<std::uint64_t>(device());
 }
 
 }
