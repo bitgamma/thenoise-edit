@@ -11,7 +11,6 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <thread>
 #include <utility>
 
 namespace noise::app {
@@ -201,8 +200,7 @@ json front_door_json(const AppState& state) {
 }
 
 void register_file_commands(AppState& state, CommandTable& table) {
-    // The picker blocks for as long as the person takes, and a frame loop that waits for it stops
-    // answering the wire. So the answer arrives on a worker and `file.pick.state` is what anyone reads.
+    // The command queues its request so a debug-wire caller never opens a native window off-thread.
     table.add("file.pick", "Ask the desktop for a path; read the answer from file.pick.state",
               {"Ctrl+O"},
               {"for", "title", "path", "multiple"}, [&state](const json& args) -> CommandResult {
@@ -235,8 +233,8 @@ void register_file_commands(AppState& state, CommandTable& table) {
                   }
                   {
                       std::lock_guard lock(state.pick_mutex);
-                      if (state.pick_running) {
-                          return fail("file.pick", "a picker is already open ('" +
+                      if (state.pick_running || state.pick_needs_route) {
+                          return fail("file.pick", "a picker is already open or its answer is pending ('" +
                                                       state.pick_title +
                                                       "'); answer it, then ask again");
                       }
@@ -246,19 +244,12 @@ void register_file_commands(AppState& state, CommandTable& table) {
                       state.pick_set = file_set_name(*set);
                       state.pick_needs_route = true;
                       state.pick_note.clear();
+#ifndef __EMSCRIPTEN__
+                      state.pick_request = request;
+#endif
                   }
 #ifdef __EMSCRIPTEN__
                   platform::begin_browser_pick(request);
-#else
-                  if (state.pick_worker.joinable()) {
-                      state.pick_worker.join();
-                  }
-                  state.pick_worker = std::thread([&state, request] {
-                      const platform::PickResult answered = platform::pick_path(request);
-                      std::lock_guard lock(state.pick_mutex);
-                      state.pick_answer = answered;
-                      state.pick_running = false;
-                  });
 #endif
                   return command_ok({{"started", true},
                                      {"for", file_set_name(*set)},
@@ -453,8 +444,26 @@ void register_file_commands(AppState& state, CommandTable& table) {
               });
 }
 
+#ifndef __EMSCRIPTEN__
+std::optional<platform::PickRequest> take_native_file_pick(AppState& state) {
+    std::lock_guard lock(state.pick_mutex);
+    auto request = std::move(state.pick_request);
+    state.pick_request.reset();
+    return request;
+}
+
+void finish_native_file_pick(AppState& state, platform::PickResult result) {
+    std::lock_guard lock(state.pick_mutex);
+    if (!state.pick_running) {
+        return;
+    }
+    state.pick_answer = std::move(result);
+    state.pick_running = false;
+}
+#endif
+
 // The frame that opens a picker and the frame that receives its answer are minutes apart, and the
-// answer arrives on a worker. Routing it here rather than in whichever widget asked means a pick asked
+// answer arrives in a later frame. Routing it here rather than in whichever widget asked means a pick asked
 // for over the wire does the same thing as one clicked: the answer is applied once, a refusal is left
 // where the buttons are, and a cancelled dialog stays silent because "no" is an ordinary answer.
 void pump_picked_files(AppState& state, CommandTable& table) {

@@ -55,6 +55,20 @@ FetchContent_Declare(json
 FetchContent_MakeAvailable(sokol imgui json)
 
 if(NOT EMSCRIPTEN)
+    set(NFD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(NFD_INSTALL OFF CACHE BOOL "" FORCE)
+    if(NOT NFD_PORTAL)
+        set(NFD_APPEND_EXTENSION ON CACHE BOOL "" FORCE)
+    endif()
+    set(NFD_WAYLAND OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(nfd
+        GIT_REPOSITORY https://github.com/btzy/nativefiledialog-extended.git
+        GIT_TAG        v1.4.1
+        GIT_SHALLOW    TRUE)
+    FetchContent_MakeAvailable(nfd)
+endif()
+
+if(NOT EMSCRIPTEN)
     find_package(OpenGL REQUIRED)
     find_package(X11 REQUIRED COMPONENTS Xcursor Xi)
     find_package(Threads REQUIRED)
@@ -97,12 +111,7 @@ else()
     add_library(noise_platform STATIC
         src/platform/posix.cpp
         src/platform/posix_net.cpp
-        src/platform/file_dialog_argv.cpp)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        target_sources(noise_platform PRIVATE src/platform/file_dialog_linux.cpp)
-    else()
-        target_sources(noise_platform PRIVATE src/platform/file_dialog_none.cpp)
-    endif()
+        src/platform/file_dialog_filters.cpp)
 endif()
 target_include_directories(noise_platform PUBLIC src)
 if(EMSCRIPTEN)
@@ -249,6 +258,10 @@ add_library(noise_ui STATIC
     src/app/reference_thumbs.cpp)
 target_include_directories(noise_ui PUBLIC src)
 target_link_libraries(noise_ui PUBLIC noise_app noise_gfx imgui sokol)
+if(NOT EMSCRIPTEN)
+    target_sources(noise_ui PRIVATE src/app/ui_file_dialog.cpp src/platform/file_dialog_nfd.cpp)
+    target_link_libraries(noise_ui PUBLIC nfd)
+endif()
 
 add_executable(noise-edit
     src/main.cpp)
@@ -272,6 +285,9 @@ if(EMSCRIPTEN)
 else()
     install(TARGETS noise-edit RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     install(DIRECTORY assets/ DESTINATION ${CMAKE_INSTALL_DATADIR}/thenoise-edit)
+    install(FILES "${nfd_SOURCE_DIR}/LICENSE"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/thenoise-edit"
+            RENAME NativeFileDialog-Extended-LICENSE)
 endif()
 
 if(EMSCRIPTEN)

@@ -1,7 +1,7 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the tree against the docs: **2026-10-25**, after freehand Lasso — the selection design was
-checked against `Mask`, `maskops`, tool metadata, provisional edits, the canvas and the command table. The
+Last re-read of the tree against the docs: **2026-10-26**, after the movable native picker — the file
+selection path was checked against the command table, host loop, platform boundary and WASM bridge. The
 selected next architecture milestone remains `doc.crop` / `doc.resize`, blocked on
 `History::fits_coverage` validating coverage when a history entry's canvas extent differs from the current
 stack extent. `AGENTS.md` is normative and outranks this file.
@@ -1040,3 +1040,30 @@ The prompt box was a lesson in where truth lives. It held a `char` buffer filled
 a prompt set over the wire stored correctly and rendered empty forever: the buffer is a *view* of
 `new_document` and is refilled from the form whenever the keyboard is not holding it — the rule the verb
 fields already used, discovered by looking at the working case instead of inventing a second one.
+
+## 2026-10-25 — Native ImGuiFileDialog (superseded)
+
+The external Linux-only picker is replaced with the native ImGuiFileDialog v0.6.8
+modal. `file.pick` queues `PickRequest`, the frame renders the browser, and the
+existing `pump_picked_files()` routes `PickResult` through `file.answer`.
+The native picker shares the app's Light/Dark theme and uses Sokol thumbnails;
+Open, Save As, Export, Insert and multi-image references share one implementation.
+WASM retained the browser file bridge. This picker was replaced on 2026-10-26 to meet the movable-window
+requirement; see the newer file-dialog entry below.
+
+## 2026-10-26 — Movable native file picker
+
+Native File Dialog Extended v1.4.1 replaces the embedded browser. The `file.pick` command still queues
+the same request, then the host consumes it on the main thread, passes the Sokol parent-window handle,
+and waits for the OS dialog to return. The native modal pauses the host frame loop and debug-wire polling;
+after it closes, `file.pick.state` reports the result and `file.answer` still owns file operations. The
+WASM browser bridge is unchanged. Linux builds use NFD's
+GTK 3 backend; the native host remains Linux-first, while the dependency also supplies Windows and macOS
+backends for the host ports.
+
+Architecture verdict: file ownership is now on the platform side instead of being drawn into the one
+Sokol window. A native modal window solves detachment without adding secondary Sokol contexts, changing
+the app command protocol, or moving file routing into the platform adapter. The test seam still separates
+the queued request/result from file operations, and the existing selection order is deterministic after
+the NFD path set is collected. The crop/resize milestone and the document/history constraint it needs are
+unchanged. See `docs/FILE_BROWSER.md`.

@@ -21,7 +21,6 @@
 #include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace noise {
@@ -240,9 +239,8 @@ struct AppState {
     app::FrontDoor front_door = app::FrontDoor::closed;
     app::NewDocumentForm new_document;
 
-    // A native file picker blocks until the person answers, so it runs on a worker and the answer lands
-    // here for the panel, the wire and the frame loop to read. One at a time: a second dialog would be a
-    // modal nobody can see, and an answer has to belong to the request still on screen.
+    // A picker request may originate in the UI or debug-wire thread. The native
+    // ImGui dialog consumes it on the frame thread; the browser uses its JS callback.
     std::mutex pick_mutex;
     bool pick_running = false;
     std::string pick_title;
@@ -253,15 +251,8 @@ struct AppState {
     std::string pick_set;
     bool pick_needs_route = false;
     std::string pick_note;
-    // The desktop picker owns its worker; the browser picker posts its answer to the frame loop.
 #ifndef __EMSCRIPTEN__
-    std::thread pick_worker;
-
-    ~AppState() {
-        if (pick_worker.joinable()) {
-            pick_worker.join();
-        }
-    }
+    std::optional<platform::PickRequest> pick_request;
 #endif
 
     // True while the pointer is inside a gesture of any tool. The host ends the gesture on the

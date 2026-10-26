@@ -42,4 +42,11 @@ json front_door_json(const AppState& state);
 // that the answer is routed whoever asked for the dialog.
 void pump_picked_files(AppState& state, CommandTable& table);
 
+#ifndef __EMSCRIPTEN__
+// The host consumes a pending native request. Native dialogs must not be opened in the command
+// callback, which can run on the debug wire.
+std::optional<platform::PickRequest> take_native_file_pick(AppState& state);
+void finish_native_file_pick(AppState& state, platform::PickResult result);
+#endif
+
 }  // namespace noise::app
