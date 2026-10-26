@@ -98,8 +98,10 @@ Working on an existing file is the same story with fewer steps: open, do, save.
 - The verbs live **next to the marked area** - a floating bar at the selection - because that is where the
   eyes already are. The panel keeps the full controls for the same verbs.
 - **Layers are always shown**, with thumbnails, and the mask thumbnail when there is one.
-- **File dialogs are the desktop's own** (portal/zenity subprocess, one file in `src/platform/`), with the
-  in-app browser as the fallback where no portal exists.
+- **Native file dialogs** use Native File Dialog Extended (Zlib, v1.4.1), as a separate
+  movable OS window parented to the editor. Open, Save As, Export, Insert and Add Reference
+  share this dialog; reference images support multi-selection. The WASM build retains browser
+  file APIs and downloads, with no filesystem access.
 - **Save writes `.noise`, flat images are Export** (png / jpg / webp).
 - **Fix, Insert and Erase are three buttons**, not one button with a mode: three things a person wants are
   three things they can see.

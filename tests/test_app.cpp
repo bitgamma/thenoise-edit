@@ -4484,26 +4484,19 @@ void test_unsaved_work_holds_a_quit() {
 void test_a_picked_path_is_applied_whatever_asked_for_the_dialog() {
     const std::filesystem::path dir = std::filesystem::temp_directory_path() / "noise-app-pick-test";
     std::filesystem::create_directories(dir);
-    const std::filesystem::path script = dir / "answer.sh";
-    {
-        std::ofstream out(script);
-        out << "#!/bin/sh\nprintf '%s\\n' \"$NOISE_PICK_ANSWER\"\n";
-    }
-    ::chmod(script.c_str(), 0755);
     const std::filesystem::path target = dir / "picked.noise";
     std::filesystem::remove(target);
-    ::setenv("NOISE_PICKER_PROGRAM", script.c_str(), 1);
-    ::setenv("NOISE_PICK_ANSWER", target.string().c_str(), 1);
 
     Harness h;
     h.value("doc.new", json{{"width", 8}, {"height", 8}});
     h.value("file.pick", json{{"for", "project"}, {"title", "Save document"}});
-    for (int i = 0; i < 400 && h.state.pick_running; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    const auto pending = app::take_native_file_pick(h.state);
+    REQUIRE(pending.has_value());
+    CHECK(pending->kind == platform::PickKind::save);
+    platform::PickResult answer;
+    answer.paths = {target.string()};
+    app::finish_native_file_pick(h.state, std::move(answer));
     app::pump_picked_files(h.state, h.table);
-    ::unsetenv("NOISE_PICKER_PROGRAM");
-    ::unsetenv("NOISE_PICK_ANSWER");
     CHECK_EQ(h.state.doc.path(), target.string());
     CHECK(!h.state.doc.dirty());
     CHECK(std::filesystem::exists(target));

@@ -21,6 +21,7 @@ Every claim here is either in the tree or marked **(planned)** / **(out)**. What
 | GPU | **sokol_gfx**, backend `SG_BACKEND_GL3` first | Metal/D3D11/WGPU one flag away; GL3.3 is the boring, works-everywhere choice |
 | Platform | **sokol_app** (decided: no pen/tablet in MVP) | zero extra deps, same API shape; if tablet pressure ever becomes a requirement, SDL3 goes behind the same shim |
 | UI toolkit | **Dear ImGui** + docking branch, via `sokol_glue.h` + `sokol_imgui.h` | fastest path to a full editor chrome |
+| Native file dialogs | **Native File Dialog Extended 1.4.1** | separate OS-owned windows, with a parent handle from Sokol |
 | Image codecs | **libpng** (lossless, alpha), **libwebp** (opaque payloads), **libjpeg** (JPEG export) | system libraries found by `pkg-config`, all present on this machine; `libjpeg-turbo` is a drop-in if export speed ever matters |
 | HTTP | **libcurl** (easy interface, worker threads) | ubiquitous, no TLS surprises |
 | JSON | **nlohmann/json** | config, model profiles, manifests |
@@ -29,8 +30,9 @@ Every claim here is either in the tree or marked **(planned)** / **(out)**. What
 | Vector overlay | **the ImGui draw list** today; **sokol_gl** (immediate) or a tiny instanced-quad path if an overlay ever has to be shaded | marching ants and the selection outline are line segments on `ImDrawList`, with the *geometry* - which pixel of the mask boundary is on which side - from `app/ants.{h,cpp}`. A draw-list element per dash is fine at a mask's perimeter and would not be at one per canvas square, which is the mistake `ui_vertices` exists to catch |
 | Inference backend | **Lemonade Server**, `thenoise` recipe only | we are a client; the model box is AMD/ROCm, usually on the LAN, bearer-keyed |
 
-Build: CMake + `FetchContent` (sokol, imgui, miniz, nlohmann). System libs via `pkg-config`, all
-required for the native target: libpng16, libjpeg, libwebp and libcurl (the AI transport).
+Build: CMake + `FetchContent` (sokol, imgui, miniz, nlohmann, Native File Dialog Extended). System
+libs via `pkg-config`, all required for the native target: libpng16, libjpeg, libwebp, libcurl (the
+AI transport) and GTK 3 development files for Linux native dialogs.
 The optional Emscripten target uses Emscripten codec ports and WebGL2, without libcurl or a
 worker thread; it is a local-only editor until an asynchronous browser AI transport exists.
 Everything statically linkable into one binary on Linux or a WASM/JS asset bundle in the browser. No OpenCV (heavy, wrong
@@ -40,13 +42,16 @@ licence gravity for what we need; the ~400 lines of healing/filtering we want ar
 but nothing may foreclose them:
 
 * one `CMakeLists.txt`, no hand-written makefiles, no shell-only build steps;
-* platform-specific code quarantined in `src/platform/` behind one header per concern. Two concerns have
-  implementations: `posix.cpp` (+`posix_net.cpp`) for time, paths and the wire's sockets, and
-  `file_dialog_{argv,linux}.cpp` for asking the desktop for a path - the argv is built portably so it is
-  testable everywhere, and only the spawn is Linux (`zenity`, replaced by `$NOISE_PICKER_PROGRAM`).
-  `file_dialog_none.cpp` is what any other target links: an error naming the unwritten seam, never a
-  cancel that did not happen. The header is the seam, a port adds a file rather than an `#ifdef` in
-  shared code, and anything above `src/platform/` is portable C++;
+* platform-specific code remains behind the `src/platform/` boundary for time,
+  paths and sockets. `file.pick` uses Native File Dialog Extended through
+  `src/platform/file_dialog_nfd.cpp`: requests can be posted from the debug wire,
+  and the host opens a parented OS dialog on the main thread. The dialog is a
+  separate movable native window; the command and result routing stay in the
+  shared file command table.
+  `file.pick.state` and `file.answer` remain the shared command interface. The
+  WASM build retains the separate JavaScript file picker and browser downloads.
+  The rest of the application is still Linux-first, and a full Windows/macOS
+  application build will require separate platform/backend work;
 * UTF-8 internally, `std::filesystem::path` (from/to UTF-8) at the boundary;
 * no POSIX-only primitives outside the shim: std threads/mutexes/atomics, no `fork`, no
   `poll`, no signal-based shutdown, no `dlopen`;
@@ -310,8 +315,8 @@ src/
     project.{h,cpp}    .noise read/write (the only layered format we read or write)
     config.{h,cpp}     app preferences: recent files and `ui_theme` in `$NOISE_CONFIG_DIR`; keymap and
                        keyring access remain planned
-assets/        shipped role and recipe tables, plus the bundled DejaVu Sans Regular UI font and its
-               license; CMake installs this tree in the native install prefix's shared data directory
+assets/        shipped role and recipe tables; CMake installs this tree in the native
+               install prefix's shared data directory (the GUI uses ImGui's default font)
 tests/         core + ai unit tests (no GPU), golden-image tests, and `fixtures/http` - the recorded
                server the default `ctest` run answers from
 tools/         the probes that drive the running app over the wire, and the shared harness

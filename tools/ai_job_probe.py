@@ -137,7 +137,7 @@ def seed_and_resample_claims(p: Probe, wire: wd.Wire, row: dict, words: dict, se
             f'{row["id"]}: the session reports the pin', str(state.get("seed_pinned")))
     one_press = wire.call("ai.preview", {**asked, "seed": seed})
     p.check(one_press["seed"] == seed and one_press["seed_source"] == "named",
-            f'{row["id"]}: a named seed belongs to this press only', 
+            f'{row["id"]}: a named seed belongs to this press only',
             f'{one_press["seed"]}/{one_press["seed_source"]}')
     wire.call("ai.intent", {"seed_pin": None})
     p.check(wire.call("server.state")["seed_pinned"] is False,

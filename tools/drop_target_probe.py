@@ -74,7 +74,7 @@ class X11:
                         if has_title and title else "")
                 if title:
                     self.lib.XFree(title)
-                if (name.endswith(" - TheNoise Editor")
+                if (name.endswith(" - noise-edit")
                         and self.longs(kids[i], "XdndAware")):
                     found.append(kids[i])
                 walk(kids[i], depth + 1)

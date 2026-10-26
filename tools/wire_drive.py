@@ -8,7 +8,7 @@ committed golden.
 
 Run through ctest (`test_view_golden`) or directly:
 
-    python3 tools/wire_drive.py --bin build/noise-edit --theme light \
+    python3 tools/wire_drive.py --bin build/noise-edit --theme dark \
         --golden tests/golden/view_pan_zoom.png
 
 Skips loudly (exit 0, "SKIP:" on stdout) when there is neither a display nor Xvfb: a missing

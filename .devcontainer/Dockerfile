@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-numpy python3-pil \
     libpng-dev libjpeg-dev libwebp-dev zlib1g-dev libcurl4-openssl-dev \
     libgl1-mesa-dev libglx-dev libgl1-mesa-dri mesa-utils \
-    libx11-dev libxcursor-dev libxi-dev libxtst-dev \
+    libx11-dev libxcursor-dev libxi-dev libxtst-dev libgtk-3-dev \
     xvfb xauth zenity \
     fonts-liberation fonts-noto-color-emoji \
     libasound2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \

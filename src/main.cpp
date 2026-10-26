@@ -2,6 +2,9 @@
 #include "app/ai_session.h"
 #include "app/commands.h"
 #include "app/file_commands.h"
+#ifndef __EMSCRIPTEN__
+#include "app/ui_file_dialog.h"
+#endif
 #include "app/shortcuts.h"
 #include "app/state.h"
 #include "app/ui.h"
@@ -239,11 +242,13 @@ void frame(void) {
     frame_desc.dpi_scale = sapp_dpi_scale();
     simgui_new_frame(&frame_desc);
 
-    // A desktop dialog answers whenever the person finishes with it, on its own thread; this is where
-    // its answer becomes an editing command.
+    // Pick results are routed on the frame thread before a queued native dialog opens.
     app::pump_picked_files(g.state, g.commands);
     app::draw_ui(g.state, g.commands, g.canvas_texture, g.checker, g.coverage_tint,
                  g.layer_thumbs, g.reference_thumbs);
+#ifndef __EMSCRIPTEN__
+    app::draw_native_file_dialog(g.state);
+#endif
     const app::PointerRequest request = app::pointer_request(g.state.pointer);
     // sokol_imgui applies ImGui's own cursor request at new-frame, before the canvas has decided what
     // it needs, so this is the frame's last word - and only over the canvas, so a text field in a panel
@@ -405,6 +410,9 @@ void event(const sapp_event* ev) {
 
 void cleanup(void) {
     g.wire.stop();
+#ifndef __EMSCRIPTEN__
+    app::shutdown_native_file_dialog();
+#endif
     g.canvas_texture.discard();
     g.checker.discard();
     simgui_shutdown();

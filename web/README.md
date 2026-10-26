@@ -19,7 +19,7 @@ Open `http://localhost:8000/noise-edit.html` in a WebGL2-capable browser.
 Do not use `file://`: Emscripten needs to fetch its `.wasm` and `.data` files.
 The build emits `noise-edit.html`, `noise-edit.js`, `noise-edit.wasm`, and
 `noise-edit.data`; deploy all four together. The `.data` contains the recipes,
-role table, and bundled GUI font. The first configure fetches the pinned Sokol,
+role table and recipes. The editor uses the default ImGui font. The first configure fetches the pinned Sokol,
 ImGui and JSON source trees, and the first Emscripten build may fetch codec ports.
 
 A native build remains unchanged:

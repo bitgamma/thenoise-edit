@@ -1,7 +1,7 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the tree against the docs: **2026-10-25**, after freehand Lasso — the selection design was
-checked against `Mask`, `maskops`, tool metadata, provisional edits, the canvas and the command table. The
+Last re-read of the tree against the docs: **2026-10-26**, after the movable native picker — the file
+selection path was checked against the command table, host loop, platform boundary and WASM bridge. The
 selected next architecture milestone remains `doc.crop` / `doc.resize`, blocked on
 `History::fits_coverage` validating coverage when a history entry's canvas extent differs from the current
 stack extent. `AGENTS.md` is normative and outranks this file.
@@ -62,94 +62,19 @@ Not preferences. Each one exists because breaking it was observed as a bug.
    output, and put the resident model back (`server.load`'s argument is `pinned`). No URL, host or key
    ever enters the repo.
 
-## 2026-10-23 — Native UI redesign and theme preference
+## 2026-10-23 — UI module split and theme preference
 
-The app chrome now uses one shared semantic palette and one UI font, with dark and light styles applied
-through the existing ImGui layer. The window code is split by real panel responsibilities so the next UI
-change can stay local to its canvas, front door, layers, tools, verb rows or theme. The theme picker uses
-the `ui.theme` command used by the debug wire; `io/config` owns its persisted value alongside recents.
-The native install carries the role, recipe and font assets under the same prefix, while GUI probes point
-`NOISE_CONFIG_DIR` into their temporary runtime and select a theme before capturing.
-The viewport golden is light mode and the CTest command names that choice explicitly.
+The original Dear ImGui editor layout, default font, tool list, welcome dialog and dark
+palette remain unchanged. UI implementation is split by panel responsibility (canvas,
+front door, layers, tools, verbs and theme), but this is not a visual redesign.
+The optional light/dark switch uses the `ui.theme` command, with its persisted value
+owned by `io/config` alongside recent files. The dark-mode viewport golden explicitly
+selects `--theme dark`; GUI probes use an isolated `NOISE_CONFIG_DIR`.
 
-Architecture verdict after rereading the full design: this changes no document, AI request, recipe, or
-pixel-write seam. The theme is an application preference, not project state. The new UI command is
-observable through the existing command table, and `app.state.ui_theme` reports the active choice. The
-installed asset lookup follows the executable and keeps CWD-independent launches on the same role, recipe
-and font files. GUI probes use the existing `io/config` path in a temporary directory. Future editor
-controls still belong in the existing UI modules and dispatch through the same command table. The
-remaining product roadmap is unchanged.
-
-## 2026-10-24 — Optional WebAssembly/WebGL2 build
-
-The `EMSCRIPTEN` CMake branch keeps the existing document, command table, Dear ImGui UI, and
-Sokol draw path. Only host seams change: WebGL2, browser file selection/drop/download, codec
-ports, and localStorage preferences live behind `src/platform/web*` and `web/`. Browser uploads
-and project bytes are transient MEMFS data until explicitly downloaded. The native executable
-and its tests remain the reference for image semantics. This no-pthread target intentionally
-cannot run the blocking libcurl job worker, so AI generation reports an unsupported operation
-rather than pretending to succeed; a future async Fetch transport requires its own tested job
-path and server CORS policy. The web file bridge has isolated Node tests, while full WASM
-rendering is exercised in Chromium/WebGL2 by `web/smoke.cjs`: in both themes it creates a canvas, paints,
-undoes, and checks the canvas capture returns byte-for-byte to its earlier state. It also downloads and
-reopens a `.noise` project, exports PNG, reopens it through the browser picker, and compares the visible
-canvas bytes. The brush slider rows reserve space for their full labels, including in a 280 px Tools dock.
-
-Architecture verdict after rereading the full design: the browser branch changes only host
-seams and keeps editing commands, document semantics and codecs in their existing modules.
-The slider adjustment stays in `app/ui_tool_panel`; the browser toolbar and native UI still
-reach behavior through the command table. The smoke test goes through real browser actions and
-pointer/keyboard input. No document, AI request, field policy, or debug-wire contract changed;
-async browser AI remains a separate transport milestone.
-
-The native and WASM builds pass. The bridge and Chromium smoke tests pass, including the `.noise` and
-PNG file round trips. Native CTest is 39/40: all GUI probes pass with `DISPLAY` unset; only the existing
-wide-versus-tiled timing assertion in `test_blend` fails, as it did before the merge. `sweep_procs.py`
-reports clean.
-
-## 2026-10-25 — Ordered AI references
-
-An AI edit now compiles its prepared document region as Image 1 and appends only explicitly selected
-file or layer references. The References section owns session-only selection and ordering; the Layers
-panel still owns document composition. The same command table serves the GUI and wire. File bytes are
-encoded once into cached PNGs, linked layer images refresh on content or opacity revisions, and the queue
-owns the submitted image bytes after enqueue. Repeated `image[]` parts carry two or more inputs in order;
-the existing landing, coverage and undo path still owns the result.
-
-Architecture verdict after rereading the full design against the tree: this feature fits at the AI session
-and request-builder seams. It does not add a document format member, modify layer composition or coverage,
-or create a second representation of the document. Request identity and recordings include every image in
-order; refusal from a backend is surfaced without reducing the request. The UI and wire expose the same
-reference actions and diagnostics. The next feature can consume the existing ordered request image list
-without another transport path.
-
-Verification: native CTest passes 40/40. The Emscripten build and browser bridge tests pass; Chromium
-smoke passes in both themes, including paint/undo and project/PNG round trips. Local screenshots show
-the ordered reference rows in Light and Dark Mode. The live check reached no inference: the configured
-dev-box `/health` connection failed, so no edit request was sent and no model was changed.
-
-## 2026-10-25 — Reference inclusion defaults and relinking
-
-Change and Fill now include configured references by default; Blend, Heal and Remove keep them out unless
-the person explicitly enables them for that operation. The References control and `ai.preview` report
-whether the additional images will be sent. Blend's recipe prompt asks for harmonization while retaining
-the inserted object's identity and placement. A linked layer reference keeps its stable layer id and last
-encoded image while that layer is temporarily absent, reconnects after undo, and detaches on a document
-epoch change. Request assembly moves the compiled buffers into the queued snapshot. The reference drop
-rectangle follows the clipped visible panel geometry.
-
-Architecture verdict after rereading the full design against the tree: the fixes stay at the existing
-recipe, intent, reference-session, request-builder and panel seams. They do not change transport structure,
-document pixels, coverage, result landing or model resolution. The explicit operation choice is carried
-through the command table and request preview, and the document epoch makes layer identity safe across
-undo and document switches without another reference store.
-
-Verification: the native build passed. The full native CTest run had 39/40 pass; its only failure was
-`test_provider`'s test-only recipe helper missing the newly required recipe field. After updating that
-fixture, `ctest --rerun-failed` passed the remaining test (1/1); `test_app` and the UI probes passed in the
-full run. The Emscripten build, browser bridge tests and Chromium smoke passed in both themes. The GUI
-probe checked the drop rectangle after scrolling the references panel. The configured endpoint refused
-the connection, so no live Change/Fill inference ran.
+The module split changes no document, AI request, recipe or pixel-write interface.
+Installed asset lookup resolves the role and recipe files relative to the executable.
+The browser build reuses these UI modules and its own platform-specific file handling.
+The remaining product roadmap is unchanged.
 
 ## What is next, in order
 
@@ -1040,3 +965,30 @@ The prompt box was a lesson in where truth lives. It held a `char` buffer filled
 a prompt set over the wire stored correctly and rendered empty forever: the buffer is a *view* of
 `new_document` and is refilled from the form whenever the keyboard is not holding it — the rule the verb
 fields already used, discovered by looking at the working case instead of inventing a second one.
+
+## 2026-10-25 — Native ImGuiFileDialog (superseded)
+
+The external Linux-only picker is replaced with the native ImGuiFileDialog v0.6.8
+modal. `file.pick` queues `PickRequest`, the frame renders the browser, and the
+existing `pump_picked_files()` routes `PickResult` through `file.answer`.
+The native picker shares the app's Light/Dark theme and uses Sokol thumbnails;
+Open, Save As, Export, Insert and multi-image references share one implementation.
+WASM retained the browser file bridge. This picker was replaced on 2026-10-26 to meet the movable-window
+requirement; see the newer file-dialog entry below.
+
+## 2026-10-26 — Movable native file picker
+
+Native File Dialog Extended v1.4.1 replaces the embedded browser. The `file.pick` command still queues
+the same request, then the host consumes it on the main thread, passes the Sokol parent-window handle,
+and waits for the OS dialog to return. The native modal pauses the host frame loop and debug-wire polling;
+after it closes, `file.pick.state` reports the result and `file.answer` still owns file operations. The
+WASM browser bridge is unchanged. Linux builds use NFD's
+GTK 3 backend; the native host remains Linux-first, while the dependency also supplies Windows and macOS
+backends for the host ports.
+
+Architecture verdict: file ownership is now on the platform side instead of being drawn into the one
+Sokol window. A native modal window solves detachment without adding secondary Sokol contexts, changing
+the app command protocol, or moving file routing into the platform adapter. The test seam still separates
+the queued request/result from file operations, and the existing selection order is deterministic after
+the NFD path set is collected. The crop/resize milestone and the document/history constraint it needs are
+unchanged. See `docs/FILE_BROWSER.md`.

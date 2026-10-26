@@ -19,11 +19,6 @@ using nlohmann::json;
 
 namespace {
 constexpr float kThemeSelectorWidthPx = 82.0f;
-#ifndef __EMSCRIPTEN__
-constexpr float kFileActionPaddingPx = 1.0f;
-constexpr float kFileActionVerticalPaddingPx = 3.0f;
-constexpr float kFileActionSpacingPx = 2.0f;
-#endif
 // The menu and the front door both ask for a path and act on the answer later: a native dialog is
 // asynchronous by design, so the click that opened it and the document it produced cannot share a
 // frame. This remembers which door the open picker is behind.
@@ -112,10 +107,6 @@ void draw_file_row(AppState& state, CommandTable& commands) {
     const bool has_document = !state.doc.empty();
 #ifndef __EMSCRIPTEN__
     const bool can_save = has_document && !state.doc.path().empty();
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                        ImVec2(kFileActionPaddingPx, kFileActionVerticalPaddingPx));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-                        ImVec2(kFileActionSpacingPx, ImGui::GetStyle().ItemSpacing.y));
     draw_file_buttons(commands, has_document, can_save);
     draw_export_insert_buttons(commands, has_document);
     ImGui::NewLine();
@@ -125,9 +116,6 @@ void draw_file_row(AppState& state, CommandTable& commands) {
         ImGui::SameLine();
         ImGui::TextDisabled("unsaved");
     }
-#ifndef __EMSCRIPTEN__
-    ImGui::PopStyleVar(2);
-#endif
 }
 
 // The body both doors draw: a size and, if the person already knows what they want, the words. Reading
