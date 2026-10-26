@@ -60,19 +60,19 @@ bool read_head(const std::string& path, std::vector<std::uint8_t>& out, std::siz
 bool write_file_atomic(const std::string& path, const std::vector<std::uint8_t>& bytes,
                        std::string& error) {
     const std::filesystem::path target = platform::path_from_utf8(path);
-    const std::filesystem::path temp = target.parent_path() /
-                                       (target.filename().string() + ".noise-tmp");
+    std::filesystem::path temp = target;
+    temp += ".noise-tmp";
     {
         std::ofstream file(temp, std::ios::binary | std::ios::trunc);
         if (!file) {
-            error = "cannot write file: " + temp.string();
+            error = "cannot write file: " + platform::path_to_utf8(temp);
             return false;
         }
         file.write(reinterpret_cast<const char*>(bytes.data()),
                    static_cast<std::streamsize>(bytes.size()));
         file.close();
         if (!file) {
-            error = "short write: " + temp.string();
+            error = "short write: " + platform::path_to_utf8(temp);
             return false;
         }
     }

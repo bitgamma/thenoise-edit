@@ -91,7 +91,8 @@ Image flattened_reference(const Image& source) {
 }
 
 std::string temp_path(const std::string& name) {
-    return (std::filesystem::temp_directory_path() / ("noise-test-" + name)).string();
+    return platform::path_to_utf8(std::filesystem::temp_directory_path() /
+                                  ("noise-test-" + name));
 }
 
 void test_png_round_trip() {
