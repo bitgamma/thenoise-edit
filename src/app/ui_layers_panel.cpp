@@ -13,6 +13,8 @@
 #include "sokol_imgui.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -24,6 +26,8 @@ using nlohmann::json;
 namespace {
 constexpr float kLayerOpacitySliderPx = 88.0f;
 constexpr float kLayerModeMinPx = 64.0f;
+constexpr const char* kLabelScale = "Scale";
+constexpr float kLayerScaleFieldPx = 64.0f;
 constexpr float kLayerCardPaddingX = 8.0f;
 constexpr float kLayerCardPaddingY = 4.0f;
 constexpr float kLayerCardSpacingX = 6.0f;
@@ -43,6 +47,25 @@ ImVec2 thumb_draw_size(Extent size) {
                   std::max(1.0f, static_cast<float>(size.h) * scale));
 }
 
+// A factor off the field's text: a whole number, a decimal, either sign rejected downstream. Anything
+// else - "big", "1.5x", empty - is not a factor, and the field keeps what was typed rather than sending a
+// zero the command would have to guess about.
+bool reads_factor(const char* text, double& factor) {
+    char* end = nullptr;
+    const double parsed = std::strtod(text, &end);
+    if (end == text) {
+        return false;
+    }
+    while (end != nullptr && *end != '\0' && (*end == ' ' || *end == '\t')) {
+        ++end;
+    }
+    if (*end != '\0' || !std::isfinite(parsed) || parsed <= 0.0) {
+        return false;
+    }
+    factor = parsed;
+    return true;
+}
+
 // The box of the item just submitted, in screen coordinates - the same box the hit test used.
 ScreenRect item_rect() {
     const ImVec2 from = ImGui::GetItemRectMin();
@@ -57,21 +80,57 @@ float button_px(const char* label) {
     return ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
 }
 
-void draw_layer_title(LayerCard& card, const Layer& layer, int row, int layer_count,
-                      float arrows_px, CommandTable& commands) {
+void draw_layer_title(AppState& state, LayerCard& card, const Layer& layer, int row,
+                      int layer_count, float arrows_px, CommandTable& commands) {
     bool visible = layer.visible;
     if (ImGui::Checkbox("##visible", &visible)) {
         commands.invoke("layer.set", json{{"index", row}, {"visible", visible}});
     }
     card.visibility = item_rect();
     ImGui::SameLine();
+    // The name stops where the arrows begin, so no pixel belongs to two controls. Its floor is the one
+    // thing that can lay them over each other again, in a card too narrow for the arrows and a name
+    // nobody could read anyway.
     const float name_px = std::max(
         kLayerNameMinPx,
         ImGui::GetContentRegionAvail().x - arrows_px - ImGui::GetStyle().ItemSpacing.x);
-    if (ImGui::Selectable(layer.name.c_str(), card.active, 0, ImVec2(name_px, 0.0f))) {
-        commands.invoke("layer.select", json{{"index", row}});
+    if (state.renaming.layer == layer.id) {
+        // The field takes the name's place rather than sitting over it: two items claiming one box and
+        // the point goes to whichever was submitted first. `Enter` commits and anything else drops it, so
+        // a name that was never confirmed cannot end up in the file - and while the field holds the
+        // keyboard, `Escape` is the field's to cancel with rather than `app.quit`'s to leave with.
+        const bool opening = state.renaming.just_opened;
+        if (opening) {
+            ImGui::SetKeyboardFocusHere(0);
+            state.renaming.just_opened = false;
+        }
+        ImGui::SetNextItemWidth(name_px);
+        const bool confirmed =
+            ImGui::InputText("##name", state.renaming.text.data(), state.renaming.text.size() - 1,
+                             ImGuiInputTextFlags_EnterReturnsTrue);
+        card.title = item_rect();
+        card.renaming = true;
+        const bool escaping = ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+        if (confirmed) {
+            commands.invoke("layer.rename",
+                            json{{"index", row}, {"name", state.renaming.text.data()}});
+            state.renaming.layer = 0;
+        } else if (escaping) {
+            state.renaming.layer = 0;
+        } else if (!opening && !ImGui::IsItemActive()) {
+            // On the frame a field opens, focus has not arrived yet: dropping the edit for its own first
+            // frame would close a field nobody ever saw.
+            state.renaming.layer = 0;
+        }
+    } else {
+        if (ImGui::Selectable(layer.name.c_str(), card.active, 0, ImVec2(name_px, 0.0f))) {
+            commands.invoke("layer.select", json{{"index", row}});
+        }
+        card.title = item_rect();
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            begin_layer_rename(state, row);
+        }
     }
-    card.title = item_rect();
     card.can_move_up = card.index + 1 < layer_count;
     card.can_move_down = card.index > 0;
     card.can_merge = card.index > 0;
@@ -91,7 +150,7 @@ void draw_layer_title(LayerCard& card, const Layer& layer, int row, int layer_co
     card.move_down = item_rect();
 }
 
-void draw_layer_preview(LayerCard& card_state, const Layer& layer, int row,
+void draw_layer_preview(AppState& state, LayerCard& card_state, const Layer& layer, int row,
                         LayerThumbs& thumbs, CommandTable& commands) {
     const LayerThumbs::Card& preview = thumbs.card(layer.id);
     if (preview.pixels.valid()) {
@@ -113,6 +172,49 @@ void draw_layer_preview(LayerCard& card_state, const Layer& layer, int row,
     }
     ImGui::EndDisabled();
     card_state.merge = item_rect();
+
+    // The picture can be made bigger or smaller without touching the canvas it sits in, and the way to
+    // say by how much is a number: the button opens a field in its own place, `Enter` sends it to
+    // `layer.scale`, and a factor that will not fit is refused by the command with the largest one that
+    // does.
+    ImGui::SameLine();
+    if (state.scaling.layer == layer.id) {
+        const bool opening = state.scaling.just_opened;
+        if (opening) {
+            state.scaling.just_opened = false;
+            ImGui::SetKeyboardFocusHere();
+        }
+        ImGui::PushItemWidth(kLayerScaleFieldPx);
+        const bool confirmed =
+            ImGui::InputText("##scale", state.scaling.text.data(), state.scaling.text.size() - 1,
+                             ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::PopItemWidth();
+        card_state.scale = item_rect();
+        card_state.scaling = true;
+        const bool escaping = ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+        double factor = 0.0;
+        if (confirmed && reads_factor(state.scaling.text.data(), factor)) {
+            commands.invoke("layer.scale", json{{"index", row}, {"factor", factor}});
+            state.scaling = InlineField{};
+        } else if (confirmed) {
+            // Re-armed rather than let go: a single-line InputText gives up focus on Enter whether or not
+            // the flag asked it to, and the key a person reaches for after a refusal is Escape - which
+            // with no field holding the keyboard is the app's quit key. The word they typed stays where
+            // they typed it.
+            log::warn("scale: '" + std::string(state.scaling.text.data()) +
+                      "' is not a factor: 2 is twice as big, 0.5 is half");
+            state.scaling.just_opened = true;
+        } else if (escaping) {
+            state.scaling = InlineField{};
+        } else if (!opening && !ImGui::IsItemActive()) {
+            state.scaling = InlineField{};
+        }
+    } else {
+        if (ImGui::Button(kLabelScale)) {
+            begin_layer_scale(state, row);
+        }
+        card_state.scale = item_rect();
+    }
 }
 
 void draw_layer_properties(LayerCard& card, const Layer& layer, int row,
@@ -168,10 +270,10 @@ void draw_layer_card(AppState& state, CommandTable& commands, LayerThumbs& thumb
                         ImVec2(kLayerCardSpacingX, kLayerCardSpacingY));
     ImGui::BeginChild("card", ImVec2(0.0f, 0.0f),
                       ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
-    draw_layer_title(card, layer, static_cast<int>(row), static_cast<int>(layers.size()),
+    draw_layer_title(state, card, layer, static_cast<int>(row), static_cast<int>(layers.size()),
                      arrows_px, commands);
     ImGui::NewLine();
-    draw_layer_preview(card, layer, static_cast<int>(row), thumbs, commands);
+    draw_layer_preview(state, card, layer, static_cast<int>(row), thumbs, commands);
     ImGui::NewLine();
     draw_layer_properties(card, layer, static_cast<int>(row), commands);
     ImGui::EndChild();
@@ -259,13 +361,39 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
         const std::span<const Layer> layers = state.doc.layers();
         const bool live = state.doc.in_provisional();
         thumbs.keep(layers);
+        const auto gone_from_stack = [&layers](std::uint64_t id) {
+            return std::find_if(layers.begin(), layers.end(),
+                                [id](const Layer& layer) { return layer.id == id; }) == layers.end();
+        };
+        if (state.renaming.layer != 0 && gone_from_stack(state.renaming.layer)) {
+            state.renaming = InlineField{};  // a card that left the stack is not being typed into
+        }
+        if (state.scaling.layer != 0 && gone_from_stack(state.scaling.layer)) {
+            state.scaling = InlineField{};
+        }
+        // Both arrows take the right end of every title row, so their width is known before the first
+        // name of the stack is measured.
         const float arrows_px = button_px(kLabelMoveUp) + ImGui::GetStyle().ItemSpacing.x +
                                 button_px(kLabelMoveDown);
+        // The stack's own verbs are pinned under the list rather than being its last entry: with three
+        // layers they fell past the panel's bottom edge - reported at y=926 in a window ending at 800 -
+        // controls for the whole stack, drawn nowhere and reachable only by scrolling to them. What the
+        // panel has left after one button row is the list's, and a row is a frame tall plus the gap above
+        // it, both from the style; the list carries no padding of its own, so the cards are the width
+        // they were.
+        const float pinned_row_px = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y;
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{0.0f, 0.0f});
+        ImGui::BeginChild("layer-list", ImVec2(0.0f, -pinned_row_px));
         for (std::size_t row = layers.size(); row-- > 0;) {
             draw_layer_card(state, commands, thumbs, layers, row, live, colors, arrows_px);
         }
-        draw_stack_actions(state, commands, layers.size());
         draw_mask_controls(state, commands);
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+        // The scrolling region: what a card has to be inside to be on screen, and where the pinned row
+        // begins.
+        state.layer_panel.list = item_rect();
+        draw_stack_actions(state, commands, layers.size());
     }
     state.layer_thumb_rebuilds = thumbs.rebuilds;
     ImGui::End();

@@ -4,6 +4,7 @@
 #include "core/image.h"
 #include "core/resample.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -219,6 +220,51 @@ void test_colour_under_no_alpha_is_not_carried() {
     CHECK_EQ(std::memcmp(out.at(0, 0), kEmptyPixel, kChannels), 0);
 }
 
+void test_coverage_resamples_without_inventing_claims() {
+    Mask block(Extent{7, 5});
+    block.op(Rect{2, 1, 3, 3}, MaskOp::replace);  // hard-edged window, nothing around it
+
+    // A pass to the size the plane already is changes no claim, exactly as it does for colour.
+    CHECK(resample_coverage_lanczos3(block, Extent{7, 5}).plane() == block.plane());
+
+    // A plane that claims every pixel has to still claim every pixel: a mask that shows a whole layer
+    // which came back at 98 % would dim the layer, and that is the failure this filter must not have.
+    Mask all(Extent{8, 8});
+    all.op(Rect{0, 0, 8, 8}, MaskOp::replace);
+    const Mask full = resample_coverage_lanczos3(all, Extent{5, 11});
+    for (const std::uint8_t coverage : full.plane()) {
+        CHECK_EQ(coverage, kMaskIn);
+    }
+
+    // And a plane that claims nothing stays at nothing: coverage cannot be manufactured by resizing.
+    Mask none(Extent{8, 8});
+    const Mask empty_again = resample_coverage_lanczos3(none, Extent{13, 6});
+    for (const std::uint8_t coverage : empty_again.plane()) {
+        CHECK_EQ(coverage, kMaskOut);
+    }
+
+    // Upscaled, the middle of the window is still fully in and the far corner of the plane is still out -
+    // the ring is near the edge rather than smeared over the canvas.
+    const Mask grown = resample_coverage_lanczos3(block, Extent{14, 10});
+    CHECK_EQ(grown.coverage(8, 5), kMaskIn);   // inside the window's own image (4,2)-(10,8)
+    CHECK_EQ(grown.coverage(0, 0), kMaskOut);
+    CHECK_EQ(grown.coverage(13, 9), kMaskOut);
+
+    // The integral is the load-bearing one: what a mask amounts to is how much of the layer it claims, so
+    // the sum per output pixel has to survive the resample. A filter that mis-normalized its weights would
+    // shift this and never show it in a single cell.
+    const double before = block.facts().area;
+    const double after = grown.facts().area / 4.0;  // 2x in each axis
+    CHECK(std::abs(after - before) < before * 0.05);
+
+    // Reduced, the same two facts: the window is still the bright part, and the average still adds up.
+    const Mask reduced = resample_coverage_lanczos3(block, Extent{4, 3});
+    CHECK(reduced.coverage(2, 1) > 200);
+    CHECK_EQ(reduced.coverage(0, 0), kMaskOut);
+    const double shrunk = reduced.facts().area / (4.0 / 7.0 * 3.0 / 5.0);
+    CHECK(std::abs(shrunk - before) < before * 0.1);
+}
+
 }  // namespace
 
 int main() {
@@ -230,5 +276,6 @@ int main() {
     test_a_reduction_averages_what_it_covers_instead_of_sampling_it();
     test_a_pixel_left_with_no_alpha_has_no_colour_either();
     test_colour_under_no_alpha_is_not_carried();
+    test_coverage_resamples_without_inventing_claims();
     return noise::test::summary(__FILE__);
 }

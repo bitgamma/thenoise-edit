@@ -73,6 +73,28 @@ void Image::blit(const Image& src, int dst_x, int dst_y) {
     }
 }
 
+Rect Image::content_bounds() const {
+    int left = size_.w;
+    int top = size_.h;
+    int right = 0;
+    int bottom = 0;
+    for (int y = 0; y < size_.h; ++y) {
+        for (int x = 0; x < size_.w; ++x) {
+            if (at(x, y)[3] == 0) {
+                continue;
+            }
+            left = std::min(left, x);
+            top = std::min(top, y);
+            // Maxima, not last-seen: a scan that ends on a narrow row would otherwise report a box too
+            // small to cover the widest row above it, and whatever is aimed at the picture - a move, a
+            // scale, the undo of either - would miss the part it was aimed at.
+            right = std::max(right, x + 1);
+            bottom = std::max(bottom, y + 1);
+        }
+    }
+    return Rect{left, top, right - left, bottom - top};
+}
+
 void Image::fill_rect(Rect r, const std::uint8_t rgba[4]) {
     const Rect clipped = clamp_rect(r, size_);
     for (int y = 0; y < clipped.h; ++y) {

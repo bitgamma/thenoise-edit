@@ -34,6 +34,17 @@ enum class PaintFence {
     own_coverage,
 };
 
+// What asking a layer's picture to change size answered.
+struct LayerScale {
+    bool done = false;
+    // The largest factor that fits this layer's picture and coverage inside the canvas: the number to put
+    // in the refusal, so a rejected scale comes with the next one to try. 0 when there was no picture to
+    // scale at all.
+    double max_factor = 0.0;
+    // Where the picture sits afterwards, or where it stands when the scale was refused.
+    Rect picture{};
+};
+
 // The open document: a stack of layers, and the history of what changed in them. Pixels change
 // only through `paint`, a provisional gesture or undo/redo, so every visible change can be put
 // back exactly - within one layer, which is what a step is recorded against.
@@ -101,6 +112,23 @@ public:
     // canvas cannot re-blend what was just baked. False when there is nothing to flatten.
     bool flatten_layers();
 
+    // The layer's picture, and the coverage that hides part of it, scaled about the middle of what the
+    // picture holds. A layer is the size of the canvas and always will be, so scaling a layer scales what
+    // it holds *inside* that rectangle: everything outside the scaled picture comes out transparent, and a
+    // scale that would push the picture past a canvas edge is refused rather than clipped - losing the
+    // part of someone's drawing that fell off the edge is not a reversible reading of "twice as big", and
+    // the refusal carries the largest factor that does fit.
+    //
+    // The mask goes with the picture under the same map, because it is a claim about the same pixels:
+    // scaling one without the other would hide parts that were shown and show parts that were hidden. A
+    // mask that covers everything, or nothing, is the same mask at any size and is left alone - filtering
+    // it would spend a pass putting ringing where there was none.
+    //
+    // Like a merge this is not a paint, so the selection fences nothing: it changes which pixels of the
+    // layer exist at all, not what was written into them. One undo step, holding the rectangle both planes
+    // moved over, and a scale that fits its own box exactly (factor 1) records nothing.
+    LayerScale scale_layer(int index, double factor);
+
     // The layer at `index` onto the one under it, exactly as the canvas shows them: the upper layer's
     // mask, blend mode and opacity are applied on the way down, and it leaves the stack while the layer
     // under it keeps its identity - name, mode, opacity, mask - which is what makes the undo exact. An
@@ -151,6 +179,14 @@ public:
     // otherwise keep showing a layer that is meant to be gone - and all three mark the document
     // dirty. None enters history, nor does adding or removing a layer. `opacity` is 0..1, and out
     // of range is false rather than a clamped value.
+
+    // A layer's name: what the panel shows, what an error message points at and what the container
+    // stores. `normalize_layer_name` is what decides whether the name is one, and a name that is not is
+    // false rather than a quietly shortened one. No pixel moves and no layer's content changes, so a
+    // card's thumbnail is untouched - and it is one undo step, because a mistyped name is not a reason to
+    // lose the stroke under it.
+    bool rename_layer(int index, std::string name);
+
     // The layer's mask: what the composite hides. A mask must be the size of the canvas, and a
     // different size is false rather than a resized mask - a mask that quietly shifted would hide
     // pixels nobody asked about. Putting one on and taking one off record the *plane* (`Kind::mask_replaced`);

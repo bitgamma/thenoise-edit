@@ -56,6 +56,7 @@ void History::record(std::uint64_t layer_id, LayerPlane plane, Rect rect,
                                   .step = step,
                                   .kind = Kind::pixels,
                                   .plane = plane,
+                                  .name = {},
                                   .index = 0,
                                   .size = {},
                                   .order = {},
@@ -81,6 +82,7 @@ void History::record_layer_created(std::uint64_t layer_id, int index, Extent siz
                                   .step = step,
                                   .kind = Kind::layer_created,
                                   .plane = LayerPlane::pixels,
+                                  .name = {},
                                   .index = index,
                                   .size = size,
                                   .order = {},
@@ -92,7 +94,8 @@ void History::record_layer_created(std::uint64_t layer_id, int index, Extent siz
 }
 
 std::size_t History::held(const Stacked& entry) {
-    std::size_t bytes = entry.bytes.size();
+    // The name a `layer_renamed` entry is the whole of, and a small part of a layer that came whole.
+    std::size_t bytes = entry.bytes.size() + entry.name.size();
     bytes += entry.whole.pixels.bytes();
     if (entry.whole.mask) {
         bytes += entry.whole.mask->plane().size();
@@ -142,6 +145,18 @@ void History::record_layer_mask(std::uint64_t layer_id, std::optional<Mask> mask
     drop_oldest_until_within_budget();
 }
 
+void History::record_layer_renamed(std::uint64_t layer_id, std::string previous_name) {
+    redo_stack_.clear();
+    Stacked entry;
+    entry.layer = layer_id;
+    entry.kind = Kind::layer_renamed;
+    entry.step = open_step_ != 0 ? open_step_ : ++next_step_;
+    entry.name = std::move(previous_name);
+    bytes_ += held(entry);
+    undo_stack_.push_back(std::move(entry));
+    drop_oldest_until_within_budget();
+}
+
 void History::record_stack_replaced(std::vector<Layer> stack) {
     redo_stack_.clear();
     Stacked entry;
@@ -163,6 +178,7 @@ void History::record_layer_order(std::vector<std::uint64_t> order) {
                                   .step = step,
                                   .kind = Kind::layer_order,
                                   .plane = LayerPlane::pixels,
+                                  .name = {},
                                   .index = 0,
                                   .size = {},
                                   .order = std::move(order),
@@ -197,6 +213,7 @@ void History::record_layer_removed(Layer layer, int index) {
                   .step = step,
                   .kind = Kind::layer_absent,
                   .plane = LayerPlane::pixels,
+                  .name = {},
                   .index = index,
                   .size = layer.pixels.size(),
                   .order = {},
@@ -265,6 +282,9 @@ bool History::fits(const Layer* layer, const Stacked& entry) {
         case Kind::layer_order:
             // Checked against the whole stack by `fits_stack`.
             return true;
+        case Kind::layer_renamed:
+            // The name belongs to a layer, so the layer has to be there. The name itself always fits.
+            return layer != nullptr;
         case Kind::stack_replaced:
             // Nothing to check: it supplies every layer rather than reading one.
             return true;
@@ -337,6 +357,14 @@ void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
         // The entry leaves holding the stack that is current now, which is what the other direction
         // needs: undo and redo are the same swap, so a layer cannot come back in the wrong place.
         std::swap(layers, entry.stack);
+        entry.step = step;
+        into.push_back(std::move(entry));
+        return;
+    }
+    if (entry.kind == Kind::layer_renamed) {
+        // One field holds the name that is not current, so this is the whole of both directions. The
+        // layer is there because the pass above checked it.
+        std::swap(layer_of(layers, entry.layer)->name, entry.name);
         entry.step = step;
         into.push_back(std::move(entry));
         return;
@@ -490,7 +518,8 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
         touched.rect = unite(touched.rect, entry.rect);
         if (entry.kind != Kind::pixels) {
             const std::size_t carried = held(entry);
-            const bool coverage_step = entry.kind == Kind::coverage;
+            const bool paints_nothing =
+                entry.kind == Kind::coverage || entry.kind == Kind::layer_renamed;
             step_structure(entry, into, layers, marked, step);
             // A structural entry trades content with the stack, so what it costs the budget changes with
             // the trade: a step that takes a layer away starts paying for it, and one that gives it back
@@ -498,13 +527,10 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
             // `stack_replaced` entry leaves holding the stack the document just gave up, and pricing that
             // as nothing underflows `bytes_` and drops the whole timeline.
             bytes_ += held(into.back()) - carried;
-            // A coverage step moved no pixel and no layer, so it is not `structure`: telling the
-            // document it was would repaint the whole canvas to show a mark moving.
-            if (coverage_step) {
-                touched.coverage = true;
-            } else {
-                touched.structure = true;
-            }
+            // Trading coverage or a name put back no pixel and moved no layer, so it is not
+            // `structure`: telling the document it was would repaint the whole canvas to show a mark
+            // moving or a card relabelling itself.
+            touched.structure = touched.structure || !paints_nothing;
             continue;
         }
         Layer& layer = *layer_of(layers, entry.layer);
@@ -519,6 +545,7 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
                                    .step = step,
                                    .kind = entry.kind,
                                    .plane = entry.plane,
+                                    .name = {},
                                     .index = 0,
                                    .size = {},
                                    .order = {},
@@ -534,6 +561,7 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
                                    .step = step,
                                    .kind = entry.kind,
                                    .plane = entry.plane,
+                                    .name = {},
                                     .index = 0,
                                    .size = {},
                                    .order = {},

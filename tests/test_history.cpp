@@ -392,7 +392,6 @@ void test_a_mask_plane_comes_back_with_the_coverage_it_had() {
     const History::Applied took_off = history.undo(layers, unmarked).value();
     CHECK(!layer.mask.has_value());
     CHECK(took_off.structure);
-    CHECK(!took_off.coverage);
     // The load-bearing byte: what comes back is the mask that was hidden by, not a new one.
     const History::Applied brought_back = history.undo(layers, unmarked).value();
     CHECK(layer.mask.has_value());
@@ -629,7 +628,6 @@ void test_a_marked_coverage_step_swaps_and_survives_the_stack() {
 
     const History::Applied undone = history.undo(layers, marked).value();
     CHECK(!marked.has_value());
-    CHECK(undone.coverage);
     CHECK(!undone.structure);  // no layer moved, so the canvas has nothing to repaint
     CHECK(undone.rect.empty());
     // The entry left holding the coverage the document gave up, and it is that plane the budget now
@@ -661,6 +659,38 @@ void test_a_marked_coverage_step_swaps_and_survives_the_stack() {
     CHECK(!history.can_redo());
 }
 
+// A name is the one property of a layer with a step of its own, and the classification is what the
+// renderer depends on: neither `structure` nor a painted rectangle is how `Document::undo` knows there is
+// no texture to re-upload and no card to resample. One field holds the name that is not current, so both
+// directions are the same swap.
+void test_a_rename_swaps_one_name_and_paints_nothing() {
+    std::vector<Layer> layers = one_layer(Image::filled(Extent{4, 4}, 0, 0, 0, 0));
+    History history(1u << 20);
+    std::optional<Mask> unmarked;
+    const std::string was = layers.front().name;
+
+    history.record_layer_renamed(layers.front().id, was);
+    layers.front().name = "typed in";
+    CHECK_NE(history.stats().bytes, 0u);  // the entry pays for the name it holds
+
+    const History::Applied undone = history.undo(layers, unmarked).value();
+    CHECK_EQ(layers.front().name, was);
+    CHECK(!undone.structure);
+    CHECK(undone.rect.empty());
+
+    const History::Applied redone = history.redo(layers, unmarked).value();
+    CHECK_EQ(layers.front().name, std::string("typed in"));
+    CHECK(!redone.structure);
+    CHECK(redone.rect.empty());
+
+    // The name belongs to a layer, so an entry naming one that is gone is not a rename of anything: the
+    // timeline goes rather than a name being written into whatever stands at that id.
+    const std::uint64_t gone = layers.front().id;
+    layers.front().id = gone + 1000;
+    CHECK(!history.undo(layers, unmarked).has_value());
+    CHECK(!history.can_undo());
+}
+
 int main() {
     test_an_added_layer_and_its_pixels_come_back_as_one_step();
     test_a_refused_write_adds_no_layer_and_records_nothing();
@@ -683,5 +713,6 @@ int main() {
     test_a_replaced_stack_walks_back_and_forward_unchanged();
     test_two_removals_in_one_step_are_not_a_step();
     test_a_marked_coverage_step_swaps_and_survives_the_stack();
+    test_a_rename_swaps_one_name_and_paints_nothing();
     return noise::test::summary("history");
 }

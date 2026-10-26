@@ -11,31 +11,6 @@ namespace noise::app {
 
 namespace {
 
-// The smallest rectangle holding every pixel with coverage. A layer is document-sized whether or not
-// it is filled, and without this a drag would call a whole canvas dirty - and so hold a whole canvas
-// aside for undo - every time the cursor moved one pixel.
-Rect content_bounds(const Image& image) {
-    const Extent size = image.size();
-    int left = size.w;
-    int top = size.h;
-    int right = 0;
-    int bottom = 0;
-    for (int y = 0; y < size.h; ++y) {
-        for (int x = 0; x < size.w; ++x) {
-            if (image.at(x, y)[3] != 0) {
-                left = std::min(left, x);
-                top = std::min(top, y);
-                // Maxima, not last-seen: a scan that ends on a narrow row would otherwise report a
-                // box too small to cover the widest row above it, and the pixels outside it would
-                // never be repainted.
-                right = std::max(right, x + 1);
-                bottom = std::max(bottom, y + 1);
-            }
-        }
-    }
-    return Rect{left, top, right - left, bottom - top};
-}
-
 Rect shift(Rect rect, int dx, int dy) {
     return Rect{rect.x + dx, rect.y + dy, rect.w, rect.h};
 }
@@ -80,7 +55,10 @@ void move_press(AppState& state, Vec2 document_point) {
     state.move.active = true;
     state.move.origin = document_point;
     state.move.snapshot = state.doc.layer(std::size_t(state.doc.active())).pixels;
-    state.move.content = content_bounds(state.move.snapshot);
+    // A layer is document-sized whether or not it is filled, and without the content box a drag would
+    // call the whole canvas dirty - and hold a whole canvas aside for undo - every time the cursor
+    // moved one pixel.
+    state.move.content = state.move.snapshot.content_bounds();
     if (state.move.content.empty()) {
         log::info("move: the active layer holds nothing to move");
     }

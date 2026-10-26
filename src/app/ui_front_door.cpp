@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/ui_internal.h"
 
-#include "app/ui_theme.h"
 #include "app/verb_fields.h"
 
 #include "core/log.h"
@@ -9,7 +8,6 @@
 #include "imgui.h"
 
 #include <algorithm>
-#include <array>
 #include <cstdio>
 #include <string>
 
@@ -18,7 +16,6 @@ namespace noise::app {
 using nlohmann::json;
 
 namespace {
-constexpr float kThemeSelectorWidthPx = 82.0f;
 // The menu and the front door both ask for a path and act on the answer later: a native dialog is
 // asynchronous by design, so the click that opened it and the document it produced cannot share a
 // frame. This remembers which door the open picker is behind.
@@ -57,31 +54,6 @@ void draw_file_buttons(CommandTable& commands, bool has_document, bool can_save)
 }
 #endif
 
-void draw_theme_picker(AppState& state, CommandTable& commands) {
-    ImGui::TextDisabled("Theme");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(kThemeSelectorWidthPx);
-    const std::string selected_theme = io::theme_name(state.ui_theme);
-    if (!ImGui::BeginCombo("##theme", selected_theme.c_str())) {
-        return;
-    }
-    constexpr std::array<io::Theme, 2> choices{io::Theme::dark, io::Theme::light};
-    for (const io::Theme choice : choices) {
-        const std::string name = io::theme_name(choice);
-        const bool selected = choice == state.ui_theme;
-        if (ImGui::Selectable(name.c_str(), selected) && !selected) {
-            const CommandResult changed = commands.invoke("ui.theme", json{{"theme", name}});
-            if (!changed.ok) {
-                log::error(changed.error);
-            }
-        }
-        if (selected) {
-            ImGui::SetItemDefaultFocus();
-        }
-    }
-    ImGui::EndCombo();
-}
-
 #ifndef __EMSCRIPTEN__
 void draw_export_insert_buttons(CommandTable& commands, bool has_document) {
     ImGui::SameLine();
@@ -111,9 +83,7 @@ void draw_file_row(AppState& state, CommandTable& commands) {
     draw_export_insert_buttons(commands, has_document);
     ImGui::NewLine();
 #endif
-    draw_theme_picker(state, commands);
     if (has_document && state.doc.dirty()) {
-        ImGui::SameLine();
         ImGui::TextDisabled("unsaved");
     }
 }

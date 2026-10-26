@@ -8,6 +8,10 @@
 #include "core/blend.h"
 #include "core/hash.h"
 #include "core/log.h"
+#include "core/resample.h"
+
+#include <cmath>
+#include <limits>
 
 namespace noise {
 
@@ -214,6 +218,211 @@ bool Document::merge_down(int index) {
     return true;
 }
 
+namespace {
+
+// A pixel edge from a real-valued one: half up, not half away from zero. `lround` breaks the tie the
+// other way for negative values, which is enough to make a factor that fits by the bound below not fit.
+int edge_of(double value) {
+    return static_cast<int>(std::floor(value + 0.5));
+}
+
+// A scale is one map: every point moves away from `anchor` by `factor`, and a box goes through it by its
+// two corners, so the box it becomes is the box its corners say rather than two roundings apart.
+Rect scale_box(Rect box, Vec2 anchor, double factor) {
+    const int x0 = edge_of(anchor.x + (static_cast<double>(box.x) - anchor.x) * factor);
+    const int y0 = edge_of(anchor.y + (static_cast<double>(box.y) - anchor.y) * factor);
+    const int x1 = edge_of(anchor.x + (static_cast<double>(box.right()) - anchor.x) * factor);
+    const int y1 = edge_of(anchor.y + (static_cast<double>(box.bottom()) - anchor.y) * factor);
+    return Rect{x0, y0, std::max(1, x1 - x0), std::max(1, y1 - y0)};
+}
+
+// The largest factor that keeps `box` inside the canvas under that map. The bound comes from the four
+// edges and is then *verified*: what is handed back is a factor that fits, not the supremum of an
+// algebra that rounds the wrong way at a half. The walk steps by a fraction of an output pixel, so the
+// answer is within a hair of the maximum rather than being the maximum - which is the property a refusal
+// needs, since it is a number to try next.
+double largest_factor_for(Rect box, Vec2 anchor, Extent canvas) {
+    const double left = anchor.x - static_cast<double>(box.x);
+    const double right = static_cast<double>(box.right()) - anchor.x;
+    const double up = anchor.y - static_cast<double>(box.y);
+    const double down = static_cast<double>(box.bottom()) - anchor.y;
+    double best = std::numeric_limits<double>::max();
+    if (left > 0.0) {
+        best = std::min(best, (anchor.x + 0.5) / left);
+    }
+    if (right > 0.0) {
+        best = std::min(best, (static_cast<double>(canvas.w) + 0.5 - anchor.x) / right);
+    }
+    if (up > 0.0) {
+        best = std::min(best, (anchor.y + 0.5) / up);
+    }
+    if (down > 0.0) {
+        best = std::min(best, (static_cast<double>(canvas.h) + 0.5 - anchor.y) / down);
+    }
+    const double step =
+        0.5 / static_cast<double>(std::max(1, std::min(box.w, box.h)));
+    while (best > 0.0 && !scale_box(box, anchor, best).inside(canvas)) {
+        best -= step;
+    }
+    return std::max(best, 0.0);
+}
+
+// A crop of `plane` widened by `margin`, with whatever the canvas does not hold left at *nothing* rather
+// than at the edge pixel repeated. Outside a document there are no pixels, and a filter that sampled the
+// border twice would invent a picture that fades into a wall.
+Image padded_crop(const Image& plane, Rect box, Rect canvas_rect) {
+    Image out = Image::filled(Extent{box.w, box.h}, 0, 0, 0, 0);
+    const Rect clip = intersect(box, canvas_rect);
+    if (!clip.empty()) {
+        out.blit(plane.region(clip), clip.x - box.x, clip.y - box.y);
+    }
+    return out;
+}
+
+Mask padded_crop(const Mask& plane, Rect box, Rect canvas_rect) {
+    Mask out(Extent{box.w, box.h});
+    const Rect clip = intersect(box, canvas_rect);
+    for (int y = clip.y; y < clip.bottom(); ++y) {
+        const std::span<const std::uint8_t> from = plane.row(y);
+        std::copy_n(from.begin() + clip.x, static_cast<std::size_t>(clip.w),
+                    out.row(y - box.y).begin() + (clip.x - box.x));
+    }
+    return out;
+}
+
+}  // namespace
+
+LayerScale Document::scale_layer(int index, double factor) {
+    if (index < 0 || static_cast<std::size_t>(index) >= layers_.size()) {
+        return LayerScale{};
+    }
+    Layer& layer = layers_[static_cast<std::size_t>(index)];
+    const Extent canvas = size();
+    const Rect canvas_rect{0, 0, canvas.w, canvas.h};
+    const Rect picture = layer.pixels.content_bounds();
+    if (picture.empty()) {
+        log::info("scale: layer '" + layer.name + "' holds nothing to scale");
+        return LayerScale{false, 0.0, picture};
+    }
+    if (!std::isfinite(factor) || factor <= 0.0) {
+        log::error("scale: layer '" + layer.name + "' was given factor " + std::to_string(factor) +
+                   ", which is no size at all");
+        return LayerScale{false, 0.0, picture};
+    }
+
+    const Vec2 anchor{static_cast<double>(picture.x) + picture.w / 2.0,
+                      static_cast<double>(picture.y) + picture.h / 2.0};
+    // Coverage that hides something travels with the picture under the same map, so its own edges bound
+    // the factor too. A mask that covers the whole canvas hides nothing anywhere and is the same mask at
+    // any size; filtering it would spend a pass putting ringing where there was none.
+    Rect coverage{};
+    bool scale_mask = false;
+    if (layer.mask && layer.mask->sized()) {
+        coverage = layer.mask->bounds();
+        scale_mask = !coverage.empty() && !layer.mask->covers_all(canvas_rect);
+    }
+
+    // The decision is the map itself: does this factor land the picture - and the coverage over it -
+    // inside the canvas. The largest factor that does is computed for the answer either way, because a
+    // refusal without a number to try next is a second job for the person asking.
+    const double max_factor = [&] {
+        double limit = largest_factor_for(picture, anchor, canvas);
+        if (scale_mask) {
+            limit = std::min(limit, largest_factor_for(coverage, anchor, canvas));
+        }
+        return limit;
+    }();
+    const bool fits = scale_box(picture, anchor, factor).inside(canvas) &&
+                      (!scale_mask || scale_box(coverage, anchor, factor).inside(canvas));
+    if (!fits) {
+        return LayerScale{false, max_factor, picture};
+    }
+
+    if (factor == 1.0) {
+        // The picture lands exactly where it stood: the filter is zero at every integer offset but its
+        // own, so this is a copy. Nothing changed, so there is no step, no revision and no dirty flag -
+        // and no fit question either, because a copy of what already fits fits.
+        return LayerScale{true, max_factor, picture};
+    }
+
+    const Rect to = scale_box(picture, anchor, factor);
+
+    const int margin = resample_margin_px(factor);
+    const int out_margin = std::max(1, static_cast<int>(std::lround(static_cast<double>(margin) * factor)));
+    const Rect src_box{picture.x - margin, picture.y - margin, picture.w + 2 * margin,
+                       picture.h + 2 * margin};
+    const Rect dst_box{to.x - out_margin, to.y - out_margin, to.w + 2 * out_margin,
+                       to.h + 2 * out_margin};
+
+    const Image source = padded_crop(layer.pixels, src_box, canvas_rect);
+    const Image scaled = resample_lanczos3(source, Extent{dst_box.w, dst_box.h});
+    // Cut at the picture's own edge. The margin is input the filter's window needs, not output the layer
+    // keeps: Lanczos reaches a few pixels past an edge, and a halo outside the picture would be read as
+    // part of the picture by the next scale, so every scale would add a ring and the box reported would
+    // stop being the box the pixels agree with.
+    const Image result = scaled.region(Rect{to.x - dst_box.x, to.y - dst_box.y, to.w, to.h});
+    const Rect dirty = intersect(unite(picture, to), canvas_rect);
+    const Image before = layer.pixels.region(dirty);
+    // The vacated part of the layer holds nothing rather than what happened to be there: a picture that
+    // shrank would otherwise leave a ghost of its old size behind it.
+    layer.pixels.fill_rect(dirty, kEmptyPixel);
+    layer.pixels.blit(result, to.x, to.y);
+    const bool pixels_moved = !unchanged(before, layer.pixels, dirty);
+
+    Rect mask_dirty{};
+    Mask before_mask{};
+    bool mask_moved = false;
+    if (scale_mask) {
+        const Rect mask_src_box{coverage.x - margin, coverage.y - margin, coverage.w + 2 * margin,
+                                coverage.h + 2 * margin};
+        const Rect coverage_to = scale_box(coverage, anchor, factor);
+        const Rect mask_dst_box{coverage_to.x - out_margin, coverage_to.y - out_margin,
+                                coverage_to.w + 2 * out_margin, coverage_to.h + 2 * out_margin};
+        const Mask mask_source = padded_crop(*layer.mask, mask_src_box, canvas_rect);
+        const Mask scaled_mask =
+            resample_coverage_lanczos3(mask_source, Extent{mask_dst_box.w, mask_dst_box.h});
+        const Mask mask_result = scaled_mask.region(Rect{coverage_to.x - mask_dst_box.x,
+                                                         coverage_to.y - mask_dst_box.y, coverage_to.w,
+                                                         coverage_to.h});
+        mask_dirty = intersect(unite(coverage, coverage_to), canvas_rect);
+        before_mask = layer.mask->region(mask_dirty);
+        layer.mask->op(mask_dirty, MaskOp::subtract);
+        const Rect patch_area = intersect(coverage_to, canvas_rect);
+        if (!patch_area.empty()) {
+            const Mask patch =
+                mask_result.region(Rect{patch_area.x - coverage_to.x, patch_area.y - coverage_to.y,
+                                        patch_area.w, patch_area.h});
+            layer.mask->op(patch_area, patch.plane(), MaskOp::replace);
+        }
+        mask_moved = !unchanged(before_mask, *layer.mask, mask_dirty);
+    }
+
+    if (!pixels_moved && !mask_moved) {
+        // A scale that changed no byte is not an edit, exactly as a stroke that landed on the colour it
+        // was already painted with records nothing.
+        return LayerScale{true, max_factor, to};
+    }
+
+    // Both planes of one layer under one map is one thing a person did, so it comes back as one step.
+    history_.begin_step();
+    if (pixels_moved) {
+        const std::span<const std::uint8_t> bytes = before.pixels();
+        history_.record(layer.id, LayerPlane::pixels, dirty, {bytes.begin(), bytes.end()});
+    }
+    if (mask_moved) {
+        history_.record(layer.id, LayerPlane::mask, mask_dirty, before_mask.plane());
+    }
+    history_.end_step();
+
+    pending_ = unite(pending_, mask_moved ? unite(dirty, mask_dirty) : dirty);
+    dirty_ = true;
+    changed_layer(layer);
+    log::info("scale: layer '" + layer.name + "' picture " + std::to_string(picture.w) + "x" +
+              std::to_string(picture.h) + " to " + std::to_string(to.w) + "x" + std::to_string(to.h) +
+              (mask_moved ? ", its coverage with it" : "") + " at factor " + std::to_string(factor));
+    return LayerScale{true, max_factor, to};
+}
+
 bool Document::remove_layer(int index) {
     if (index < 0 || static_cast<std::size_t>(index) >= layers_.size()) {
         return false;
@@ -310,6 +519,26 @@ bool Document::set_layer_mode(int index, BlendMode mode) {
     return true;
 }
 
+bool Document::rename_layer(int index, std::string name) {
+    if (index < 0 || static_cast<std::size_t>(index) >= layers_.size()) {
+        return false;
+    }
+    const std::optional<std::string> wanted = normalize_layer_name(name);
+    if (!wanted) {
+        return false;
+    }
+    Layer& layer = layers_[static_cast<std::size_t>(index)];
+    if (layer.name == *wanted) {
+        return true;
+    }
+    history_.record_layer_renamed(layer.id, std::move(layer.name));
+    layer.name = std::move(*wanted);
+    // The name is in the file and in the panel, and in nothing the renderer draws: no revision, no
+    // pending rectangle and no content revision, so no card resamples its picture over a rename.
+    dirty_ = true;
+    return true;
+}
+
 bool Document::set_layer_opacity(int index, double opacity) {
     if (index < 0 || static_cast<std::size_t>(index) >= layers_.size()) {
         return false;
@@ -335,6 +564,11 @@ std::string Document::checksum() const {
         // different documents, whatever their flattened pixels happen to look like, and a
         // round-trip check that could not see a lost `visible` flag would pass on data loss.
         seed += layer.visible ? 'v' : 'h';
+        // The name too, and its length first: names are free text, so without a bound between them a
+        // rename that dropped a character, or moved one into the field after it, would hash the same.
+        seed += std::to_string(layer.name.size());
+        seed += ':';
+        seed += layer.name;
         const char* raw = reinterpret_cast<const char*>(&layer.opacity);
         seed.append(raw, sizeof(layer.opacity));  // the bytes, so two opacities never collide
         seed += blend_mode_name(layer.mode);
@@ -893,16 +1127,19 @@ bool Document::undo() {
     if (!moved) {
         return false;
     }
+    // Stepping back is a change: what the document holds now is not what the file holds, and a quit guard
+    // that read this as clean would discard the step it just took.
+    dirty_ = true;
     retarget_active(was);
     pending_ = unite(pending_, moved->rect);
     if (moved->structure) {
         pending_ = Rect{0, 0, width(), height()};
     }
-    // A step that moved only the marked coverage restored no pixel and moved no layer, so the canvas is
-    // byte-identical and every card already shows the picture it showed. Bumping the stack's revision
-    // for it would re-upload a texture nobody changed and resample every thumbnail to prove nothing
-    // happened; the overlay reads the coverage plane itself, per frame.
-    if (moved->coverage && !moved->structure && moved->rect.empty()) {
+    // A step that painted no rectangle and moved no layer - the mark shifting, a name going back - left
+    // the canvas byte-identical and every card showing the picture it showed. Bumping the stack's
+    // revision for it would re-upload a texture nobody changed and resample every thumbnail to prove
+    // nothing happened; the overlay reads the coverage plane itself, per frame.
+    if (!moved->structure && moved->rect.empty()) {
         return true;
     }
     changed_all_layers();
@@ -918,12 +1155,13 @@ bool Document::redo() {
     if (!moved) {
         return false;
     }
+    dirty_ = true;  // as for undo: the document has moved away from the file
     retarget_active(was);
     pending_ = unite(pending_, moved->rect);
     if (moved->structure) {
         pending_ = Rect{0, 0, width(), height()};
     }
-    if (moved->coverage && !moved->structure && moved->rect.empty()) {
+    if (!moved->structure && moved->rect.empty()) {
         return true;
     }
     changed_all_layers();

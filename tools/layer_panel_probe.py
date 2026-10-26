@@ -12,7 +12,11 @@ drag), and that painting into the layer does change it.
 The stack controls are claimed the same way: an arrow moves the layer of *its* card, a dim arrow answers a
 press with nothing, a merge leaves the canvas exactly as it was, and undo gives the merged layer back as a
 layer rather than as an empty one with the right name. Flatten is claimed the same way too, and walked
-twice, because a stack put back in the wrong order still looks like a stack.
+twice, because a stack put back in the wrong order still looks like a stack. Naming a layer is claimed
+with real keys on the card itself: `Enter` commits, and `Escape` cancels the edit instead of leaving the
+program - the one claim here that only a keyboard can make. And the row those stack-wide
+verbs live in is claimed to be *pinned* - below the scrolling list rather than at the end of it, so three
+cards cannot push the way to flatten them off the panel.
 
 Everything is pressed and measured at the coordinates the app reports in `app.state.layer_cards`, so the
 probe follows the layout instead of remembering one.
@@ -26,6 +30,7 @@ import pathlib
 import shutil
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import wire_drive as wd  # noqa: E402
@@ -50,6 +55,17 @@ def click(inj: wi.Injector, x: float, y: float) -> None:
     inj.move(int(x), int(y))
     inj.button(1, True)
     inj.button(1, False)
+
+
+# XK_Return, for the field that commits on it, and XK_F2 for the one key that opens it.
+KEY_RETURN = 0xFF0D
+KEY_F2 = 0xFFBF
+
+
+def type_text(inj: wi.Injector, words: str) -> None:
+    """Keys, one character at a time: lowercase ASCII and space, which are their own keysyms."""
+    for ch in words:
+        inj.key(ord(ch))
 
 
 def centre(rect: list) -> tuple[float, float]:
@@ -89,6 +105,13 @@ def differs(a: Image.Image, b: Image.Image) -> tuple[int, int]:
 def apart(a: Image.Image, b: Image.Image) -> str:
     moved, worst = differs(a, b)
     return f"{moved} of {a.size[0] * a.size[1]} px differ, worst step {worst}"
+
+
+def interior(image: Image.Image, edge: int = 1) -> Image.Image:
+    """A reported rect is fractional and a capture is not, so the outermost pixel of a grab can belong to
+    the frame around the widget rather than to the widget - which is how a thumbnail that had not changed
+    differed from itself by one column of card border. Compare what is inside."""
+    return image.crop((edge, edge, image.size[0] - edge, image.size[1] - edge))
 
 
 def grab(wire, rect: list, name: str) -> Image.Image:
@@ -145,12 +168,24 @@ def main() -> int:
         order = [card["index"] for card in got]
         p.check(order == sorted(order, reverse=True), "the top card is the top layer", str(order))
 
+        panel = wire.call("app.state")["layer_panel"]
         window = wire.call("app.state")["layers_window"]
+        fold = panel["list"]
         inside = all(
-            card["box"][0] >= window[0] - 1 and card["box"][1] >= window[1] - 1 and
-            card["box"][0] + card["box"][2] <= window[0] + window[2] + 1
+            card["box"][0] >= fold[0] - 1 and card["box"][1] >= fold[1] - 1 and
+            card["box"][0] + card["box"][2] <= fold[0] + fold[2] + 1
             for card in got)
-        p.check(inside, "every card sits inside the panel", str([round(v) for v in window]))
+        p.check(inside, "every card sits inside the panel's scrolling list",
+                str([round(v) for v in fold]))
+        # The row that answers for the whole stack is pinned below the list, not filed at the end of it.
+        # It used to be the last thing in a scrollable panel, which at three layers put it at y=926 in a
+        # window ending at 800: reported, drawn nowhere, reachable only by scrolling to it.
+        p.check(inside_box(fold, window) and
+                all(button[1] >= fold[1] + fold[3] - 1 for button in
+                    (panel["add"], panel["remove"], panel["flatten"])),
+                "and the stack's own row is below the list and inside the panel",
+                f"list={[round(v) for v in fold]} row={[round(v) for v in panel['flatten']]} "
+                f"window={[round(v) for v in window]}")
         disjoint = all(got[i]["box"][1] >= got[i - 1]["box"][1] + got[i - 1]["box"][3] - 1
                        for i in range(1, len(got)))
         p.check(disjoint, "and no two share a pixel",
@@ -207,7 +242,8 @@ def main() -> int:
         # presses - which no screenshot shows, and which is why the reported rects are checked against
         # each other and not just against the card.
         got = cards(wire)
-        CONTROLS = ("visibility", "title", "move_up", "move_down", "merge", "opacity", "mode")
+        CONTROLS = ("visibility", "title", "move_up", "move_down", "merge", "opacity", "mode",
+                    "scale")
         astray = [f"layer {card['index']}.{name}={[round(v) for v in card[name]]} in "
                   f"box={[round(v) for v in card['box']]}"
                   for card in got for name in CONTROLS if not inside_box(card[name], card["box"])]
@@ -266,7 +302,8 @@ def main() -> int:
         # The picture belongs to the layer, so it travels with it: the moved layer's thumbnail is now
         # under the card above it, and the card it left behind shows the other one.
         thumb_moved_on = grab(wire, card_at(cards(wire), 2)["picture"], "thumb-after-up")
-        p.check(differs(thumb_moved, thumb_moved_on)[0] == 0, "and its picture went with it",
+        p.check(ImageChops.difference(interior(thumb_moved), interior(thumb_moved_on)).getbbox() is None,
+                "and its picture went with it, inside the box the card reported",
                 apart(thumb_moved, thumb_moved_on))
         p.check(rebuilds(wire) == sampled_stack, "and the reorder resampled nothing either",
                 f"{sampled_stack} to {rebuilds(wire)}")
@@ -326,17 +363,13 @@ def main() -> int:
         # and the order the layers come back in is the thing a history of one-position-per-layer cannot
         # promise, so it is walked twice here on a stack whose layers are each a different colour.
         top_thumb = grab(wire, cards(wire)[0]["picture"], "thumb-top-before-flatten")
-        # The stack's own buttons are below the cards in the same scrollable panel, so on three layers
-        # they begin past the fold; the claim is that the wheel reaches them and that the press lands
-        # where the app then says they are, which is the same rule the last card is held to.
-        inj.move(window[0] + window[2] / 2.0, window[1] + window[3] / 2.0)
-        for _ in range(8):
-            if inside_box(wire.call("app.state")["layer_panel"]["flatten"], window):
-                break
-            inj.wheel(-3)
-            wd.settle(wire)
+        # Three cards do not fit the list, which is the case that used to push this row off the panel. The
+        # press has to land with no scrolling involved: a person reaching for Flatten reaches for the
+        # button, not for the wheel.
         panel = wire.call("app.state")["layer_panel"]
-        p.check(inside_box(panel["flatten"], window), "the wheel brings the panel's own buttons up",
+        p.check(all(inside_box(button, window) for button in
+                    (panel["add"], panel["remove"], panel["flatten"])),
+                "three cards deep, the panel's own row is still on screen with nothing scrolled",
                 f"flatten={[round(v) for v in panel['flatten']]} in "
                 f"window={[round(v) for v in window]}")
         p.check(not overlaps(panel["flatten"], panel["add"]) and
@@ -388,28 +421,189 @@ def main() -> int:
         # against a shrinking stack re-inserts bottom-last, which shuffles and looks plausible.
         p.check(stack() == stack_before, "and undo a second time is as exact as the first", str(stack()))
 
+        # Naming a layer is how a person says which one they mean, so it happens on the card: `F2` turns
+        # that card's title row into the field, `Enter` commits it through `layer.rename`, and `Escape` is
+        # the field's to cancel with rather than the program's to leave by. That last one needs a real key:
+        # the same key ends the app the moment nothing owns the keyboard.
+        #
+        # The double-click a hand uses opens the same field and is not driven here. Injected button presses
+        # reach this app ~0.5 s apart - measured, presses 200 frames apart at ~340 fps however the driver
+        # spaces them - which is outside ImGui's 0.3 s double-click window, so a probe claiming to
+        # "double-click" would assert something it never did. `layer.rename.begin` is the door the key and
+        # the double-click share, and the one a driver can trust.
+        naming = card_at(cards(wire), 1)
+        named = naming["index"]
+        named_before = wire.call("layer.list")["layers"][named]["name"]
+        canvas_named = canvas_shot(wire, "before-rename")
+        sampled_rename = rebuilds(wire)
+        wire.call("layer.select", {"index": named})
+        wd.settle(wire)
+        inj.key(KEY_F2)
+        wd.settle(wire)
+        editing = [card["index"] for card in cards(wire) if card["renaming"]]
+        opened = p.check(editing == [named],
+                         "F2 puts the active layer's card into the field", str(editing))
+        if not opened:
+            # Everything below types, and a key typed while nothing owns the keyboard is a shortcut: the
+            # letters would press the app's own verbs and `Escape` would ask it to quit. Stop here rather
+            # than spend the rest of the run on a cascade.
+            p.check(False, "the claims after it need the field open, so they were not attempted")
+        else:
+            p.check(wire.call("layer.list")["layers"][named]["name"] == named_before,
+                    "and nothing is renamed before it is confirmed")
+            clashing = [f"layer {card['index']}: {a} over {b}"
+                        for card in cards(wire)
+                        for i, a in enumerate(CONTROLS) for b in CONTROLS[i + 1:]
+                        if overlaps(card[a], card[b])]
+            p.check(not clashing, "the field takes the name's place rather than lying over it",
+                    "; ".join(clashing))
+            try:
+                wire.call("layer.rename", {"index": named, "name": "   "})
+                refused = "accepted"
+            except wd.WireError as exc:
+                refused = str(exc)
+            p.check("not a name a layer can carry" in refused and "'   '" in refused,
+                    "a name of nothing is refused by the command the field uses, naming it", refused)
+            inj.modified_key(ord("a"), wi.KEY_CTRL_L)  # select what the card called it
+            type_text(inj, "sky")
+            inj.key(KEY_RETURN)
+            wd.settle(wire)
+            p.check(wire.call("layer.list")["layers"][named]["name"] == "sky",
+                    "and Enter commits it through `layer.rename`",
+                    wire.call("layer.list")["layers"][named]["name"])
+            p.check(not [card for card in cards(wire) if card["renaming"]],
+                    "the field closes once the name is in")
+            p.check(ImageChops.difference(canvas_named,
+                                          canvas_shot(wire, "after-rename")).getbbox() is None,
+                    "a rename moves no pixel - the canvas is not where a name is")
+            p.check(rebuilds(wire) == sampled_rename, "and costs no card a resample",
+                    f"{sampled_rename} to {rebuilds(wire)}")
+            wire.call("edit.undo", {})
+            wd.settle(wire)
+            p.check(wire.call("layer.list")["layers"][named]["name"] == named_before,
+                    "one undo gives the name back, so a mistyped one does not cost the stroke under it",
+                    wire.call("layer.list")["layers"][named]["name"])
+
+            wire.call("layer.rename.begin", {"index": named})
+            wd.settle(wire)
+            inj.modified_key(ord("a"), wi.KEY_CTRL_L)
+            type_text(inj, "not this")
+            inj.key(wi.KEY_ESCAPE)
+            wd.settle(wire)
+            p.check(wire.call("layer.list")["layers"][named]["name"] == named_before,
+                    "Escape drops a half-typed name instead of saving it",
+                    wire.call("layer.list")["layers"][named]["name"])
+            p.check(len(cards(wire)) == 3, "and the same key left the app running, three cards deep")
+
+        # Scaling a layer's picture is a number, so the door is a field. The card's `Scale` button opens it
+        # in the button's own place; `Enter` sends the factor to `layer.scale`; what is not a factor is
+        # refused by the field rather than sent as a zero; and a factor that would push the picture past the
+        # canvas is refused with the largest one that fits. The geometry itself - about the middle of the
+        # picture, both planes together, exact under undo - is `test_document`'s; what is claimed here is
+        # that the panel's door reaches it and that a wrong answer through that door moves nothing.
+        wire.call("layer.select", {"index": 1})
+        wd.settle(wire)
+        scaled_layer = card_at(cards(wire), 1)
+        canvas_before_scale = canvas_shot(wire, "before-scale")
+        sampled_scale = rebuilds(wire)
+        click(inj, *centre(scaled_layer["scale"]))
+        wd.settle(wire)
+        open_field = card_at(cards(wire), 1)
+        opened_scale = p.check(open_field["scaling"],
+                               "the card's Scale button opens a field in its own place",
+                               f"scale={[round(v) for v in open_field['scale']]} "
+                               f"button={[round(v) for v in scaled_layer['scale']]}")
+        if not opened_scale:
+            p.check(False, "the claims after it need the field open, so they were not attempted")
+        else:
+            p.check(inside_box(open_field["scale"], open_field["box"]),
+                    "and the field is inside the card it belongs to",
+                    str([round(v) for v in open_field["scale"]]))
+            p.check(not [c for c in cards(wire) if c["index"] != 1 and c["scaling"]],
+                    "and one card at a time holds a field")
+            p.check(ImageChops.difference(canvas_before_scale,
+                                          canvas_shot(wire, "field-open")).getbbox() is None,
+                    "opening the field has not scaled anything yet")
+            type_text(inj, "big")
+            inj.key(KEY_RETURN)
+            wd.settle(wire)
+            stuck = card_at(cards(wire), 1)
+            p.check(stuck["scaling"],
+                    "a word where a factor belongs is not sent, and the field keeps it to fix",
+                    f"scaling={stuck['scaling']}")
+            p.check(ImageChops.difference(canvas_before_scale,
+                                          canvas_shot(wire, "word-typed")).getbbox() is None,
+                    "and the canvas is exactly as it was")
+            # Only press on while the field still holds the keyboard: with it gone, Escape would be the
+            # app's quit key and every claim after it would be about a dialog.
+            if stuck["scaling"]:
+                inj.key(wi.KEY_ESCAPE)
+                wd.settle(wire)
+            escaped = card_at(cards(wire), 1)
+            p.check(not escaped["scaling"], "Escape puts the button back",
+                    f"scaling={escaped['scaling']}")
+            p.check(ImageChops.difference(canvas_before_scale,
+                                          canvas_shot(wire, "after-escape")).getbbox() is None,
+                    "and that key was the field's, not the app's: same canvas, app still answering")
+
+            # Half as big always has room, however far the picture reaches. Twice as big is the refusal,
+            # and it is the same picture - the layer this probe painted spans the canvas, so there is
+            # nowhere for it to grow.
+            click(inj, *centre(card_at(cards(wire), 1)["scale"]))
+            wd.settle(wire)
+            inj.modified_key(ord("a"), wi.KEY_CTRL_L)  # so the seed cannot be left glued to the number
+            type_text(inj, "0.5")
+            inj.key(KEY_RETURN)
+            wd.settle(wire)
+            doubled = card_at(cards(wire), 1)
+            p.check(not doubled["scaling"], "a factor typed and confirmed closes the field")
+            canvas_after_scale = canvas_shot(wire, "after-scale")
+            p.check(ImageChops.difference(canvas_before_scale, canvas_after_scale).getbbox() is not None,
+                    "and half the factor has visibly shrunk the picture")
+            p.check(rebuilds(wire) > sampled_scale,
+                    "the card re-sampled, because the layer's own bytes moved",
+                    f"{sampled_scale} to {rebuilds(wire)}")
+            wire.call("edit.undo", {})
+            wd.settle(wire)
+            p.check(ImageChops.difference(canvas_before_scale,
+                                          canvas_shot(wire, "after-undo-scale")).getbbox() is None,
+                    "one undo gives the picture back exactly",
+                    str(ImageChops.difference(canvas_before_scale,
+                                              canvas_shot(wire, "after-undo-scale")).getbbox()))
+
+            try:
+                wire.call("layer.scale", {"index": 1, "factor": 2.0})
+                too_big = "accepted"
+            except wd.WireError as exc:
+                too_big = str(exc)
+            p.check("largest factor that fits" in too_big and "2" in too_big,
+                    "a factor that leaves the canvas is refused with the largest that fits", too_big)
+            p.check(ImageChops.difference(canvas_before_scale,
+                                          canvas_shot(wire, "after-refusal")).getbbox() is None,
+                    "and a refusal has moved no pixel")
+
         # A card's title row selects its layer - and about the awkward one, which is the last card down:
         # three of them do not fit a panel this tall, so the wheel is how a person reaches it, and the
         # press has to land where the app now says the control is rather than where it used to be.
         # Back to the top of the list first: the claims below are about a wheel-down reaching the last
         # card, which is nothing if the panel is already at the bottom.
-        inj.move(window[0] + window[2] / 2.0, window[1] + window[3] / 2.0)
+        fold = wire.call("app.state")["layer_panel"]["list"]
+        inj.move(fold[0] + fold[2] / 2.0, fold[1] + fold[3] / 2.0)
         for _ in range(10):
             inj.wheel(3)
             wd.settle(wire)
         wire.call("layer.select", {"index": cards(wire)[0]["index"]})
         wd.settle(wire)
         above_fold = card_at(cards(wire), 0)
-        inj.move(window[0] + window[2] / 2.0, window[1] + window[3] / 2.0)
         inj.wheel(-6)
         wd.settle(wire)
         got = cards(wire)
         bottom = card_at(got, 0)
         p.check(bottom["title"][1] < above_fold["title"][1],
-                "the wheel brings the last card up into the panel",
+                "the wheel brings the last card up through the list",
                 f"{round(above_fold['title'][1])} to {round(bottom['title'][1])}")
-        p.check(inside_box(bottom["title"], window), "until its title row is on screen",
-                str([round(v) for v in bottom["title"]]))
+        p.check(inside_box(bottom["title"], wire.call("app.state")["layer_panel"]["list"]),
+                "until its title row is on screen", str([round(v) for v in bottom["title"]]))
         p.check([card["index"] for card in got if card["active"]] != [bottom["index"]],
                 "and another layer is the active one before the click", str(got[0]["index"]))
         click(inj, *centre(bottom["title"]))
@@ -469,9 +663,15 @@ def main() -> int:
         # The mask section is the one control here that changes the state its own frame is drawn from:
         # pressing `Remove` took the mask off and the two lines under it then asked a null for its
         # bounds, which is a throw in the middle of a click rather than a panel one frame behind. Both
-        # directions get clicked, and the app answering afterwards is part of the claim.
+        # directions get clicked, and the app answering afterwards is part of the claim. It belongs to the
+        # active layer rather than to the stack, so it scrolls with the cards: the wheel is aimed at the
+        # list, and "reachable" means inside it, because a row the list clipped still reports a box that
+        # sits inside the window, and a wheel over the pinned row scrolls the panel, which has nothing to
+        # scroll.
+        inj.move(*centre(wire.call("app.state")["layer_panel"]["list"]))
         for _ in range(12):
-            if inside_box(wire.call("app.state")["layer_panel"]["mask_add"], window):
+            panel = wire.call("app.state")["layer_panel"]
+            if inside_box(panel["mask_add"], panel["list"]):
                 break
             inj.wheel(-3)
             wd.settle(wire)

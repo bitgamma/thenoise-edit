@@ -71,18 +71,30 @@ recorded in §Decisions (locked). Anything unmarked exists and is imported.
 ```
 src/
   core/        # no deps, no GPU, no IO — pure data + maths, unit-testable
-    image.{h,cpp}      ImageBuffer (RGBA8 straight alpha, stride-aware, tiles later)
+    image.{h,cpp}      ImageBuffer (RGBA8 straight alpha, stride-aware, tiles later), and
+                       `content_bounds`: the smallest rectangle holding every pixel with any alpha -
+                       the *picture*, as distinct from the canvas-sized rectangle a layer stores. The
+                       move tool and `scale_layer` are both aimed at that, so dragging a layer and
+                       scaling it agree on which part of a layer "it" is.
     document.{h,cpp}   Document: a stack of layers, path, revision, the composite over them
-                       and the history under it
+                       and the history under it. `scale_layer` is the only place that says what resizing
+                       a layer means (see §Undo): the layer keeps its canvas-sized store, the picture
+                       inside it is resampled about its own middle along with any non-trivial coverage,
+                       and a factor that would put either of them outside the canvas is refused with the
+                       largest one that fits
     layer.{h,cpp}      Layer (id, name, pixels, optional mask, visible, opacity, mode) and generated
-                       names; a stack is bottom-first. `LayerPlane` names which of a layer's two
+                       names; a stack is bottom-first. `normalize_layer_name` and `layer_name_rule` are
+                       the whole of what a layer may be called - the panel's field, `layer.rename` and the
+                       container reader all ask here, so no file and no keystroke can leave a layer named
+                       something another of them would refuse. `LayerPlane` names which of a layer's two
                        planes - `pixels`, `mask` - a write or a step belongs to, and its name table is
                        the vocabulary `mask.target` and `stroke.plane` speak
     history.{h,cpp}    undo/redo as stacked (layer, plane, rectangle) deltas, budgeted by stored bytes,
-                       as structural entries that put a layer back, take one away or replace the whole
-                       stack, and as swapped planes for the two coverages - the document's marked area and
-                       one layer's mask, present or absent - so an edit that created a layer is one step,
-                       not a layer plus a write, and so is a gesture that moved the mark or put a mask on
+                       as structural entries that put a layer back, take one away, reorder the stack or
+                       replace it whole, as swapped planes for the two coverages - the document's marked
+                       area and one layer's mask, present or absent - and as a swapped name, so an edit
+                       that created a layer is one step, not a layer plus a write, and so is a gesture that
+                       moved the mark, put a mask on, or mistyped a name
     brush.{h,cpp}      dabs, stamp coverage, stroke compositing (the CPU paint path), and the same
                        coverage handed to the other plane: `scratch_coverage` as bytes for the mask
                        door, `mask_ink` as the coverage statement of `PaintMode`, and
@@ -136,7 +148,13 @@ src/
                        must not pick up the far side of the image. `ai/region` prep and `ai/compose`
                        soften with this and nothing else.
     resample.{h,cpp}   Lanczos-3 over premultiplied alpha, with the support widened when the image
-                       shrinks so no source pixel is dropped. Premultiplied because the coverage edge
+                       shrinks so no source pixel is dropped. A coverage plane goes through
+                       `resample_coverage_lanczos3` - the same taps, clamped at the edge rather than
+                       wrapped, and never renormalised, so an in-outside boundary cannot manufacture
+                       coverage and a fully-covered area stays fully covered. `resample_margin_px` says
+                       how many output pixels the filter's reach adds at a given stretch, which is how a
+                       caller cuts a resampled result at the bounds it asked for instead of keeping the
+                       ringing as if it were content. Premultiplied because the coverage edge
                        of a returned image is the feather, and averaging straight alpha drags a
                        transparent pixel's colour into a visible one; the weights are normalised among
                        themselves, never by the coverage. At 1:1 it returns the input byte for byte -
@@ -189,16 +207,21 @@ src/
                        that answer between the tool panel and the status line
     ui_canvas.cpp      checker, document composite, pointer interaction, selection overlays and brush
                        footprint
-    ui_front_door.cpp  file actions, theme picker, recent files, new-document and quit dialogs
-    ui_layers_panel.cpp layer cards, thumbnails, stack actions, mask controls and log panel
+    ui_front_door.cpp  file actions, recent files, new-document and quit dialogs
+    ui_layers_panel.cpp layer cards in a scrolling list with the stack's own add / delete / flatten row
+                       pinned below it, so the verbs for the whole stack are never the thing a person has
+                       to wheel to; a name typed in a card's title row and a factor typed in the place of
+                       the card's `Scale` button, each holding its text in `AppState` until the command
+                       that does the work confirms it, so nothing half-typed reaches the document;
+                       thumbnails, stack actions, mask controls and log panel
     ui_tool_panel.cpp  tool selection, coverage controls, brush controls, AI references and AI status
     ui_references.cpp  ordered reference rows, thumbnails, file/layer actions and drop target
     reference_thumbs.{h,cpp} GPU thumbnails keyed by reference id and content revision
     ui_verbs.cpp       recipe-backed verb rows, their fields, aspect/style selectors and model-swap
                        confirmation; owns no parallel verb list or prompt state
-    ui_theme.{h,cpp}   shared semantic palette and ImGui style for dark and light themes
-    ui_internal.h     declarations shared by the UI translation units
-    select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
+    ui_theme.{h,cpp}   shared semantic palette and ImGui style for dark and light themes; no
+                       window control chooses between them - `ui.theme` and the persisted pref do
+    ui_internal.h     declarations shared by the UI translation units    select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
     coverage.cpp        the two lifetimes coverage has (`marked`, `mask`): one id, one title each
     coverage_commands.cpp `coverage.target`, read and set, answering with what the target can do
     verb_bar.cpp          the verbs the mark is an instruction for, `verb.bar` and `verb.ask`
@@ -585,7 +608,7 @@ panel`, "Regenerate with same params", kept variants) and nothing in the tree st
   (`kHistoryBudgetBytes`, 128 MB) dropping **whole steps oldest-first**: losing an old step is
   a shorter history, losing part of a step would be a half-restored edit. Tiles become the
   storage granularity when partial texture uploads need them.
-  Structural commands are planned to store the inverse command. Six are in the timeline today, as entries
+  Structural commands are planned to store the inverse command. Seven are in the timeline today, as entries
   of their own rather than as pixels: a reorder (`layer.move`) records the stack's ids in order and keeps
   the order it displaced, because no pixel moved and what the composite shows changed everywhere; a
   **layer arriving** (`layer.add`, and the layer an answer lands on) records the arrival alone - the entry
@@ -596,17 +619,32 @@ panel`, "Regenerate with same params", kept variants) and nothing in the tree st
   wearing the right name; a flatten (`layer.flatten`) records the **whole stack** and applies it as a swap,
   so undo and redo are the same operation - the only encoding that needs no position for a layer, since a
   removal sees a stack shrinking while an insert needs one growing; changing the **marked coverage** records
-  the coverage that is not current; and changing **which plane a layer has** (`Kind::mask_replaced`) records
+  the coverage that is not current; changing **which plane a layer has** (`Kind::mask_replaced`) records
   its mask, `nullopt` included, so a mask put on is taken off by undo and a mask taken off comes back with
-  the coverage it was hiding. The last three are applied by swapping, as a replaced stack is: the entry holds
-  the state that is not current, so the two directions are one operation and neither has to assert where the
-  thing went.
+  the coverage it was hiding; and a **rename** (`layer.rename`, the field a card's title row turns into)
+  records the one name that is not current, and is the only property of a layer worth a step of its own -
+  typing a name should not cost the person the stroke under it, while hiding, fading or re-modding a layer
+  is a state checked by looking rather than a mistake undone. The last four are applied by swapping, as a
+  replaced stack is: the entry holds the state that is not current, so the two directions are one operation
+  and neither has to assert where the thing went.
   A flatten carries every pixel of both sides and therefore records nothing else, and neither it nor a
   coverage entry names a layer, because the stack and the mark outlive any one layer. A coverage entry is not
   `structure` either — it puts coverage back and no pixel, so undoing one re-uploads no texture and resamples
-  no thumbnail, which is why `History::undo` is handed the marked coverage next to the stack and reports
-  `Applied::coverage`; a mask entry *is* `structure`, because what a mask hides is everywhere the layer
-  composites, not only inside the mask's bounds.
+  no thumbnail, and a rename entry is not either, for the same reason. What the document reads is therefore
+  "no rectangle painted and no layer moved" - `!structure` with an empty `rect` - rather than a flag that
+  would have to be kept in step with the kinds that paint nothing. A mask entry *is* `structure`, because
+  what a mask hides is everywhere the layer composites, not only inside the mask's bounds.
+  A scale (`layer.scale`, the field on a card behind its `Scale` button) is the one operation that rewrites
+  a layer's pixels *and* its coverage as a single step: what it resamples is the picture -
+  `Image::content_bounds`, not the layer's canvas-sized rectangle - about the middle of that picture, with a
+  mask that covers something but not everything going through the same factor so the two keep covering the
+  same part of the document. Chained scales are two resamples rather than an identity: doubled then halved,
+  a hard-edged stroke came back in the box it started, flat inside and differing along a one-pixel rim
+  (measured: 4411 px, worst 112 of 255, no byte changed anywhere else). A round trip of round factors is
+  therefore not a way to lose nothing, and undo is what is exact. A layer that holds nothing, a factor that
+  is not a finite positive number, and a factor that would push either plane off the canvas are all refused
+  without a step, the last of those quoting the largest factor that does fit. A factor of exactly 1 changes
+  nothing, records nothing and costs no revision.
 * **Nothing is invalidated by layer id, and that is what recording the departure bought.** `History` has no
   `drop_layer` and no `drop_mask`: they existed because a layer or a mask that could only go forever made
   every step naming it unrestorable, and dropping the unrelated steps around it was the least bad answer.
@@ -618,9 +656,10 @@ panel`, "Regenerate with same params", kept variants) and nothing in the tree st
   than writing bytes into a layer that is not there (`test_a_history_that_no_longer_fits_its_layers_is_dropped`).
   Steps written into a mask before it went stay in the timeline for the same reason: they are reached by
   undoing the plane's step first, which returns the mask with the coverage the writes ended on.
-* What a layer *is*, as opposed to what it holds or where it sits, still enters no step: visibility,
-  opacity and blend mode are composite state the stack carries, restored only as part of a layer that
-  arrives, goes or is replaced. That is the whole of what is outside the timeline now.
+* What a layer *is*, as opposed to what it holds or where it sits, enters no step but one: its name, and
+  only because a mistyped one is a mistake a person should be able to take back without losing the stroke
+  under it. Visibility, opacity and blend mode are composite state the stack carries, restored only as part
+  of a layer that arrives, goes or is replaced. That is the whole of what is outside the timeline now.
 * **The boundary of the coverage rule is therefore one gesture, not one kind of coverage.** Coverage
   written *into* a layer's mask is a pixel entry against that plane (`mask.fill`, `mask.invert`, a `cover`
   stroke, a marquee aimed at the mask); the plane arriving or going is the plane entry above; the mark on
@@ -1516,7 +1555,7 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | Group | Commands | Why |
 |---|---|---|
 | state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `ai.references`, `server.state`, `job.list`, `job.get {id}`, `ai.roles`, `ai.recipes`, `log.tail` | read what the app believes, cheaply |
-| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.lasso {points, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `ui.theme {theme?}`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at?, mode?}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
+| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.lasso {points, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `ui.theme {theme?}`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at?, mode?}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `layer.move {index?, to}`, `layer.merge {index?}`, `layer.flatten`, `layer.rename {index?, name}`, `layer.rename.begin {index?}` (`F2`), `layer.scale {index?, factor}`, `layer.import {path, at}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
  `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. Its `cancel` phase closes a provisional selection without committing it; Lasso press may also carry `mode: replace|add|subtract`. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
 | ai | `ai.verbs` (the verb rows: id, command, key, recipe, label, operation, `ask`, scope, `ready`, `reason`, `model`, `resident`, `swap`), `ai.heal` / `ai.remove` / `ai.fill` / `ai.change` / `ai.generate` / `ai.blend` `{vars?, seed?, confirm?, include_references?}` (one verb row pressed - they call `ai.intent` with their recipe named, so a key and a scripted intent cannot diverge), `ai.references {}`, `ai.references.add {path?, paths?, layer?}`, `ai.references.remove {id}`, `ai.references.move {id, to}`, `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?, include_references?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?, include_references?}`, `ai.intent {recipe?, vars?, aspect?, include_references?, seed?, seed_pin?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pinned}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.apply {id, feather?, colour_match?}` (the idempotent landing door - answers land by themselves, so this one brings one back or overrides the policy, and says `already_landed` otherwise), | `ai.references` reads ordered session references; its add/remove/move commands are the same actions the GUI uses, and `ai.preview` shows every image's order, source, dimensions, hash and encoded size plus the actual request field names and body size. It also reports whether configured references are included for the selected operation. `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact request before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel and land without a UI; `ai.intent` is the whole surface of the action, so a scripted run and a key press cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command; absent, the request takes the panel's pin or a fresh draw, and every report says which (`seed`, `seed_source`) |
@@ -1541,7 +1580,14 @@ it will commit to when the button lifts. The mask is reported the same way a sel
 rows carry `mask` (`covered`, `area`, `bounds`, or `null` for none), `mask.get` answers with the mask
 itself, and `brush.coverage_target` with `writable` says which lifetime the next stroke writes - so a
 driver can tell a mask that hides everything from a layer that has no mask, and a stroke that painted
-colour from one that painted coverage. Enough for a driver to place an image rect on screen, wait
+colour from one that painted coverage. The Layers panel reports where it is as well as what it shows:
+`layer_cards` rows carry a layer's `index`, `id`, `name`, whether it is `active`, `renaming` or `scaling`
+while the card holds the name field or the factor field, and the screen box of every control on the card
+(`title`, `visibility`, `move_up`, `move_down`, `merge`, `opacity`, `mode`, `scale`), while `layer_panel`
+carries the boxes of the stack's own row, the `can_flatten` that says whether the row can do anything to
+this stack, and the box of the scrolling list the cards live in. A driver presses a control where the app says it is, which is the only way to catch the
+failure this found: a widget submitted inside another widget's rect draws, lights up under the pointer and
+never fires, so a dead control looks exactly like a button nobody clicked. Enough for a driver to place an image rect on screen, wait
 for the frame that drew it, and tell a stroke from an undo. `doc.get` is the call that hashes
 the pixels and answers with a checksum; `app.state` deliberately does not, because a driver
 polls it every frame. `fit_pending` is true while a fit waits for a

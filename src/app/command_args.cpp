@@ -195,16 +195,20 @@ json layer_cards_json(const AppState& state) {
                          {"merge", screen_json(card.merge)},
                          {"opacity", screen_json(card.opacity)},
                          {"mode", screen_json(card.mode)},
+                         {"scale", screen_json(card.scale)},
                          {"can_move_up", card.can_move_up},
                          {"can_move_down", card.can_move_down},
-                         {"can_merge", card.can_merge}});
+                         {"can_merge", card.can_merge},
+                         {"renaming", card.renaming},
+                         {"scaling", card.scaling}});
     }
     return cards;
 }
 
 json layer_panel_json(const AppState& state) {
     const LayerPanelControls& controls = state.layer_panel;
-    return json{{"add", screen_json(controls.add)},
+    return json{{"list", screen_json(controls.list)},
+                {"add", screen_json(controls.add)},
                 {"remove", screen_json(controls.remove)},
                 {"flatten", screen_json(controls.flatten)},
                 {"mask_add", screen_json(controls.mask_add)},

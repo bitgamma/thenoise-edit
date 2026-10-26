@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "core/geom.h"
@@ -60,6 +61,11 @@ public:
     // read against the stack the layer goes back into, and putting one layer back cannot shift another.
     void record_layer_removed(Layer layer, int index);
 
+    // A layer's **name** - the one edit to a layer that is worth a step of its own, because a mistyped
+    // name should not cost the person the stroke under it. One field holds the name that is not current,
+    // so undo and redo are the same swap; no pixel and no other property of the layer is involved.
+    void record_layer_renamed(std::uint64_t layer_id, std::string previous_name);
+
     // A step that replaced the **whole stack** with layers none of the old ones can become - flattening
     // is the case. The entry holds the stack that is not current and applying it swaps the two, so undo
     // and redo are the same operation and every layer returns to the place it came from; encoding the
@@ -88,12 +94,10 @@ public:
         std::uint64_t layer;
         Rect rect;
         // The step moved the layer stack, or a layer's mask plane, so what the canvas shows changed
-        // everywhere it composites, not only inside `rect`.
+        // everywhere it composites, not only inside `rect`. A step that is neither this nor a painted
+        // rectangle - the mark moving, a name going back - left the composite byte-identical, which the
+        // document reads from `!structure && rect.empty()` rather than from a flag saying so.
         bool structure = false;
-        // The step moved the marked coverage. It put back no pixel: the composite is byte-identical
-        // and no layer holds anything different, so a step that is nothing else re-uploads and
-        // resamples nothing.
-        bool coverage = false;
     };
 
     // Put back the state the other stack holds, keeping the pixels it displaces so the
@@ -101,7 +105,8 @@ public:
     // step, or when a recorded rectangle no longer fits its layer - a resized layer makes
     // every rectangle it holds a lie, so the whole history is dropped rather than half
     // restored. `marked` is the document's coverage plane, swapped with what a `coverage` entry holds,
-    // and a layer's own mask is swapped with what a `mask_replaced` entry holds.
+    // and a layer's own mask is swapped with what a `mask_replaced` entry holds. A `layer_renamed`
+    // entry swaps one name and nothing else.
     std::optional<Applied> undo(std::vector<Layer>& layers, std::optional<Mask>& marked);
     std::optional<Applied> redo(std::vector<Layer>& layers, std::optional<Mask>& marked);
 
@@ -120,6 +125,7 @@ private:
         layer_created,
         layer_absent,
         layer_order,
+        layer_renamed,
         stack_replaced,
         coverage,
         mask_replaced,
@@ -132,7 +138,11 @@ private:
         int step;  // entries sharing it are undone and redone together
         Kind kind = Kind::pixels;
         LayerPlane plane = LayerPlane::pixels;
-        // Structural entries only: where the layer sat, how big it was. Its name travels inside `whole`.
+        // The name that is not current, for `layer_renamed`. A departing layer's name travels inside
+        // `whole`; a rename cannot, because carrying the layer would carry both of its planes through
+        // an edit that moves no pixel.
+        std::string name;
+        // Structural entries only: where the layer sat, how big it was.
         int index = 0;
         Extent size{};
         // The stack's order, for `layer_order`.

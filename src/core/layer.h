@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "core/blend.h"
@@ -18,8 +19,22 @@ inline constexpr const char* kLayerNamePrefix = "Layer";
 // The name of the single layer a flatten leaves behind. It is not "Layer 1" again, because the thing it
 // says is different: this layer is no longer one of several, it is the picture.
 inline constexpr const char* kFlattenedLayerName = "Background";
+// How long a layer's name may be. The panel shows one line of it and a name exists to tell two layers
+// apart, so this is a generous ceiling rather than a layout width; it is also the size of the buffer the
+// panel types into, which is why it lives here and not there.
+inline constexpr int kLayerNameMaxChars = 64;
 
 std::string default_layer_name(std::size_t index);
+
+// A layer's name as the document stores it, or nothing when `wanted` is not a name: outer space is not
+// part of what a layer is called, and a name of nothing would leave a panel row that says nothing and an
+// error that cannot say which layer it means. Every door that takes a name - the panel's field,
+// `layer.rename`, the container reader - asks here, so none of them can hold a layer this one would refuse.
+std::optional<std::string> normalize_layer_name(std::string_view wanted);
+
+// The same rule in words, built from `kLayerNameMaxChars` so a refusal cannot promise a length the code
+// no longer enforces.
+std::string layer_name_rule();
 
 // The two byte planes a layer holds, named so a write can say which one it lands on: the layer's own
 // colour, or the coverage that hides it. A gesture writes exactly one of them per press, so this is

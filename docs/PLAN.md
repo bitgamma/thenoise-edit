@@ -1,10 +1,74 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the tree against the docs: **2026-10-26**, after the movable native picker — the file
-selection path was checked against the command table, host loop, platform boundary and WASM bridge. The
-selected next architecture milestone remains `doc.crop` / `doc.resize`, blocked on
-`History::fits_coverage` validating coverage when a history entry's canvas extent differs from the current
-stack extent. `AGENTS.md` is normative and outranks this file.
+Last re-read of the tree against the docs: **2026-10-26**, after the merge of the inline-rename and
+layer-scale branch back over the UI module split — the layers panel, its two inline fields and the history
+kinds were checked against `docs/ARCHITECTURE.md`, the command table and the probe. The file
+selection path was last checked against the command table, host loop, platform boundary and WASM bridge in
+the movable-native-picker note. The selected next architecture milestone remains `doc.crop` /
+`doc.resize`, blocked on `History::fits_coverage` validating coverage when a history entry's canvas extent
+differs from the current stack extent. `AGENTS.md` is normative and outranks this file.
+
+## 2026-10-26 - The window stops offering a theme
+
+The theme dropdown left the file row. Nothing about the palette moved: `ui_theme::Palette` is still how
+every panel names a colour, `io/config` still persists the choice, `ui.theme` is still the door - the probe
+harness sets it for the viewport golden, the file-dialog probe runs the native chooser in both themes, and
+the browser build still drives the page chrome from it. What went was the widget, because a dropdown with
+two entries is a design decision about light appearance that nobody has made yet, and a half-decided
+appearance in the menu is worse than no appearance in the menu: the dark palette is what a person gets
+until the light one is designed rather than merely defined.
+
+## 2026-10-26 - The name and the factor land on top of the module split
+
+Two weeks of parallel work met here: this branch wrote inline rename (`layer.rename`) and layer scaling
+(`layer.scale`) into the single `ui.cpp`, while `origin/main` emptied that file into `ui_canvas` /
+`ui_layers_panel` / `ui_tool_panel` / `ui_references` / `ui_verbs` / `ui_front_door` / `ui_theme` and, in
+the same window, put a layer's arrival, departure and mask plane into the timeline. Merging was a port, not
+a line merge, and three of the collisions were design questions rather than text.
+
+**The panel's two fields live in the module now, not in the file they were written in.** `draw_layer_title`
+holds the name field where the name was, `draw_layer_preview` holds the factor field where the `Scale`
+button was, and `draw_layers_panel` wraps the cards in the `layer-list` child with the stack's verbs pinned
+under it. The card colours came out of the merge and into `ui_theme::Palette`: the branch had been pushing
+hardcoded `IM_COL32` card backgrounds, upstream had moved exactly those into the semantic palette with a
+light theme beside them, and a second home for the same colour is the kind of thing that shows up as a dark
+card in a light window. `InlineField` and `typing_in_layer_field` stayed in `state.h`, so the command door
+(`layer.rename.begin`, so `F2`, so the wire) and the card's double-click still share one seeding rule.
+
+**A rename step and the deleted `Stacked::name` were the real conflict.** The rename entry stores the name
+that is not current in `Stacked::name`; upstream deleted that field on the rule that a layer's name travels
+inside `whole`. Both rules were kept, because they answer different edits: a departing layer carries its
+whole self, and a rename carries one string — routing a rename through `whole` would carry both pixel planes
+of the layer through an operation that must move no pixel and resample no thumbnail (the probe asserts
+exactly that). `Kind::layer_renamed` therefore owns a `name` field with that argument on it.
+
+**`Applied::coverage` is gone, and that is what made room for the rename.** The flag meant "no texture was
+repainted" only because a moving mark was the single kind that paints nothing; a rename is the second, so
+the class is now real and the document derives it - `!structure && rect.empty()` - instead of a flag that
+can fall out of step with the kinds. A third kind costs one line in `step_back` and no change in
+`Document`. The `Applied` contract in ARCHITECTURE §Undo says it that way now.
+
+**The mask section scrolls with the cards, so a driver asks the list where it is.** Upstream's probe waited
+for `layer_panel.mask_add` to be inside the panel window and then pressed it, which worked while the panel
+itself scrolled. It is inside the pinned list now, so a row the list clipped still reported a box inside the
+window, and a wheel over the pinned row scrolled the panel, which has nothing to scroll: the wait is against
+`layer_panel.list` and the wheel is aimed at it, which is the same rule a card's title row was already held
+to.
+
+**Running the suite under `xvfb-run` makes the click probes lie.** `wire_drive` starts its own Xvfb at the
+size a probe asked for only when `DISPLAY` is unset, so `xvfb-run -a ctest` hands every probe the wrapper's
+server instead and every injected press lands somewhere else - three probe tests red on a tree with nothing
+wrong with it. Run plain `ctest` on a box with no `DISPLAY`. Both trees were then compared claim by claim:
+`ctest` 41/42, with `test_file_dialog_ui` the one failure, identical on `origin/main` before the merge (the
+GTK chooser opens but cannot be driven here - no `Xvfb` of its own to move, and `dconf` cannot write
+`/run/user/1000`), and `tools/layer_panel_probe.py` fully green including the rename and scale claims, which
+upstream does not have.
+
+**What the next feature touches.** A gesture for `layer.scale` goes on the canvas in `ui_canvas.cpp` and
+sends the command that exists; a third card field goes in `draw_layer_*` with one `InlineField` in
+`AppState`; any entry that changes no pixel is already in the no-repaint class and needs no new flag; and
+the panel's scroll region is `layer_panel.list` for every control inside the list, so a driver never has to
+know the panel's height.
 
 ## 2026-10-25 - Freehand Lasso
 
@@ -120,10 +184,13 @@ quote remains deliberately cut. Slice 3's coverage and verb bar are in place; lo
 5. **Layers you can see.** Landed since 2026-10-16: thumbnails of the layer and its mask, one bordered card
    per layer holding its own controls, visibility, opacity, blend mode, reorder (`Up`/`Down` on the card,
    `layer.move`), **Merge down** (`layer.merge`) and **Flatten** of the whole stack (`layer.flatten`, whose
-   history entry is the replaced stack itself - see *The stack becomes one layer* below). What the slice
-   owes: moving and scaling a layer's picture, inline rename, and the panel's own row of buttons pinned
-   clear of the scrolling card list. The panel is always visible: it is where a person goes to understand
-   what an edit did.
+   history entry is the replaced stack itself - see *The stack becomes one layer* below), the panel's own
+   row of buttons pinned clear of the scrolling card list, a name typed on the card itself (`F2`,
+   `layer.rename` - see *A layer's name is typed where the layer is shown* below), and a factor typed in the
+   place of the card's `Scale` button (`layer.scale` - see *A layer's picture is resized by a number, typed
+   on the card* below). What the slice owes: a gesture for that scale - a handle on the layer's picture
+   driving the command that already exists. The panel is always visible: it is where a person goes to
+   understand what an edit did.
 6. **Blend, and images as input.** Landed: Insert/drop places an image on its own layer; no-prompt *Blend*
    uses `region: layer`, whose source is the layer's pixels and whose coverage is its alpha. *Blend* with a
    prompt and control images (openpose) remain future work through the same input path.
@@ -368,11 +435,11 @@ step *underneath* it names that layer's mask, so undo hands the mask off to a la
 re-inserted, and redo takes it back off. `test_merging_down_shows_what_the_canvas_already_showed` and
 `test_flattening_leaves_one_layer_that_shows_what_the_stack_showed` now walk through it, both directions.
 
-**`Applied::structure` is the right flag here, and `coverage` is the wrong one.** A mask change moves no
-pixel of any layer, but it changes what the composite shows everywhere the layer reaches — which is what
-`structure` already means, and what makes `Document::undo` widen the pending region to the whole canvas.
-Reusing it is a fact, not a fudge: `Applied::coverage` says "no texture was repainted", which is exactly
-false for a mask.
+**`Applied::structure` is the right flag here, and a second flag would not have been.** A mask change moves
+no pixel of any layer, but it changes what the composite shows everywhere the layer reaches — which is what
+`structure` already means, and what makes `Document::undo` widen the pending region to the whole canvas. The
+kinds that need saying the other way round - a mark moving, a name going back - are read from the absence:
+`structure` false with an empty `rect`, so nothing has to be kept in step as entries are added.
 
 **What is left outside the timeline is now one thing, not a family.** A layer's arrival and deletion landed
 in the note above this one; visibility, opacity and blend mode are the remainder — composite state the stack
@@ -412,8 +479,8 @@ found.
   lifetime the press opened, as it already carried the shape, and `stroke.marquee_coverage` says which one
   a running drag holds.
 
-**The step moves coverage and nothing else**, which is a fact the renderer needs: `Applied::coverage` is
-set and `structure` is not, so `Document::undo` neither widens the pending region nor calls
+**The step moves coverage and nothing else**, which is a fact the renderer needs: `structure` is not set and
+the entry's `rect` is empty, so `Document::undo` neither widens the pending region nor calls
 `changed_all_layers`. Bumping the stack's revision for a mark would re-upload a texture nobody repainted
 and resample every layer card — invisible, and a per-frame cost — so the tests hold `revision` and every
 layer's `content_revision` unchanged across a mark's undo and redo.
@@ -476,13 +543,117 @@ the depth on each lap.
 `Flatten`) and the mask section are submitted after the cards *in the panel's own scroll region*, so on three
 layers that row starts past the window's bottom edge - `app.state` reported it at y=926 in a window ending
 at 800: drawn nowhere, unreachable until scrolled. The probe wheels to it and then presses where the app
-says it is, the rule the last card is already held to. **Not yet decided**: whether that row is pinned
-outside the scrolling list, so the buttons for the whole stack are where they always are rather than at the
-bottom of a scroll.
+says it is, the rule the last card is already held to. The next note is the decision: the row is pinned.
 
 **Owed from here**: moving and scaling a layer's picture, inline rename, and `layer.remove` in the timeline
 (`layer_absent` is the entry deletion always needed; the decision is whether deleting belongs in the
 timeline at all). The coverage-undo decision further up is still the bigger of the two.
+
+## 2026-10-17 - A layer's name is typed where the layer is shown
+
+Two things slice 5 owed that turned out to be about the panel rather than the pixels: the row of
+stack-wide controls moved out of the scroll, and a layer's name became something a person types.
+
+**The stack's own buttons are pinned, not scrolled.** The cards now live in a `layer-list` child sized to
+leave room under it, and `Add layer` / `Delete layer` / `Flatten` are submitted after that child, so the
+buttons that act on the whole stack are where they always are instead of at the bottom of a scroll. What it
+bought in observability is the important half: `app.state.layer_panel.list` is the scroll region, so a probe
+wheels *inside the list* rather than over the buttons, and the claims are that three cards deep the row is
+already on screen, that the three buttons claim no pixel twice, and that every card sits inside the list.
+
+**A name is document data that moves no pixel.** `F2`, or a double-click on the card, puts a field in the
+card's title row; `Enter` commits it through `layer.rename`, `Escape` throws it away. The card says which
+state it is in (`layer_cards[].renaming`), and the host's existing shortcut gate is what makes `Escape` the
+field's rather than the app's quit key - which the probe checks with a real key, because on the wire the
+question does not exist. A rename marks the document dirty and enters `checksum()` - it is saved, so it is
+data - while bumping neither the document revision nor any layer's `content_revision`: the probe asserts 0
+canvas px moved and 24 thumbnails still 24 resamples.
+
+**`Kind::layer_renamed` holds the name that is not current**, and applying it swaps: the same shape as the
+stack swap above, one field instead of a stack, and the only property of a layer with a step of its own.
+Hiding, fading or re-modding a layer stays out of the timeline deliberately - those are states checked by
+looking, not mistakes undone.
+
+**What a layer may be called is one fact in one file.** The rule was being restated in three places: the
+document trimmed and capped, `layer.rename` re-typed the same sentence in its error (with the limit spelled
+out a second time), and the container reader accepted whatever the file said - a 4 kB name or none. They are
+`normalize_layer_name` and `layer_name_rule` in `core/layer`, asked by all three doors. The reader now
+refuses a name a layer cannot carry, quoting the row and the offending text and listing the limit, and
+defaults only where the file has no `name` at all, which is a different fact rather than the same failure.
+
+**A double-click cannot be driven on this box, and a probe that claimed to would be lying.** Measured: two
+injected presses reach ImGui ~0.5 s apart (presses 200 frames apart) however the driver spaces them - the
+app renders ~340 fps idle and a wire call costs 3 ms, so it is XTEST-to-app delivery, not the app being
+slow. ImGui counts a pair inside `io.MouseDoubleClickTime` (0.3 s), so every variant of the burst failed the
+same way. `layer.rename.begin` is the door the key and the double-click share, so the probe drives that and
+`F2`, and the double-click stays for the hand that produces it - unclaimed, because the claim would not be
+true of the thing the probe did.
+
+**Verified**: `test_document` 3760 checks, `test_history` 254, `test_project` 216 (the new reader cases are
+13 of them), `ctest` 39/39, `tools/layer_panel_probe.py` 65 claims green, `sweep_procs.py` clean.
+
+**Owed from here**: `layer.remove` in the timeline (`layer_absent` is the entry deletion always needed;
+the decision is whether deleting belongs in the timeline at all), and the coverage-undo decision further
+up, which is still the bigger of the two.
+
+## 2026-10-17 - A layer's picture is resized by a number, typed on the card
+
+The half of slice 5's "move or scale a layer's picture" that was missing was scaling: the move tool had
+long since been dragging a layer's *content* around, because `src/app/tools/move.h` insists that whole-pixel
+movement and resampling are different features with different undo semantics. Scaling is now a command with
+those semantics of its own, and a field on the card to type it into.
+
+**What is scaled is the picture, and the picture is `Image::content_bounds`.** A layer stays the size of the
+canvas - every blend, mask, thumbnail and `Document::checksum` assumes a stack of congruent rectangles - so
+scaling means resampling what the layer *holds* and leaving the rest transparent. `content_bounds` used to be
+a static inside the move tool; it is on `Image` now, so a drag and a scale cannot disagree about which part
+of a layer "it" is. The anchor is the middle of those bounds, not the canvas origin and not the layer's
+top-left: on the app a stroke spanning x 68..168 halved to x 93..143, middle 118 before and after.
+
+**The coverage plane goes through the same map, because it is a claim about the same pixels.** Scale the
+colour and not the mask and the layer shows parts it was hiding and hides parts it was showing. So both
+planes take one factor, about one anchor, in one history step - and they take it through `core/resample`
+twice rather than through a filter twice: a coverage plane has no colour to premultiply and must never be
+renormalised by weights that sum to less than one, or an in-outside boundary starts claiming coverage it was
+asserting the opposite of (`resample_coverage_lanczos3`, clamped at the edge, never renormalised). Two cases
+are kept out of the filter on purpose: a plane that covers everything is the same plane at any size, so
+filtering it would spend a pass putting ringing where there was none; and a plane that reaches a canvas edge
+*limits how far the picture may grow*, which is why the fit test is taken over the union of the two bounds.
+
+**A factor that will not fit is refused with the largest one that will**, because someone who meant "bigger"
+wants that number rather than a shrug: `LayerScale::max_factor` comes back on the refusal, in the command's
+error and in the log, and the refusal writes nothing - no pixel, no revision, no step. The same is true of a
+layer that holds nothing and of a factor that is not a finite positive number, and `factor == 1` is refused
+as the no-op it is rather than recorded as a change. The probe's own instance: a layer whose stroke spans the
+canvas is resized at 1.00147 at best, so `layer.scale {factor: 2}` on it says so.
+
+**A factor is a number, so the door is a field, and it stands where the button was.** The card's `Scale`
+button opens it in the button's own box (`layer_cards[].scale`, with `scaling` saying which of the two the
+box currently is) so a card cannot grow wider than the panel; `Enter` sends `layer.scale`, `Escape` puts the
+button back, and nothing reaches the document except through the command - so a half-typed factor cannot move
+a pixel, cost a step, or be saved.
+
+**Two ImGui facts that cost the debugging time, both of them found by looking at the canvas.** A single-line
+`InputText` gives up focus when Enter is pressed whether or not `EnterReturnsTrue` is set, so a refused value
+closed the field - and the next key a person reaches for after a refusal is `Escape`, which with no field
+holding the keyboard is the app's quit key. Its save prompt then dimmed the canvas, and the probe's next four
+claims were about a dialog rather than a scale. The field now re-arms itself on a refusal; and because
+`io.WantCaptureKeyboard` is one frame stale on the frame a field is re-armed on, `main.cpp`'s shortcut gate
+asks `typing_in_layer_field(state)` next to ImGui's flag, since either one alone lets the quit key through.
+The observation that gave this away was a canvas diff with a bbox covering the whole image, which is what
+`pixels.compare` and a capture are for: an assertion about the field alone would have gone green.
+
+**Verified**: `test_document` 3815 checks, `test_resample` 766 (the coverage resampler's own invariants:
+1:1 byte-identical, all-in stays all-in, all-out stays all-out, area held within the filter's tolerance),
+`test_history` 254, `ctest` 39/39, `tools/layer_panel_probe.py` 79 claims green - including that a word where
+a factor belongs is not sent and the field keeps it, that `Escape` was the field's key and not the app's,
+that half the factor visibly shrinks the picture and costs one thumbnail resample (27 to 28), that one undo
+gives the canvas back byte for byte, and that a refusal moves nothing.
+`sweep_procs.py` clean.
+
+**Owed from here**: a gesture for the same command - a handle on the selected layer's picture driving
+`layer.scale`, which is what the command existing on its own was for - `layer.remove` in the timeline, and
+the coverage-undo decision further up.
 
 ## 2026-10-16 - Moving a layer, and what a change to the stack actually carries
 
@@ -668,6 +839,19 @@ which is the only way either fact could have been found.
 invariant) carry the rest. Suite: 37/37 with `test_verb_bar_probe` added.
 
 ## Traps the code cannot show
+* **A resampled picture carries its filter's throw.** Lanczos reaches about three pixels past an edge and
+  the throw has alpha, so a result left at the filter's natural size holds a *picture* bigger than the thing
+  in it - and `content_bounds`, which is what the next scale, move or crop is aimed at, grows by the reach
+  every time round. Cut the output at the box that was asked for; `resample_margin_px` is about the input
+  side, where the window must not run off the data.
+* **A field that refuses a value has to take the keyboard back, and ImGui will not warn you that it let
+  go.** A single-line `InputText` deactivates when Enter is pressed whether or not `EnterReturnsTrue` is
+  set, so rejecting an input closes the thing the person is typing into - and the key they reach for next
+  is `Escape`, which with nothing holding the keyboard is the app's quit key. The symptom is not a broken
+  field but a save prompt over the canvas and every screenshot claim after it describing a dialog. Re-arm
+  the field on a refusal, and remember that `io.WantCaptureKeyboard` describes the frame that just ended:
+  on the frame a field is re-armed it is stale, which is why the host's shortcut gate asks
+  `typing_in_layer_field` beside it rather than trusting either one alone.
 * **A position recorded while a stack shrinks is not a position for putting it back.** Undo re-inserts the
   layers a step removed in the order it removed them, each into a stack that is *growing*, while the index
   each carries was read off a stack that was *shrinking*. One removal per step and the two frames coincide;
@@ -693,6 +877,12 @@ invariant) carry the rest. Suite: 37/37 with `test_verb_bar_probe` added.
   onto layers by that number serves the wrong picture. Key such a cache by the thing it is a picture *of*;
   the document is then free to say what a change really moved - this layer's content, or only how the
   layers stack.
+* **An injected double-click is not a double click on this box.** Two injected presses reach ImGui ~0.5 s
+  apart - 200 frames apart at the ~340 fps this app idles at - however tightly the driver sends them, and
+  ImGui counts a pair only inside `io.MouseDoubleClickTime` (0.3 s), so the second press starts a new click.
+  Raising the threshold would tune the app to the harness. Drive the command the gesture uses, and give the
+  feature the key it deserves anyway (`F2`): `layer.rename.begin` opens the field the double-click opens, so
+  the probe checks the door instead of claiming a gesture it never performed.
 * **`xvfb-run` clips pointer injection; the probes are run without it.** `wd.ensure_display` raises an
   Xvfb at the size the probe asks for and is what ctest uses, so motion reaches the whole window. Running
   a probe by hand under `xvfb-run -a` instead reuses *its* screen, and XTEST motion then stops arriving
