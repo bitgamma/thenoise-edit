@@ -6,6 +6,15 @@
 #ifdef __EMSCRIPTEN__
 #include <GLES3/gl3.h>
 #else
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>  // Windows SDK gl.h requires WINGDIAPI and APIENTRY.
+#endif
 #include <GL/gl.h>
 #endif
 #include <sokol_glue.h>

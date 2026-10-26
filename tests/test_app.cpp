@@ -33,6 +33,7 @@
 #include <fstream>
 #include <thread>
 #include <map>
+#include <numbers>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -41,6 +42,23 @@ using namespace noise;
 using nlohmann::json;
 
 namespace {
+
+// Keep fixture configuration local to this test process on all supported hosts.
+void set_test_env(const char* key, const std::string& value) {
+#ifdef _WIN32
+    _putenv_s(key, value.c_str());
+#else
+    ::setenv(key, value.c_str(), 1);
+#endif
+}
+
+void unset_test_env(const char* key) {
+#ifdef _WIN32
+    _putenv_s(key, "");
+#else
+    ::unsetenv(key);
+#endif
+}
 
 // Drives the real command table with no window and no GPU: whatever the wire can
 // reach, this reaches.
@@ -111,10 +129,10 @@ struct Harness {
         // then exercise the transport, the queue and the failure classes against the shapes the dev box
         // was observed sending, and the default test run stays hermetic.
         if (config_ == Config::recorded) {
-            ::setenv("NOISE_AI_FIXTURES", fixtures.c_str(), 1);
+            set_test_env("NOISE_AI_FIXTURES", fixtures);
         } else {
-            ::unsetenv("NOISE_AI_FIXTURES");
-            ::unsetenv("THENOISE_URL");
+            unset_test_env("NOISE_AI_FIXTURES");
+            unset_test_env("THENOISE_URL");
         }
         app::open_ai_session(state);
         const app::HostHooks hooks{&stub_frame, [this] { ++quits; }};
@@ -2291,7 +2309,7 @@ void test_a_layer_mask_is_one_step_and_reaches_the_file() {
 void expect_ellipse_area(const json& selection, double tolerance, int line) {
     const double a = selection["bounds"][2].get<double>() / 2.0;
     const double b = selection["bounds"][3].get<double>() / 2.0;
-    const double want = M_PI * a * b;
+    const double want = std::numbers::pi * a * b;
     const double got = selection["area"].get<double>();
     noise::test::expect(std::fabs(got - want) <= tolerance * want, "ellipse area matches pi*a*b",
                         __FILE__, line,
@@ -4660,7 +4678,7 @@ void test_the_recent_files_are_the_documents_this_app_touched() {
                         ("noise-config-" + std::to_string(platform::pid()));
     std::filesystem::remove_all(config);
     std::filesystem::create_directories(config);
-    ::setenv("NOISE_CONFIG_DIR", config.c_str(), 1);
+    set_test_env("NOISE_CONFIG_DIR", config.string());
 
     harness.value("doc.new", json{{"width", 8}, {"height", 6}});
     const std::string first = harness.temp("first.noise");
@@ -4685,7 +4703,7 @@ void test_the_recent_files_are_the_documents_this_app_touched() {
     harness.value("doc.open", json{{"path", files[0].get<std::string>()}});
     CHECK_EQ(harness.value("doc.get", json::object())["path"].get<std::string>(),
              std::filesystem::canonical(first).string());
-    ::unsetenv("NOISE_CONFIG_DIR");
+    unset_test_env("NOISE_CONFIG_DIR");
 }
 
 void test_theme_switch_persists_without_changing_the_document() {
@@ -4694,7 +4712,7 @@ void test_theme_switch_persists_without_changing_the_document() {
     std::filesystem::remove_all(config);
     std::filesystem::create_directories(config);
     const std::optional<std::string> previous = platform::env("NOISE_CONFIG_DIR");
-    ::setenv("NOISE_CONFIG_DIR", config.c_str(), 1);
+    set_test_env("NOISE_CONFIG_DIR", config.string());
 
     Harness harness;
     CHECK_EQ(harness.value("ui.theme", json::object())["theme"].get<std::string>(),
@@ -4727,9 +4745,9 @@ void test_theme_switch_persists_without_changing_the_document() {
     CHECK_EQ(harness.state.ui_theme, io::Theme::light);
 
     if (previous.has_value()) {
-        ::setenv("NOISE_CONFIG_DIR", previous->c_str(), 1);
+        set_test_env("NOISE_CONFIG_DIR", *previous);
     } else {
-        ::unsetenv("NOISE_CONFIG_DIR");
+        unset_test_env("NOISE_CONFIG_DIR");
     }
     std::filesystem::remove_all(config);
 }

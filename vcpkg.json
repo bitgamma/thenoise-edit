@@ -1,0 +1,11 @@
+{
+  "name": "thenoise-edit",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "curl",
+    "libjpeg-turbo",
+    "libpng",
+    "libwebp",
+    "zlib"
+  ]
+}

@@ -1,5 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
+if(MSVC)
+    set(NOISE_TEST_WARNINGS /W4)
+    set(NOISE_TEST_CONVERSION_WARNINGS /W4)
+else()
+    set(NOISE_TEST_WARNINGS -Wall -Wextra -Werror -Wshadow)
+    set(NOISE_TEST_CONVERSION_WARNINGS -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+endif()
+
 add_executable(test_hash test_hash.cpp)
 add_executable(test_geom test_geom.cpp)
 add_executable(test_image test_image.cpp)
@@ -29,58 +37,58 @@ add_executable(test_backend test_backend.cpp)
 foreach(target test_hash test_geom test_command test_wire test_brush test_history)
     target_link_libraries(${target} PRIVATE noise_core noise_dbg)
     target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -Wshadow)
+    target_compile_options(${target} PRIVATE ${NOISE_TEST_WARNINGS})
     add_test(NAME ${target} COMMAND ${target})
 endforeach()
 
 # The document model: what a stack composites to, and the invariants a stack keeps.
 target_link_libraries(test_document PRIVATE noise_core noise_dbg)
 target_include_directories(test_document PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(test_document PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_document PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_document COMMAND test_document)
 
 # The blend arithmetic, checked against the definitions written out again in the test rather than
 # against the implementation: a mode that agrees with a shared helper agrees with nothing.
 target_link_libraries(test_blend PRIVATE noise_core noise_dbg)
 target_include_directories(test_blend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(test_blend PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_blend PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_blend COMMAND test_blend)
 
 # What a coverage plane does to a write, checked against source-over written out again in the test:
 # the claim that the document can restrict a write after the fact rests on the two being the same.
 target_link_libraries(test_maskops PRIVATE noise_core noise_dbg)
 target_include_directories(test_maskops PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(test_maskops PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_maskops PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_maskops COMMAND test_maskops)
 
 target_link_libraries(test_mask PRIVATE noise_core noise_dbg)
 target_include_directories(test_mask PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(test_mask PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_mask PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_mask COMMAND test_mask)
 
 target_link_libraries(test_ants PRIVATE noise_app noise_core noise_dbg)
 target_include_directories(test_ants PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(test_ants PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_ants PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_ants COMMAND test_ants)
 
 # The container reader is a parser for files from elsewhere, so it gets the hostile-input
 # tests: crc, truncation, and a directory that lies.
 target_link_libraries(test_zip PRIVATE noise_core noise_io ZLIB::ZLIB)
 target_include_directories(test_zip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(test_zip PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_zip PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_zip COMMAND test_zip)
 
 # The container: what a .noise file must guarantee, checked against files this app writes and
 # files it would never write.
 target_link_libraries(test_project PRIVATE noise_core noise_io noise_platform)
 target_include_directories(test_project PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(test_project PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_project PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_project COMMAND test_project)
 
 # Pixels plus the codec that reads and writes them.
 target_link_libraries(test_image PRIVATE noise_core noise_io noise_dbg)
 target_include_directories(test_image PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(test_image PRIVATE -Wall -Wextra -Werror -Wshadow)
+target_compile_options(test_image PRIVATE ${NOISE_TEST_WARNINGS})
 add_test(NAME test_image COMMAND test_image)
 
 # The command table is windowless, so the app's own behaviour is testable here. The
@@ -92,7 +100,7 @@ target_include_directories(test_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(test_app
     PRIVATE NOISE_TEST_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets"
             NOISE_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/http")
-target_compile_options(test_app PRIVATE -Wall -Wextra -Werror -Wshadow)
+target_compile_options(test_app PRIVATE ${NOISE_TEST_WARNINGS})
 add_test(NAME test_app COMMAND test_app)
 
 # File request and answer routing stay testable without opening a desktop dialog.
@@ -100,18 +108,18 @@ target_link_libraries(test_file_dialog PRIVATE noise_app noise_core noise_dbg)
 target_include_directories(test_file_dialog PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(test_file_dialog
     PRIVATE NOISE_TEST_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
-target_compile_options(test_file_dialog PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_file_dialog PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_file_dialog COMMAND test_file_dialog)
 
 # Shortcut text, table bindings and the platform key translation: sokol headers are needed
 # to build a sapp_event, but nothing is initialized, so it stays a windowless test.
 target_link_libraries(test_shortcut PRIVATE noise_app noise_ui noise_core noise_dbg sokol imgui)
 target_include_directories(test_shortcut PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(test_shortcut PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_shortcut PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_shortcut COMMAND test_shortcut)
 
 find_package(Python3 COMPONENTS Interpreter)
-if(Python3_Interpreter_FOUND)
+if(Python3_Interpreter_FOUND AND NOT WIN32)
     # M0 acceptance: drive pan+zoom over the wire against the running app, capture the
     # canvas, diff against the golden. Skips loudly when it cannot render (no DISPLAY,
     # no xvfb-run) rather than going red on a headless box.
@@ -330,7 +338,7 @@ endif()
 # against the statistics each one claims to keep or destroy.
 target_link_libraries(test_region PRIVATE noise_ai noise_core noise_dbg)
 target_include_directories(test_region PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(test_region PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_region PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_region COMMAND test_region)
 
 # The two pixel operations the compositor is built out of: a softening that must never invent
@@ -338,7 +346,7 @@ add_test(NAME test_region COMMAND test_region)
 foreach(target test_blur test_resample)
     target_link_libraries(${target} PRIVATE noise_core noise_dbg)
     target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+    target_compile_options(${target} PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
     add_test(NAME ${target} COMMAND ${target})
 endforeach()
 
@@ -346,7 +354,7 @@ endforeach()
 # the byte that was there, diffed over the whole image.
 target_link_libraries(test_compose PRIVATE noise_ai noise_core noise_dbg)
 target_include_directories(test_compose PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(test_compose PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_compose PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_compose COMMAND test_compose)
 
 # The role table and resolution order: which model a command gets, and what it says when the answer is
@@ -355,7 +363,7 @@ add_test(NAME test_compose COMMAND test_compose)
 target_link_libraries(test_roles PRIVATE noise_ai noise_core noise_io noise_dbg)
 target_include_directories(test_roles PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(test_roles PRIVATE NOISE_TEST_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
-target_compile_options(test_roles PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_roles PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_roles COMMAND test_roles)
 
 # Recipes are the product's policy: prompts, prep, region scope, composite policy. A malformed one is a
@@ -363,14 +371,14 @@ add_test(NAME test_roles COMMAND test_roles)
 target_link_libraries(test_recipes PRIVATE noise_ai noise_core noise_io noise_dbg)
 target_include_directories(test_recipes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(test_recipes PRIVATE NOISE_TEST_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
-target_compile_options(test_recipes PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_recipes PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_recipes COMMAND test_recipes)
 
 # The field policy, asserted on the bytes a request would go out as: the whitelist, the values the
 # builder refuses because the server would not, and the cache key's stability.
 target_link_libraries(test_provider PRIVATE noise_ai noise_core noise_io noise_dbg)
 target_include_directories(test_provider PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(test_provider PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_provider PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_provider COMMAND test_provider)
 
 # The client, the queue and the cache against recorded HTTP fixtures: request field policy on the wire,
@@ -381,5 +389,5 @@ target_include_directories(test_backend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(test_backend
     PRIVATE NOISE_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/http"
             NOISE_TEST_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
-target_compile_options(test_backend PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+target_compile_options(test_backend PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_backend COMMAND test_backend)

@@ -2,6 +2,7 @@
 #include "io/png.h"
 
 #include "core/image.h"
+#include "platform/paths.h"
 
 #include <png.h>
 
@@ -33,7 +34,7 @@ Image decode_png(std::span<const std::uint8_t> bytes, std::string& error) {
 }
 
 Image load_png(const std::string& path, std::string& error) {
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(platform::path_from_utf8(path), std::ios::binary);
     if (!file) {
         error = "cannot open file: " + path;
         return {};
@@ -70,7 +71,7 @@ bool save_png(const std::string& path, const Image& image, std::string& error) {
         error = "png encode failed";
         return false;
     }
-    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    std::ofstream file(platform::path_from_utf8(path), std::ios::binary | std::ios::trunc);
     if (!file) {
         error = "cannot write file: " + path;
         return false;

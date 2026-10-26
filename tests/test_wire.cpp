@@ -8,11 +8,20 @@
 #include "platform/net.h"
 #include "platform/platform.h"
 
-#include "arpa/inet.h"
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#endif
 
 #include <cstring>
 #include <nlohmann/json.hpp>
@@ -55,29 +64,45 @@ void build_table(CommandTable& table) {
     });
 }
 
-int connect_client(std::uint16_t port) {
+platform::SocketHandle connect_client(std::uint16_t port) {
+#ifdef _WIN32
+    const SOCKET fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd == INVALID_SOCKET) {
+        return platform::kInvalidSocket;
+    }
+#else
     const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return platform::kInvalidSocket;
+    }
+#endif
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     ::inet_pton(AF_INET, kAddress, &addr.sin_addr);
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        ::close(fd);
-        return -1;
+        platform::close_fd(static_cast<platform::SocketHandle>(fd));
+        return platform::kInvalidSocket;
     }
+#ifdef _WIN32
+    const DWORD timeout = 100;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
     const timeval timeout{0, 100000};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    return fd;
+#endif
+    return static_cast<platform::SocketHandle>(fd);
 }
 
-bool send_line(int client, const std::string& line) {
+bool send_line(platform::SocketHandle client, const std::string& line) {
     return platform::write_all(client, line + "\n", kWriteTimeoutMs);
 }
 
 // Drives the server until one response frame arrives, or the deadline passes.
 // The server must never block, so a stalled or absent reply fails here rather
 // than hanging the suite.
-bool read_response(dbg::DebugWire& wire, int client, LineFramer& framer, json& out) {
+bool read_response(dbg::DebugWire& wire, platform::SocketHandle client, LineFramer& framer, json& out) {
     std::vector<char> buffer(8192);
     const double deadline = platform::now_seconds() + kDeadlineSeconds;
     while (platform::now_seconds() < deadline) {
@@ -100,7 +125,7 @@ bool read_response(dbg::DebugWire& wire, int client, LineFramer& framer, json& o
     return false;
 }
 
-json wait_for_response(dbg::DebugWire& wire, int client, LineFramer& framer) {
+json wait_for_response(dbg::DebugWire& wire, platform::SocketHandle client, LineFramer& framer) {
     json out;
     CHECK(read_response(wire, client, framer, out));
     return out;
@@ -118,7 +143,7 @@ void test_request_response_round_trip() {
     CHECK(wire.start(config_for(""), error));
     CHECK(wire.port() != 0);
 
-    const int client = connect_client(wire.port());
+    const platform::SocketHandle client = connect_client(wire.port());
     CHECK(client >= 0);
     wire.poll();
     CHECK_EQ(wire.client_count(), std::size_t(1));
@@ -141,7 +166,7 @@ void test_two_frames_in_one_write() {
     std::string error;
     CHECK(wire.start(config_for(""), error));
 
-    const int client = connect_client(wire.port());
+    const platform::SocketHandle client = connect_client(wire.port());
     const std::string both = std::string(R"({"id":1,"cmd":"test.echo"})") + "\n" +
                              R"({"id":2,"cmd":"test.fail"})" + "\n";
     CHECK(platform::write_all(client, both, kWriteTimeoutMs));
@@ -168,7 +193,7 @@ void test_malformed_and_unknown_requests() {
     std::string error;
     CHECK(wire.start(config_for(""), error));
 
-    const int client = connect_client(wire.port());
+    const platform::SocketHandle client = connect_client(wire.port());
     LineFramer framer(1024u * 1024u);
 
     CHECK(send_line(client, "this is not json"));
@@ -197,7 +222,7 @@ void test_frame_over_bound_drops_client() {
     std::string error;
     CHECK(wire.start(config_for(""), error));
 
-    const int client = connect_client(wire.port());
+    const platform::SocketHandle client = connect_client(wire.port());
     wire.poll();
     CHECK_EQ(wire.client_count(), std::size_t(1));
 
@@ -226,19 +251,19 @@ void test_token_required_before_any_command() {
 
     LineFramer framer(1024u * 1024u);
 
-    const int unauthenticated = connect_client(wire.port());
+    const platform::SocketHandle unauthenticated = connect_client(wire.port());
     CHECK(send_line(unauthenticated, R"({"id":1,"cmd":"test.echo"})"));
     const json rejected = wait_for_response(wire, unauthenticated, framer);
     CHECK_EQ(rejected["ok"].get<bool>(), false);
     CHECK(error_of(rejected).find("authentication") != std::string::npos);
 
-    const int wrong = connect_client(wire.port());
+    const platform::SocketHandle wrong = connect_client(wire.port());
     wire.poll();
     CHECK(send_line(wrong, R"({"auth":"wrong"})"));
     const json bad_auth = wait_for_response(wire, wrong, framer);
     CHECK_EQ(bad_auth["ok"].get<bool>(), false);
 
-    const int good = connect_client(wire.port());
+    const platform::SocketHandle good = connect_client(wire.port());
     wire.poll();
     CHECK(send_line(good, R"({"auth":"s3cret"})"));
     const json ready = wait_for_response(wire, good, framer);
@@ -269,7 +294,7 @@ void test_a_hung_up_client_gives_its_slot_back() {
 
     // Well past config max_clients, each one asked to answer before it hangs up.
     for (int round = 0; round < 12; ++round) {
-        const int client = connect_client(port);
+        const platform::SocketHandle client = connect_client(port);
         CHECK(client >= 0);
         if (client < 0) {
             break;

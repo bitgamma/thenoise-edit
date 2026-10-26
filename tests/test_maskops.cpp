@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 #include <cstdint>
 #include <limits>
 #include <numeric>
@@ -98,7 +99,7 @@ void test_the_ellipse_covers_what_the_arithmetic_says() {
     for (const Rect box : {Rect{0, 0, 60, 40}, Rect{10, 5, 61, 41}, Rect{0, 0, 8, 8},
                            Rect{3, 3, 101, 21}}) {
         const Mask mask = ellipse_of(box);
-        const double want = M_PI * (box.w / 2.0) * (box.h / 2.0);
+        const double want = std::numbers::pi * (box.w / 2.0) * (box.h / 2.0);
         const double got = coverage_area(mask);
         // A few tenths of a percent: the edge is sub-sampled eight ways, so the error is a small
         // fraction of the perimeter and shrinks relative to the area as the shape grows.
@@ -219,7 +220,7 @@ void test_the_smallest_ellipses_stay_honest() {
     // rounding a shape up to the staircase it is meant to avoid.
     Mask one{Extent{4, 4}};
     op_shape(one, MaskShape::ellipse, Rect{2, 2, 1, 1}, MaskOp::replace);
-    CHECK_NEAR(static_cast<double>(one.coverage(2, 2)), 255.0 * M_PI / 4.0, 1.0);
+    CHECK_NEAR(static_cast<double>(one.coverage(2, 2)), 255.0 * std::numbers::pi / 4.0, 1.0);
     CHECK(one.coverage(2, 2) != kMaskIn);
 
     // A one-pixel-wide box is a vertical lens: covered where the ellipse reaches along the column,
