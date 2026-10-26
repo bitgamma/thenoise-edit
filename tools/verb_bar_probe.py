@@ -82,6 +82,9 @@ def main() -> int:
     try:
         wire = wd.Wire(wd.wire_port(runtime, proc, 60.0), timeout=120)
         inj = wi.Injector(display)
+        # Xvfb has no window manager: mouse presses can hit the app while keyboard
+        # events still go nowhere. Focus it before typing into the verb's prompt.
+        inj.focus_app_window(WIDTH, HEIGHT)
         wire.call("doc.new", {"width": 512, "height": 512})
         wire.call("server.connect")
         wd.settle(wire)
