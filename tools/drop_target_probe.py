@@ -35,13 +35,13 @@ class X11:
                                         ctypes.POINTER(ctypes.c_ulong),
                                         ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)),
                                         ctypes.POINTER(ctypes.c_uint)]
-        self.lib.XFetchName.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
-                                        ctypes.POINTER(ctypes.c_char_p)]
-        self.lib.XFetchName.restype = ctypes.c_int
         self.lib.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
         self.lib.XInternAtom.restype = ctypes.c_ulong
         self.lib.XGetAtomName.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
         self.lib.XGetAtomName.restype = ctypes.c_char_p
+        self.lib.XFetchName.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
+                                        ctypes.POINTER(ctypes.c_void_p)]
+        self.lib.XFetchName.restype = ctypes.c_int
         self.lib.XGetWindowProperty.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong,
                                                ctypes.c_long, ctypes.c_long, ctypes.c_int,
                                                ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong),
@@ -54,7 +54,7 @@ class X11:
         if not self.dpy:
             raise wd.WireError(f"cannot open display {display!r}")
 
-    def window_ending_with(self, suffix: str) -> int:
+    def noise_window_advertising_xdnd(self) -> int:
         found = []
 
         def walk(window: int, depth: int) -> None:
@@ -67,20 +67,23 @@ class X11:
             if not self.lib.XQueryTree(self.dpy, window, ctypes.byref(root), ctypes.byref(parent),
                                        ctypes.byref(kids), ctypes.byref(count)):
                 return
-            names = []
             for i in range(count.value):
-                name = ctypes.c_char_p()
-                if self.lib.XFetchName(self.dpy, kids[i], ctypes.byref(name)) and name.value:
-                    names.append(name.value.decode(errors="replace"))
-                    if name.value.decode(errors="replace").endswith(suffix):
-                        found.append(kids[i])
+                title = ctypes.c_void_p()
+                has_title = self.lib.XFetchName(self.dpy, kids[i], ctypes.byref(title))
+                name = (ctypes.string_at(title).decode(errors="replace")
+                        if has_title and title else "")
+                if title:
+                    self.lib.XFree(title)
+                if (name.endswith(" - noise-edit")
+                        and self.longs(kids[i], "XdndAware")):
+                    found.append(kids[i])
                 walk(kids[i], depth + 1)
             if kids:
                 self.lib.XFree(kids)
 
         walk(self.lib.XDefaultRootWindow(self.dpy), 0)
         if not found:
-            raise wd.WireError(f"no window whose title ends in {suffix!r} on this display")
+            raise wd.WireError("TheNoise window did not advertise XdndAware on this display")
         return int(found[0])
 
     def longs(self, window: int, property_name: str) -> list[int]:
@@ -142,9 +145,7 @@ def main() -> int:
         check("layer.import" in names, "a driver can land the picture a drop lands")
 
         x11 = X11(display)
-        # The title names the document (`untitled - noise-edit`, `first.noise * - noise-edit`), so the
-        # search is on the part that never changes.
-        window = x11.window_ending_with("noise-edit")
+        window = x11.noise_window_advertising_xdnd()
         aware = x11.longs(window, "XdndAware")
         check(aware == [5], "the window advertises itself to the desktop as an XDND 5 target",
               f"XdndAware {aware}")

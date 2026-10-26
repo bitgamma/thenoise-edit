@@ -27,10 +27,12 @@ const std::vector<ToolInfo> kTools{
      "Take coverage away with the pointer", PointerShape::brush},
     {"move", ToolAction::move, std::nullopt, std::nullopt, "V",
      "Move the active layer with the pointer", PointerShape::move},
-    {"select", ToolAction::select, std::nullopt, MaskShape::rect, "M",
+    {"select", ToolAction::select, std::nullopt, SelectionGesture::rectangle, "M",
      "Select a rectangle with the pointer", PointerShape::crosshair},
-    {"select_ellipse", ToolAction::select, std::nullopt, MaskShape::ellipse, "Shift+M",
+    {"select_ellipse", ToolAction::select, std::nullopt, SelectionGesture::ellipse, "Shift+M",
      "Select an ellipse with the pointer", PointerShape::crosshair},
+    {"lasso", ToolAction::select, std::nullopt, SelectionGesture::lasso, "L",
+     "Draw a freehand selection; Shift adds and Alt subtracts", PointerShape::crosshair},
 };
 
 const char* pointer_shape_name(PointerShape shape) {
@@ -101,13 +103,25 @@ double step_brush_fraction(double value, int direction, double low, double high)
     return std::clamp(low + steps * kBrushFractionStep, low, high);
 }
 
-std::optional<MaskShape> tool_marquee(const std::string& id) {
+std::optional<SelectionGesture> tool_selection_gesture(const std::string& id) {
     for (const ToolInfo& tool : kTools) {
         if (id == tool.id) {
-            return tool.marquee;
+            return tool.selection_gesture;
         }
     }
     return std::nullopt;
+}
+
+const char* selection_gesture_name(SelectionGesture gesture) {
+    switch (gesture) {
+        case SelectionGesture::rectangle:
+            return "rect";
+        case SelectionGesture::ellipse:
+            return "ellipse";
+        case SelectionGesture::lasso:
+            return "lasso";
+    }
+    return "?";
 }
 
 std::optional<PaintMode> tool_mode(const std::string& id) {

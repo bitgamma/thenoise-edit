@@ -35,8 +35,8 @@ EndpointShape shape_of(Endpoint endpoint) {
                                   "response_format"}};
         case Endpoint::edits:
             return EndpointShape{"/images/edits",
-                                 {"model", "image", "prompt", "size", "steps", "cfg_scale", "seed",
-                                  "response_format"}};
+                                 {"model", "image", "image[]", "prompt", "size", "steps",
+                                  "cfg_scale", "seed", "response_format"}};
         case Endpoint::upscale:
             return EndpointShape{"/images/upscale", {"model", "image"}};
         case Endpoint::chat:
@@ -48,11 +48,26 @@ EndpointShape shape_of(Endpoint endpoint) {
     return EndpointShape{};
 }
 
-bool is_png(const std::vector<std::uint8_t>& bytes) {
+bool is_png(std::span<const std::uint8_t> bytes) {
     if (bytes.size() < sizeof(kPngMagic)) {
         return false;
     }
     return std::equal(std::begin(kPngMagic), std::end(kPngMagic), bytes.begin());
+}
+
+std::string image_set_id(const std::vector<RequestImage>& images) {
+    if (images.empty()) {
+        return sha256_hex(std::span<const std::uint8_t>());
+    }
+    if (images.size() == 1) {
+        return images.front().sha256;
+    }
+    std::string identity = "noise-edit-images-v1\n";
+    for (const RequestImage& image : images) {
+        identity += std::to_string(image.png.size()) + ":" + image.sha256 + "\n";
+    }
+    return sha256_hex(std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(identity.data()), identity.size()));
 }
 
 bool blank(const std::string& text) {
@@ -157,11 +172,33 @@ nlohmann::json BuiltRequest::preview_json() const {
     for (const RequestField& field : this->fields) {
         // A base64 PNG is not something to print: the preview says how much went and where it is.
         const nlohmann::json shown =
-            field.name == "image" && field.value.is_string()
+            (field.name == "image" || field.name == "image[]") && field.value.is_string()
                 ? nlohmann::json("<b64 " + std::to_string(field.value.get<std::string>().size()) +
                                  " chars>")
                 : field.value;
         fields.push_back(nlohmann::json::array({field.name, shown}));
+    }
+    nlohmann::json image_rows = nlohmann::json::array();
+    std::size_t total_image_bytes = 0;
+    for (std::size_t i = 0; i < images.size(); ++i) {
+        const RequestImage& image = images[i];
+        const std::string field = endpoint == Endpoint::edits && images.size() > 1
+                                      ? "image[]"
+                                      : "image";
+        image_rows.push_back(nlohmann::json{{"index", i + 1},
+                                           {"field", field},
+                                           {"source", image.source},
+                                           {"name", image.name},
+                                           {"dimensions", nlohmann::json::array(
+                                                              {image.width, image.height})},
+                                           {"encoded_bytes", image.png.size()},
+                                           {"content_type", "image/png"},
+                                           {"filename", images.size() == 1
+                                                             ? "image.png"
+                                                             : "image-" + std::to_string(i + 1) +
+                                                                   ".png"},
+                                           {"sha256", image.sha256}});
+        total_image_bytes += image.png.size();
     }
     return nlohmann::json{{"endpoint", endpoint_name(endpoint)},
                           {"path", path},
@@ -173,13 +210,21 @@ nlohmann::json BuiltRequest::preview_json() const {
                           {"seed", params.seed},
                           {"prompt", params.prompt},
                           {"fields", fields},
-                          {"image_bytes", png.size()},
+                          {"wire_image_fields", [&] {
+                               nlohmann::json names = nlohmann::json::array();
+                               for (const nlohmann::json& image : image_rows) {
+                                   names.push_back(image["field"]);
+                               }
+                               return names;
+                           }()},
+                          {"images", image_rows},
+                          {"image_count", images.size()},
+                          {"image_bytes", total_image_bytes},
                           {"blob", params.blob_id},
                           {"allowed_fields", allowed_fields(endpoint)}};
 }
 
-
-std::optional<BuiltRequest> build_request(const RequestInput& input, const SizePolicy& size_policy,
+std::optional<BuiltRequest> build_request(RequestInput input, const SizePolicy& size_policy,
                                          std::string& error) {
     if (input.recipe == nullptr) {
         error = "build_request: no recipe";
@@ -224,12 +269,47 @@ std::optional<BuiltRequest> build_request(const RequestInput& input, const SizeP
                                         "without one only for some endpoints - build nothing";
         return std::nullopt;
     }
-    const bool wants_image =
-        recipe.endpoint == Endpoint::edits || recipe.endpoint == Endpoint::upscale;
-    if (wants_image && !is_png(input.png)) {
-        error = "recipe '" + recipe.id + "': the uploaded region is " +
-                std::to_string(input.png.size()) +
-                " bytes and does not start with a PNG header";
+    const bool wants_image = recipe.endpoint == Endpoint::edits || recipe.endpoint == Endpoint::upscale;
+    if (recipe.endpoint == Endpoint::edits && input.images.empty()) {
+        error = "recipe '" + recipe.id + "': the edits endpoint needs the primary image as Image 1";
+        return std::nullopt;
+    }
+    if (recipe.endpoint == Endpoint::upscale && input.images.size() != 1) {
+        error = "recipe '" + recipe.id + "': upscale accepts exactly one image";
+        return std::nullopt;
+    }
+    if (!wants_image && !input.images.empty()) {
+        error = "recipe '" + recipe.id + "': endpoint '" + endpoint_name(recipe.endpoint) +
+                "' does not accept image references; choose an edit recipe or remove them";
+        return std::nullopt;
+    }
+    const std::string image_field = input.images.size() > 1 ? "image[]" : "image";
+    if (recipe.endpoint == Endpoint::edits && !field_allowed(recipe.endpoint, image_field)) {
+        error = "recipe '" + recipe.id + "': image field '" + image_field +
+                "' is not in the tier-1 field policy";
+        return std::nullopt;
+    }
+    for (std::size_t i = 0; i < input.images.size(); ++i) {
+        const RequestImageInput& image = input.images[i];
+        if (!is_png(image.png)) {
+            error = "recipe '" + recipe.id + "': Image " + std::to_string(i + 1) + " ('" +
+                    image.name + "') is " + std::to_string(image.png.size()) +
+                    " bytes and does not start with a PNG header";
+            return std::nullopt;
+        }
+        if (image.width <= 0 || image.height <= 0) {
+            error = "recipe '" + recipe.id + "': Image " + std::to_string(i + 1) + " ('" +
+                    image.name + "') has invalid dimensions " + size_field(image.width, image.height);
+            return std::nullopt;
+        }
+        if (image.name.empty() || image.source.empty()) {
+            error = "recipe '" + recipe.id + "': Image " + std::to_string(i + 1) +
+                    " needs a source and a name for its preview";
+            return std::nullopt;
+        }
+    }
+    if (recipe.endpoint == Endpoint::upscale && !field_allowed(recipe.endpoint, "image")) {
+        error = "recipe '" + recipe.id + "': field 'image' is not in the tier-1 field policy";
         return std::nullopt;
     }
 
@@ -251,8 +331,17 @@ std::optional<BuiltRequest> build_request(const RequestInput& input, const SizeP
     request.params.width = input.width;
     request.params.height = input.height;
     request.params.seed = input.seed;
-    request.png = input.png;
-    request.params.blob_id = sha256_hex(std::span<const std::uint8_t>(input.png));
+    for (const RequestImageInput& image : input.images) {
+        RequestImage encoded;
+        encoded.source = image.source;
+        encoded.name = image.name;
+        encoded.width = image.width;
+        encoded.height = image.height;
+        encoded.png.assign(image.png.begin(), image.png.end());
+        encoded.sha256 = sha256_hex(image.png);
+        request.images.push_back(std::move(encoded));
+    }
+    request.params.blob_id = image_set_id(request.images);
 
     // Steps and CFG are the model's numbers. An override is what the user asked for on the command
     // line; guessing a number here would be the app asserting a fact the server already publishes.
@@ -279,7 +368,7 @@ std::optional<BuiltRequest> build_request(const RequestInput& input, const SizeP
     FieldSink sink(recipe.endpoint);
     sink.add_text("model", input.model_id);
     if (recipe.endpoint == Endpoint::upscale) {
-        sink.add_text("image", base64_encode(std::span<const std::uint8_t>(input.png)));
+        sink.add_text("image", base64_encode(input.images.front().png));
     } else {
         sink.add_text("prompt", input.prompt);
         sink.add_text("size", size_field(input.width, input.height));

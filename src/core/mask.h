@@ -22,6 +22,8 @@ enum class MaskOp {
     subtract,  // what is left of the region's coverage
 };
 
+inline constexpr MaskOp kDefaultSelectionMode = MaskOp::replace;
+
 struct MaskOpInfo {
     MaskOp op;
     const char* name;
@@ -181,7 +183,6 @@ private:
     mutable std::vector<RowFacts> rows_;
     mutable std::vector<bool> row_dirty_;
     mutable MaskFacts facts_{};
-    mutable bool facts_ready_ = false;
     mutable std::optional<std::vector<MaskRun>> boundary_;
 };
 

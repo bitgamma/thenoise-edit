@@ -150,7 +150,9 @@ JobQueue::JobQueue(Deps deps, Clock clock)
     : deps_(deps), clock_(std::move(clock)), directory_(deps.directory) {
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(directory_), ec);
+#ifndef __EMSCRIPTEN__
     worker_ = std::thread([this] { worker(); });
+#endif
 }
 
 JobQueue::~JobQueue() {
@@ -159,9 +161,11 @@ JobQueue::~JobQueue() {
         stopping_ = true;
     }
     ready_.notify_all();
+#ifndef __EMSCRIPTEN__
     if (worker_.joinable()) {
         worker_.join();
     }
+#endif
 }
 
 std::string JobQueue::new_id() { return pad_id(next_id_++); }
@@ -172,7 +176,7 @@ int JobQueue::predicted_timeout_s(const std::string& model, Extent size, int ste
     return latency_.request_timeout_s(model, size, steps, floor_seconds);
 }
 
-std::string JobQueue::enqueue(const BuiltRequest& request, const std::string& recipe_id,
+std::string JobQueue::enqueue(BuiltRequest request, const std::string& recipe_id,
                               const std::string& role, const Landing& landing,
                               std::vector<std::uint8_t> coverage_png) {
     std::string id;
@@ -191,34 +195,37 @@ std::string JobQueue::enqueue(const BuiltRequest& request, const std::string& re
         }
         InFlight job;
         job.id = id;
-        job.request = request;
+        job.request = std::move(request);
         job.cancelled = std::make_shared<std::atomic<bool>>(false);
         job.landing = stored;
         // Predicted here, on the thread that queues: the worker must not read the latency model while
         // this one is writing it, and the number the ETA shows is the number the request gets.
-        job.timeout_s = predicted_timeout_s(request.params.model_id, request.params.width > 0
-                                                                      ? Extent{request.params.width,
-                                                                               request.params.height}
+        job.timeout_s = predicted_timeout_s(job.request.params.model_id,
+                                            job.request.params.width > 0
+                                                ? Extent{job.request.params.width,
+                                                         job.request.params.height}
                                                                       : Extent{},
-                                            request.params.steps);
+                                            job.request.params.steps);
         flags_[id] = job.cancelled;
-        queue_.push_back(job);
+        queue_.push_back(std::move(job));
 
         JobRecord& record = records_[id];
         record.id = id;
         record.recipe_id = recipe_id;
         record.role = role;
-        record.server_name = request.params.server_name;
-        record.model_id = request.params.model_id;
+        record.server_name = queue_.back().request.params.server_name;
+        record.model_id = queue_.back().request.params.model_id;
         record.state = JobState::queued;
-        record.request = request.preview_json();
+        record.request = outgoing_preview(deps_.client != nullptr ? deps_.client->profile()
+                                                                  : ServerProfile{},
+                                          queue_.back().request);
         record.submitted_at = clock_();
         record.attempts = 0;
         record.landing = stored;
-        if (!request.png.empty()) {
+        if (!queue_.back().request.images.empty()) {
             const std::string path = at(directory_, id + "-request.png");
             std::string error;
-            if (io::write_file_atomic(path, request.png, error)) {
+            if (io::write_file_atomic(path, queue_.back().request.images.front().png, error)) {
                 record.request_png = path;
             } else {
                 log::error("queue: " + error);

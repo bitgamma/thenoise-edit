@@ -3,6 +3,8 @@
 
 #include "app/ai_intent.h"
 #include "ai/provider.h"
+#include "ai/recorded.h"
+#include "ai/recorded.h"
 #include "app/ai_session.h"
 #include "app/ai_verbs.h"
 #include "app/commands.h"
@@ -17,6 +19,7 @@
 #include "io/zip.h"
 #include "core/log.h"
 #include "dbg/wire.h"
+#include "io/config.h"
 #include "platform/platform.h"
 
 #include <nlohmann/json.hpp>
@@ -57,6 +60,19 @@ Image stub_frame(int width, int height) {
     return frame;
 }
 
+Image patterned_image(Extent size, int seed) {
+    Image image = Image::filled(size, 0, 0, 0, 255);
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            std::uint8_t* pixel = image.at(x, y);
+            pixel[0] = static_cast<std::uint8_t>((seed + x * 7 + y * 3) % 256);
+            pixel[1] = static_cast<std::uint8_t>((seed * 3 + x * 2 + y * 11) % 256);
+            pixel[2] = static_cast<std::uint8_t>((seed * 5 + x * 13 + y) % 256);
+        }
+    }
+    return image;
+}
+
 struct Harness {
     // Which server the session believes it has. `unconfigured` is where a person lands when they
     // installed the editor and set nothing, and the answer has to name the variable.
@@ -68,9 +84,11 @@ struct Harness {
     int quits = 0;
     Config config_ = Config::recorded;
 
-    Harness() : Harness(Config::recorded) {}
+    Harness() : Harness(Config::recorded, NOISE_TEST_FIXTURES_DIR) {}
 
-    explicit Harness(Config config) : config_(config) {
+    explicit Harness(Config config) : Harness(config, NOISE_TEST_FIXTURES_DIR) {}
+
+    Harness(Config config, const std::string& fixtures) : config_(config) {
         // One directory per harness, not per process: a second harness in the same test would otherwise
         // remove the directory the first one is still writing into.
         static int instance = 0;
@@ -93,7 +111,7 @@ struct Harness {
         // then exercise the transport, the queue and the failure classes against the shapes the dev box
         // was observed sending, and the default test run stays hermetic.
         if (config_ == Config::recorded) {
-            ::setenv("NOISE_AI_FIXTURES", NOISE_TEST_FIXTURES_DIR, 1);
+            ::setenv("NOISE_AI_FIXTURES", fixtures.c_str(), 1);
         } else {
             ::unsetenv("NOISE_AI_FIXTURES");
             ::unsetenv("THENOISE_URL");
@@ -127,8 +145,10 @@ void test_m0_command_surface_is_registered() {
     }
     for (const char* required : {"app.state", "app.quit", "command.list", "command.invoke",
                                  "doc.new", "doc.open", "doc.save", "doc.get", "image.get",
-                                 "screenshot", "pixels.compare", "log.tail", "view.fit",
-                                 "view.pan", "view.zoom", "view.set"}) {
+                                 "screenshot", "pixels.compare", "log.tail", "ui.theme", "view.fit",
+                                 "view.pan", "view.zoom", "view.set", "ai.references",
+                                 "ai.references.add", "ai.references.remove", "ai.references.move",
+                                 "select.lasso"}) {
         CHECK(std::find(ids.begin(), ids.end(), std::string(required)) != ids.end());
     }
     for (const json& entry : listed["commands"]) {
@@ -155,6 +175,7 @@ void test_the_keymap_is_reported_with_the_commands() {
     CHECK_EQ(bound["edit.redo"], std::string("Ctrl+Y "));
     CHECK_EQ(bound["doc.save"], std::string("Ctrl+S "));
     CHECK_EQ(bound["app.quit"], std::string("Escape Ctrl+Q "));
+    CHECK_EQ(bound["tool.lasso"], std::string("L "));
 }
 
 // The refusal of unread arguments lives in the table, so it has to hold across the whole surface:
@@ -1904,6 +1925,175 @@ void test_a_marquee_gesture_is_one_step_in_whichever_coverage() {
     CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 8 * 6);
 }
 
+void test_lasso_command_combines_coverage_and_never_changes_pixels() {
+    Harness h;
+    h.value("doc.new", json{{"width", 24}, {"height", 16},
+                            {"fill", json::array({12, 34, 56, 255})}});
+    const std::string pixels = checksum_of(h);
+    const json triangle = json::array({json::array({2.0, 2.0}), json::array({10.0, 2.0}),
+                                       json::array({2.0, 10.0})});
+    const json first = h.value("select.lasso", json{{"points", triangle}});
+    CHECK(first["active"].get<bool>());
+    CHECK_EQ(h.state.doc.selection()->coverage(3, 3), kMaskIn);
+    CHECK_EQ(h.state.doc.selection()->coverage(9, 9), kMaskOut);
+    CHECK(std::any_of(h.state.doc.selection()->plane().begin(),
+                      h.state.doc.selection()->plane().end(), [](std::uint8_t value) {
+                          return value != kMaskOut && value != kMaskIn;
+                      }));
+    h.value("server.connect", json::object());
+    const json preview = h.value("ai.preview", json{{"recipe", "inpaint-remove"}, {"seed", 3}});
+    CHECK(preview["region"]["mask_bounds"] == json::array({2, 2, 8, 8}));
+    const json square = json::array({json::array({14.0, 2.0}), json::array({21.0, 2.0}),
+                                     json::array({21.0, 9.0}), json::array({14.0, 9.0})});
+    h.value("select.lasso", json{{"points", square}, {"mode", "add"}});
+    CHECK_EQ(h.state.doc.selection()->coverage(3, 3), kMaskIn);
+    CHECK_EQ(h.state.doc.selection()->coverage(18, 5), kMaskIn);
+    h.value("select.lasso", json{{"points", triangle}, {"mode", "subtract"}});
+    CHECK_EQ(h.state.doc.selection()->coverage(3, 3), kMaskOut);
+    CHECK_EQ(h.state.doc.selection()->coverage(18, 5), kMaskIn);
+
+    const Mask before = *h.state.doc.selection();
+    for (const json& args : {json{{"points", json::array({json::array({1.0, 1.0}),
+                                                           json::array({5.0, 5.0})})}},
+                             json{{"points", triangle}, {"mode", "intersect"}}}) {
+        CHECK(!h.run("select.lasso", args).ok);
+        CHECK(*h.state.doc.selection() == before);
+    }
+    h.value("select.lasso", json{{"points", square}});
+    CHECK_EQ(h.state.doc.selection()->coverage(3, 3), kMaskOut);
+    CHECK_EQ(h.state.doc.selection()->coverage(18, 5), kMaskIn);
+    CHECK_EQ(checksum_of(h), pixels);
+}
+
+void test_lasso_pointer_commits_once_and_undo_redo_restore_exact_coverage() {
+    Harness h;
+    h.value("doc.new", json{{"width", 24}, {"height", 16},
+                            {"fill", json::array({12, 34, 56, 255})}});
+    h.value("select.rect", json{{"rect", json::array({1, 1, 5, 5})}});
+    const Mask before = *h.state.doc.selection();
+    const std::string pixels = checksum_of(h);
+    const int depth = undo_depth(h);
+    h.value("tool.set", json{{"tool", "lasso"}});
+    CHECK_EQ(h.state.tool, std::string("lasso"));
+
+    const std::vector<Vec2> path{{10.0, 2.0}, {20.0, 2.0}, {20.0, 12.0}, {10.0, 12.0}};
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({10.0, 2.0})},
+                                  {"mode", "add"}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({20.0, 2.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({20.0, 12.0})}});
+    const json during = h.value("app.state", json::object())["stroke"];
+    CHECK(during["active"].get<bool>());
+    CHECK_EQ(during["marquee_shape"].get<std::string>(), std::string("lasso"));
+    CHECK_EQ(during["lasso_points"].size(), 3u);
+    CHECK(*h.state.doc.selection() == before);
+    CHECK_EQ(undo_depth(h), depth);
+
+    h.value("tool.set", json{{"tool", "brush"}});
+    h.value("coverage.target", json{{"to", "mask"}});
+    h.value("tool.pointer", json{{"phase", "release"}, {"at", json::array({10.0, 12.0})}});
+    Mask expected = before;
+    CHECK(op_lasso(expected, path, MaskOp::add));
+    const Mask after = *h.state.doc.selection();
+    CHECK(after == expected);
+    CHECK_EQ(undo_depth(h), depth + 1);
+    CHECK_EQ(checksum_of(h), pixels);
+    CHECK(!h.state.select.active);
+    CHECK(!h.state.doc.in_provisional());
+    CHECK(h.state.doc.layer(0).mask == std::nullopt);
+
+    CHECK(h.run("edit.undo", json::object()).ok);
+    CHECK(*h.state.doc.selection() == before);
+    CHECK(h.run("edit.redo", json::object()).ok);
+    CHECK(*h.state.doc.selection() == after);
+
+    const int before_cancel = undo_depth(h);
+    h.value("coverage.target", json{{"to", "marked"}});
+    h.value("tool.set", json{{"tool", "lasso"}});
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({3.0, 12.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({8.0, 12.0})}});
+    h.value("tool.pointer", json{{"phase", "cancel"}});
+    CHECK(!h.state.select.active);
+    CHECK(!h.state.doc.in_provisional());
+    CHECK(*h.state.doc.selection() == after);
+    CHECK_EQ(undo_depth(h), before_cancel);
+}
+
+void test_lasso_edits_a_layer_mask_through_its_provisional_transaction() {
+    Harness h;
+    h.value("doc.new", json{{"width", 20}, {"height", 16},
+                            {"fill", json::array({40, 50, 60, 255})}});
+    h.value("mask.add", json::object());
+    h.value("mask.fill", json{{"to", "hide"}});
+    h.value("coverage.target", json{{"to", "mask"}});
+    h.value("tool.set", json{{"tool", "lasso"}});
+    const Mask before = *h.state.doc.layer(0).mask;
+    const std::string pixels = h.state.doc.layer(0).pixels.checksum_hex();
+    const int depth = undo_depth(h);
+    const std::vector<Vec2> path{{3.0, 3.0}, {15.0, 3.0}, {15.0, 12.0}, {3.0, 12.0}};
+
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({3.0, 3.0})}});
+    CHECK(h.state.doc.provisional_area() == Rect{3, 3, 1, 1});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({15.0, 3.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({15.0, 12.0})}});
+    h.value("tool.pointer", json{{"phase", "release"}, {"at", json::array({3.0, 12.0})}});
+    Mask expected(h.state.doc.size());
+    CHECK(op_lasso(expected, path, MaskOp::replace));
+    const Mask after = *h.state.doc.layer(0).mask;
+    CHECK(after == expected);
+    CHECK(!h.state.doc.selection().has_value());
+    CHECK_EQ(undo_depth(h), depth + 1);
+    CHECK_EQ(h.state.doc.layer(0).pixels.checksum_hex(), pixels);
+    CHECK(!h.state.doc.in_provisional());
+    CHECK(h.run("edit.undo", json::object()).ok);
+    CHECK(*h.state.doc.layer(0).mask == before);
+    CHECK(h.run("edit.redo", json::object()).ok);
+    CHECK(*h.state.doc.layer(0).mask == after);
+
+    const int before_cancel = undo_depth(h);
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({4.0, 4.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({10.0, 10.0})}});
+    h.value("tool.pointer", json{{"phase", "cancel"}});
+    CHECK(*h.state.doc.layer(0).mask == after);
+    CHECK_EQ(undo_depth(h), before_cancel);
+    CHECK(!h.state.doc.in_provisional());
+
+    h.value("mask.remove", json::object());
+    h.value("coverage.target", json{{"to", "mask"}});
+    const int without_mask = undo_depth(h);
+    const CommandResult refused = h.run(
+        "tool.pointer", json{{"phase", "press"}, {"at", json::array({4.0, 4.0})}});
+    CHECK(!refused.ok);
+    CHECK(!h.state.select.active);
+    CHECK_EQ(undo_depth(h), without_mask);
+}
+
+// Replacing a nonempty layer mask must clear its old coverage, not reveal the old bounds.
+void test_lasso_mask_replace_discards_previous_visible_pixels() {
+    Harness h;
+    h.value("doc.new", json{{"width", 20}, {"height", 16},
+                            {"fill", json::array({40, 50, 60, 255})}});
+    h.value("mask.add", json::object());
+    h.value("mask.fill", json{{"to", "show"}});
+    h.value("coverage.target", json{{"to", "mask"}});
+    h.value("tool.set", json{{"tool", "lasso"}});
+    const Mask before = *h.state.doc.layer(0).mask;
+    CHECK_EQ(before.coverage(16, 12), kMaskIn);
+    const int depth = undo_depth(h);
+
+    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({2.0, 2.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({8.0, 2.0})}});
+    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({8.0, 8.0})}});
+    h.value("tool.pointer", json{{"phase", "release"}, {"at", json::array({2.0, 8.0})}});
+    const Mask after = *h.state.doc.layer(0).mask;
+    CHECK_EQ(after.coverage(4, 4), kMaskIn);
+    CHECK_EQ(after.coverage(16, 12), kMaskOut);
+    CHECK_EQ(undo_depth(h), depth + 1);
+    CHECK(h.run("edit.undo", json::object()).ok);
+    CHECK(*h.state.doc.layer(0).mask == before);
+    CHECK(h.run("edit.redo", json::object()).ok);
+    CHECK(*h.state.doc.layer(0).mask == after);
+}
+
 // The selection fences every write, and a mask stroke is a write: what the brush did to coverage
 // happened only as far as the selection reached, which is the same rule the colour stroke runs.
 void test_a_selection_limits_a_mask_stroke() {
@@ -2262,7 +2452,9 @@ void test_blend_takes_the_layer_for_its_region() {
     CHECK_EQ(std::stoi(size.substr(cross + 1)) % 16, 0);
     // No words were asked for and none were invented by the caller: the standing instruction is the
     // recipe's, and the scene it is to match is in the upload, not in the prompt.
-    CHECK(preview["prompt"].get<std::string>().find("belongs in this scene") != std::string::npos);
+    CHECK(preview["prompt"].get<std::string>().find("Harmonize the marked object") !=
+          std::string::npos);
+    CHECK(!preview["additional_references"]["will_transmit"].get<bool>());
     CHECK(preview["request"].contains("seed"));
 
     h.value("layer.add", json{{"name", "empty"}, {"fill", json::array({0, 0, 0, 0})}});
@@ -2270,6 +2462,451 @@ void test_blend_takes_the_layer_for_its_region() {
     CHECK(!refused.ok);
     CHECK(refused.error.find("'empty'") != std::string::npos);
     CHECK_EQ(h.state.doc.layers().size(), std::size_t(3));
+}
+
+void test_ai_reference_commands_keep_images_separate_from_document_layers() {
+    Harness h;
+    h.value("doc.new", json{{"width", 64}, {"height", 64},
+                             {"fill", json::array({30, 80, 120, 255})}});
+    const json document_before = h.value("doc.get", json::object());
+    const Image house = patterned_image(Extent{23, 15}, 31);
+    const Image swing = patterned_image(Extent{11, 27}, 173);
+    const std::string house_path = h.temp("House.png");
+    const std::string swing_path = h.temp("Swing.png");
+    std::string error;
+    CHECK(io::save_png(house_path, house, error));
+    CHECK(io::save_png(swing_path, swing, error));
+
+    const json added = h.value("file.answer", json{{"for", "reference"},
+                                                     {"paths", json::array(
+                                                                   {house_path, swing_path})}});
+    CHECK(added["session_only"].get<bool>());
+    CHECK_EQ(added["count"].get<std::size_t>(), std::size_t(2));
+    REQUIRE(added["references"].size() == std::size_t(2));
+    CHECK_EQ(added["references"][0]["number"].get<int>(), 2);
+    CHECK_EQ(added["references"][1]["number"].get<int>(), 3);
+    CHECK_EQ(added["references"][0]["name"].get<std::string>(), std::string("House.png"));
+    CHECK_EQ(added["references"][1]["name"].get<std::string>(), std::string("Swing.png"));
+    CHECK_EQ(added["references"][0]["dimensions"], json::array({23, 15}));
+    CHECK_EQ(added["references"][1]["dimensions"], json::array({11, 27}));
+    CHECK_EQ(h.state.doc.revision(), document_before["revision"].get<std::uint64_t>());
+    CHECK_EQ(checksum_of(h), document_before["checksum"].get<std::string>());
+    CHECK_EQ(undo_depth(h), document_before["history"]["undo_depth"].get<int>());
+
+    std::string decode_error;
+    REQUIRE(h.state.ai.references.size() == std::size_t(2));
+    const Image decoded_house = io::decode_png(h.state.ai.references[0].png, decode_error);
+    const Image decoded_swing = io::decode_png(h.state.ai.references[1].png, decode_error);
+    CHECK_EQ(decoded_house.checksum_hex(), house.checksum_hex());
+    CHECK_EQ(decoded_swing.checksum_hex(), swing.checksum_hex());
+    const std::string house_id = h.state.ai.references[0].id;
+    const std::string swing_id = h.state.ai.references[1].id;
+
+    const json moved = h.value("ai.references.move", json{{"id", swing_id}, {"to", 0}});
+    CHECK_EQ(moved["references"][0]["name"].get<std::string>(), std::string("Swing.png"));
+    CHECK_EQ(moved["references"][0]["number"].get<int>(), 2);
+    h.value("ai.references.remove", json{{"id", house_id}});
+    CHECK_EQ(h.value("ai.references", json::object())["count"].get<std::size_t>(), std::size_t(1));
+
+    h.value("layer.add", json{{"name", "House_layer"},
+                               {"fill", json::array({220, 35, 18, 255})}});
+    h.value("select.rect", json{{"rect", json::array({11, 13, 17, 19})}});
+    h.value("mask.from_selection", json::object());
+    h.value("layer.add", json{{"name", "Unrelated_layer"},
+                               {"fill", json::array({5, 190, 240, 255})}});
+    h.value("layer.set", json{{"index", 1}, {"opacity", 0.5}});
+    const json stack_before_reference = h.value("doc.get", json::object());
+    const Image target_pixels = h.state.doc.layer(1).pixels;
+    const std::uint64_t encodes_before_layer = h.state.ai.reference_encodes;
+    const json layer_added = h.value("ai.references.add", json{{"layer", 1}});
+    REQUIRE(layer_added["references"].size() == std::size_t(2));
+    const json& layer_row = layer_added["references"][1];
+    CHECK_EQ(layer_row["number"].get<int>(), 3);
+    CHECK_EQ(layer_row["name"].get<std::string>(), std::string("House_layer"));
+    CHECK(layer_row["linked"].get<bool>());
+    CHECK_EQ(layer_row["dimensions"], json::array({17, 19}));
+    CHECK_EQ(h.state.ai.reference_encodes, encodes_before_layer + 1);
+    CHECK_EQ(h.state.doc.revision(), stack_before_reference["revision"].get<std::uint64_t>());
+    CHECK_EQ(h.value("doc.get", json::object())["checksum"].get<std::string>(),
+             stack_before_reference["checksum"].get<std::string>());
+    CHECK_EQ(h.state.doc.layer(1).pixels.checksum_hex(), target_pixels.checksum_hex());
+
+    const app::AiReference& cached_layer = h.state.ai.references.back();
+    const std::string first_layer_hash = cached_layer.sha256;
+    const std::uint64_t first_layer_revision = cached_layer.revision;
+    const Image decoded_layer = io::decode_png(cached_layer.png, decode_error);
+    REQUIRE(!decoded_layer.empty());
+    CHECK_EQ(decoded_layer.size(), (Extent{17, 19}));
+    CHECK_EQ(decoded_layer.at(0, 0)[0], std::uint8_t(220));
+    CHECK_EQ(decoded_layer.at(0, 0)[1], std::uint8_t(35));
+    CHECK_EQ(decoded_layer.at(0, 0)[2], std::uint8_t(18));
+    CHECK_EQ(decoded_layer.at(0, 0)[3], std::uint8_t(128));
+    const std::uint64_t cached_encodes = h.state.ai.reference_encodes;
+    h.value("ai.references", json::object());
+    h.value("ai.references", json::object());
+    CHECK_EQ(h.state.ai.reference_encodes, cached_encodes);
+
+    h.value("layer.set", json{{"index", 1}, {"opacity", 0.25}});
+    const json opacity_changed = h.value("ai.references", json::object());
+    CHECK_EQ(h.state.ai.reference_encodes, cached_encodes + 1);
+    CHECK(opacity_changed["references"][1]["revision"].get<std::uint64_t>() >
+          first_layer_revision);
+    CHECK(opacity_changed["references"][1]["sha256"].get<std::string>() != first_layer_hash);
+    const Image quarter_opacity = io::decode_png(h.state.ai.references.back().png, decode_error);
+    CHECK_EQ(quarter_opacity.at(0, 0)[3], std::uint8_t(64));
+
+    h.value("layer.select", json{{"index", 1}});
+    json stroke = full_stroke();
+    stroke["points"] = json::array({json::array({14.0, 15.0}), json::array({16.0, 15.0})});
+    stroke["size"] = 4.0;
+    stroke["color"] = json::array({40, 240, 90, 255});
+    h.value("tool.stroke", stroke);
+    const std::string opacity_hash = h.state.ai.references.back().sha256;
+    const json pixels_changed = h.value("ai.references", json::object());
+    CHECK_EQ(h.state.ai.reference_encodes, cached_encodes + 2);
+    CHECK(pixels_changed["references"][1]["sha256"].get<std::string>() != opacity_hash);
+
+    const std::string frozen_hash = h.state.ai.references.back().sha256;
+    const std::uint64_t frozen_encodes = h.state.ai.reference_encodes;
+    h.value("layer.select", json{{"index", 1}});
+    h.value("layer.remove", json::object());
+    const json frozen = h.value("ai.references", json::object());
+    CHECK(!frozen["references"][1]["linked"].get<bool>());
+    CHECK_EQ(frozen["references"][1]["sha256"].get<std::string>(), frozen_hash);
+    CHECK_EQ(h.state.ai.reference_encodes, frozen_encodes);
+}
+
+void test_ai_references_relink_after_undo_but_detach_across_documents() {
+    Harness h;
+    h.value("doc.new", json{{"width", 32}, {"height", 32},
+                             {"fill", json::array({32, 64, 96, 255})}});
+    h.value("layer.add", json{{"name", "Linked-reference"},
+                               {"fill", json::array({180, 90, 45, 255})}});
+    const json added = h.value("ai.references.add", json{{"layer", 1}});
+    REQUIRE(added["references"].size() == std::size_t(1));
+    const std::uint64_t layer_id = h.state.ai.references[0].source_layer_id;
+    const std::string original_hash = h.state.ai.references[0].sha256;
+    const std::uint64_t encodes = h.state.ai.reference_encodes;
+
+    h.value("layer.select", json{{"index", 1}});
+    h.value("layer.remove", json::object());
+    const json absent = h.value("ai.references", json::object());
+    CHECK(!absent["references"][0]["linked"].get<bool>());
+    CHECK_EQ(h.state.ai.references[0].source_layer_id, layer_id);
+    CHECK_EQ(absent["references"][0]["sha256"].get<std::string>(), original_hash);
+    CHECK_EQ(h.state.ai.reference_encodes, encodes);
+
+    h.value("edit.undo", json::object());
+    const json restored = h.value("ai.references", json::object());
+    CHECK(restored["references"][0]["linked"].get<bool>());
+    CHECK_EQ(h.state.ai.references[0].source_layer_id, layer_id);
+    CHECK_EQ(restored["references"][0]["sha256"].get<std::string>(), original_hash);
+    const std::uint64_t restored_encodes = h.state.ai.reference_encodes;
+    h.value("layer.set", json{{"index", 1}, {"opacity", 0.5}});
+    const json changed = h.value("ai.references", json::object());
+    CHECK(changed["references"][0]["linked"].get<bool>());
+    CHECK_NE(changed["references"][0]["sha256"].get<std::string>(), original_hash);
+    CHECK_EQ(h.state.ai.reference_encodes, restored_encodes + 1);
+
+    const std::string cached_hash = h.state.ai.references[0].sha256;
+    h.value("doc.new", json{{"width", 32}, {"height", 32},
+                             {"fill", json::array({12, 24, 48, 255})}});
+    const json other_document = h.value("ai.references", json::object());
+    CHECK(!other_document["references"][0]["linked"].get<bool>());
+    CHECK(other_document["references"][0]["layer_id"].is_null());
+    CHECK_EQ(other_document["references"][0]["sha256"].get<std::string>(), cached_hash);
+    CHECK_EQ(h.state.ai.reference_encodes, restored_encodes + 1);
+}
+
+void test_reference_inclusion_defaults_and_preview_match_the_operation() {
+    Harness h;
+    h.value("doc.new", json{{"width", 64}, {"height", 64},
+                             {"fill", json::array({30, 40, 50, 255})}});
+    h.value("select.rect", json{{"rect", json::array({20, 20, 16, 16})}});
+    const std::string path = h.temp("Independent.png");
+    std::string error;
+    CHECK(io::save_png(path, patterned_image(Extent{9, 11}, 202), error));
+    h.value("ai.references.add", json{{"path", path}});
+    h.value("server.connect", json::object());
+
+    struct Operation {
+        const char* recipe;
+        bool includes_by_default;
+        json vars;
+    };
+    const std::vector<Operation> operations{
+        {"inpaint-replace", true, json{{"instruction", "Replace the selected object."}}},
+        {"region-fill", true, json{{"prompt", "Place the swing."}}},
+        {"blend", false, json::object()},
+        {"heal", false, json::object()},
+        {"inpaint-remove", false, json::object()},
+    };
+    for (const Operation& operation : operations) {
+        const json intent = h.value("ai.intent", json{{"recipe", operation.recipe}});
+        CHECK_EQ(intent["include_references_default"].get<bool>(), operation.includes_by_default);
+        CHECK_EQ(intent["include_references"].get<bool>(), operation.includes_by_default);
+        const json preview = h.value("ai.preview", json{{"recipe", operation.recipe},
+                                                         {"vars", operation.vars}});
+        CHECK_EQ(preview["additional_references"]["will_transmit"].get<bool>(),
+                 operation.includes_by_default);
+        CHECK_EQ(preview["additional_references"]["transmitted_count"].get<std::size_t>(),
+                 operation.includes_by_default ? std::size_t(1) : std::size_t(0));
+        CHECK_EQ(preview["request"]["image_count"].get<std::size_t>(),
+                 operation.includes_by_default ? std::size_t(2) : std::size_t(1));
+    }
+
+    const json enabled = h.value("ai.intent", json{{"recipe", "blend"},
+                                                     {"include_references", true}});
+    CHECK(enabled["include_references"].get<bool>());
+    CHECK_EQ(h.value("ai.preview", json{{"recipe", "blend"}})["request"]["image_count"]
+                 .get<std::size_t>(), std::size_t(2));
+    const json disabled = h.value("ai.intent", json{{"include_references", false}});
+    CHECK(!disabled["include_references"].get<bool>());
+    const json preview = h.value("ai.preview", json{{"recipe", "blend"}});
+    CHECK_EQ(preview["additional_references"]["status"].get<std::string>(),
+             std::string("configured_not_included"));
+    CHECK_EQ(preview["request"]["image_count"].get<std::size_t>(), std::size_t(1));
+    CHECK_EQ(h.value("ai.preview", json{{"recipe", "inpaint-remove"},
+                                         {"include_references", true}})["request"]["image_count"]
+                 .get<std::size_t>(), std::size_t(2));
+}
+
+void test_multi_image_edit_uses_an_ordered_snapshot_and_keeps_the_existing_landing() {
+    Harness h;
+    const Image garden = patterned_image(Extent{64, 64}, 9);
+    const std::string garden_path = h.temp("Garden.png");
+    std::string error;
+    CHECK(io::save_png(garden_path, garden, error));
+    h.value("doc.open", json{{"path", garden_path}});
+    h.value("select.rect", json{{"rect", json::array({24, 24, 16, 16})}});
+    const std::string before = checksum_of(h);
+    const std::string original_layer = h.state.doc.layer(0).pixels.checksum_hex();
+
+    const Image house = patterned_image(Extent{31, 21}, 73);
+    const Image swing = patterned_image(Extent{17, 29}, 181);
+    const std::string house_path = h.temp("House.png");
+    const std::string swing_path = h.temp("Swing.png");
+    CHECK(io::save_png(house_path, house, error));
+    CHECK(io::save_png(swing_path, swing, error));
+    h.value("ai.references.add", json{{"paths", json::array({house_path, swing_path})}});
+    REQUIRE(h.state.ai.references.size() == std::size_t(2));
+    const std::vector<std::uint8_t> transmitted_house = h.state.ai.references[0].png;
+    const std::vector<std::uint8_t> transmitted_swing = h.state.ai.references[1].png;
+    const std::string house_id = h.state.ai.references[0].id;
+    const std::string swing_id = h.state.ai.references[1].id;
+    CHECK_EQ(checksum_of(h), before);
+    CHECK_EQ(h.state.doc.layer(0).pixels.checksum_hex(), original_layer);
+
+    CHECK(h.value("server.connect", json::object())["connected"].get<bool>());
+    const std::string change_words =
+        "Replace the selected object in Image 1 with the object shown in Image 2. "
+        "Preserve its recognizable appearance and keep the remaining scene unchanged.";
+    const json args{{"recipe", "inpaint-replace"}, {"seed", 313},
+                    {"vars", {{"instruction", change_words}}}};
+    const json preview = h.value("ai.preview", args);
+    const json request = preview["request"];
+    CHECK_EQ(preview["additional_references"]["status"].get<std::string>(),
+             std::string("included"));
+    CHECK_EQ(preview["additional_references"]["transmitted_count"].get<std::size_t>(),
+             std::size_t(2));
+    CHECK(preview["prompt"].get<std::string>().find(change_words) != std::string::npos);
+    REQUIRE(request["images"].size() == std::size_t(3));
+    CHECK_EQ(request["image_count"].get<std::size_t>(), std::size_t(3));
+    CHECK_EQ(request["images"][0]["source"].get<std::string>(), std::string("document"));
+    CHECK_EQ(request["images"][1]["name"].get<std::string>(), std::string("House.png"));
+    CHECK_EQ(request["images"][2]["name"].get<std::string>(), std::string("Swing.png"));
+    CHECK_EQ(request["images"][1]["dimensions"], json::array({31, 21}));
+    CHECK_EQ(request["images"][2]["dimensions"], json::array({17, 29}));
+    CHECK_EQ(request["wire_image_fields"], json::array({"image[]", "image[]", "image[]"}));
+    CHECK_EQ(request["image_bytes"].get<std::size_t>(), transmitted_house.size() +
+                                                          transmitted_swing.size() +
+                                                          request["images"][0]["encoded_bytes"]
+                                                              .get<std::size_t>());
+
+    const json run = h.value("ai.run", args);
+    const std::string job_id = run["job"]["id"].get<std::string>();
+    const json queued_request = run["job"]["request"];
+    CHECK_EQ(queued_request["image_count"].get<std::size_t>(), std::size_t(3));
+    CHECK_EQ(queued_request["blob"].get<std::string>(), request["blob"].get<std::string>());
+
+    h.value("ai.references.move", json{{"id", swing_id}, {"to", 0}});
+    const json reordered_preview = h.value("ai.preview", args)["request"];
+    CHECK_EQ(reordered_preview["images"][1]["name"].get<std::string>(), std::string("Swing.png"));
+    CHECK_NE(reordered_preview["blob"].get<std::string>(), queued_request["blob"].get<std::string>());
+    h.value("ai.references.remove", json{{"id", house_id}});
+    h.value("ai.references.remove", json{{"id", swing_id}});
+    const json without_references = h.value("ai.preview", args)["request"];
+    CHECK_EQ(without_references["image_count"].get<std::size_t>(), std::size_t(1));
+    CHECK_NE(without_references["blob"].get<std::string>(), queued_request["blob"].get<std::string>());
+    CHECK_EQ(queued_request["image_count"].get<std::size_t>(), std::size_t(3));
+    CHECK_EQ(checksum_of(h), before);
+
+    const json done = h.value("job.wait", json{{"id", job_id}, {"timeout", 30}});
+    CHECK_EQ(done["state"].get<std::string>(), std::string("succeeded"));
+    CHECK(done["landing"]["landed"].get<bool>());
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(2));
+    CHECK_EQ(h.state.doc.layer(0).pixels.checksum_hex(), original_layer);
+    const Image result_layer = h.state.doc.layer(1).pixels;
+    CHECK(result_layer.at(0, 0)[3] == 0);
+    CHECK(result_layer.at(63, 63)[3] == 0);
+    const Image after = h.state.doc.composite();
+    std::size_t outside_written_layer = 0;
+    for (int y = 0; y < after.size().h; ++y) {
+        for (int x = 0; x < after.size().w; ++x) {
+            if (result_layer.at(x, y)[3] == 0 &&
+                std::memcmp(after.at(x, y), garden.at(x, y), kChannels) != 0) {
+                ++outside_written_layer;
+            }
+        }
+    }
+    CHECK_EQ(outside_written_layer, std::size_t(0));
+    CHECK_NE(after.checksum_hex(), before);
+
+    auto* recorded = dynamic_cast<ai::RecordedTransport*>(h.state.ai.transport.get());
+    REQUIRE(recorded != nullptr);
+    if (recorded == nullptr) {
+        return;
+    }
+    const std::vector<ai::CapturedRequest> sent = recorded->sent();
+    const auto post = std::find_if(sent.rbegin(), sent.rend(), [](const ai::CapturedRequest& item) {
+        return item.method == "POST" && item.path.find("/images/edits") != std::string::npos;
+    });
+    REQUIRE(post != sent.rend());
+    if (post == sent.rend()) {
+        return;
+    }
+    REQUIRE(post->images.size() == std::size_t(3));
+    if (post->images.size() == std::size_t(3)) {
+        CHECK_EQ(post->images[0].field, std::string("image[]"));
+        CHECK_EQ(post->images[1].field, std::string("image[]"));
+        CHECK_EQ(post->images[2].field, std::string("image[]"));
+        CHECK_EQ(post->images[0].sha256, queued_request["images"][0]["sha256"].get<std::string>());
+        CHECK_EQ(post->images[1].bytes, transmitted_house);
+        CHECK_EQ(post->images[2].bytes, transmitted_swing);
+        CHECK_EQ(post->images[1].sha256, queued_request["images"][1]["sha256"].get<std::string>());
+        CHECK_EQ(post->images[2].sha256, queued_request["images"][2]["sha256"].get<std::string>());
+        CHECK_EQ(post->images[1].content_type, std::string("image/png"));
+        CHECK_EQ(post->images[2].content_type, std::string("image/png"));
+        CHECK_EQ(post->request_body_bytes, queued_request["request_body_bytes"].get<std::size_t>());
+        CHECK_EQ(post->images[1].filename, std::string("image-2.png"));
+        CHECK_EQ(post->images[2].filename, std::string("image-3.png"));
+    }
+
+    h.value("edit.undo", json::object());
+    CHECK_EQ(checksum_of(h), before);
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(1));
+    h.value("edit.redo", json::object());
+    CHECK_EQ(h.state.doc.composite().checksum_hex(), after.checksum_hex());
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(2));
+
+    const std::string fill_words =
+        "Place the swing shown in Image 2 into the selected area of Image 1. Preserve the swing's "
+        "design and match perspective, scale, lighting and shadows.";
+    h.value("ai.references.add", json{{"paths", json::array({house_path, swing_path})}});
+    const json fill_args{{"recipe", "region-fill"}, {"seed", 314},
+                         {"vars", {{"prompt", fill_words}, {"context_desc", "the garden"}}}};
+    const json fill_preview = h.value("ai.preview", fill_args);
+    const json fill_request = fill_preview["request"];
+    CHECK_EQ(fill_preview["additional_references"]["transmitted_count"].get<std::size_t>(),
+             std::size_t(2));
+    CHECK(fill_preview["prompt"].get<std::string>().find(fill_words) != std::string::npos);
+    REQUIRE(fill_request["images"].size() == std::size_t(3));
+    CHECK_EQ(fill_request["images"][0]["source"].get<std::string>(), std::string("document"));
+    CHECK_EQ(fill_request["images"][1]["name"].get<std::string>(), std::string("House.png"));
+    CHECK_EQ(fill_request["images"][2]["name"].get<std::string>(), std::string("Swing.png"));
+    const std::string before_fill = checksum_of(h);
+    const Image before_fill_pixels = h.state.doc.composite();
+    const json fill_run = h.value("ai.run", fill_args);
+    CHECK_EQ(fill_run["job"]["request"]["blob"].get<std::string>(),
+             fill_request["blob"].get<std::string>());
+    const json fill_done = h.value("job.wait",
+                                   json{{"id", fill_run["job"]["id"]}, {"timeout", 30}});
+    CHECK_EQ(fill_done["state"].get<std::string>(), std::string("succeeded"));
+    CHECK(fill_done["landing"]["landed"].get<bool>());
+    REQUIRE(h.state.doc.layers().size() == std::size_t(3));
+    const Image fill_layer = h.state.doc.layer(2).pixels;
+    const Image after_fill = h.state.doc.composite();
+    std::size_t outside_fill_written = 0;
+    for (int y = 0; y < after_fill.size().h; ++y) {
+        for (int x = 0; x < after_fill.size().w; ++x) {
+            if (fill_layer.at(x, y)[3] == 0 &&
+                std::memcmp(after_fill.at(x, y), before_fill_pixels.at(x, y), kChannels) != 0) {
+                ++outside_fill_written;
+            }
+        }
+    }
+    CHECK_EQ(outside_fill_written, std::size_t(0));
+    auto* fill_recorded = dynamic_cast<ai::RecordedTransport*>(h.state.ai.transport.get());
+    REQUIRE(fill_recorded != nullptr);
+    if (fill_recorded != nullptr) {
+        const std::vector<ai::CapturedRequest> fill_sent = fill_recorded->sent();
+        const auto fill_post = std::find_if(fill_sent.rbegin(), fill_sent.rend(),
+                                             [](const ai::CapturedRequest& item) {
+            return item.method == "POST" && item.path.find("/images/edits") != std::string::npos;
+        });
+        REQUIRE(fill_post != fill_sent.rend());
+        if (fill_post != fill_sent.rend()) {
+            REQUIRE(fill_post->images.size() == std::size_t(3));
+            if (fill_post->images.size() == std::size_t(3)) {
+                CHECK_EQ(fill_post->images[0].field, std::string("image[]"));
+                CHECK_EQ(fill_post->images[1].field, std::string("image[]"));
+                CHECK_EQ(fill_post->images[2].field, std::string("image[]"));
+                CHECK_EQ(fill_post->images[1].bytes, transmitted_house);
+                CHECK_EQ(fill_post->images[2].bytes, transmitted_swing);
+                CHECK_EQ(fill_post->request_body_bytes,
+                         fill_request["request_body_bytes"].get<std::size_t>());
+            }
+        }
+    }
+    h.value("edit.undo", json::object());
+    CHECK_EQ(checksum_of(h), before_fill);
+    h.value("edit.redo", json::object());
+    CHECK_EQ(h.state.doc.composite().checksum_hex(), after_fill.checksum_hex());
+}
+
+void test_a_multi_image_backend_failure_leaves_the_document_untouched() {
+    const std::filesystem::path fixtures = std::filesystem::temp_directory_path() /
+                                           ("noise-reference-rejection-" +
+                                            std::to_string(platform::pid()));
+    std::filesystem::remove_all(fixtures);
+    std::filesystem::create_directories(fixtures);
+    for (const char* name : {"01-models.json", "02-health.json"}) {
+        std::filesystem::copy_file(std::filesystem::path(NOISE_TEST_FIXTURES_DIR) / name,
+                                   fixtures / name);
+    }
+    const json refusal{{"name", "multi-image refusal"},
+                       {"method", "POST"},
+                       {"path", "/images/edits"},
+                       {"status", 400},
+                       {"json", {{"error", {{"message", "multiple images are unsupported"},
+                                               {"code", "multi_image_unsupported"}}}}}};
+    const std::string refusal_text = refusal.dump();
+    const std::vector<std::uint8_t> refusal_bytes(refusal_text.begin(), refusal_text.end());
+    std::string write_error;
+    CHECK(io::write_file_atomic((fixtures / "03-multi-image-refusal.json").string(),
+                                refusal_bytes, write_error));
+
+    Harness h(Harness::Config::recorded, fixtures.string());
+    h.value("doc.new", json{{"width", 64}, {"height", 64},
+                             {"fill", json::array({42, 62, 82, 255})}});
+    h.value("select.rect", json{{"rect", json::array({24, 24, 16, 16})}});
+    const std::string before = checksum_of(h);
+    const int undo_before = undo_depth(h);
+    const std::string reference_path = h.temp("reference.png");
+    CHECK(io::save_png(reference_path, patterned_image(Extent{13, 19}, 91), write_error));
+    h.value("ai.references.add", json{{"path", reference_path}});
+    CHECK(h.value("server.connect", json::object())["connected"].get<bool>());
+    const json run = h.value("ai.run", json{{"recipe", "inpaint-remove"}, {"seed", 55},
+                                              {"include_references", true}});
+    CHECK_EQ(run["job"]["request"]["image_count"].get<std::size_t>(), std::size_t(2));
+    const json done = h.value("job.wait", json{{"id", run["job"]["id"]}, {"timeout", 30}});
+    CHECK_EQ(done["state"].get<std::string>(), std::string("failed"));
+    CHECK(done["error"].get<std::string>().find("multiple images are unsupported") !=
+          std::string::npos);
+    CHECK_EQ(checksum_of(h), before);
+    CHECK_EQ(undo_depth(h), undo_before);
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(1));
+    std::filesystem::remove_all(fixtures);
 }
 
 // The whole AI path against the recorded server: discovery, role resolution, the compiled request, the
@@ -3847,26 +4484,19 @@ void test_unsaved_work_holds_a_quit() {
 void test_a_picked_path_is_applied_whatever_asked_for_the_dialog() {
     const std::filesystem::path dir = std::filesystem::temp_directory_path() / "noise-app-pick-test";
     std::filesystem::create_directories(dir);
-    const std::filesystem::path script = dir / "answer.sh";
-    {
-        std::ofstream out(script);
-        out << "#!/bin/sh\nprintf '%s\\n' \"$NOISE_PICK_ANSWER\"\n";
-    }
-    ::chmod(script.c_str(), 0755);
     const std::filesystem::path target = dir / "picked.noise";
     std::filesystem::remove(target);
-    ::setenv("NOISE_PICKER_PROGRAM", script.c_str(), 1);
-    ::setenv("NOISE_PICK_ANSWER", target.string().c_str(), 1);
 
     Harness h;
     h.value("doc.new", json{{"width", 8}, {"height", 8}});
     h.value("file.pick", json{{"for", "project"}, {"title", "Save document"}});
-    for (int i = 0; i < 400 && h.state.pick_running; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    const auto pending = app::take_native_file_pick(h.state);
+    REQUIRE(pending.has_value());
+    CHECK(pending->kind == platform::PickKind::save);
+    platform::PickResult answer;
+    answer.paths = {target.string()};
+    app::finish_native_file_pick(h.state, std::move(answer));
     app::pump_picked_files(h.state, h.table);
-    ::unsetenv("NOISE_PICKER_PROGRAM");
-    ::unsetenv("NOISE_PICK_ANSWER");
     CHECK_EQ(h.state.doc.path(), target.string());
     CHECK(!h.state.doc.dirty());
     CHECK(std::filesystem::exists(target));
@@ -4058,10 +4688,61 @@ void test_the_recent_files_are_the_documents_this_app_touched() {
     ::unsetenv("NOISE_CONFIG_DIR");
 }
 
+void test_theme_switch_persists_without_changing_the_document() {
+    const auto config = std::filesystem::temp_directory_path() /
+                        ("noise-theme-config-" + std::to_string(platform::pid()));
+    std::filesystem::remove_all(config);
+    std::filesystem::create_directories(config);
+    const std::optional<std::string> previous = platform::env("NOISE_CONFIG_DIR");
+    ::setenv("NOISE_CONFIG_DIR", config.c_str(), 1);
+
+    Harness harness;
+    CHECK_EQ(harness.value("ui.theme", json::object())["theme"].get<std::string>(),
+             std::string("dark"));
+    CHECK_EQ(io::load_theme(), io::Theme::dark);
+    harness.value("doc.new", json{{"width", 12}, {"height", 9},
+                                  {"fill", json::array({16, 32, 64, 255})}});
+    const json before = harness.value("doc.get", json::object());
+    const CommandResult changed = harness.run("ui.theme", json{{"theme", "light"}});
+    CHECK_OK(changed);
+    CHECK_EQ(changed.value["theme"].get<std::string>(), std::string("light"));
+    CHECK_EQ(harness.value("ui.theme", json::object())["theme"].get<std::string>(),
+             std::string("light"));
+    CHECK_EQ(harness.value("app.state", json::object())["ui_theme"].get<std::string>(),
+             std::string("light"));
+
+    const json after = harness.value("doc.get", json::object());
+    CHECK_EQ(after["checksum"].get<std::string>(), before["checksum"].get<std::string>());
+    CHECK_EQ(after["revision"].get<std::uint64_t>(), before["revision"].get<std::uint64_t>());
+    CHECK_EQ(after["history"]["undo_depth"].get<int>(),
+             before["history"]["undo_depth"].get<int>());
+    CHECK_EQ(io::load_theme(), io::Theme::light);
+
+    io::remember_recent_file(harness.temp("recent.png"));
+    CHECK_EQ(io::load_theme(), io::Theme::light);
+    const CommandResult invalid = harness.run("ui.theme", json{{"theme", "sepia"}});
+    CHECK(!invalid.ok);
+    CHECK(invalid.error.find("sepia") != std::string::npos);
+    CHECK_EQ(io::load_theme(), io::Theme::light);
+    CHECK_EQ(harness.state.ui_theme, io::Theme::light);
+
+    if (previous.has_value()) {
+        ::setenv("NOISE_CONFIG_DIR", previous->c_str(), 1);
+    } else {
+        ::unsetenv("NOISE_CONFIG_DIR");
+    }
+    std::filesystem::remove_all(config);
+}
+
 int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
     test_blend_takes_the_layer_for_its_region();
+    test_ai_reference_commands_keep_images_separate_from_document_layers();
+    test_ai_references_relink_after_undo_but_detach_across_documents();
+    test_reference_inclusion_defaults_and_preview_match_the_operation();
+    test_multi_image_edit_uses_an_ordered_snapshot_and_keeps_the_existing_landing();
+    test_a_multi_image_backend_failure_leaves_the_document_untouched();
     test_a_recipe_runs_against_the_recorded_server_and_lands();
     test_an_answer_lands_itself_into_the_document_that_asked_for_it();
     test_an_answer_lands_on_the_document_and_undoes_completely();
@@ -4119,6 +4800,10 @@ int main() {
     test_the_coverage_target_decides_where_a_stroke_lands();
     test_the_marquee_lands_on_whichever_coverage_is_named();
     test_a_marquee_gesture_is_one_step_in_whichever_coverage();
+    test_lasso_command_combines_coverage_and_never_changes_pixels();
+    test_lasso_pointer_commits_once_and_undo_redo_restore_exact_coverage();
+    test_lasso_edits_a_layer_mask_through_its_provisional_transaction();
+    test_lasso_mask_replace_discards_previous_visible_pixels();
     test_a_selection_limits_a_mask_stroke();
     test_the_mask_controls_name_the_layer_they_refused();
     test_a_selection_becomes_a_mask_and_a_mask_becomes_a_selection();
@@ -4141,5 +4826,6 @@ int main() {
     test_the_front_door_is_a_state_the_wire_can_open_and_shut();
     test_the_new_document_form_offers_the_sizes_and_refuses_the_impossible();
     test_the_recent_files_are_the_documents_this_app_touched();
+    test_theme_switch_persists_without_changing_the_document();
     return noise::test::summary(__FILE__);
 }

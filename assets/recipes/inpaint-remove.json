@@ -7,6 +7,7 @@
   "region": "selection",
   "prep": "blur",
   "enhance": "never",
+  "include_references_default": false,
   "prompt": [
     "Remove the marked content from this image.",
     "Reconstruct the area behind it as a seamless continuation of the surrounding",

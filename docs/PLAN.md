@@ -1,11 +1,23 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the tree against the docs: **2026-10-23**, at the request-policy fix below — the AI path
-had two defects that were both invisible to the recorded tier, and the sections of this file that describe
-what a request contains were checked against `ai/provider`, `ai/region` and `app/ai_session` rather than
-against memory. Slice 6 (frames and style) landed earlier; **slice 7 (`doc.crop` / `doc.resize`) is still
-what is next**, blocked on `History::fits_coverage` validating a far-side plane against the current stack
-extent. `AGENTS.md` is normative and outranks this file.
+Last re-read of the tree against the docs: **2026-10-26**, after the movable native picker — the file
+selection path was checked against the command table, host loop, platform boundary and WASM bridge. The
+selected next architecture milestone remains `doc.crop` / `doc.resize`, blocked on
+`History::fits_coverage` validating coverage when a history entry's canvas extent differs from the current
+stack extent. `AGENTS.md` is normative and outranks this file.
+
+## 2026-10-25 - Freehand Lasso
+
+Lasso uses the existing `Mask` bytes and `MaskOp` rules. `maskops::rasterize_lasso` makes a patch only for
+the clipped path bounds, fills self-crossings with even-odd scan conversion, and integrates sixteen
+subscanlines per row for antialiased edges. `tool.pointer` captures the gesture, coverage target and
+operation on press; release commits one marked-area or layer-mask step, while `cancel` drops the
+provisional transaction. The command `select.lasso` reaches the same rasterizer for marked-area edits.
+
+Architecture verdict: no second selection model or persistent document field was needed. The next crop
+and resize milestone still owns the outstanding canvas-extent/history constraint; this feature did not
+change it. Core geometry, command results, exact undo bytes, cancellation, both coverage targets, and
+the real mouse path at two zoom levels are covered by the existing tests and input probe.
 
 ---
 
@@ -20,11 +32,12 @@ Not preferences. Each one exists because breaking it was observed as a bug.
    it quotes (endpoint, size, model, steps, measured ~s) from geometry and tables and preps / resamples /
    PNG-encodes nothing. `AppState::upload_encodes` counts every upload encode and a test fails if a read
    raises it. `ai.preview` is the only pre-flight compile, and it is for drivers and probes, not a frame.
-3. **Nothing persists except the document.** No answer cache, no job file, no `job.retry`, no durable
-   queue. The runtime directory is scratch — startup deletes the previous run's `ai/` and `captures/` —
-   and nothing is read back from it. Pressing the verb again *is* the retry: it recompiles against what
-   the document is now and costs a second request. Any future store states its identity scheme and its
-   eviction policy before it gets a writer.
+3. **Documents, jobs and app preferences have separate lifetimes.** No answer cache, no job file, no
+   `job.retry`, no durable queue. The runtime directory is scratch — startup deletes the previous run's
+   `ai/` and `captures/` — and nothing is read back from it. Pressing the verb again *is* the retry: it
+   recompiles against what the document is now and costs a second request. The UI theme and recent-file
+   list are app preferences in config, not document or job state. Any future durable store states its
+   identity scheme and eviction policy before it gets a writer.
 4. **The words an operation asks for are typed.** An `ask` field has no default anywhere; a run with a
    blank or whitespace-only asked-for field is refused, naming the recipe and the field.
 5. **Every feature is observable on the debug wire, through the same command table the UI uses.** If the
@@ -41,28 +54,44 @@ Not preferences. Each one exists because breaking it was observed as a bug.
    | prompts, region/prep/composite policy | `assets/recipes/*.json` |
    | document model and its defaults | `core/document` |
    | blend maths | `core/blend`'s reference, mirrored only in `tests/test_blend` |
-   | prefs, session state | `io/config` (planned), `manifest.json`, the environment |
+   | app preferences | `io/config` (`ui_theme`, recent files), the environment |
+   | document state | `core/document`, `manifest.json` |
 7. **The default `ctest` run is hermetic and opens no sockets.** `$NOISE_AI_FIXTURES` selects the recorded
    transport. Live-tier tests are labelled `live`, registered only with `-DNOISE_LIVE_TESTS=ON`, skip
    loudly without `$THENOISE_URL` / `$THENOISE_API_KEY`, assert contract and invariants and never model
    output, and put the resident model back (`server.load`'s argument is `pinned`). No URL, host or key
    ever enters the repo.
 
+## 2026-10-23 — UI module split and theme preference
+
+The original Dear ImGui editor layout, default font, tool list, welcome dialog and dark
+palette remain unchanged. UI implementation is split by panel responsibility (canvas,
+front door, layers, tools, verbs and theme), but this is not a visual redesign.
+The optional light/dark switch uses the `ui.theme` command, with its persisted value
+owned by `io/config` alongside recent files. The dark-mode viewport golden explicitly
+selects `--theme dark`; GUI probes use an isolated `NOISE_CONFIG_DIR`.
+
+The module split changes no document, AI request, recipe or pixel-write interface.
+Installed asset lookup resolves the role and recipe files relative to the executable.
+The browser build reuses these UI modules and its own platform-specific file handling.
+The remaining product roadmap is unchanged.
+
 ## What is next, in order
 
 Ordered by what makes the thing usable rather than by what is interesting. Each slice is demoable by a
 human without a terminal, ships the wire command that makes it observable, and ends with a step of
-`tools/flow_probe.py` walking [PRODUCT.md](PRODUCT.md)'s scenario. Until slice 3 the scenario is walked
-partly over the wire; after it, by clicking.
+`tools/flow_probe.py` walking [PRODUCT.md](PRODUCT.md)'s scenario. The primary flows in slices 1–4 are
+landed; slice 3 still owes local Heal. Slices 5 and 6 have landed their core UI, image-input and ordered AI
+reference behavior, with remaining work listed below. The selected next milestone is slice 7, document geometry.
 
-**Slices 1 and 2 landed 2026-10-15** — files, and a new image from an idea — with two deliberate gaps: the
-New dialog quotes no price, because that was cut by decision, and *Blend* belongs to slice 5. Slice 3, one
-coverage with verbs at the marked area, is next.
+**Slices 1 and 2 landed 2026-10-15** — files, and a new image from an idea. The file surface now includes
+New, Open, Save, Save As, Export, Insert, drop, recent files and the quit guard. The New dialog's price
+quote remains deliberately cut. Slice 3's coverage and verb bar are in place; local Heal remains owed.
 
-1. **Files.** Start dialog (New / Open + recent), Open, Save, Save As, Export (png / jpg / webp),
-   drag-and-drop onto a new layer, dirty title, quit guard. Native picker through the desktop portal or
-   `zenity`, one file in `src/platform/`, with the in-app browser as the fallback. `doc.new`, `doc.open`,
-   `doc.save` and `doc.export` already exist as commands; what does not exist is a way to reach them.
+1. **Files.** Landed: Start dialog (New / Open + recent), Open, Save, Save As, Export (png / jpg / webp),
+   Insert and drag-and-drop onto a new layer, dirty title, and quit guard. Native pickers live in
+   `src/platform/`; the browser picker, import and download path lives in `src/platform/*_web.cpp` and
+   `web/bridge.js`.
 2. **New image from an idea.** The New dialog's prompt, kind (a recipe family's `variants`) and size -
    preset ratios plus explicit pixels - and the dialog **quoting the price** the way the status line does.
    OK generates into the document's first layer. Progress, coarse or indefinite, plus Cancel.
@@ -95,10 +124,9 @@ coverage with verbs at the marked area, is next.
    owes: moving and scaling a layer's picture, inline rename, and the panel's own row of buttons pinned
    clear of the scrolling card list. The panel is always visible: it is where a person goes to understand
    what an edit did.
-6. **Blend, and images as input.** Drop an image → its own layer → *Blend* with no prompt repaints it into
-   the scene on that layer. Needs the third recipe scope, `region: layer`, whose source is the layer's
-   pixels and whose coverage is its alpha. *Blend* with a prompt, then control images (openpose), come in
-   through the same door.
+6. **Blend, and images as input.** Landed: Insert/drop places an image on its own layer; no-prompt *Blend*
+   uses `region: layer`, whose source is the layer's pixels and whose coverage is its alpha. *Blend* with a
+   prompt and control images (openpose) remain future work through the same input path.
 7. **Document geometry.** `doc.crop`, `doc.resize` for the canvas - with *AI fill* on the grown strip, the
    outpaint mechanism below - and *Image size* with a method: Lanczos, `AI upscale (fast)` (ESRGAN),
    `AI upscale (best)` (an edit model, so one `roles.json` row and one recipe). The seam to think about
@@ -792,9 +820,10 @@ disagrees with [PRODUCT.md](PRODUCT.md) or the code, it is the older text.
   contiguous/global, anti-aliased) on composite or active layer
 - new/add/subtract/intersect modifiers; invert; feather; expand/shrink; border
 - **live**: marching ants, `Ctrl+D` clear, invert, save selection ↔ layer mask (and the reverse), and
-  two shapes — rectangle (`M`) and the anti-aliased ellipse inscribed in the drag (`Shift+M`), plus
-  `select.rect` / `select.ellipse` with `replace`/`add`/`subtract`. Missing: lasso, wand, feather,
-  expand/shrink and border
+  three tools — rectangle (`M`), the anti-aliased ellipse inscribed in the drag (`Shift+M`), and
+  freehand Lasso (`L`) with even-odd filling and `Shift`/`Alt` add/subtract. `select.rect`,
+  `select.ellipse` and `select.lasso` expose replace/add/subtract to the command table. Missing: wand,
+  feather, expand/shrink and border
 
 **AI**
 - `New image from prompt` → new layer, aspect presets at the model's native scale,
@@ -936,3 +965,30 @@ The prompt box was a lesson in where truth lives. It held a `char` buffer filled
 a prompt set over the wire stored correctly and rendered empty forever: the buffer is a *view* of
 `new_document` and is refilled from the form whenever the keyboard is not holding it — the rule the verb
 fields already used, discovered by looking at the working case instead of inventing a second one.
+
+## 2026-10-25 — Native ImGuiFileDialog (superseded)
+
+The external Linux-only picker is replaced with the native ImGuiFileDialog v0.6.8
+modal. `file.pick` queues `PickRequest`, the frame renders the browser, and the
+existing `pump_picked_files()` routes `PickResult` through `file.answer`.
+The native picker shares the app's Light/Dark theme and uses Sokol thumbnails;
+Open, Save As, Export, Insert and multi-image references share one implementation.
+WASM retained the browser file bridge. This picker was replaced on 2026-10-26 to meet the movable-window
+requirement; see the newer file-dialog entry below.
+
+## 2026-10-26 — Movable native file picker
+
+Native File Dialog Extended v1.4.1 replaces the embedded browser. The `file.pick` command still queues
+the same request, then the host consumes it on the main thread, passes the Sokol parent-window handle,
+and waits for the OS dialog to return. The native modal pauses the host frame loop and debug-wire polling;
+after it closes, `file.pick.state` reports the result and `file.answer` still owns file operations. The
+WASM browser bridge is unchanged. Linux builds use NFD's
+GTK 3 backend; the native host remains Linux-first, while the dependency also supplies Windows and macOS
+backends for the host ports.
+
+Architecture verdict: file ownership is now on the platform side instead of being drawn into the one
+Sokol window. A native modal window solves detachment without adding secondary Sokol contexts, changing
+the app command protocol, or moving file routing into the platform adapter. The test seam still separates
+the queued request/result from file operations, and the existing selection order is deterministic after
+the NFD path set is collected. The crop/resize milestone and the document/history constraint it needs are
+unchanged. See `docs/FILE_BROWSER.md`.

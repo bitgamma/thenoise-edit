@@ -83,6 +83,8 @@ public:
     std::string assignment(const std::string& role) const;
 
     void update(const std::vector<ModelEntry>& models);
+    // The canonical ID /health reports. Reuse it only when it satisfies the same preferred name.
+    void set_resident(const std::string& id);
 
     // An unknown role resolves to nothing with a reason naming the role, rather than to a guess.
     const Resolution& resolve(const std::string& role) const;
@@ -102,6 +104,7 @@ private:
 
     RoleTable table_;
     std::vector<ModelEntry> models_;
+    std::string resident_;
     std::map<std::string, std::string> assignments_;
     std::map<std::string, Resolution> resolved_;
 };

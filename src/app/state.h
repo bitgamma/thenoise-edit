@@ -14,13 +14,13 @@
 #include "io/zip.h"
 #include "core/geom.h"
 #include "core/image.h"
+#include "io/config.h"
 #include "platform/file_dialog.h"
 
 #include <cstdint>
 #include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace noise {
@@ -123,16 +123,16 @@ struct PointerMove {
     Rect content{};
 };
 
-// The gesture the pointer is making with the select tool. The rectangle is the marquee in document
-// pixels and it is live: the document holds it during the drag, so a state report taken mid-gesture
-// says what is selected rather than what was selected before the button went down.
+// The gesture the pointer is making with the selection tool. `path` and `rect` stay in document
+// coordinates, so changing the view while tracing cannot change the shape being selected.
 struct PointerSelection {
     bool active = false;
     Vec2 origin{};
     Rect rect{};
-    // Held from the moment the button goes down rather than read again on every drag: switching
-    // tools mid-marquee must not change the shape of the one already being drawn.
-    MaskShape shape = MaskShape::rect;
+    SelectionGesture gesture = SelectionGesture::rectangle;
+    MaskOp mode = kDefaultSelectionMode;
+    std::vector<Vec2> path;
+    Rect mask_bounds{};
     // The same argument for the lifetime: the press opened one door - the layer's provisional bytes or
     // the document's marked coverage - and releasing has to shut that one, however the switch was
     // aimed by then.
@@ -141,6 +141,7 @@ struct PointerSelection {
 
 struct AppState {
     Document doc;
+    io::Theme ui_theme = io::Theme::dark;
     // The brush the next stroke uses, and the one the last stroke ran with: the status bar
     // and the wire read this, so a screenshot can be reproduced from the state alone.
     Brush brush = kBrushDefaults;
@@ -199,6 +200,8 @@ struct AppState {
     std::uint64_t layer_thumb_rebuilds = 0;
     std::vector<LayerCard> layer_cards{};
     LayerPanelControls layer_panel{};
+    ScreenRect ai_references_rect{};
+    std::uint64_t reference_thumb_rebuilds = 0;
     // And the same for the phrase box the bar opens, so a driver can read the box's own rect rather
     // than deriving it from the bar's.
     ScreenRect verb_ask{};
@@ -236,9 +239,8 @@ struct AppState {
     app::FrontDoor front_door = app::FrontDoor::closed;
     app::NewDocumentForm new_document;
 
-    // A native file picker blocks until the person answers, so it runs on a worker and the answer lands
-    // here for the panel, the wire and the frame loop to read. One at a time: a second dialog would be a
-    // modal nobody can see, and an answer has to belong to the request still on screen.
+    // A picker request may originate in the UI or debug-wire thread. The native
+    // ImGui dialog consumes it on the frame thread; the browser uses its JS callback.
     std::mutex pick_mutex;
     bool pick_running = false;
     std::string pick_title;
@@ -249,14 +251,9 @@ struct AppState {
     std::string pick_set;
     bool pick_needs_route = false;
     std::string pick_note;
-    // Joined when the state goes away, so nothing can free it under a worker still writing the answer.
-    std::thread pick_worker;
-
-    ~AppState() {
-        if (pick_worker.joinable()) {
-            pick_worker.join();
-        }
-    }
+#ifndef __EMSCRIPTEN__
+    std::optional<platform::PickRequest> pick_request;
+#endif
 
     // True while the pointer is inside a gesture of any tool. The host ends the gesture on the
     // button release through this, so a new tool has one place to be counted in and cannot leave

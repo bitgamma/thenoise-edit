@@ -7,6 +7,7 @@
   "region": "document",
   "prep": "none",
   "enhance": "never",
+  "include_references_default": false,
   "prompt": [
     "Colorize this image, keeping every line, edge and tonal relationship exactly where it is.",
     "Natural, consistent lighting and palette.",

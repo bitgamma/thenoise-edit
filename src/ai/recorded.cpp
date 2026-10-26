@@ -60,6 +60,25 @@ std::string attribute_of(const std::string& headers, const char* key) {
     return {};
 }
 
+std::string header_of(const std::string& headers, const std::string& key) {
+    std::size_t begin = 0;
+    while (begin < headers.size()) {
+        const std::size_t end = headers.find("\r\n", begin);
+        const std::string line = headers.substr(begin, end == std::string::npos
+                                                          ? std::string::npos
+                                                          : end - begin);
+        const std::string prefix = key + ": ";
+        if (line.rfind(prefix, 0) == 0) {
+            return line.substr(prefix.size());
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        begin = end + 2;
+    }
+    return {};
+}
+
 std::map<std::string, std::string> json_fields(const std::string& text) {
     std::map<std::string, std::string> out;
     nlohmann::json body;
@@ -77,11 +96,8 @@ std::map<std::string, std::string> json_fields(const std::string& text) {
     return out;
 }
 
-// The `image` part is not a field: it is the blob, and a capture records its size and digest so a test
-// can prove the right bytes were uploaded without the test holding them twice.
-void multipart_fields(const std::string& body, const std::string& boundary,
-                      std::map<std::string, std::string>& fields, std::size_t& image_bytes,
-                      std::string& image_sha) {
+void multipart_parts(const std::string& body, const std::string& boundary,
+                     CapturedRequest& captured) {
     const std::string dash = "--" + boundary;
     std::size_t at = body.find(dash);
     while (at != std::string::npos) {
@@ -104,12 +120,22 @@ void multipart_fields(const std::string& body, const std::string& boundary,
             next >= 2 && body.compare(next - 2, 2, "\r\n") == 0 ? next - 2 : next;
         const std::string payload = body.substr(head_end + 4, payload_end - (head_end + 4));
         const std::string name = attribute_of(headers, "name");
+        captured.part_names.push_back(name);
         if (headers.find("filename=") != std::string::npos) {
-            image_bytes = payload.size();
-            image_sha = sha256_hex(std::span<const std::uint8_t>(
+            CapturedRequest::ImagePart image;
+            image.field = name;
+            image.filename = attribute_of(headers, "filename");
+            image.content_type = header_of(headers, "Content-Type");
+            image.bytes.assign(payload.begin(), payload.end());
+            image.sha256 = sha256_hex(std::span<const std::uint8_t>(
                 reinterpret_cast<const std::uint8_t*>(payload.data()), payload.size()));
+            captured.image_bytes += image.bytes.size();
+            if (captured.images.empty()) {
+                captured.image_sha = image.sha256;
+            }
+            captured.images.push_back(std::move(image));
         } else if (!name.empty()) {
-            fields[name] = trim(payload);
+            captured.fields[name] = trim(payload);
         }
         at = next;
     }
@@ -122,10 +148,10 @@ CapturedRequest capture(const OutgoingRequest& request) {
     captured.path = path_of_url(request.url);
     captured.content_type = request.content_type;
     captured.body_text = request.text();
+    captured.request_body_bytes = request.body.size();
     if (captured.content_type.rfind("multipart/form-data", 0) == 0) {
         const std::string boundary = attribute_of(captured.content_type, "boundary");
-        multipart_fields(captured.body_text, boundary, captured.fields, captured.image_bytes,
-                         captured.image_sha);
+        multipart_parts(captured.body_text, boundary, captured);
     } else if (!captured.body_text.empty()) {
         captured.fields = json_fields(captured.body_text);
     }
@@ -197,6 +223,20 @@ std::unique_ptr<RecordedTransport> RecordedTransport::from_json(
                 recording.match[it.key()] = it.value().is_string()
                                                 ? it.value().get<std::string>()
                                                 : it.value().dump();
+            }
+        }
+        if (body.contains("match_images")) {
+            if (!body.at("match_images").is_array()) {
+                error = where + ": 'match_images' must be an ordered array of SHA-256 strings";
+                return transport;
+            }
+            recording.image_sha256s = std::vector<std::string>();
+            for (const nlohmann::json& hash : body.at("match_images")) {
+                if (!hash.is_string()) {
+                    error = where + ": every 'match_images' entry must be a SHA-256 string";
+                    return transport;
+                }
+                recording.image_sha256s->push_back(hash.get<std::string>());
             }
         }
         recording.status = body.contains("status") && body.at("status").is_number_integer()
@@ -273,6 +313,13 @@ IncomingResponse RecordedTransport::send(const OutgoingRequest& request,
                 break;
             }
         }
+        if (fits && recording.image_sha256s.has_value()) {
+            std::vector<std::string> hashes;
+            for (const CapturedRequest::ImagePart& image : captured.images) {
+                hashes.push_back(image.sha256);
+            }
+            fits = hashes == *recording.image_sha256s;
+        }
         if (!fits) {
             continue;
         }
@@ -310,8 +357,9 @@ IncomingResponse RecordedTransport::send(const OutgoingRequest& request,
         }
         asked += " " + name + "=" + value;
     }
-    if (captured.image_bytes != 0) {
-        asked += " image(" + std::to_string(captured.image_bytes) + " bytes)";
+    for (const CapturedRequest::ImagePart& image : captured.images) {
+        asked += " " + image.field + "(" + image.sha256 + ", " +
+                 std::to_string(image.bytes.size()) + " bytes)";
     }
     {
         std::lock_guard<std::mutex> lock(seen_);

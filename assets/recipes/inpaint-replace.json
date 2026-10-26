@@ -7,6 +7,7 @@
   "region": "selection",
   "prep": "none",
   "enhance": "never",
+  "include_references_default": true,
   "prompt": [
     "Change the marked content of this image into: {{instruction}}",
     "Keep the framing, lighting, light direction, perspective, focus and grain of the",

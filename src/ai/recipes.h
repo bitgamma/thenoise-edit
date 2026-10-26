@@ -81,6 +81,7 @@ struct Recipe {
     // "never" | "always". A recipe that says "always" must still build a valid request when the
     // `enhance` role is unresolved, which is why the MVP ships "never" everywhere.
     std::string enhance = "never";
+    bool include_references_default;
     std::vector<std::string> prompt_lines;
     // A recipe's own context growth, when it differs from `roles.json`. Null means "what the table
     // says", which is the common case and the reason the table exists.

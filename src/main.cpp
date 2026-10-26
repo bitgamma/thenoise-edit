@@ -2,6 +2,9 @@
 #include "app/ai_session.h"
 #include "app/commands.h"
 #include "app/file_commands.h"
+#ifndef __EMSCRIPTEN__
+#include "app/ui_file_dialog.h"
+#endif
 #include "app/shortcuts.h"
 #include "app/state.h"
 #include "app/ui.h"
@@ -9,7 +12,12 @@
 #include "dbg/wire.h"
 #include "gfx/checker.h"
 #include "gfx/renderer.h"
+#include "io/config.h"
 #include "platform/platform.h"
+#ifdef __EMSCRIPTEN__
+#include "platform/web.h"
+#include <emscripten/emscripten.h>
+#endif
 
 #include "imgui.h"
 #include "sokol_app.h"
@@ -26,6 +34,7 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -35,6 +44,7 @@ using nlohmann::json;
 constexpr int kDefaultWidth = 1280;
 constexpr int kDefaultHeight = 800;
 constexpr const char* kWireAddress = "127.0.0.1";
+
 std::optional<std::string> value_after(const std::string& arg, const std::string& prefix) {
     if (arg.rfind(prefix, 0) != 0) {
         return std::nullopt;
@@ -46,7 +56,11 @@ struct Args {
     int width = kDefaultWidth;
     int height = kDefaultHeight;
     std::uint16_t wire_port = 0;
+#ifdef __EMSCRIPTEN__
+    bool wire_enabled = false;
+#else
     bool wire_enabled = true;
+#endif
     bool start_dialog = true;
     std::string open_path;
 };
@@ -95,6 +109,7 @@ struct Runtime {
     gfx::Checker checker;
     app::CoverageTint coverage_tint;
     app::LayerThumbs layer_thumbs;
+    app::ReferenceThumbs reference_thumbs;
     CommandTable commands;
     dbg::DebugWire wire{commands};
     Args args;
@@ -143,6 +158,10 @@ void init(void) {
     simgui.logger.func = slog_func;
     simgui_setup(&simgui);
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    g.state.ui_theme = io::load_theme();
+#ifdef __EMSCRIPTEN__
+    platform::set_browser_theme(g.state.ui_theme == io::Theme::light);
+#endif
 
     g.state.framebuffer = Extent{sapp_width(), sapp_height()};
     g.state.viewport = g.state.framebuffer;
@@ -159,6 +178,9 @@ void init(void) {
     }
     const app::HostHooks hooks{&gfx::read_framebuffer, &sapp_quit};
     app::register_commands(g.state, g.commands, g.wire, hooks);
+#ifdef __EMSCRIPTEN__
+    platform::enable_browser_drop();
+#endif
 
     // The same path the UI and the wire take, so an image named on the command line
     // gets the view fit, the log line and the error mapping like any other open.
@@ -195,6 +217,13 @@ std::string window_title() {
 }
 
 void frame(void) {
+#ifdef __EMSCRIPTEN__
+    static io::Theme last_theme = g.state.ui_theme;
+    if (last_theme != g.state.ui_theme) {
+        last_theme = g.state.ui_theme;
+        platform::set_browser_theme(last_theme == io::Theme::light);
+    }
+#endif
     g.state.framebuffer = Extent{sapp_width(), sapp_height()};
     static std::string title;
     if (const std::string wanted = window_title(); wanted != title) {
@@ -213,11 +242,13 @@ void frame(void) {
     frame_desc.dpi_scale = sapp_dpi_scale();
     simgui_new_frame(&frame_desc);
 
-    // A desktop dialog answers whenever the person finishes with it, on its own thread; this is where
-    // its answer becomes an editing command.
+    // Pick results are routed on the frame thread before a queued native dialog opens.
     app::pump_picked_files(g.state, g.commands);
     app::draw_ui(g.state, g.commands, g.canvas_texture, g.checker, g.coverage_tint,
-                 g.layer_thumbs);
+                 g.layer_thumbs, g.reference_thumbs);
+#ifndef __EMSCRIPTEN__
+    app::draw_native_file_dialog(g.state);
+#endif
     const app::PointerRequest request = app::pointer_request(g.state.pointer);
     // sokol_imgui applies ImGui's own cursor request at new-frame, before the canvas has decided what
     // it needs, so this is the frame's last word - and only over the canvas, so a text field in a panel
@@ -300,6 +331,19 @@ void event(const sapp_event* ev) {
     // to put the picture under the pointer. XDND is sokol's job; the placement and the layer are the
     // same command a wire client or a future picker calls.
     if (ev->type == SAPP_EVENTTYPE_FILES_DROPPED) {
+        const ScreenRect& target = g.state.ai_references_rect;
+        const bool over_references = !target.empty() &&
+                                     ev->mouse_x >= target.x && ev->mouse_y >= target.y &&
+                                     ev->mouse_x < target.x + target.w &&
+                                     ev->mouse_y < target.y + target.h;
+        if (over_references) {
+            json paths = json::array();
+            for (int i = 0; i < sapp_get_num_dropped_files(); ++i) {
+                paths.push_back(sapp_get_dropped_file_path(i));
+            }
+            invoke_command("ai.references.add", json{{"paths", paths}}, "dropped AI reference");
+            return;
+        }
         const Vec2 at = g.state.view.view_to_world(
             {static_cast<double>(ev->mouse_x) - g.state.canvas_origin.x,
              static_cast<double>(ev->mouse_y) - g.state.canvas_origin.y});
@@ -342,6 +386,11 @@ void event(const sapp_event* ev) {
             invoke_command("front_door", json{{"show", "close"}}, "close the front door");
             return;
         }
+        if (g.state.select.active) {
+            invoke_command("tool.pointer", json{{"phase", "cancel"}},
+                           "cancel the selection gesture");
+            return;
+        }
     }
     // A widget that owns the keyboard (text entry, later) keeps the key: a shortcut fired
     // through it would move the canvas while the user types.
@@ -361,6 +410,9 @@ void event(const sapp_event* ev) {
 
 void cleanup(void) {
     g.wire.stop();
+#ifndef __EMSCRIPTEN__
+    app::shutdown_native_file_dialog();
+#endif
     g.canvas_texture.discard();
     g.checker.discard();
     simgui_shutdown();
@@ -372,6 +424,9 @@ void cleanup(void) {
 int main(int argc, char** argv) {
     g.args = parse_args(argc, argv);
     g.state.runtime_dir = platform::runtime_dir();
+#ifdef __EMSCRIPTEN__
+    g.state.ai.resource_dir = "/assets";
+#endif
     // The runtime directory is scratch: nothing in it is read back, and the only thing that has to
     // outlive a run is the document the person saved. Job blobs and captures therefore go at startup -
     // a directory that grows by a few megabytes every run, forever, is a bug with a slow fuse.
@@ -395,7 +450,12 @@ int main(int argc, char** argv) {
     app.window_title = kWindowTitle;
     // sokol asks for the drop support up front and caps what it will hand over; the cap is here
     // because a stack of forty imports would be an undo history nobody asked for.
+#ifdef __EMSCRIPTEN__
+    // The browser delivers File blobs, not host paths; web/bridge.js imports them into MEMFS.
+    app.enable_dragndrop = false;
+#else
     app.enable_dragndrop = true;
+#endif
     app.max_dropped_files = kMaxDroppedFiles;
     app.max_dropped_file_path_length = kDroppedPathBytes;
     app.high_dpi = false;
@@ -406,3 +466,40 @@ int main(int argc, char** argv) {
     sapp_run(&app);
     return 0;
 }
+
+#ifdef __EMSCRIPTEN__
+extern "C" EMSCRIPTEN_KEEPALIVE void noise_web_dropped(const char* path) {
+    if (path == nullptr || path[0] == '\0') { return; }
+    if (g.state.doc.empty()) {
+        invoke_command("doc.open", nlohmann::json{{"path", path}}, "browser file drop");
+    } else {
+        invoke_command("layer.import",
+                       nlohmann::json{{"path", path},
+                            {"at", nlohmann::json::array({g.state.doc.width() / 2,
+                                                           g.state.doc.height() / 2})}},
+                       "browser file drop");
+    }
+}
+#endif
+
+#ifdef __EMSCRIPTEN__
+extern "C" EMSCRIPTEN_KEEPALIVE void noise_web_action(int action) {
+    switch (action) {
+        case 0:
+            invoke_command("file.pick", nlohmann::json{{"for", "open"}}, "browser Open");
+            break;
+        case 1:
+            invoke_command("file.pick", nlohmann::json{{"for", "image"}}, "browser Insert");
+            break;
+        case 2:
+            invoke_command("doc.save", nlohmann::json::object(), "browser Save");
+            break;
+        case 3:
+            invoke_command("file.pick", nlohmann::json{{"for", "flat"}}, "browser Export");
+            break;
+        case 4:
+            invoke_command("file.new", nlohmann::json::object(), "browser New");
+            break;
+    }
+}
+#endif

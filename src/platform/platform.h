@@ -9,6 +9,7 @@ namespace noise::platform {
 
 std::string config_dir();
 std::string runtime_dir();
+std::string executable_path();
 
 std::optional<std::string> env(const std::string& name);
 

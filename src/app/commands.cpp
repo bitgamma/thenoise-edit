@@ -24,6 +24,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                        const HostHooks& hooks) {
     register_document_commands(state, table);
     register_ai_commands(state, table);
+    register_ai_reference_commands(state, table);
     register_ai_job_commands(state, table);
     register_ai_intent_commands(state, table);
     register_ai_verb_commands(state, table);
@@ -44,6 +45,7 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
             doc = document_summary_json(state);
         }
         return command_ok(json{{"version", kAppVersion},
+                               {"ui_theme", io::theme_name(state.ui_theme)},
                                {"pid", platform::pid()},
                                {"frame", state.frame},
                                {"frame_ms", state.frame_ms},
@@ -67,6 +69,12 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                                               state.layers_window.h})},
                                {"layer_cards", layer_cards_json(state)},
                                {"layer_panel", layer_panel_json(state)},
+                               {"ai_references_rect", json::array({state.ai_references_rect.x,
+                                                                   state.ai_references_rect.y,
+                                                                   state.ai_references_rect.w,
+                                                                   state.ai_references_rect.h})},
+                               {"reference_thumbs", json{{"rebuilds",
+                                                           state.reference_thumb_rebuilds}}},
                                // How often the panel had to resample a picture: the caching rule as a
                                // number, so "dragging opacity rebuilds nothing" is a reading and not a
                                // promise.
@@ -79,6 +87,27 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                              {"speed_px_per_second", kAntMarchPxPerSecond},
                                              {"frozen_phases", state.ants.phases}}},
                                {"wire_port", wire.port()}});
+    });
+
+    table.add("ui.theme", "Read or set the application theme", {}, {"theme"},
+              [&state](const json& args) -> CommandResult {
+        if (!args.contains("theme")) {
+            return command_ok(json{{"theme", io::theme_name(state.ui_theme)}});
+        }
+        if (!args.at("theme").is_string()) {
+            return fail("ui.theme", "'theme' must be 'dark' or 'light'");
+        }
+        const std::string name = args.at("theme").get<std::string>();
+        io::Theme theme = state.ui_theme;
+        if (!io::theme_from_name(name, theme)) {
+            return fail("ui.theme", "unknown theme '" + name + "' (dark|light)");
+        }
+        std::string error;
+        if (!io::save_theme(theme, error)) {
+            return fail("ui.theme", "cannot save theme: " + error);
+        }
+        state.ui_theme = theme;
+        return command_ok(json{{"theme", io::theme_name(state.ui_theme)}});
     });
 
     // A key does not throw away work. `Escape`, `Ctrl+Q` and the window manager's close all come

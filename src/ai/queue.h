@@ -141,7 +141,7 @@ public:
     // change under it while it waits - the latency model itself guards its own contents.
     // `coverage_png` is the canvas-sized PNG the answer lands under; the queue stores it and records
     // where it put it.
-    std::string enqueue(const BuiltRequest& request, const std::string& recipe_id,
+    std::string enqueue(BuiltRequest request, const std::string& recipe_id,
                         const std::string& role, const Landing& landing,
                         std::vector<std::uint8_t> coverage_png);
 
@@ -215,7 +215,9 @@ private:
     bool running_ = false;
     bool stopping_ = false;
 
+#ifndef __EMSCRIPTEN__
     std::thread worker_;
+#endif
 };
 
 }  // namespace noise::ai

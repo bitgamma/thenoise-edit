@@ -57,8 +57,15 @@ Working on an existing file is the same story with fewer steps: open, do, save.
 - **Document** - the picture and its layers, at one size. Saved as `.noise`.
 - **Layer** - a rectangle of pixels with opacity, visibility and an optional mask. Answers always land on
   one. The Layers panel is **always visible**: it is where a person goes to understand what an edit did.
-- **Coverage** - one concept, two lifetimes. The *marked area* is transient tool state, painted, marquee'd
-  or lassoed, drawn as marching ants; a layer's *mask* is the same paintable thing, stored in the document.
+- **AI reference** - an independent image explicitly added from a local PNG/JPEG/WebP file or one document
+  layer. The References section numbers these after Image 1, lets the person reorder and remove them, and
+  keeps them for this app session only. Adding a file here does not insert a document layer; inserting a
+  layer does not make it a reference. References give the model information and do not expand the marked
+  area or change where an answer lands. Change and Fill include them by default; Blend, Heal and Remove
+  leave them configured but excluded until the user turns them on for that operation.
+- **Coverage** - one concept, two lifetimes. The *marked area* is transient tool state, painted, selected
+  with a rectangle, ellipse or freehand Lasso, and drawn as marching ants; a layer's *mask* is the same
+  coverage plane, stored in the document.
   One editor, one shape language, one maths: the target switch says which one the brush is working on.
 - **Verb** - a named request with a question: *Fix*, *Insert*, *Edit*, *Erase*, *Blend*, *Generate*,
   *Upscale*. A verb is a row in `assets/recipes/`, not a branch in code. It has a scope - the marked area,
@@ -75,8 +82,9 @@ Working on an existing file is the same story with fewer steps: open, do, save.
    picture above an invisible one. Undo gives the blank canvas back.
 2. **Pixel-lock.** Outside the coverage - and the feather the recipe asked for - the document is byte
    identical to what it was. Whole-image diff, not a sampled point.
-3. **Nothing persists but the document.** Jobs, prompts, selections and undo history die with the run;
-   re-asking is the retry.
+3. **Document and job state follow different lifetimes.** The `.noise` document persists when saved;
+   jobs, prompts, selections, AI references and undo history die with the run, and re-asking is the retry. App
+   preferences such as the UI theme and recent-file list live in config and do not alter a document.
 4. **Every request is priced before it is sent**, and its fields are chosen by one policy the UI cannot
    widen.
 5. **The document owns its size.** Crop, canvas growth and resampling are undoable document commands, and
@@ -90,8 +98,10 @@ Working on an existing file is the same story with fewer steps: open, do, save.
 - The verbs live **next to the marked area** - a floating bar at the selection - because that is where the
   eyes already are. The panel keeps the full controls for the same verbs.
 - **Layers are always shown**, with thumbnails, and the mask thumbnail when there is one.
-- **File dialogs are the desktop's own** (portal/zenity subprocess, one file in `src/platform/`), with the
-  in-app browser as the fallback where no portal exists.
+- **Native file dialogs** use Native File Dialog Extended (Zlib, v1.4.1), as a separate
+  movable OS window parented to the editor. Open, Save As, Export, Insert and Add Reference
+  share this dialog; reference images support multi-selection. The WASM build retains browser
+  file APIs and downloads, with no filesystem access.
 - **Save writes `.noise`, flat images are Export** (png / jpg / webp).
 - **Fix, Insert and Erase are three buttons**, not one button with a mode: three things a person wants are
   three things they can see.

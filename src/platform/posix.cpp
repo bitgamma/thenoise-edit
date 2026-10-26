@@ -6,7 +6,13 @@
 #include <unistd.h>
 #include <cstdlib>
 #include <filesystem>
+#include <system_error>
 #include <thread>
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <cstring>
+#endif
 
 #if !defined(__linux__) && !defined(__APPLE__)
 #error "noise has no platform implementation for this target (see docs/ARCHITECTURE.md)"
@@ -49,6 +55,22 @@ std::string runtime_dir() {
     const auto root = (base && !base->empty()) ? std::filesystem::path(*base)
                                                : std::filesystem::path(home_dir()) / ".cache";
     return ensure_dir(root / "noise-edit").string();
+}
+
+std::string executable_path() {
+#if defined(__linux__)
+    std::error_code error;
+    return std::filesystem::read_symlink("/proc/self/exe", error).string();
+#elif defined(__APPLE__)
+    std::uint32_t size = 0;
+    static_cast<void>(_NSGetExecutablePath(nullptr, &size));
+    std::string path(size, '\0');
+    if (_NSGetExecutablePath(path.data(), &size) != 0) {
+        return {};
+    }
+    path.resize(std::strlen(path.c_str()));
+    return path;
+#endif
 }
 
 std::optional<std::string> env(const std::string& name) {

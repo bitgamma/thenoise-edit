@@ -22,6 +22,7 @@ enum class FileSet {
     project,  // the document itself
     flat,     // one flattened image — one filter per format, so the extension follows the choice
     image,    // one picture to put *into* the document, which is `open`'s formats minus `.noise`
+    reference,  // independent flat images supplied to AI, never inserted into the document
 };
 
 std::optional<FileSet> file_set_from_name(const std::string& name);
@@ -40,5 +41,12 @@ json front_door_json(const AppState& state);
 // Apply a finished file pick to the file set it was asked for, once. The host calls it each frame so
 // that the answer is routed whoever asked for the dialog.
 void pump_picked_files(AppState& state, CommandTable& table);
+
+#ifndef __EMSCRIPTEN__
+// The host consumes a pending native request. Native dialogs must not be opened in the command
+// callback, which can run on the debug wire.
+std::optional<platform::PickRequest> take_native_file_pick(AppState& state);
+void finish_native_file_pick(AppState& state, platform::PickResult result);
+#endif
 
 }  // namespace noise::app

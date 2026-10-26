@@ -15,6 +15,9 @@ ctest --test-dir build                       # hermetic, opens no sockets
 recorded responses instead. Without either it runs as an editor with no AI verbs available and says so.
 `--width` / `--height` / `--runtime` / `--debug-wire` exist for drivers, not for people.
 
+For container-based GUI development with Agenets or VS Code, see
+[the devcontainer guide](../.devcontainer/README.md).
+
 ## The four documents
 
 | File | What it answers |

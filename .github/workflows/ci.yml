@@ -15,11 +15,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build pkg-config python3 \
+            build-essential cmake ninja-build pkg-config python3 python3-numpy python3-pil \
             libpng-dev libjpeg-dev libwebp-dev zlib1g-dev \
             libcurl4-openssl-dev \
             libgl1-mesa-dev libglx-dev \
-            libx11-dev libxcursor-dev libxi-dev \
+            libx11-dev libxcursor-dev libxi-dev libgtk-3-dev libxtst6 \
             libgl1-mesa-dri xvfb
 
       # FetchContent talks to the network at configure time, never at build time.

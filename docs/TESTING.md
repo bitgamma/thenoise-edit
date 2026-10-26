@@ -8,10 +8,10 @@ being asserted are in [ARCHITECTURE.md](ARCHITECTURE.md); what a run is *for* is
 
 | Tier | Runs | Network | Content |
 |---|---|---|---|
-| **unit / property** | always, `ctest` | no | region compiler round-trips, aspect names, mask ops, blend reference, history and undo invariants, format round-trips |
+| **unit / property** | always, `ctest` | no | region compiler round-trips, aspect names, mask ops (including lasso fill and even-odd crossings), blend reference, history and undo invariants, format round-trips |
 | **golden image** | always, `ctest` | no | named fixtures → exact bytes: codecs, mask ops, composite, the viewport capture |
-| **recorded backend** | always, `ctest` | no | `tests/fixtures/http` as the server: `test_roles` (resolution order, the shipped `roles.json`), `test_recipes` (policy parsing, the shipped set agreeing with the roles), `test_provider` (the field set on the serialized request, fields refused by name), `test_backend` (discovery, decoding, every failure class, cancellation, replay, and that a re-ask is one send more) |
-| **app over the wire** | always, `ctest` | no | `tools/*_probe.py`: the running editor driven through its own command table — paint, layers, masks, view, panel, and `ai_job_probe.py` for the whole AI path against the recordings |
+| **recorded backend** | always, `ctest` | no | `tests/fixtures/http` as the server: `test_roles` (resolution order, the shipped `roles.json`), `test_recipes` (policy parsing, the shipped set agreeing with the roles), `test_provider` (single-image compatibility and exact ordered multipart bytes for two and three images), `test_backend` (discovery, decoding, every failure class, cancellation, replay, and that a re-ask is one send more) |
+| **app over the wire** | always, `ctest` | no | `tools/*_probe.py`: the running editor driven through its own command table — paint, layers, masks, view, panel, detached native file-dialog selection/cancellation and movement, Lasso pointer gestures and zoom mapping, and `ai_job_probe.py` for the whole AI path against recordings; `test_app` covers lasso command/mask bytes, one-step gesture undo/redo, cancellation and both coverage targets, alongside the recorded AI path |
 | **live backend** | on demand, tagged `live` | **yes** | the real contract against the dev box |
 
 The default `ctest` run opens no sockets, even in a shell that exports the credentials: live tests are
@@ -109,8 +109,9 @@ result; prefer reading state the wire already exposes over adding prints.
   in `probes/2026-10-11-ai-job-live.md` belong to the estimator that no longer exists.
 * The recipe/prompt pass (~10 images) that picks prep, context ratio and steps per verb, which only makes
   sense once the verbs have their final names.
-* The prep ablation (`none|average|blur|pixelate|white`), edit drift over a large region, cancel
-  mid-request, `n`/multi-image behaviour.
+* The prep ablation (`none|average|blur|pixelate|white`), edit drift over a large region, and cancel
+  mid-request. Multi-image transport and the recorded edit path are covered offline; live acceptance
+  of multiple references and model use of each one still need an on-demand run.
 
 ## Records
 
