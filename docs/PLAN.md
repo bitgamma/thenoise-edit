@@ -8,6 +8,16 @@ the movable-native-picker note. The selected next architecture milestone remains
 `doc.resize`, blocked on `History::fits_coverage` validating coverage when a history entry's canvas extent
 differs from the current stack extent. `AGENTS.md` is normative and outranks this file.
 
+## 2026-10-26 - The window stops offering a theme
+
+The theme dropdown left the file row. Nothing about the palette moved: `ui_theme::Palette` is still how
+every panel names a colour, `io/config` still persists the choice, `ui.theme` is still the door - the probe
+harness sets it for the viewport golden, the file-dialog probe runs the native chooser in both themes, and
+the browser build still drives the page chrome from it. What went was the widget, because a dropdown with
+two entries is a design decision about light appearance that nobody has made yet, and a half-decided
+appearance in the menu is worse than no appearance in the menu: the dark palette is what a person gets
+until the light one is designed rather than merely defined.
+
 ## 2026-10-26 - The name and the factor land on top of the module split
 
 Two weeks of parallel work met here: this branch wrote inline rename (`layer.rename`) and layer scaling

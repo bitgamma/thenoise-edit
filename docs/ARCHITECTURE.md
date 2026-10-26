@@ -207,7 +207,7 @@ src/
                        that answer between the tool panel and the status line
     ui_canvas.cpp      checker, document composite, pointer interaction, selection overlays and brush
                        footprint
-    ui_front_door.cpp  file actions, theme picker, recent files, new-document and quit dialogs
+    ui_front_door.cpp  file actions, recent files, new-document and quit dialogs
     ui_layers_panel.cpp layer cards in a scrolling list with the stack's own add / delete / flatten row
                        pinned below it, so the verbs for the whole stack are never the thing a person has
                        to wheel to; a name typed in a card's title row and a factor typed in the place of
@@ -219,7 +219,8 @@ src/
     reference_thumbs.{h,cpp} GPU thumbnails keyed by reference id and content revision
     ui_verbs.cpp       recipe-backed verb rows, their fields, aspect/style selectors and model-swap
                        confirmation; owns no parallel verb list or prompt state
-    ui_theme.{h,cpp}   shared semantic palette and ImGui style for dark and light themes
+    ui_theme.{h,cpp}   shared semantic palette and ImGui style for dark and light themes; no
+                       window control chooses between them - `ui.theme` and the persisted pref do
     ui_internal.h     declarations shared by the UI translation units    select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
     coverage.cpp        the two lifetimes coverage has (`marked`, `mask`): one id, one title each
     coverage_commands.cpp `coverage.target`, read and set, answering with what the target can do
