@@ -44,11 +44,11 @@ public:
 
 private:
     struct Client {
-        int fd = -1;
+        platform::SocketHandle fd = platform::kInvalidSocket;
         LineFramer framer;
         bool authenticated = false;
 
-        explicit Client(int fd_, std::size_t max_frame) : fd(fd_), framer(max_frame) {}
+        explicit Client(platform::SocketHandle fd_, std::size_t max_frame) : fd(fd_), framer(max_frame) {}
     };
 
     void close_client(std::size_t index);

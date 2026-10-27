@@ -47,9 +47,15 @@ InitialLocation initial_location(const PickRequest& request) {
         if (!last_directory().empty()) {
             return {last_directory(), {}};
         }
+#ifdef _WIN32
+        if (const auto home = env("USERPROFILE"); home && !home->empty()) {
+            return {*home, {}};
+        }
+#else
         if (const auto home = env("HOME"); home && !home->empty()) {
             return {*home, {}};
         }
+#endif
         return {".", {}};
     }
 

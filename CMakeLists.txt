@@ -2,6 +2,12 @@
 cmake_minimum_required(VERSION 3.24)
 project(noise_edit CXX)
 
+# The vcpkg static Windows triplet uses /MT. All project and FetchContent targets
+# must use the same CRT, or MSVC fails with LNK2038 RuntimeLibrary mismatches.
+if(MSVC AND VCPKG_TARGET_TRIPLET MATCHES "-static$")
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -13,7 +19,13 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
 endif()
 
-option(NOISE_WERROR "Treat warnings as errors in noise targets" ON)
+if(MSVC)
+    add_compile_options(/utf-8)
+    set(NOISE_DEFAULT_WERROR OFF)
+else()
+    set(NOISE_DEFAULT_WERROR ON)
+endif()
+option(NOISE_WERROR "Treat warnings as errors in noise targets" ${NOISE_DEFAULT_WERROR})
 if(EMSCRIPTEN)
     set(NOISE_DEFAULT_TESTS OFF)
 else()
@@ -28,6 +40,13 @@ if(EMSCRIPTEN)
     # Use Emscripten's codec ports, not host libraries from pkg-config.
     set(NOISE_WEB_CODECS -sUSE_LIBPNG=1 -sUSE_LIBJPEG=1 -sUSE_ZLIB=1
                          --use-port=contrib.libwebp)
+elseif(WIN32)
+    # Use vcpkg-provided CMake targets, not pkg-config or Unix sonames.
+    find_package(PNG REQUIRED)
+    find_package(JPEG REQUIRED)
+    find_package(WebP CONFIG REQUIRED)
+    find_package(CURL REQUIRED)
+    find_package(ZLIB REQUIRED)
 else()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(LIBPNG REQUIRED libpng16)
@@ -70,14 +89,19 @@ endif()
 
 if(NOT EMSCRIPTEN)
     find_package(OpenGL REQUIRED)
-    find_package(X11 REQUIRED COMPONENTS Xcursor Xi)
     find_package(Threads REQUIRED)
-    pkg_check_modules(LIBCURL REQUIRED IMPORTED_TARGET libcurl)
+    if(UNIX AND NOT APPLE)
+        find_package(X11 REQUIRED COMPONENTS Xcursor Xi)
+        pkg_check_modules(LIBCURL REQUIRED IMPORTED_TARGET libcurl)
+    endif()
 endif()
 
 add_library(sokol STATIC vendor/sokol_impl.cpp)
 if(EMSCRIPTEN)
     target_compile_definitions(sokol PUBLIC SOKOL_GLES3=1 SOKOL_NO_ENTRY=1)
+elseif(WIN32)
+    target_compile_definitions(sokol PUBLIC SOKOL_GLCORE=1 SOKOL_NO_ENTRY=1)
+    target_link_libraries(sokol PUBLIC OpenGL::GL user32 gdi32 shell32)
 else()
     target_compile_definitions(sokol PUBLIC SOKOL_GLCORE=1 SOKOL_NO_ENTRY=1)
     target_link_libraries(sokol PUBLIC OpenGL::GL X11::X11 ${X11_Xcursor_LIB} ${X11_Xi_LIB} m Threads::Threads dl)
@@ -99,7 +123,11 @@ target_include_directories(imgui SYSTEM PUBLIC
 target_link_libraries(imgui PUBLIC sokol)
 
 foreach(tgt sokol imgui)
-    target_compile_options(${tgt} PRIVATE -w)
+    if(MSVC)
+        target_compile_options(${tgt} PRIVATE /W0)
+    else()
+        target_compile_options(${tgt} PRIVATE -w)
+    endif()
 endforeach()
 
 if(EMSCRIPTEN)
@@ -107,6 +135,12 @@ if(EMSCRIPTEN)
         src/platform/web.cpp
         src/platform/net_web.cpp
         src/platform/file_dialog_web.cpp)
+elseif(WIN32)
+    add_library(noise_platform STATIC
+        src/platform/windows.cpp
+        src/platform/windows_net.cpp
+        src/platform/file_dialog_filters.cpp)
+    target_link_libraries(noise_platform PUBLIC ws2_32)
 else()
     add_library(noise_platform STATIC
         src/platform/posix.cpp
@@ -156,6 +190,8 @@ target_include_directories(noise_io PUBLIC src)
 target_link_libraries(noise_io PUBLIC noise_core)
 if(EMSCRIPTEN)
     target_compile_options(noise_io PRIVATE ${NOISE_WEB_CODECS})
+elseif(WIN32)
+    target_link_libraries(noise_io PUBLIC PNG::PNG JPEG::JPEG WebP::webp ZLIB::ZLIB)
 else()
     target_include_directories(noise_io PUBLIC ${LIBPNG_INCLUDE_DIRS} ${LIBJPEG_INCLUDE_DIRS}
                                          ${LIBWEBP_INCLUDE_DIRS})
@@ -182,7 +218,11 @@ target_include_directories(noise_ai PUBLIC src)
 target_link_libraries(noise_ai PUBLIC noise_core noise_io)
 if(NOT EMSCRIPTEN)
     target_sources(noise_ai PRIVATE src/ai/http_curl.cpp)
-    target_link_libraries(noise_ai PUBLIC PkgConfig::LIBCURL)
+    if(WIN32)
+        target_link_libraries(noise_ai PUBLIC CURL::libcurl)
+    else()
+        target_link_libraries(noise_ai PUBLIC PkgConfig::LIBCURL)
+    endif()
 endif()
 
 add_library(noise_gfx STATIC
@@ -299,8 +339,19 @@ if(EMSCRIPTEN)
     target_link_options(noise-edit PRIVATE -fwasm-exceptions)
 endif()
 
-if(NOISE_WERROR)
+if(MSVC)
+    # MSVC's diagnostic flags are not GCC flags. Keep /WX opt-in on a new platform
+    # until the native Windows build has been exercised in CI.
+    if(NOISE_WERROR)
+        message(STATUS "NOISE_WERROR enabled: MSVC diagnostics are errors")
+        set(NOISE_WARNINGS /W4 /WX)
+    else()
+        set(NOISE_WARNINGS /W4)
+    endif()
+else()
     set(NOISE_WARNINGS -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+endif()
+if(MSVC OR NOISE_WERROR)
     foreach(tgt noise_platform noise_core noise_io noise_gfx noise_dbg noise_app noise_ui
                     noise-edit)
         target_compile_options(${tgt} PRIVATE ${NOISE_WARNINGS})

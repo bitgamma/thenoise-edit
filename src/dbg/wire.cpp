@@ -69,7 +69,7 @@ void DebugWire::close_client(std::size_t index) {
 void DebugWire::send(Client& client, const std::string& payload) {
     if (!platform::write_all(client.fd, payload, kWriteTimeoutMs)) {
         log::warn("debug wire: client write failed, dropping connection");
-        client.fd = -1;
+        client.fd = platform::kInvalidSocket;
     }
 }
 
@@ -95,7 +95,7 @@ void DebugWire::handle_frame(Client& client, const std::string& text) {
             send(client, frame(json{{"event", "ready"}, {"ok", true}}));
         } else {
             send(client, error_frame(id, "authentication required"));
-            client.fd = -1;
+            client.fd = platform::kInvalidSocket;
         }
         return;
     }
@@ -131,8 +131,8 @@ void DebugWire::poll() {
     }
 
     while (clients_.size() < config_.max_clients) {
-        const int fd = server_.accept();
-        if (fd < 0) {
+        const platform::SocketHandle fd = server_.accept();
+        if (fd == platform::kInvalidSocket) {
             break;
         }
         Client client(fd, config_.max_frame_bytes);
@@ -160,7 +160,7 @@ void DebugWire::poll() {
             close_client(i);
             continue;
         }
-        if (client.fd < 0) {
+        if (client.fd == platform::kInvalidSocket) {
             close_client(i);
             continue;
         }

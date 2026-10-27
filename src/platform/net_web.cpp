@@ -10,9 +10,9 @@ bool TcpServer::open(const std::string&, std::uint16_t, std::string& error) {
 }
 void TcpServer::close() {}
 std::uint16_t TcpServer::port() const { return 0; }
-int TcpServer::accept() { return -1; }
-bool write_all(int, const std::string&, int) { return false; }
-std::int64_t read_some(int, char*, std::size_t) { return -1; }
-void close_fd(int) {}
+SocketHandle TcpServer::accept() { return -1; }
+bool write_all(SocketHandle, const std::string&, int) { return false; }
+std::int64_t read_some(SocketHandle, char*, std::size_t) { return -1; }
+void close_fd(SocketHandle) {}
 
 }  // namespace noise::platform

@@ -12,6 +12,7 @@
 #endif
 #include "core/log.h"
 #include "platform/platform.h"
+#include "platform/paths.h"
 
 #include <filesystem>
 #include <vector>
@@ -96,8 +97,8 @@ void open_ai_session(noise::AppState& state) {
         }
         const std::string executable = platform::executable_path();
         if (!executable.empty()) {
-            candidates.push_back((std::filesystem::path(executable).parent_path() /
-                                  NOISE_INSTALL_ASSET_RELATIVE).string());
+            candidates.push_back(platform::path_to_utf8(
+                platform::path_from_utf8(executable).parent_path() / NOISE_INSTALL_ASSET_RELATIVE));
         }
         candidates.push_back("assets");
         candidates.push_back(state.runtime_dir + "/assets");
@@ -105,7 +106,7 @@ void open_ai_session(noise::AppState& state) {
             if (candidate.empty()) {
                 continue;
             }
-            if (std::filesystem::exists(std::filesystem::path(candidate) / "roles.json")) {
+            if (std::filesystem::exists(platform::path_from_utf8(candidate) / "roles.json")) {
                 ai.resource_dir = candidate;
                 break;
             }

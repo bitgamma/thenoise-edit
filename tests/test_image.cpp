@@ -7,6 +7,7 @@
 #include "io/jpeg.h"
 #include "io/png.h"
 #include "io/webp.h"
+#include "platform/paths.h"
 
 #include <span>
 
@@ -90,7 +91,8 @@ Image flattened_reference(const Image& source) {
 }
 
 std::string temp_path(const std::string& name) {
-    return (std::filesystem::temp_directory_path() / ("noise-test-" + name)).string();
+    return platform::path_to_utf8(std::filesystem::temp_directory_path() /
+                                  ("noise-test-" + name));
 }
 
 void test_png_round_trip() {
@@ -127,6 +129,24 @@ void test_png_file_round_trip_preserves_alpha() {
         }
     }
     std::filesystem::remove(path);
+}
+
+// Native file dialogs return UTF-8 even on Windows. Keep that spelling usable
+// through disk IO, including when the filename cannot round-trip via the ANSI code page.
+void test_unicode_image_path() {
+    const std::filesystem::path native =
+        std::filesystem::temp_directory_path() / std::filesystem::path(u8"noise-ü-日本.png");
+    const std::string path = platform::path_to_utf8(native);
+    const Image source = make_pattern(Extent{11, 7});
+    std::string error;
+    CHECK(io::save_png(path, source, error));
+    CHECK_EQ(io::load_png(path, error).checksum_hex(), source.checksum_hex());
+    std::vector<std::uint8_t> bytes;
+    CHECK(io::read_file(path, bytes, error));
+    CHECK_EQ(io::decode_png(bytes, error).checksum_hex(), source.checksum_hex());
+    CHECK(io::write_file_atomic(path, bytes, error));
+    CHECK_EQ(io::load_png(path, error).checksum_hex(), source.checksum_hex());
+    std::filesystem::remove(native);
 }
 
 void test_decode_rejects_bad_input() {
@@ -355,6 +375,7 @@ void test_flat_writing_refuses_an_extension_it_does_not_have() {
 int main() {
     test_png_round_trip();
     test_png_file_round_trip_preserves_alpha();
+    test_unicode_image_path();
     test_decode_rejects_bad_input();
     test_region_matches_source_pixels();
     test_region_clips_and_rejects();

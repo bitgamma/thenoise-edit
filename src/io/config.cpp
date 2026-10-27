@@ -3,6 +3,7 @@
 
 #include "io/file.h"
 #include "platform/platform.h"
+#include "platform/paths.h"
 #ifdef __EMSCRIPTEN__
 #include "platform/web.h"
 #endif
@@ -20,7 +21,7 @@ using json = nlohmann::json;
 
 #ifndef __EMSCRIPTEN__
 std::filesystem::path config_path() {
-    return std::filesystem::path(platform::config_dir()) / "config.json";
+    return platform::path_from_utf8(platform::config_dir()) / "config.json";
 }
 #endif
 
@@ -31,7 +32,7 @@ json read_config() {
 #else
     std::vector<std::uint8_t> bytes;
     std::string error;
-    if (!read_file(config_path().string(), bytes, error)) {
+    if (!read_file(platform::path_to_utf8(config_path()), bytes, error)) {
         return json::object();
     }
     const json parsed = json::parse(bytes, nullptr, false);
@@ -45,7 +46,7 @@ bool write_config(const json& config, std::string& error) {
     return platform::save_browser_config(text, error);
 #else
     const std::vector<std::uint8_t> bytes(text.begin(), text.end());
-    return write_file_atomic(config_path().string(), bytes, error);
+    return write_file_atomic(platform::path_to_utf8(config_path()), bytes, error);
 #endif
 }
 
@@ -54,8 +55,8 @@ bool write_config(const json& config, std::string& error) {
 #ifndef __EMSCRIPTEN__
 std::string canonical(const std::string& path) {
     std::error_code ec;
-    const std::filesystem::path fixed = std::filesystem::canonical(path, ec);
-    return ec ? path : fixed.string();
+    const std::filesystem::path fixed = std::filesystem::canonical(platform::path_from_utf8(path), ec);
+    return ec ? path : platform::path_to_utf8(fixed);
 }
 #endif
 

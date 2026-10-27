@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "ai/queue.h"
+#include "platform/paths.h"
 
 #include "core/hash.h"
 
@@ -149,7 +150,7 @@ nlohmann::json JobRecord::json() const {
 JobQueue::JobQueue(Deps deps, Clock clock)
     : deps_(deps), clock_(std::move(clock)), directory_(deps.directory) {
     std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::path(directory_), ec);
+    std::filesystem::create_directories(platform::path_from_utf8(directory_), ec);
 #ifndef __EMSCRIPTEN__
     worker_ = std::thread([this] { worker(); });
 #endif
