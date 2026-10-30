@@ -6,6 +6,7 @@
 #include "core/layer.h"
 #include "core/log.h"
 #include "core/mask.h"
+#include "core/maskops.h"
 
 #include <nlohmann/json.hpp>
 
@@ -149,6 +150,35 @@ void register_mask_commands(AppState& state, CommandTable& table) {
             return command_ok(layer_mask_json(state.doc.layer(static_cast<std::size_t>(state.doc.active()))));
         }
         return fail("mask.fill", "'to' must be one of " + mask_fill_names());
+    });
+
+    table.add("mask.edge", "Adjust an editable result edge: harden, grow/shrink, feather", {},
+              {"shift", "hard", "feather"}, [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        CommandResult refusal;
+        const Layer* layer = masked_layer(state, "mask.edge", refusal);
+        if (layer == nullptr) {
+            return refusal;
+        }
+        int shift = 0;
+        int feather = 0;
+        bool hard = false;
+        if (!arg_int(args, "shift", shift) || !arg_int(args, "feather", feather) ||
+            !arg_bool(args, "hard", hard) || shift < -kMaxEdgeShiftPx || shift > kMaxEdgeShiftPx ||
+            feather < 0 || feather > kMaxEdgeFeatherPx) {
+            return fail("mask.edge", "shift must be -" + std::to_string(kMaxEdgeShiftPx) +
+                                         ".." + std::to_string(kMaxEdgeShiftPx) +
+                                         " px, feather 0.." +
+                                         std::to_string(kMaxEdgeFeatherPx) +
+                                         " px, and hard a boolean");
+        }
+        const Mask next = adjusted_edge(*layer->mask, shift, hard, feather);
+        state.doc.set_layer_mask(state.doc.active(), next);
+        return command_ok(layer_mask_json(state.doc.layer(static_cast<std::size_t>(
+            state.doc.active()))));
     });
 
     table.add("mask.invert", "Turn what the active layer's mask shows into what it hides", {}, {},

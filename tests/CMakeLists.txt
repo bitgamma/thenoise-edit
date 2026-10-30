@@ -21,6 +21,7 @@ add_executable(test_history test_history.cpp)
 add_executable(test_zip test_zip.cpp)
 add_executable(test_project test_project.cpp)
 add_executable(test_document test_document.cpp)
+add_executable(test_canvas_edit test_canvas_edit.cpp)
 add_executable(test_blend test_blend.cpp)
 add_executable(test_mask test_mask.cpp)
 add_executable(test_ants test_ants.cpp)
@@ -46,6 +47,12 @@ target_link_libraries(test_document PRIVATE noise_core noise_dbg)
 target_include_directories(test_document PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(test_document PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
 add_test(NAME test_document COMMAND test_document)
+
+# Canvas geometry and the editable masks generated edits leave behind.
+target_link_libraries(test_canvas_edit PRIVATE noise_ai noise_core noise_dbg)
+target_include_directories(test_canvas_edit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_canvas_edit PRIVATE ${NOISE_TEST_CONVERSION_WARNINGS})
+add_test(NAME test_canvas_edit COMMAND test_canvas_edit)
 
 # The blend arithmetic, checked against the definitions written out again in the test rather than
 # against the implementation: a mode that agrees with a shared helper agrees with nothing.

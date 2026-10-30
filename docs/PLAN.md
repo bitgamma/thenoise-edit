@@ -1,12 +1,39 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the tree against the docs: **2026-10-26**, after the merge of the inline-rename and
-layer-scale branch back over the UI module split — the layers panel, its two inline fields and the history
-kinds were checked against `docs/ARCHITECTURE.md`, the command table and the probe. The file
-selection path was last checked against the command table, host loop, platform boundary and WASM bridge in
-the movable-native-picker note. The selected next architecture milestone remains `doc.crop` /
-`doc.resize`, blocked on `History::fits_coverage` validating coverage when a history entry's canvas extent
-differs from the current stack extent. `AGENTS.md` is normative and outranks this file.
+Last re-read of the document geometry and AI landing path: **2026-10-29**. `doc.resize` and
+`doc.crop` now move pixels, masks and marked coverage together, and undo/redo exchange entire
+canvas states so older per-pixel history is valid again once the original extent returns. New AI
+answers retain the generated crop under a separately editable mask. The prior 2026-10-26 notes
+below remain historical. Image-size resampling and dedicated AI upscale methods are still planned.
+`AGENTS.md` is normative and outranks this file.
+
+## 2026-10-29 - Crop, canvas size, outpainting and editable AI seams
+
+**Landed in this change:** `doc.resize` translates all layer pixel planes and layer masks without
+resampling; `doc.crop` keeps the requested rectangle. The Canvas size / Crop panel exposes an
+anchor, pixel dimensions, a crop rectangle and crop-to-selection. Resizing selects precisely the
+newly exposed pixels by default. That mark is immediately usable with the existing Fill workflow;
+selecting a different region or selecting everything lets the editor regenerate only that portion
+or the complete enlarged canvas. The actual AI request can still be downsampled by the model's
+published pixel cap; the resized **document** has the requested size regardless.
+
+**History and jobs:** `Kind::canvas_replaced` holds the old layer stack **and** the marked area
+as a single reversible state. Earlier rectangles remain valid when the old extent is restored.
+`geometry_revision` propagates to the document epoch on resize, crop and undo/redo, so a queued
+answer cannot be pasted onto a canvas whose coordinates have changed. A large single geometry
+snapshot remains undoable even if it exceeds the nominal 128 MiB history budget.
+
+**Editable seam:** A generated edit now keeps the full colour-matched requested crop on its
+new layer, with the original coverage/lock-band as an editable layer mask. `mask.edge` applies
+harden, pixel growth/shrinkage and optional feathering; painting on the layer mask makes local
+corrections. Undo records mask changes. **Only pixels returned in the generated crop can be
+revealed**: reaching outside it requires a new AI request. The empty-first-layer special case
+still lands directly on that canvas. The existing flattened `ai.compose` preview remains unchanged.
+
+**Still outstanding:** actual image-size resampling (Lanczos, AI upscale) is separate from
+canvas size; a dedicated `extend` recipe can refine the outpainting language later. The native
+ImGui/runtime and a live model round trip require the normal full dependency-equipped build.
+See [CANVAS_OUTPAINT.md](CANVAS_OUTPAINT.md) for the commands and workflow.
 
 ## 2026-10-26 - The window stops offering a theme
 
@@ -194,16 +221,17 @@ quote remains deliberately cut. Slice 3's coverage and verb bar are in place; lo
 6. **Blend, and images as input.** Landed: Insert/drop places an image on its own layer; no-prompt *Blend*
    uses `region: layer`, whose source is the layer's pixels and whose coverage is its alpha. *Blend* with a
    prompt and control images (openpose) remain future work through the same input path.
-7. **Document geometry.** `doc.crop`, `doc.resize` for the canvas - with *AI fill* on the grown strip, the
-   outpaint mechanism below - and *Image size* with a method: Lanczos, `AI upscale (fast)` (ESRGAN),
-   `AI upscale (best)` (an edit model, so one `roles.json` row and one recipe). The seam to think about
-   first is history: `Document` fixes its `Extent` at creation today, and the journal holds full-size
-   snapshots, so a size change needs a decision about what undo means across it.
+7. **Document geometry.** Canvas `doc.crop` and `doc.resize` **landed 2026-10-29**.
+   `History::canvas_replaced` exchanges the entire document extent, layers and marked selection;
+   new exposure is selected for Fill. *Image size*, which **resamples** rather than enlarges an
+   empty border, is still future work: Lanczos, `AI upscale (fast)` (ESRGAN) and
+   `AI upscale (best)` (an edit model with a recipe and a role).
 
-   **Outpaint, the mechanism.** Grow the `Extent`, mark the grown border as the coverage, compile the
-   region with the original frame *inside* it as context, and let the answer land on a new layer clipped to
-   the grown strip, so the original pixels stay byte-untouched. It is `reconstruct` with a different mask
-   story, which is why it wants its own `operation: extend` rather than a weakened call.
+   **Outpaint, the mechanism (landed via Fill):** Grow `Extent`, mark newly exposed coverage,
+   compile the crop with the original frame as context, and land on a new mask-clipped layer.
+   Existing document pixels remain untouched. The present path deliberately reuses the existing
+   selection-scoped recipe; a dedicated `operation: extend` may be worth adding when its prompt
+   or backend needs to behave differently, not as a prerequisite for outpainting.
 8. **The tuning pass and the parked niceties.** Recipe wording and `prep.radius_px` per verb against hole
    size (specified at the end of this file, needs the box), the `enhance` prompt-improver behind its own
    button, the keymap file, autosave.

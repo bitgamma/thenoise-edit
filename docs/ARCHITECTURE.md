@@ -608,9 +608,8 @@ panel`, "Regenerate with same params", kept variants) and nothing in the tree st
   (`kHistoryBudgetBytes`, 128 MB) dropping **whole steps oldest-first**: losing an old step is
   a shorter history, losing part of a step would be a half-restored edit. Tiles become the
   storage granularity when partial texture uploads need them.
-  Structural commands are planned to store the inverse command. Seven are in the timeline today, as entries
-  of their own rather than as pixels: a reorder (`layer.move`) records the stack's ids in order and keeps
-  the order it displaced, because no pixel moved and what the composite shows changed everywhere; a
+  Structural edits live in the timeline as state swaps or reversible entries rather than as pixels:
+  a reorder (`layer.move`) records the stack's ids in order and keeps the order it displaced, because no pixel moved and what the composite shows changed everywhere; a
   **layer arriving** (`layer.add`, and the layer an answer lands on) records the arrival alone - the entry
   that takes the layer away carries the whole layer, so what it arrived wearing comes back with it, and a
   layer created *and then written* records that write beside it because the write has a `before` of its own;
@@ -624,9 +623,10 @@ panel`, "Regenerate with same params", kept variants) and nothing in the tree st
   the coverage it was hiding; and a **rename** (`layer.rename`, the field a card's title row turns into)
   records the one name that is not current, and is the only property of a layer worth a step of its own -
   typing a name should not cost the person the stroke under it, while hiding, fading or re-modding a layer
-  is a state checked by looking rather than a mistake undone. The last four are applied by swapping, as a
-  replaced stack is: the entry holds the state that is not current, so the two directions are one operation
-  and neither has to assert where the thing went.
+  is a state checked by looking rather than a mistake undone. Canvas resizing and cropping add a
+  **whole-canvas replacement** that swaps the layer stack and marked coverage together. The replaced
+  stack, marked coverage, mask plane, name and canvas entry all hold the state that is not current, so
+  undo and redo can apply the same swap.
   A flatten carries every pixel of both sides and therefore records nothing else, and neither it nor a
   coverage entry names a layer, because the stack and the mark outlive any one layer. A coverage entry is not
   `structure` either — it puts coverage back and no pixel, so undoing one re-uploads no texture and resamples
@@ -678,6 +678,29 @@ panel`, "Regenerate with same params", kept variants) and nothing in the tree st
 
 This is the strongest argument for our own container: provenance is not an afterthought,
 it's a first-class file-format feature.
+
+### Geometry steps and editable AI results (implemented 2026-10-29)
+
+`Document::resize_canvas(Extent, offset_x, offset_y, mark_added)` defines the new canvas
+extent and moves **all** layer pixels and layer masks in document pixel coordinates; it does
+not resample them. The new exposure can replace the marked selection (the default) so Fill
+uses only those pixels. `Document::crop_canvas(Rect)` is the corresponding negative-offset
+extent change without adding a selection. Both run through `History::canvas_replaced`, which
+swaps the layer stack and marked coverage together in one step. Ordinary paint/selection steps
+from before a resize become applicable again after its undo. A single oversized geometry
+step is retained even over the nominal history budget rather than making resize irreversible.
+The canvas geometry revision also increments on undo/redo, so the application increments
+`document_epoch` to reject AI answers queued against obsolete geometry.
+
+`ai::compose_result` still supplies the old preview/flat image contract. The real landing
+instead uses `ai::compose_editable_result`, which puts the entire colour-matched crop on the
+new result layer and saves the effective coverage (feather and locked crop borders included)
+in that layer's optional mask. The first display is unchanged; after landing, `mask.edge`
+can threshold, dilate/erode or blur the mask, and ordinary mask brushes can hide/reveal areas
+locally. A result can only be revealed inside the crop actually returned by the model.
+Resizing the **canvas** does not promise to send the full new extent at native pixels to the
+model: the region policy may rescale an AI request down to its published pixel budget.
+See [CANVAS_OUTPAINT.md](CANVAS_OUTPAINT.md).
 
 ## File format
 
@@ -1555,7 +1578,7 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | Group | Commands | Why |
 |---|---|---|
 | state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `ai.references`, `server.state`, `job.list`, `job.get {id}`, `ai.roles`, `ai.recipes`, `log.tail` | read what the app believes, cheaply |
-| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.lasso {points, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `ui.theme {theme?}`, `doc.new/open/save/export {path, quality?}/get`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at?, mode?}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `layer.move {index?, to}`, `layer.merge {index?}`, `layer.flatten`, `layer.rename {index?, name}`, `layer.rename.begin {index?}` (`F2`), `layer.scale {index?, factor}`, `layer.import {path, at}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
+| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.lasso {points, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `ui.theme {theme?}`, `doc.new/open/save/export {path, quality?}/get`, `doc.resize {width, height, offset_x?, offset_y?, mark_added?}`, `doc.crop {rect?}`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at?, mode?}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `layer.move {index?, to}`, `layer.merge {index?}`, `layer.flatten`, `layer.rename {index?, name}`, `layer.rename.begin {index?}` (`F2`), `layer.scale {index?, factor}`, `layer.import {path, at}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `mask.edge {shift?, hard?, feather?}`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
  `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. Its `cancel` phase closes a provisional selection without committing it; Lasso press may also carry `mode: replace|add|subtract`. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
 | ai | `ai.verbs` (the verb rows: id, command, key, recipe, label, operation, `ask`, scope, `ready`, `reason`, `model`, `resident`, `swap`), `ai.heal` / `ai.remove` / `ai.fill` / `ai.change` / `ai.generate` / `ai.blend` `{vars?, seed?, confirm?, include_references?}` (one verb row pressed - they call `ai.intent` with their recipe named, so a key and a scripted intent cannot diverge), `ai.references {}`, `ai.references.add {path?, paths?, layer?}`, `ai.references.remove {id}`, `ai.references.move {id, to}`, `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?, include_references?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?, include_references?}`, `ai.intent {recipe?, vars?, aspect?, include_references?, seed?, seed_pin?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pinned}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.apply {id, feather?, colour_match?}` (the idempotent landing door - answers land by themselves, so this one brings one back or overrides the policy, and says `already_landed` otherwise), | `ai.references` reads ordered session references; its add/remove/move commands are the same actions the GUI uses, and `ai.preview` shows every image's order, source, dimensions, hash and encoded size plus the actual request field names and body size. It also reports whether configured references are included for the selected operation. `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact request before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel and land without a UI; `ai.intent` is the whole surface of the action, so a scripted run and a key press cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command; absent, the request takes the panel's pin or a fresh draw, and every report says which (`seed`, `seed_source`) |

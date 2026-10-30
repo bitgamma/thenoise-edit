@@ -4752,9 +4752,65 @@ void test_theme_switch_persists_without_changing_the_document() {
     std::filesystem::remove_all(config);
 }
 
+// The command wire is the editor surface: every canvas operation and edge tweak must be
+// reachable here, and an undo/redo changing geometry must invalidate queued AI landings.
+void test_canvas_commands_and_editable_edges_use_the_document_timeline() {
+    Harness h;
+    h.value("doc.new", json{{"width", 8}, {"height", 6},
+                             {"fill", json::array({25, 60, 90, 255})}});
+    const std::uint64_t first_epoch = h.state.document_epoch;
+    const std::string first_checksum = h.state.doc.checksum();
+    CHECK(!h.run("doc.resize", json{{"width", 8193}, {"height", 8193}}).ok);
+    CHECK_EQ(h.state.document_epoch, first_epoch);
+    CHECK_EQ(h.state.doc.checksum(), first_checksum);
+
+    const json resized = h.value("doc.resize", json{{"width", 12}, {"height", 10},
+                                                       {"offset_x", 2}, {"offset_y", 1}});
+    CHECK_EQ(resized["marked_added"].get<bool>(), true);
+    CHECK(h.state.doc.size() == (Extent{12, 10}));
+    REQUIRE(h.state.doc.selection().has_value());
+    CHECK_EQ(h.state.doc.selection()->covered(), 72u); // 120 pixels minus 8*6 old pixels
+    CHECK_EQ(h.state.doc.selection()->coverage(2, 1), kMaskOut);
+    CHECK_EQ(h.state.doc.selection()->coverage(1, 1), kMaskIn);
+    CHECK_EQ(h.state.document_epoch, first_epoch + 1);
+    CHECK_EQ(h.state.doc.history().undo_depth, 1);
+
+    h.value("mask.from_selection", json::object());
+    REQUIRE(h.state.doc.layer(0).mask.has_value());
+    CHECK_EQ(h.state.doc.layer(0).mask->coverage(2, 2), kMaskOut);
+    h.value("mask.edge", json{{"shift", 1}, {"hard", true}});
+    REQUIRE(h.state.doc.layer(0).mask.has_value());
+    CHECK_EQ(h.state.doc.layer(0).mask->coverage(2, 2), kMaskIn);
+    CHECK_EQ(h.state.doc.layer(0).mask->coverage(5, 4), kMaskOut);
+    const std::uint64_t marked_epoch = h.state.document_epoch;
+    CHECK(!h.run("mask.edge", json{{"feather", 65}}).ok);
+    CHECK_EQ(h.state.document_epoch, marked_epoch);
+
+    h.value("edit.undo", json::object()); // the edge
+    CHECK_EQ(h.state.doc.layer(0).mask->coverage(2, 2), kMaskOut);
+    h.value("edit.undo", json::object()); // the mask arrival
+    CHECK(!h.state.doc.layer(0).mask.has_value());
+    h.value("edit.undo", json::object()); // the canvas geometry
+    CHECK(h.state.doc.size() == (Extent{8, 6}));
+    CHECK_EQ(h.state.doc.checksum(), first_checksum);
+    CHECK_EQ(h.state.document_epoch, marked_epoch + 1);
+    h.value("edit.redo", json::object());
+    CHECK(h.state.doc.size() == (Extent{12, 10}));
+    CHECK_EQ(h.state.document_epoch, marked_epoch + 2);
+
+    h.value("doc.crop", json{{"rect", json::array({2, 1, 8, 6})}});
+    CHECK(h.state.doc.size() == (Extent{8, 6}));
+    CHECK_EQ(h.state.document_epoch, marked_epoch + 3);
+    CHECK(!h.run("doc.crop", json{{"rect", json::array({-2, 0, 5, 5})}}).ok);
+    h.value("edit.undo", json::object());
+    CHECK(h.state.doc.size() == (Extent{12, 10}));
+    CHECK_EQ(h.state.document_epoch, marked_epoch + 4);
+}
+
 int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
+    test_canvas_commands_and_editable_edges_use_the_document_timeline();
     test_blend_takes_the_layer_for_its_region();
     test_ai_reference_commands_keep_images_separate_from_document_layers();
     test_ai_references_relink_after_undo_but_detach_across_documents();

@@ -44,9 +44,11 @@ memorised, and each is a step in `tools/flow_probe.py`.
 8. **"Take that away."** Select the tree, press *Erase*.
 9. **"This pose, that person."** Drag in a pose image, move and scale it over the subject, press *Blend*
    and type "apply the pose to the subject". (Openpose/control images come later; the door is the same.)
-10. **"The framing is tight."** *Canvas size*: add 300 px on the left, choose *AI fill* - outpaint.
+10. **"The framing is tight."** *Canvas size*: add 300 px on the left, keep *Select added area*
+    enabled, then use *Fill* to outpaint the newly exposed strip. The generated layer keeps an
+    editable mask for correcting the seam afterward.
 11. **"I am lost in layers."** *Flatten*, and the picture is one layer.
-12. **"Wallpaper proportions."** Crop, no AI.
+12. **"Wallpaper proportions."** Crop to a rectangle or the marked area, no AI.
 13. **"I want 4K."** *Image size*, new size, method: Lanczos / *AI upscale (fast)* / *AI upscale (best)*.
 14. **Save** the document, then **Export** a flat WebP.
 

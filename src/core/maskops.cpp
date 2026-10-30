@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "core/maskops.h"
+#include "core/blur.h"
+
+#include <deque>
 
 #include <algorithm>
 #include <cmath>
@@ -415,5 +418,70 @@ bool op_lasso(Mask& mask, const std::vector<Vec2>& path, MaskOp op) {
     return patch.has_value() && mask.op(patch->area, patch->coverage, op);
 }
 
+
+namespace {
+
+std::vector<std::uint8_t> extreme_pass(const std::vector<std::uint8_t>& input, Extent size,
+                                       int radius, bool grow, bool horizontal) {
+    std::vector<std::uint8_t> output(input.size());
+    const int lines = horizontal ? size.h : size.w;
+    const int length = horizontal ? size.w : size.h;
+    const int stride = horizontal ? 1 : size.w;
+    const int line_stride = horizontal ? size.w : 1;
+    for (int line = 0; line < lines; ++line) {
+        const std::size_t start = static_cast<std::size_t>(line) *
+                                  static_cast<std::size_t>(line_stride);
+        std::deque<int> window;
+        int added = 0;
+        for (int position = 0; position < length; ++position) {
+            const int right = std::min(length - 1, position + radius);
+            while (added <= right) {
+                const auto sample = [&](int at) {
+                    return input[start + static_cast<std::size_t>(at) *
+                                         static_cast<std::size_t>(stride)];
+                };
+                while (!window.empty() &&
+                       (grow ? sample(window.back()) <= sample(added)
+                             : sample(window.back()) >= sample(added))) {
+                    window.pop_back();
+                }
+                window.push_back(added++);
+            }
+            while (window.front() < position - radius) {
+                window.pop_front();
+            }
+            output[start + static_cast<std::size_t>(position) *
+                           static_cast<std::size_t>(stride)] =
+                input[start + static_cast<std::size_t>(window.front()) *
+                               static_cast<std::size_t>(stride)];
+        }
+    }
+    return output;
+}
+
+}  // namespace
+
+Mask adjusted_edge(const Mask& source, int shift_px, bool hard, int feather_px) {
+    if (!source.sized()) {
+        return source;
+    }
+    std::vector<std::uint8_t> plane = source.plane();
+    if (hard) {
+        for (std::uint8_t& sample : plane) {
+            sample = sample >= 128 ? kMaskIn : kMaskOut;
+        }
+    }
+    if (shift_px != 0) {
+        const bool grow = shift_px > 0;
+        const int radius = std::abs(shift_px);
+        plane = extreme_pass(plane, source.size(), radius, grow, true);
+        plane = extreme_pass(plane, source.size(), radius, grow, false);
+    }
+    Mask adjusted = *Mask::from_plane(source.size(), std::move(plane));
+    if (feather_px > 0) {
+        adjusted = feathered_mask(adjusted, feather_px);
+    }
+    return adjusted;
+}
 
 }  // namespace noise

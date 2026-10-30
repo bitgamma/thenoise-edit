@@ -19,6 +19,7 @@ Document::Document() : history_(kHistoryBudgetBytes) {}
 
 void Document::reset(std::vector<Layer> layers, std::optional<Mask> selection, std::string path) {
     layers_ = std::move(layers);
+    ++geometry_revision_;
     for (Layer& layer : layers_) {
         layer.id = next_layer_id_++;
     }
@@ -49,6 +50,97 @@ bool Document::empty() const { return layers_.empty(); }
 int Document::width() const { return layers_.empty() ? 0 : layers_.front().pixels.size().w; }
 int Document::height() const { return layers_.empty() ? 0 : layers_.front().pixels.size().h; }
 Extent Document::size() const { return layers_.empty() ? Extent{0, 0} : layers_.front().pixels.size(); }
+std::uint64_t Document::geometry_revision() const { return geometry_revision_; }
+
+namespace {
+
+Mask shifted_mask(const Mask& source, Extent target, int dx, int dy) {
+    Mask moved(target);
+    const Rect old{dx, dy, source.size().w, source.size().h};
+    const Rect overlap = intersect(old, Rect{0, 0, target.w, target.h});
+    for (int y = overlap.y; y < overlap.bottom(); ++y) {
+        const auto row = source.row(y - dy);
+        const int from = overlap.x - dx;
+        std::copy_n(row.begin() + from, overlap.w, moved.row(y).begin() + overlap.x);
+    }
+    return moved;
+}
+
+Mask newly_exposed(Extent old, Extent target, int dx, int dy) {
+    Mask added(target);
+    for (int y = 0; y < target.h; ++y) {
+        auto row = added.row(y);
+        for (int x = 0; x < target.w; ++x) {
+            if (x < dx || y < dy || static_cast<std::int64_t>(x) >=
+                    static_cast<std::int64_t>(dx) + old.w ||
+                static_cast<std::int64_t>(y) >= static_cast<std::int64_t>(dy) + old.h) {
+                row[static_cast<std::size_t>(x)] = kMaskIn;
+            }
+        }
+    }
+    return added;
+}
+
+}  // namespace
+
+bool Document::resize_canvas(Extent target, int offset_x, int offset_y, bool mark_added) {
+    if (empty() || target.w <= 0 || target.h <= 0 ||
+        static_cast<std::int64_t>(target.w) * target.h > kMaxCanvasPixels) {
+        return false;
+    }
+    const Extent old_size = size();
+    if (static_cast<std::int64_t>(offset_x) < -old_size.w || offset_x > target.w ||
+        static_cast<std::int64_t>(offset_y) < -old_size.h || offset_y > target.h) {
+        return false;
+    }
+    if (target == old_size && offset_x == 0 && offset_y == 0) {
+        return true;
+    }
+    discard_provisional();
+    cancel_marked();
+    std::vector<Layer> transformed;
+    transformed.reserve(layers_.size());
+    for (const Layer& source : layers_) {
+        Layer next;
+        next.id = source.id;
+        next.name = source.name;
+        next.visible = source.visible;
+        next.opacity = source.opacity;
+        next.mode = source.mode;
+        next.content_revision = source.content_revision;
+        next.pixels = Image::filled(target, 0, 0, 0, 0);
+        next.pixels.blit(source.pixels, offset_x, offset_y);
+        if (source.mask) {
+            next.mask = shifted_mask(*source.mask, target, offset_x, offset_y);
+        }
+        transformed.push_back(std::move(next));
+    }
+    std::optional<Mask> marked = selection_
+                                     ? std::optional<Mask>(shifted_mask(*selection_, target,
+                                                                        offset_x, offset_y))
+                                     : std::nullopt;
+    if (mark_added) {
+        Mask added = newly_exposed(old_size, target, offset_x, offset_y);
+        if (added.covered() > 0) {
+            marked = std::move(added);
+        }
+    }
+    history_.record_canvas_replaced(std::move(layers_), std::move(selection_));
+    layers_ = std::move(transformed);
+    selection_ = std::move(marked);
+    ++geometry_revision_;
+    pending_ = Rect{0, 0, target.w, target.h};
+    dirty_ = true;
+    changed_all_layers();
+    return true;
+}
+
+bool Document::crop_canvas(Rect crop) {
+    if (empty() || crop.empty() || !crop.inside(size())) {
+        return false;
+    }
+    return resize_canvas(Extent{crop.w, crop.h}, -crop.x, -crop.y, false);
+}
 
 std::span<const Layer> Document::layers() const { return layers_; }
 
@@ -80,7 +172,7 @@ int Document::add_layer(std::string name, Rgba8 fill) {
 }
 
 int Document::add_layer_written(std::string name, Rect bounds,
-                                const std::function<bool(Image&)>& write) {
+                                const std::function<bool(Layer&)>& write) {
     if (empty()) {
         return -1;
     }
@@ -92,7 +184,7 @@ int Document::add_layer_written(std::string name, Rect bounds,
 
     const Rect touched = intersect(bounds, Rect{0, 0, width(), height()});
     const Image before = touched.empty() ? Image{} : added.pixels.region(touched);
-    if (!write(added.pixels)) {
+    if (!write(added)) {
         return -1;  // nothing was added, and nothing can be recorded against a layer that does not exist
     }
 
@@ -558,7 +650,8 @@ bool Document::set_layer_opacity(int index, double opacity) {
 }
 
 std::string Document::checksum() const {
-    std::string seed = std::to_string(layers_.size());
+    std::string seed = std::to_string(width()) + "x" + std::to_string(height()) + ":" +
+                       std::to_string(layers_.size());
     for (const Layer& layer : layers_) {
         // The layer's state as well as its pixels: two documents that show different things are
         // different documents, whatever their flattened pixels happen to look like, and a
@@ -1130,6 +1223,9 @@ bool Document::undo() {
     // Stepping back is a change: what the document holds now is not what the file holds, and a quit guard
     // that read this as clean would discard the step it just took.
     dirty_ = true;
+    if (moved->canvas_changed) {
+        ++geometry_revision_;
+    }
     retarget_active(was);
     pending_ = unite(pending_, moved->rect);
     if (moved->structure) {
@@ -1156,6 +1252,9 @@ bool Document::redo() {
         return false;
     }
     dirty_ = true;  // as for undo: the document has moved away from the file
+    if (moved->canvas_changed) {
+        ++geometry_revision_;
+    }
     retarget_active(was);
     pending_ = unite(pending_, moved->rect);
     if (moved->structure) {

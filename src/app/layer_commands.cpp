@@ -204,8 +204,8 @@ void register_layer_commands(AppState& state, CommandTable& table) {
                             std::to_string(placed.x) + "," + std::to_string(placed.y));
         }
         const std::string name = import_name(path);
-        const int index = state.doc.add_layer_written(name, inside, [&](Image& layer) {
-            layer.blit(imported, placed.x, placed.y);
+        const int index = state.doc.add_layer_written(name, inside, [&](Layer& layer) {
+            layer.pixels.blit(imported, placed.x, placed.y);
             return true;
         });
         if (index < 0) {

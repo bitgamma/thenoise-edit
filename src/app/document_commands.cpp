@@ -19,6 +19,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 
 
@@ -238,6 +239,71 @@ void register_document_commands(AppState& state, CommandTable& table) {
         if (io::flat_format_has_quality(extension)) {
             result["quality"] = io::clamp_quality(quality);
         }
+        return command_ok(result);
+    });
+
+    table.add("doc.crop", "Crop canvas to a rectangle or the marked area's bounds", {},
+              {"rect"}, [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        Rect region{};
+        if (args.contains("rect")) {
+            if (!arg_rect(args, "rect", region)) {
+                return fail("doc.crop", "'rect' must be [x, y, width, height] of integers");
+            }
+        } else if (state.doc.selection()) {
+            region = state.doc.selection()->bounds();
+        }
+        if (region.empty() || !region.inside(state.doc.size())) {
+            return fail("doc.crop", "crop must be a non-empty rectangle inside the canvas");
+        }
+        const std::uint64_t geometry_before = state.doc.geometry_revision();
+        if (!state.doc.crop_canvas(region)) {
+            return fail("doc.crop", "the crop could not be applied");
+        }
+        if (geometry_before != state.doc.geometry_revision()) {
+            ++state.document_epoch;
+            request_fit(state);
+        }
+        return command_ok(document_json(state));
+    });
+
+    table.add("doc.resize", "Resize the canvas without resampling pixels", {},
+              {"width", "height", "offset_x", "offset_y", "mark_added"},
+              [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        int width = 0;
+        int height = 0;
+        int dx = 0;
+        int dy = 0;
+        bool mark = true;
+        if (!want_int(args, "width", width) || !want_int(args, "height", height) ||
+            !arg_int(args, "offset_x", dx) || !arg_int(args, "offset_y", dy) ||
+            !arg_bool(args, "mark_added", mark)) {
+            return fail("doc.resize", "expected width, height, offset_x, offset_y integers "
+                                      "and optional boolean mark_added");
+        }
+        if (width <= 0 || height <= 0 ||
+            static_cast<std::int64_t>(width) * height > kMaxCanvasPixels) {
+            return fail("doc.resize", "canvas dimensions must be positive and at most " +
+                                      std::to_string(kMaxCanvasPixels) + " pixels");
+        }
+        const Extent before = state.doc.size();
+        if (!state.doc.resize_canvas({width, height}, dx, dy, mark)) {
+            return fail("doc.resize", "offset must place the old canvas within reach of the new one");
+        }
+        if (before != state.doc.size() || dx != 0 || dy != 0) {
+            ++state.document_epoch;
+            request_fit(state);
+        }
+        json result = document_json(state);
+        result["offset"] = json::array({dx, dy});
+        result["marked_added"] = mark;
         return command_ok(result);
     });
 

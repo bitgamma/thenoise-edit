@@ -87,10 +87,24 @@ struct LayerCard {
     bool scaling = false;
 };
 
-// A card's inline field: which card holds one, and what has been typed into it so far. The text is the
-// panel's rather than the document's, because neither a half-typed name nor a half-typed factor is a fact
-// about the document - each reaches it through its own command, on `Enter`. Sized by the longest thing a
-// card is asked to type, which is a layer's name.
+// The tool-panel geometry form is input state, not a document edit until its command is applied.
+// The revision resets stale coordinates even when a new document has the same dimensions.
+struct CanvasForm {
+    Extent source{};
+    std::uint64_t source_revision = 0;
+    int width = 0;
+    int height = 0;
+    int anchor = 4;
+    bool mark_added = true;
+    Rect crop{};
+    int edge_shift = 0;
+    int edge_feather = 0;
+    bool edge_hard = false;
+    std::string error;
+    std::string edge_error;
+};
+
+// A card's inline field: its pending name or scale factor belongs to the panel, not the document.
 struct InlineField {
     std::uint64_t layer = 0;  // 0: no card holds a field
     bool just_opened = false;
@@ -226,6 +240,7 @@ struct AppState {
     LayerPanelControls layer_panel{};
     InlineField renaming{};
     InlineField scaling{};
+    CanvasForm canvas_form{};
     ScreenRect ai_references_rect{};
     std::uint64_t reference_thumb_rebuilds = 0;
     // And the same for the phrase box the bar opens, so a driver can read the box's own rect rather

@@ -49,4 +49,12 @@ void op_shape(Mask& mask, MaskShape shape, Rect box, MaskOp op);
 std::optional<MaskPatch> rasterize_lasso(Extent canvas, const std::vector<Vec2>& path);
 bool op_lasso(Mask& mask, const std::vector<Vec2>& path, MaskOp op);
 
+inline constexpr int kMaxEdgeShiftPx = 128;
+inline constexpr int kMaxEdgeFeatherPx = 64;
+
+// Adjust a coverage edge without changing the pixels it reveals: a signed shift grows
+// (positive) or contracts (negative), optional threshold removes the old soft transition,
+// and feather softens the resulting outline. All operations preserve the mask extent.
+Mask adjusted_edge(const Mask& source, int shift_px, bool hard, int feather_px);
+
 }  // namespace noise

@@ -76,9 +76,9 @@ struct AnswerLanding {
 // `plan.crop`, up to and including `above_layer`, as the colour reference — measured there rather than
 // passed in, because there is exactly one right answer and a caller that forgot it would land an answer
 // corrected against an empty layer. Previewing writes nothing and returns a PNG; applying
-// adds the layer (after every argument has been believed, so a refusal costs no layer) and writes it
-// through `Document::paint` with `own_coverage` - one undo step that returns every byte, not cut off at a
-// selection the feather is meant to cross.
+// adds a layer carrying the generated crop and a persistent, editable coverage mask (after all
+// inputs are validated). The preview follows the ordinary, flattened compose path. A landing is one
+// undo step; changing the mask afterwards can reveal or hide more of the generated crop.
 //
 // Both `ai.compose` and `job.apply` call this and nothing else puts an answer on the document, which is
 // what makes the pixel-lock proof in the probe apply to every path that lands an answer.

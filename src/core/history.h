@@ -75,6 +75,10 @@ public:
     // replace.
     void record_stack_replaced(std::vector<Layer> stack);
 
+    // One geometry step exchanges all pixel planes and the document selection atomically.
+    // Older entries become applicable again after the old extent has been restored.
+    void record_canvas_replaced(std::vector<Layer> stack, std::optional<Mask> marked);
+
     // The document's **marked coverage** - the area it marks, which is a document property that is
     // saved and belongs to no layer. The entry holds the coverage that is not current and applying it
     // swaps the two, so undo and redo are the same operation; like `stack_replaced` it names no layer,
@@ -98,13 +102,16 @@ public:
         // rectangle - the mark moving, a name going back - left the composite byte-identical, which the
         // document reads from `!structure && rect.empty()` rather than from a flag saying so.
         bool structure = false;
+        // The canvas was swapped, including when a same-size translation moved the picture.
+        bool canvas_changed = false;
     };
 
     // Put back the state the other stack holds, keeping the pixels it displaces so the
     // step can be run again. Returns what was touched, or nullopt when there is nothing to
-    // step, or when a recorded rectangle no longer fits its layer - a resized layer makes
-    // every rectangle it holds a lie, so the whole history is dropped rather than half
-    // restored. `marked` is the document's coverage plane, swapped with what a `coverage` entry holds,
+    // step, or when a recorded rectangle no longer fits its layer (a corrupted or untracked
+    // geometry change), in which case the history is dropped rather than half-restored. A
+    // normal canvas resize is a reversible `canvas_replaced` step and keeps older edits valid.
+    // `marked` is the document's coverage plane, swapped with what a `coverage` entry holds,
     // and a layer's own mask is swapped with what a `mask_replaced` entry holds. A `layer_renamed`
     // entry swaps one name and nothing else.
     std::optional<Applied> undo(std::vector<Layer>& layers, std::optional<Mask>& marked);
@@ -127,6 +134,7 @@ private:
         layer_order,
         layer_renamed,
         stack_replaced,
+        canvas_replaced,
         coverage,
         mask_replaced,
     };

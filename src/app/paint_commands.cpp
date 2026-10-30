@@ -3,6 +3,7 @@
 
 #include "app/brush_steps.h"
 #include "app/command_args.h"
+#include "app/commands.h"
 
 #include "core/brush.h"
 #include "app/coverage.h"
@@ -427,8 +428,13 @@ void register_paint_commands(AppState& state, CommandTable& table) {
         if (!state.doc.can_undo()) {
             return fail("edit.undo", "nothing to undo");
         }
+        const std::uint64_t geometry_before = state.doc.geometry_revision();
         if (!state.doc.undo()) {
             return fail("edit.undo", "the recorded change no longer fits the document");
+        }
+        if (geometry_before != state.doc.geometry_revision()) {
+            ++state.document_epoch;
+            request_fit(state);
         }
         return command_ok(history_json(state.doc));
     });
@@ -442,8 +448,13 @@ void register_paint_commands(AppState& state, CommandTable& table) {
         if (!state.doc.can_redo()) {
             return fail("edit.redo", "nothing to redo");
         }
+        const std::uint64_t geometry_before = state.doc.geometry_revision();
         if (!state.doc.redo()) {
             return fail("edit.redo", "the recorded change no longer fits the document");
+        }
+        if (geometry_before != state.doc.geometry_revision()) {
+            ++state.document_epoch;
+            request_fit(state);
         }
         return command_ok(history_json(state.doc));
     });
