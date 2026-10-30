@@ -9,6 +9,7 @@
 #include "ai/server.h"
 #include "app/command_args.h"
 #include "app/state.h"
+#include "app/selection_edit.h"
 #include "core/brush.h"
 #include "core/log.h"
 
@@ -249,6 +250,20 @@ Readiness assess(noise::AppState& state, const ai::Recipe* recipe) {
         out.fix = "assets/recipes/*.json";
         return out;
     }
+    if (recipe->region == ai::RegionScope::selection) {
+        switch (selection_edit_phase(state)) {
+            case SelectionEditPhase::generating:
+                out.reason = "an AI edit is already generating";
+                out.fix = "job.list";
+                return out;
+            case SelectionEditPhase::editing:
+                out.reason = "the result mask is being edited; choose New AI edit first";
+                out.fix = "verb.new_edit";
+                return out;
+            case SelectionEditPhase::actions:
+                break;
+        }
+    }
     if (!missing_region(*recipe, state).empty()) {
         out.reason = missing_region(*recipe, state);
         out.fix = "select.rect";
@@ -396,6 +411,7 @@ CommandResult apply_intent(AppState& state, CommandTable& table, const json& arg
         state.ai.jobs->pump();
         pump_ai_landings(state);
     }
+    selection_edit_reconcile(state);
 
     AiIntent& intent = state.ai_intent;
     if (!args.empty()) {

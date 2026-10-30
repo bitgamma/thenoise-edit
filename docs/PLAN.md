@@ -7,6 +7,21 @@ answers retain the generated crop under a separately editable mask. The prior 20
 below remain historical. Image-size resampling and dedicated AI upscale methods are still planned.
 `AGENTS.md` is normative and outranks this file.
 
+## 2026-10-30 - Explicit selection-edit cycle over the AI result
+
+The marked-area bar now has three queue-backed states: actions, generating and editing. During
+execution, the four operations are disabled in the floating bar and by the shared `ai.intent`
+readiness guard (which also protects shortcuts and the panel). Only a successfully **landed**
+masked result enters `Editor mode active`; errors, cancellations, refused landings and the
+blank-first-layer special case do not pretend an editable mask exists. A new `verb.new_edit`
+command re-arms marking without changing the result layer, and `verb.bar` exposes mode and
+clickable button coordinates for the native probe. Result identity and document epoch prevent
+new layers, document replacement or Undo from inheriting an old edit state. The return button
+anchors to the resulting mask or its saved job bounds even after clearing a selection/mask.
+
+The AI job queue remains the source of progress and landing; the selection-edit controller only
+records which request owns the on-canvas UI cycle. No new AI backend path or document format.
+
 ## 2026-10-29 - Crop, canvas size, outpainting and editable AI seams
 
 **Landed in this change:** `doc.resize` translates all layer pixel planes and layer masks without

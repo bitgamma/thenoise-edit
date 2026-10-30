@@ -4178,6 +4178,10 @@ void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
     CHECK(applied["composite"]["composed"].get<bool>());
     CHECK_EQ(h.state.doc.layers().size(), landed_layers);
 
+    // The on-canvas bar is now in result-mask editing mode; opening the next edit is explicit.
+    CHECK_EQ(h.value("verb.bar", json::object())["mode"].get<std::string>(),
+             std::string("editing"));
+    h.value("verb.new_edit", json::object());
     // The other verbs keep their one question: the same press on Fill refuses rather than guessing
     // what the marked area should become.
     const CommandResult wordless = h.run("ai.fill", json{{"seed", 7}});
@@ -4190,6 +4194,112 @@ void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
     const CommandResult bogus = h.run("ai.bleach", json::object());
     CHECK(!bogus.ok);
     CHECK(bogus.error.find("ai.bleach") != std::string::npos);
+}
+
+// A marked-area edit is one deliberate cycle: queue -> locked buttons -> editable result ->
+// explicit rearm. The controller follows the actual landing rather than the HTTP result alone, and
+// never lets a shortcut silently queue a second edit while the user's brush is aimed at a layer mask.
+void test_selection_edit_mode_follows_the_job_and_the_result_mask() {
+    Harness h;
+    h.value("doc.new", json{{"width", 96}, {"height", 64},
+                            {"fill", json::array({30, 40, 50, 255})}});
+    h.value("server.connect", json::object());
+    h.value("select.rect", json{{"rect", json::array({20, 12, 36, 24})}});
+    const json before = h.value("verb.bar", json::object());
+    CHECK_EQ(before["mode"].get<std::string>(), std::string("actions"));
+    REQUIRE(before["buttons"].size() == std::size_t(4));
+    const json started = h.value("ai.remove", json{{"seed", 11}});
+    const std::string id = started["job"]["id"].get<std::string>();
+    const json busy = h.value("verb.bar", json::object());
+    CHECK_EQ(busy["mode"].get<std::string>(), std::string("generating"));
+    CHECK_EQ(busy["job"].get<std::string>(), id);
+    CHECK(busy["shown"].get<bool>());
+    for (const json& row : busy["buttons"]) {
+        CHECK(!row["ready"].get<bool>());
+        CHECK(row["reason"].get<std::string>().find("generating") != std::string::npos);
+    }
+    CHECK(!h.run("ai.remove", json::object()).ok);
+    CHECK(!h.run("verb.ask", json{{"show", "fill"}}).ok);
+    CHECK(!h.run("verb.new_edit", json::object()).ok);
+    CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(1));
+
+    const json finished = h.value("job.wait", json{{"id", id}, {"timeout", 30}});
+    CHECK_EQ(finished["state"].get<std::string>(), std::string("succeeded"));
+    CHECK(finished["landing"]["landed"].get<bool>());
+    REQUIRE(h.state.doc.active() == 1);
+    REQUIRE(h.state.active_layer().mask.has_value());
+    CHECK_EQ(h.value("coverage.target", json::object())["target"].get<std::string>(),
+             std::string("mask"));
+    const json editing = h.value("verb.bar", json::object());
+    CHECK_EQ(editing["mode"].get<std::string>(), std::string("editing"));
+    CHECK(editing["shown"].get<bool>());
+    CHECK(editing["buttons"].empty());
+    CHECK(editing["ask"].is_null());
+    CHECK(!h.run("ai.heal", json::object()).ok);
+    CHECK(!h.run("verb.ask", json{{"show", "change"}}).ok);
+    // Selecting another layer must not quietly rebind the result edit to that layer's mask.
+    h.value("layer.select", json{{"index", 0}});
+    CHECK_EQ(h.value("verb.bar", json::object())["mode"].get<std::string>(),
+             std::string("editing"));
+    h.value("layer.select", json{{"index", 1}});
+
+    const std::string unchanged = checksum_of(h);
+    const json retained_selection = h.value("select.get", json::object());
+    const json new_edit = h.value("verb.new_edit", json::object());
+    CHECK_EQ(new_edit["mode"].get<std::string>(), std::string("actions"));
+    CHECK_EQ(h.value("coverage.target", json::object())["target"].get<std::string>(),
+             std::string("marked"));
+    CHECK_EQ(checksum_of(h), unchanged);
+    CHECK_EQ(h.value("select.get", json::object()), retained_selection);
+    const json rearmed = h.value("verb.bar", json::object());
+    CHECK_EQ(rearmed["mode"].get<std::string>(), std::string("actions"));
+    CHECK_EQ(rearmed["buttons"].size(), std::size_t(4));
+    CHECK(rearmed["buttons"][0]["ready"].get<bool>());
+    CHECK(!h.run("verb.new_edit", json::object()).ok);
+
+    // The next edit builds on the result layer, not on a new empty one.
+    const json again = h.value("ai.remove", json{{"seed", 12}});
+    const json second = h.value("job.wait", json{{"id", again["job"]["id"]},
+                                              {"timeout", 30}});
+    CHECK_EQ(second["state"].get<std::string>(), std::string("succeeded"));
+    REQUIRE(h.state.doc.layers().size() == std::size_t(3));
+    CHECK_EQ(h.value("verb.bar", json::object())["mode"].get<std::string>(),
+             std::string("editing"));
+
+    // Clearing the selection does not strand New AI edit: the bar anchors to the result mask.
+    h.value("select.clear", json::object());
+    CHECK(h.value("verb.bar", json::object())["shown"].get<bool>());
+    h.value("verb.new_edit", json::object());
+    CHECK(!h.value("verb.bar", json::object())["shown"].get<bool>());
+    h.value("select.rect", json{{"rect", json::array({5, 5, 12, 10})}});
+    CHECK(h.value("verb.bar", json::object())["shown"].get<bool>());
+
+    // A new document invalidates the old edit even when its dimensions are identical.
+    h.value("doc.new", json{{"width", 96}, {"height", 64}});
+    CHECK_EQ(h.value("verb.bar", json::object())["mode"].get<std::string>(),
+             std::string("actions"));
+
+    // Undo removes the result layer, so the stale session must not stay in mask mode. Redo
+    // restores its pixels but not the obsolete mode: the next edit has to be deliberate.
+    Harness undo;
+    undo.value("doc.new", json{{"width", 96}, {"height", 64},
+                               {"fill", json::array({30, 40, 50, 255})}});
+    undo.value("server.connect", json::object());
+    undo.value("select.rect", json{{"rect", json::array({20, 12, 36, 24})}});
+    const json to_undo = undo.value("ai.remove", json{{"seed", 13}});
+    undo.value("job.wait", json{{"id", to_undo["job"]["id"]}, {"timeout", 30}});
+    CHECK_EQ(undo.value("verb.bar", json::object())["mode"].get<std::string>(),
+             std::string("editing"));
+    undo.value("edit.undo", json::object());
+    CHECK_EQ(undo.state.doc.layers().size(), std::size_t(1));
+    CHECK_EQ(undo.value("verb.bar", json::object())["mode"].get<std::string>(),
+             std::string("actions"));
+    CHECK_EQ(undo.value("coverage.target", json::object())["target"].get<std::string>(),
+             std::string("marked"));
+    undo.value("edit.redo", json::object());
+    CHECK_EQ(undo.state.doc.layers().size(), std::size_t(2));
+    CHECK_EQ(undo.value("verb.bar", json::object())["mode"].get<std::string>(),
+             std::string("actions"));
 }
 
 // Fill and Change are the two verbs with a word in them, so their sequence is mark, type, press. What
@@ -4283,6 +4393,7 @@ void test_the_typed_verbs_carry_their_words_to_their_own_layer() {
         CHECK_EQ(outside, std::size_t(0));
         CHECK_NE(checksum_of(h), scene);
 
+        h.value("verb.new_edit", json::object());
         // One `Ctrl+Z` takes the answer and the layer holding it together, back to the scene.
         h.value("edit.undo", json::object());
         CHECK_EQ(h.state.doc.layers().size(), layers_before);
@@ -4826,6 +4937,7 @@ int main() {
     test_an_unconfigured_server_names_the_variable();
     test_an_option_left_out_keeps_the_policy_the_table_asked_for();
     test_the_remove_key_runs_the_whole_sequence_with_no_words();
+    test_selection_edit_mode_follows_the_job_and_the_result_mask();
     test_the_typed_verbs_carry_their_words_to_their_own_layer();
     test_choosing_not_to_run_costs_no_upload_encode();
     test_an_aspect_choice_prices_the_frame_it_will_ask_for();

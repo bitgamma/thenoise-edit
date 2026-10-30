@@ -3,6 +3,7 @@
 
 #include "app/command_args.h"
 #include "app/state.h"
+#include "app/selection_edit.h"
 
 #include "core/log.h"
 #include "io/file.h"
@@ -397,6 +398,7 @@ CommandResult land_job(AppState& state, const ai::JobRecord& record, const char*
     }
     if (record_outcome) {
         state.ai.jobs->set_landed(record.id, layer_name, result.value);
+        selection_edit_landed(state, record.id);
     }
     result.value["layer_name"] = layer_name;
     return result;

@@ -171,12 +171,41 @@ def main() -> int:
             p.check(done_fill["state"] == "succeeded", "and it finished",
                     str(done_fill.get("job", {}).get("error", "")))
         p.check(wire.call("verb.bar")["ask"] is None, "and the box closed when the press was taken")
+        wd.settle(wire)
+        editor = wire.call("verb.bar")
+        p.check(editor["mode"] == "editing" and editor["buttons"] == [],
+                "the completed edit replaces the verbs with editor mode", str(editor["mode"]))
+        p.check(wire.call("coverage.target")["target"] == "mask",
+                "Cover now edits the new result layer mask")
+        nx, ny, nw, nh = editor["new_edit_screen"]
+        p.check(nw > 0 and nh > 0, "New AI edit has a clickable button", str(editor["new_edit_screen"]))
+
+        # The status/return button stays near the result even when the user cleared the old mark.
+        wire.call("select.clear")
+        wd.settle(wire)
+        after_clear = wire.call("verb.bar")
+        p.check(after_clear["shown"] and after_clear["mode"] == "editing",
+                "clearing the mark does not strand the return button")
+        nx, ny, nw, nh = after_clear["new_edit_screen"]
+        if nw > 0 and nh > 0:
+            click(inj, nx + nw / 2, ny + nh / 2)
+            wd.settle(wire)
+        bar_after_new = wire.call("verb.bar")
+        p.check(bar_after_new["mode"] == "actions" and not bar_after_new["shown"],
+                "New AI edit re-arms the verbs only when a mark exists")
+        p.check(wire.call("coverage.target")["target"] == "marked",
+                "New AI edit points Cover back at the marked area")
+        wire.call("select.rect", {"rect": MARK})
+        wd.settle(wire)
+        returned = wire.call("verb.bar")
+        p.check(returned["shown"] and len(returned["buttons"]) == len(EXPECTED),
+                "a new selection brings back Heal, Remove, Fill and Change")
 
         # With the mark gone the bar is gone, and the pixels where it used to be are only canvas: a
         # click there starts nothing rather than pressing an invisible button.
         wire.call("select.clear")
         wd.settle(wire)
-        p.check(wire.call("verb.bar")["shown"] is False, "clearing the mark takes the bar away")
+        p.check(wire.call("verb.bar")["shown"] is False, "clearing the new mark takes the bar away")
         jobs_now = len(wire.call("job.list")["jobs"])
         click(inj, bx + step * (index + 0.5), by + bh / 2)
         wd.settle(wire, 2)

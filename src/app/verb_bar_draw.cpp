@@ -4,6 +4,7 @@
 #include "imgui.h"
 
 #include "app/verb_fields.h"
+#include "app/selection_edit.h"
 #include "imgui_internal.h"  // BringWindowToDisplayFront: the bar has to sit above the canvas
 #include <nlohmann/json.hpp>
 
@@ -130,12 +131,15 @@ void draw_ask(AppState& state, CommandTable& commands, const json& ask, bool bar
 
 void draw_verb_bar(AppState& state, CommandTable& commands) {
     state.verb_bar = {};
-    const std::optional<Rect> mark = verb_bar_mark(state);
+    state.verb_new_edit = {};
+    const SelectionEditPhase mode = selection_edit_phase(state);
+    const std::optional<Rect> mark = verb_bar_anchor_mark(state);
     if (!mark) {
         return;
     }
-    const json rows = verb_bar_rows(commands, nullptr);
-    if (rows.empty()) {
+    const json rows = mode == SelectionEditPhase::editing
+                          ? json::array() : verb_bar_rows(commands, nullptr);
+    if (rows.empty() && mode != SelectionEditPhase::editing) {
         return;
     }
 
@@ -153,12 +157,19 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
     const ImGuiStyle& style = ImGui::GetStyle();
     double width = kBarPadPx * 2.0;
     double height = 0.0;
-    for (const json& row : rows) {
-        const ImVec2 text = ImGui::CalcTextSize(row["label"].get<std::string>().c_str());
-        width += text.x + style.FramePadding.x * 2.0 + style.ItemSpacing.x;
-        height = std::max(height, static_cast<double>(text.y + style.FramePadding.y * 2.0f));
+    if (mode == SelectionEditPhase::editing) {
+        width += std::max(static_cast<double>(ImGui::CalcTextSize("Editor mode active").x),
+                          static_cast<double>(ImGui::CalcTextSize("New AI edit").x +
+                                              style.FramePadding.x * 2.0f));
+        height = ImGui::GetTextLineHeight() + ImGui::GetFrameHeight() + style.ItemSpacing.y;
+    } else {
+        for (const json& row : rows) {
+            const ImVec2 text = ImGui::CalcTextSize(row["label"].get<std::string>().c_str());
+            width += text.x + style.FramePadding.x * 2.0 + style.ItemSpacing.x;
+            height = std::max(height, static_cast<double>(text.y + style.FramePadding.y * 2.0f));
+        }
+        width -= style.ItemSpacing.x;
     }
-    width -= style.ItemSpacing.x;
     height += kBarPadPx * 2.0;
 
     // Above the mark when there is room, below when there is not, and always inside the canvas area so
@@ -200,12 +211,24 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
                       ImGui::GetWindowSize().y};
     // The panel keeps the full controls - the words a verb asks for, the style and the model warning.
     // The bar is the shortcut, and it presses the same command the panel button presses.
+    if (mode == SelectionEditPhase::editing) {
+        ImGui::TextUnformatted("Editor mode active");
+        if (ImGui::Button("New AI edit")) {
+            commands.invoke("verb.new_edit", json::object());
+        }
+        state.verb_new_edit = {ImGui::GetItemRectMin().x, ImGui::GetItemRectMin().y,
+                               ImGui::GetItemRectSize().x, ImGui::GetItemRectSize().y};
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Keep the result layer; switch Cover back to the next marked area");
+        }
+    }
     for (std::size_t i = 0; i < rows.size(); ++i) {
         const json& row = rows[i];
         if (i > 0) {
             ImGui::SameLine();
         }
-        ImGui::BeginDisabled(!row["ready"].get<bool>());
+        ImGui::BeginDisabled(mode != SelectionEditPhase::actions ||
+                             !row["ready"].get<bool>());
         const bool pressed = ImGui::Button(row["label"].get<std::string>().c_str());
         ImGui::EndDisabled();
         // A verb that wants words opens the box over the mark instead of running on whatever the panel

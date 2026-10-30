@@ -25,6 +25,30 @@ The canvas has the exact requested pixel dimensions (up to 64 megapixels). The *
 may be rescaled to the model's published pixel cap; check the request quotation before
 running a large full-scene generation.
 
+## From a marked area to the next AI edit
+
+The floating **Heal / Remove / Fill / Change** bar has three states:
+
+1. **Ready:** select an area and choose an operation. Cover/Un-cover writes to the **marked
+   area** for the next AI request.
+2. **Generating:** the bar stays in place but all four operations are disabled. The same
+   readiness check also blocks repeat launches from the panel and keyboard shortcuts. A failed
+   or cancelled job unlocks the buttons without entering result editing.
+3. **Result editing:** after the answer has **successfully landed** as a masked result layer,
+   the whole bar becomes **Editor mode active** with **New AI edit** underneath. Cover/Un-cover
+   now edits the result **layer mask** directly; local edge corrections do not re-run AI.
+
+**New AI edit** ends the result-edit session, points Cover back to the **marked area**, and
+keeps the result layer and its pixels unchanged. The four AI operations return if a selection
+still exists; otherwise, draw a new mark to show them. If the old selection was cleared, the
+return button remains near the result mask (or the original request bounds when its mask is
+empty). Changing the active layer does not silently start another AI edit. Undoing/removing the
+result layer ends its edit session, and undo/redo never repeats an AI request. The special
+first AI result on a fully blank canvas has no separate layer mask, so it stays in ready mode.
+
+For local mask editing beyond the original selection, clear that selection first: painting may
+otherwise be clipped by the still-marked area. **New AI edit** does not silently clear it.
+
 ## Crop
 
 Set **Crop to rectangle** (x, y, width, height), or mark an area and press **Crop to

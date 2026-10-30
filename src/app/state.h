@@ -8,6 +8,7 @@
 #include "app/coverage.h"
 #include "app/new_document.h"
 #include "app/pointer.h"
+#include "app/selection_edit.h"
 
 #include "core/brush.h"
 #include "core/document.h"
@@ -197,6 +198,7 @@ struct AppState {
     // The verb whose words the bar's popup is holding, if one is open. A verb that asks for nothing is
     // never in here: its button runs, and a popup for it would be an empty box.
     std::optional<app::VerbId> ask_verb;
+    app::SelectionEdit selection_edit;
     // An ask to leave that unsaved work is holding. It is state rather than a dialog the window
     // remembers, so the wire sees the question and answers it the same way the button does.
     bool quit_pending = false;
@@ -229,6 +231,8 @@ struct AppState {
     // mark to anchor it to. Published for the wire: a driver clicks the bar by reading this back
     // rather than by measuring a screenshot.
     ScreenRect verb_bar{};
+    // The bar button that explicitly returns mask editing to marking the next AI edit.
+    ScreenRect verb_new_edit{};
     // Where the layers panel drew this frame: the panel's own box and one card per layer, top card
     // first, each with the box its visibility control occupies. A driver clicks what the app reports
     // rather than a coordinate it remembered from a screenshot.

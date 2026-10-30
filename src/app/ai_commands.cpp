@@ -3,6 +3,7 @@
 
 #include "app/ai_intent.h"
 #include "app/ai_landing.h"
+#include "app/selection_edit.h"
 #include "app/ai_references.h"
 #include "app/ai_session.h"
 #include "app/command_args.h"
@@ -595,6 +596,9 @@ void register_ai_commands(AppState& state, CommandTable& table) {
         log::info("queued " + recipe.id + " as job " + id + " (" +
                   std::to_string(assembled.plan.requested.w) + "x" +
                   std::to_string(assembled.plan.requested.h) + " at " + request_path + ")");
+        if (recipe.region == ai::RegionScope::selection) {
+            selection_edit_queued(state, id);
+        }
         const std::optional<ai::JobRecord> record = state.ai.jobs->find(id);
         return command_ok(json{{"job", record.has_value() ? record->json() : json::object()},
                                {"prepped", assembled.prepped_path},
