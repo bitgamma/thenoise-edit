@@ -2764,14 +2764,17 @@ void test_multi_image_edit_uses_an_ordered_snapshot_and_keeps_the_existing_landi
     CHECK(done["landing"]["landed"].get<bool>());
     CHECK_EQ(h.state.doc.layers().size(), std::size_t(2));
     CHECK_EQ(h.state.doc.layer(0).pixels.checksum_hex(), original_layer);
-    const Image result_layer = h.state.doc.layer(1).pixels;
-    CHECK(result_layer.at(0, 0)[3] == 0);
-    CHECK(result_layer.at(63, 63)[3] == 0);
+    const Layer& result_layer = h.state.doc.layer(1);
+    REQUIRE(result_layer.mask.has_value());
+    const Mask& visible = *result_layer.mask;
+    CHECK_EQ(visible.coverage(0, 0), kMaskOut);
+    CHECK_EQ(visible.coverage(63, 63), kMaskOut);
+    CHECK(result_layer.pixels.at(0, 0)[3] > 0);
     const Image after = h.state.doc.composite();
     std::size_t outside_written_layer = 0;
     for (int y = 0; y < after.size().h; ++y) {
         for (int x = 0; x < after.size().w; ++x) {
-            if (result_layer.at(x, y)[3] == 0 &&
+            if (visible.coverage(x, y) == kMaskOut &&
                 std::memcmp(after.at(x, y), garden.at(x, y), kChannels) != 0) {
                 ++outside_written_layer;
             }
@@ -4218,9 +4221,11 @@ void test_selection_edit_mode_follows_the_job_and_the_result_mask() {
         CHECK(!row["ready"].get<bool>());
         CHECK(row["reason"].get<std::string>().find("generating") != std::string::npos);
     }
-    CHECK(!h.run("ai.remove", json::object()).ok);
-    CHECK(!h.run("verb.ask", json{{"show", "fill"}}).ok);
+    // Read-only UI checks cannot finish a job. Attempt the explicit rearm before another
+    // AI command pumps the recorded queue, which may already contain a completed answer.
     CHECK(!h.run("verb.new_edit", json::object()).ok);
+    CHECK(!h.run("verb.ask", json{{"show", "fill"}}).ok);
+    CHECK(!h.run("ai.remove", json::object()).ok);
     CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(1));
 
     const json finished = h.value("job.wait", json{{"id", id}, {"timeout", 30}});
@@ -4547,10 +4552,14 @@ void test_an_answer_lands_on_its_own_layer_over_another_one() {
     REQUIRE(h.state.doc.layers().size() == layers_before + 1);
     const std::uint8_t base_fill[4] = {30, 40, 50, 255};
     CHECK(std::memcmp(h.state.doc.layer(0).pixels.at(14, 12), base_fill, kChannels) == 0);
-    // Pixels the document never had, inside the region...
-    CHECK_EQ(h.state.doc.layer(1).pixels.at(14, 12)[3], 255);
-    // ...and nothing outside it: the feathered coverage is the only thing that bounds the write.
-    CHECK_EQ(h.state.doc.layer(1).pixels.at(0, 0)[3], 0);
+    // The generated crop retains its pixels, while the editable mask bounds what is visible.
+    const Layer& result_layer = h.state.doc.layer(1);
+    REQUIRE(result_layer.mask.has_value());
+    CHECK_EQ(result_layer.pixels.at(14, 12)[3], 255);
+    CHECK(result_layer.mask->coverage(14, 12) > kMaskOut);
+    CHECK_EQ(result_layer.mask->coverage(0, 0), kMaskOut);
+    const Image& visible = h.state.doc.composite();
+    CHECK(std::memcmp(visible.at(0, 0), base_fill, kChannels) == 0);
     CHECK_NE(checksum_of(h), base_document);
     CHECK_EQ(undo_depth(h), marked + 1);  // layer and pixels are one edit
 

@@ -228,6 +228,11 @@ def landing_claims(p: Probe, wire: wd.Wire, live: bool, tmp: pathlib.Path, row: 
     names = [layer["name"] for layer in wire.call("layer.list")["layers"]]
     p.check(bool(landing.get("landed")), f"{verb}: the answer landed itself, nothing pressed",
             str(landing.get("landed_layer")))
+    if row.get("scope") == "selection":
+        bar = wire.call("verb.bar")
+        p.check(bar["mode"] == "editing" and
+                wire.call("coverage.target")["target"] == "mask",
+                f"{verb}: a landed edit exposes its result mask", str(bar["mode"]))
     p.check(str(landing.get("landed_layer", "")) == f"{label} {job_id}",
             f"{verb}: the layer is named for the verb and the job", str(names))
     applied = wire.call("job.apply", {"id": job_id})
@@ -530,6 +535,12 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
             wire.call("ai.intent", {"recipe": fill["recipe"], "vars": words_for(fill["ask"])})
             again = wire.call(fill["command"], {"seed": args.seed})
             second = wire.call("job.wait", {"id": again["job"]["id"], "timeout": 30})
+            p.check(wire.call("verb.bar")["mode"] == "editing",
+                    "repeat fill: the first answer enters result editing")
+            rearmed = wire.call("verb.new_edit")
+            p.check(rearmed["mode"] == "actions" and
+                    wire.call("coverage.target")["target"] == "marked",
+                    "repeat fill: New AI edit rearms the marked area")
             first = wire.call(fill["command"], {"seed": args.seed})
             first_waited = wire.call("job.wait", {"id": first["job"]["id"], "timeout": 30})
             p.check(second["state"] == "succeeded" and first_waited["state"] == "succeeded",
