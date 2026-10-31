@@ -41,7 +41,7 @@ void add_dabs(AppState& state, const std::vector<Vec2>& path) {
         return;
     }
     state.doc.begin_provisional(touched, LayerPlane::mask);
-    state.doc.repaint_provisional_mask(touched, [&state](Mask& mask, Rect region) {
+    state.doc.repaint_provisional_mask(touched, PaintFence::own_coverage, [&state](Mask& mask, Rect region) {
         mask.paint(region, scratch_coverage(state.stroke.scratch, region, state.brush.opacity),
                    ink_of(state));
     });

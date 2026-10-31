@@ -22,6 +22,31 @@ anchors to the resulting mask or its saved job bounds even after clearing a sele
 The AI job queue remains the source of progress and landing; the selection-edit controller only
 records which request owns the on-canvas UI cycle. No new AI backend path or document format.
 
+## 2026-10-31 - Outpaint launch and continuous AI-mask editing
+
+**Architecture verdict:** The existing `doc.resize` geometry step and `region-fill` recipe
+already cover outpainting; a new backend recipe or layer format would duplicate the same
+concept. The missing piece was the user-facing handoff: `doc.outpaint.prepare` composes
+one geometry change, the newly exposed selection, the existing Fill phrase box and a suggested
+prompt. The model request still requires an explicit **Run**. Geometry-only resizing remains
+separate. The command ensures Coverage targets the marked area after an earlier mask edit.
+
+**Seam correctness:** `compose_editable_result` keeps the full generated crop and the editable
+coverage mask. At newly transparent source pixels, preserve the original selected coverage
+instead of blurring it toward zero at the outer canvas boundary; feather the transition over
+existing source pixels only. A whole-image pixel test confirms the expansion is opaque and
+original pixels beyond the selected/feathered region are unchanged.
+
+**No extra mask commit:** The original Document provisional mask gesture is reused for edge
+sliders: each move recomputes from the gesture's start mask, release writes one history step,
+and cancel restores it. Mask gestures now choose the `PaintFence` explicitly, so editing the
+result mask is not clipped to an unrelated marked area for the next generation. The panel
+removes Apply edge; Undo/Redo remain the reversal mechanism. No project-format migration.
+
+**Verification scope:** core canvas/compose/document tests were run using local C++20
+compilation; the app command/UI and full recorded-backend suites still require the normal
+CMake dependencies and live verification requires an opt-in configured backend.
+
 ## 2026-10-29 - Crop, canvas size, outpainting and editable AI seams
 
 **Landed in this change:** `doc.resize` translates all layer pixel planes and layer masks without

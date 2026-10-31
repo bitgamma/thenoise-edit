@@ -52,7 +52,7 @@ void apply_marquee_replace(AppState& state) {
     Mask shaped(state.doc.size());
     op_shape(shaped, *shape, state.select.rect, MaskOp::replace);
     if (state.select.coverage == CoverageTarget::mask) {
-        state.doc.repaint_provisional_mask(canvas(state), [&shaped](Mask& mask, Rect) {
+        state.doc.repaint_provisional_mask(canvas(state), PaintFence::own_coverage, [&shaped](Mask& mask, Rect) {
             mask = shaped;
         });
         return;
@@ -67,7 +67,7 @@ void apply_marquee_operation(AppState& state) {
     }
     if (state.select.coverage == CoverageTarget::mask) {
         const Rect dirty = state.select.mode == MaskOp::replace ? canvas(state) : state.select.rect;
-        state.doc.repaint_provisional_mask(dirty, [&state, shape](Mask& mask, Rect) {
+        state.doc.repaint_provisional_mask(dirty, PaintFence::own_coverage, [&state, shape](Mask& mask, Rect) {
             if (state.select.mode == MaskOp::replace) {
                 mask.fill(kMaskOut);
             }
@@ -109,7 +109,7 @@ void finish_lasso(AppState& state) {
             select_cancel(state);
             return;
         }
-        state.doc.repaint_provisional_mask(dirty, [&state, &patch](Mask& mask, Rect) {
+        state.doc.repaint_provisional_mask(dirty, PaintFence::own_coverage, [&state, &patch](Mask& mask, Rect) {
             if (state.select.mode == MaskOp::replace) {
                 mask.fill(kMaskOut);
             }
@@ -130,7 +130,7 @@ void finish_marquee(AppState& state) {
     if (state.select.rect.empty()) {
         if (state.select.mode == MaskOp::replace) {
             if (state.select.coverage == CoverageTarget::mask) {
-                state.doc.repaint_provisional_mask(canvas(state), [](Mask& mask, Rect) {
+                state.doc.repaint_provisional_mask(canvas(state), PaintFence::own_coverage, [](Mask& mask, Rect) {
                     mask.fill(kMaskOut);
                 });
             } else {

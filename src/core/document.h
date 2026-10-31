@@ -260,7 +260,10 @@ public:
     // made a drag cost more with every event: 2.9 ms to 108 ms over one 40-event stroke at 2048².
     // Each one writes the plane its gesture began on; the other is refused in the log.
     void repaint_provisional(Rect dirty, const std::function<void(Image&, Rect)>& paint);
-    void repaint_provisional_mask(Rect dirty, const std::function<void(Mask&, Rect)>& paint);
+    // The mask is independent of the marked area when `own_coverage` is requested; only
+    // selection-fenced gestures use the document selection as a clip.
+    void repaint_provisional_mask(Rect dirty, PaintFence fence,
+                                  const std::function<void(Mask&, Rect)>& paint);
     void commit_provisional();
     void discard_provisional();
     bool in_provisional() const;

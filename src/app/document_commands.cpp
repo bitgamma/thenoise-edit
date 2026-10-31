@@ -3,6 +3,7 @@
 
 #include "app/command_args.h"
 #include "app/new_document.h"
+#include "app/selection_edit.h"
 
 #include "app/commands.h"
 #include "core/base64.h"
@@ -305,6 +306,68 @@ void register_document_commands(AppState& state, CommandTable& table) {
         result["offset"] = json::array({dx, dy});
         result["marked_added"] = mark;
         return command_ok(result);
+    });
+
+    table.add("doc.outpaint.prepare", "Enlarge the canvas and open Fill for its added area", {},
+              {"width", "height", "offset_x", "offset_y", "prompt"},
+              [&state, &table](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        int width = 0;
+        int height = 0;
+        int dx = 0;
+        int dy = 0;
+        std::string prompt = "a natural continuation of the surrounding scene";
+        if (!want_int(args, "width", width) || !want_int(args, "height", height) ||
+            !arg_int(args, "offset_x", dx) || !arg_int(args, "offset_y", dy) ||
+            !arg_text(args, "prompt", prompt)) {
+            return fail("doc.outpaint.prepare", "expected canvas dimensions, integer offsets and an optional prompt");
+        }
+        if (width <= 0 || height <= 0 ||
+            static_cast<std::int64_t>(width) * height > kMaxCanvasPixels) {
+            return fail("doc.outpaint.prepare", "canvas dimensions are invalid");
+        }
+        if (static_cast<std::int64_t>(dx) <= -static_cast<std::int64_t>(state.doc.width()) ||
+            static_cast<std::int64_t>(dy) <= -static_cast<std::int64_t>(state.doc.height()) ||
+            dx >= width || dy >= height) {
+            return fail("doc.outpaint.prepare", "the resized canvas must overlap the original image");
+        }
+        const Rect new_canvas{0, 0, width, height};
+        const Rect old_area{dx, dy, state.doc.width(), state.doc.height()};
+        const Rect overlap = intersect(new_canvas, old_area);
+        if (static_cast<std::int64_t>(overlap.w) * overlap.h ==
+            static_cast<std::int64_t>(width) * height) {
+            return fail("doc.outpaint.prepare", "enlarge the canvas to expose an area to fill");
+        }
+        if (selection_edit_phase(state) == SelectionEditPhase::generating) {
+            return fail("doc.outpaint.prepare", "finish or cancel the current AI edit first");
+        }
+        if (state.ai.recipes.find("region-fill") == nullptr) {
+            return fail("doc.outpaint.prepare", "the region-fill recipe is not loaded");
+        }
+        const CommandResult resized = table.invoke(
+            "doc.resize", json{{"width", width}, {"height", height},
+                               {"offset_x", dx}, {"offset_y", dy},
+                               {"mark_added", true}});
+        if (!resized.ok) {
+            return resized;
+        }
+        selection_edit_new(state);
+        const CommandResult asked = table.invoke("verb.ask", json{{"show", "fill"}});
+        if (!asked.ok) {
+            return asked;
+        }
+        const CommandResult intent = table.invoke(
+            "ai.intent", json{{"recipe", "region-fill"},
+                              {"vars", json{{"prompt", prompt}}}});
+        if (!intent.ok) {
+            return intent;
+        }
+        return command_ok(json{{"document", resized.value},
+                               {"ask", asked.value},
+                               {"prompt", prompt}});
     });
 
     table.add("image.get", "Return document pixels (whole image or a region)", {}, {"region", "base64"},

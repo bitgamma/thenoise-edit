@@ -894,7 +894,7 @@ void test_painting_a_mask_is_one_undo_step_that_hides_and_shows() {
     // that put a stroke outside the plane the first time it was written.
     for (const Rect event : {Rect{0, 2, 6, 4}, Rect{3, 3, 6, 4}, Rect{8, 1, 4, 6}}) {
         CHECK(doc.begin_provisional(event, LayerPlane::mask));
-        doc.repaint_provisional_mask(event, [event](Mask& mask, Rect area) {
+        doc.repaint_provisional_mask(event, PaintFence::selection, [event](Mask& mask, Rect area) {
             mask.op(intersect(area, event), MaskOp::subtract);
         });
         composite_matches_scratch(doc, "mid-gesture, after a mask event");
@@ -1007,7 +1007,7 @@ void test_a_mask_gesture_is_fenced_by_the_selection() {
 
     // Hide the whole plane through the gesture door.
     CHECK(doc.begin_provisional(Rect{0, 0, size.w, size.h}, LayerPlane::mask));
-    doc.repaint_provisional_mask(Rect{0, 0, size.w, size.h}, [](Mask& mask, Rect) {
+    doc.repaint_provisional_mask(Rect{0, 0, size.w, size.h}, PaintFence::selection, [](Mask& mask, Rect) {
         mask.fill(kMaskOut);
     });
     const auto expect_fenced = [&doc, &size](const char* where) {
@@ -1037,6 +1037,41 @@ void test_a_mask_gesture_is_fenced_by_the_selection() {
     expect_fenced("after the redo");
 }
 
+void test_an_editable_mask_preview_ignores_the_marked_area_and_repaints_from_the_original() {
+    const Extent size{8, 4};
+    Document doc;
+    doc.reset(stack({{"A", Image::filled(size, 11, 22, 33, 255)}}), std::nullopt, "x.noise");
+    Mask shown(size);
+    shown.fill(kMaskIn);
+    REQUIRE(doc.set_layer_mask(0, shown));
+    Mask selected(size);
+    selected.op(Rect{3, 1, 2, 2}, MaskOp::replace);
+    doc.set_selection(selected);
+    const int before = doc.history().undo_depth;
+    REQUIRE(doc.begin_provisional(Rect{0, 0, size.w, size.h}, LayerPlane::mask));
+    doc.repaint_provisional_mask(Rect{0, 0, size.w, size.h}, PaintFence::own_coverage,
+                                 [](Mask& mask, Rect) { mask.fill(kMaskOut); });
+    CHECK_EQ(doc.layer(0).mask->covered(), 0u);
+    CHECK_EQ(doc.history().undo_depth, before);
+    doc.repaint_provisional_mask(Rect{0, 0, size.w, size.h}, PaintFence::own_coverage,
+                                 [](Mask& mask, Rect) {
+        mask.op(Rect{0, 0, 3, 4}, MaskOp::subtract);
+    });
+    for (int y = 0; y < size.h; ++y) {
+        for (int x = 0; x < size.w; ++x) {
+            CHECK_EQ(doc.layer(0).mask->coverage(x, y), x < 3 ? kMaskOut : kMaskIn);
+        }
+    }
+    CHECK(doc.selection() == selected);
+    doc.commit_provisional();
+    CHECK_EQ(doc.history().undo_depth, before + 1);
+    CHECK(doc.undo());
+    CHECK(doc.layer(0).mask == shown);
+    CHECK(doc.redo());
+    CHECK_EQ(doc.layer(0).mask->coverage(0, 2), kMaskOut);
+    CHECK_EQ(doc.layer(0).mask->coverage(7, 2), kMaskIn);
+}
+
 // A stroke that changed no coverage is not an edit: no step, no dirty mark, no revision, exactly as
 // for pixels - otherwise dragging over an already-hidden part of a mask would spend the undo budget.
 void test_a_mask_stroke_that_changed_nothing_costs_nothing() {
@@ -1056,7 +1091,7 @@ void test_a_mask_stroke_that_changed_nothing_costs_nothing() {
 
     // The same through the gesture door: a press and release that reached nothing.
     CHECK(doc.begin_provisional(Rect{1, 1, 2, 2}, LayerPlane::mask));
-    doc.repaint_provisional_mask(Rect{1, 1, 2, 2}, [](Mask& mask, Rect area) {
+    doc.repaint_provisional_mask(Rect{1, 1, 2, 2}, PaintFence::selection, [](Mask& mask, Rect area) {
         mask.op(area, MaskOp::subtract);
     });
     doc.commit_provisional();
@@ -1092,7 +1127,7 @@ void test_a_gesture_holds_one_plane() {
 
     CHECK(doc.begin_provisional(Rect{0, 0, 4, 2}, LayerPlane::pixels));
     CHECK(!doc.begin_provisional(Rect{0, 0, 8, 2}, LayerPlane::mask));
-    doc.repaint_provisional_mask(Rect{0, 0, 8, 2}, [](Mask& mask, Rect area) {
+    doc.repaint_provisional_mask(Rect{0, 0, 8, 2}, PaintFence::selection, [](Mask& mask, Rect area) {
         mask.op(area, MaskOp::subtract);
     });
     CHECK_EQ(doc.layer(0).mask->covered(), static_cast<std::size_t>(size.w * size.h));
@@ -1101,7 +1136,7 @@ void test_a_gesture_holds_one_plane() {
 
     // The other way round still works: a coverage gesture writes coverage.
     CHECK(doc.begin_provisional(Rect{0, 0, 4, 2}, LayerPlane::mask));
-    doc.repaint_provisional_mask(Rect{0, 0, 4, 2}, [](Mask& mask, Rect area) {
+    doc.repaint_provisional_mask(Rect{0, 0, 4, 2}, PaintFence::selection, [](Mask& mask, Rect area) {
         mask.op(area, MaskOp::subtract);
     });
     CHECK_EQ(doc.layer(0).mask->covered(), 8u);
@@ -1123,7 +1158,7 @@ void test_taking_the_mask_off_ends_the_gesture_and_is_itself_undoable() {
     const std::string painted = doc.layer(0).pixels.checksum_hex();
 
     CHECK(doc.begin_provisional(Rect{1, 1, 3, 3}, LayerPlane::mask));
-    doc.repaint_provisional_mask(Rect{1, 1, 3, 3}, [](Mask& mask, Rect area) {
+    doc.repaint_provisional_mask(Rect{1, 1, 3, 3}, PaintFence::selection, [](Mask& mask, Rect area) {
         mask.op(area, MaskOp::subtract);
     });
     CHECK_EQ(doc.layer(0).mask->covered(), static_cast<std::size_t>(size.w * size.h) - 9u);
@@ -2064,6 +2099,7 @@ int main() {
     test_painting_a_mask_is_one_undo_step_that_hides_and_shows();
     test_the_selection_fences_a_mask_stroke_too();
     test_a_mask_gesture_is_fenced_by_the_selection();
+    test_an_editable_mask_preview_ignores_the_marked_area_and_repaints_from_the_original();
     test_a_mask_stroke_that_changed_nothing_costs_nothing();
     test_painting_a_layer_with_no_mask_is_refused();
     test_a_gesture_holds_one_plane();

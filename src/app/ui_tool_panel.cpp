@@ -113,27 +113,37 @@ void draw_canvas_controls(AppState& state, CommandTable& commands) {
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::Combo("Anchor##canvas", &form.anchor, kAnchors, 9);
     ImGui::Checkbox("Select added area for AI Fill", &form.mark_added);
-    if (ImGui::Button("Apply canvas size")) {
+    const auto resize = [&](bool fill) {
         if (form.width <= 0 || form.height <= 0 ||
             static_cast<std::int64_t>(form.width) * form.height > kMaxCanvasPixels) {
             form.error = "Canvas must be positive and at most " +
                          std::to_string(kMaxCanvasPixels) + " pixels";
-        } else {
-            const int column = form.anchor % 3;
-            const int row = form.anchor / 3;
-            const int dx = column == 0 ? 0 : column == 2 ? form.width - old.w
-                                                          : (form.width - old.w) / 2;
-            const int dy = row == 0 ? 0 : row == 2 ? form.height - old.h
-                                                       : (form.height - old.h) / 2;
-            const auto result = commands.invoke("doc.resize", json{{"width", form.width},
-                                                                    {"height", form.height},
-                                                                    {"offset_x", dx},
-                                                                    {"offset_y", dy},
-                                                                    {"mark_added", form.mark_added}});
-            form.error = result.ok ? "" : result.error;
+            return;
         }
+        const int column = form.anchor % 3;
+        const int row = form.anchor / 3;
+        const int dx = column == 0 ? 0 : column == 2 ? form.width - old.w
+                                                      : (form.width - old.w) / 2;
+        const int dy = row == 0 ? 0 : row == 2 ? form.height - old.h
+                                                   : (form.height - old.h) / 2;
+        const CommandResult result = fill
+            ? commands.invoke("doc.outpaint.prepare",
+                              json{{"width", form.width}, {"height", form.height},
+                                   {"offset_x", dx}, {"offset_y", dy}})
+            : commands.invoke("doc.resize",
+                              json{{"width", form.width}, {"height", form.height},
+                                   {"offset_x", dx}, {"offset_y", dy},
+                                   {"mark_added", form.mark_added}});
+        form.error = result.ok ? "" : result.error;
+    };
+    if (ImGui::Button("Resize canvas")) {
+        resize(false);
     }
-    ImGui::TextDisabled("Select All to repaint everything; Fill for an outpainted edge.");
+    ImGui::SameLine();
+    if (ImGui::Button("Resize & Fill...")) {
+        resize(true);
+    }
+    ImGui::TextDisabled("Fill opens a prompt; Run starts the AI request.");
     ImGui::SeparatorText("Crop");
     std::array<int, 4> crop{form.crop.x, form.crop.y, form.crop.w, form.crop.h};
     if (ImGui::InputInt4("x, y, w, h##crop", crop.data())) {
@@ -154,32 +164,83 @@ void draw_canvas_controls(AppState& state, CommandTable& commands) {
     }
 }
 
-void draw_edge_controls(AppState& state, CommandTable& commands) {
-    if (state.doc.empty() || !state.active_layer().mask ||
-        !ImGui::CollapsingHeader("Adjust layer edge")) {
-        return;
+// One absolute value, shown both on a slider and on pixel-precise +/- buttons.
+// A click commits immediately; a drag shows live and records at most one history step on release.
+void draw_edge_slider(CommandTable& commands, const char* title, const char* id,
+                      const char* key, int value, int min_value, int max_value,
+                      int scale_min, int scale_max, std::string& error) {
+    ImGui::TextUnformatted(title);
+    ImGui::PushID(id);
+    int next = value;
+    ImGui::BeginDisabled(value <= min_value);
+    if (ImGui::SmallButton("-")) {
+        next = value - 1;
     }
-    CanvasForm& form = state.canvas_form;
-    ImGui::TextWrapped("AI results keep their full generated crop under an editable layer mask.");
-    ImGui::Checkbox("Hard edge", &form.edge_hard);
-    ImGui::SliderInt("Grow / shrink (px)", &form.edge_shift,
-                     -kMaxEdgeShiftPx, kMaxEdgeShiftPx);
-    ImGui::BeginDisabled(form.edge_hard);
-    ImGui::SliderInt("Additional feather (px)", &form.edge_feather,
-                     0, kMaxEdgeFeatherPx);
     ImGui::EndDisabled();
-    if (ImGui::Button("Apply edge")) {
-        const auto result = commands.invoke("mask.edge", json{{"hard", form.edge_hard},
-                                                               {"shift", form.edge_shift},
-                                                               {"feather", form.edge_hard ? 0 : form.edge_feather}});
-        form.edge_error = result.ok ? "" : result.error;
-        if (result.ok) {
-            // An edge command is incremental; do not accidentally reapply a nonzero shift.
-            form.edge_shift = 0;
-            form.edge_feather = 0;
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(std::max(100.0f, std::min(230.0f,
+                              ImGui::GetContentRegionAvail().x - 88.0f)));
+    ImGui::BeginDisabled(min_value == max_value);
+    const bool moved = ImGui::SliderInt("##edge", &next, scale_min, scale_max);
+    const bool dragging = ImGui::IsItemActive();
+    const bool released = ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(value >= max_value);
+    if (ImGui::SmallButton("+")) {
+        next = value + 1;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::Text("%d px", next);
+    ImGui::PopID();
+
+    if (next != value && (moved || !dragging)) {
+        const CommandResult preview = commands.invoke("mask.edge.preview", json{{key, next}});
+        error = preview.ok ? "" : preview.error;
+        if (!preview.ok) {
+            return;
         }
     }
-    ImGui::TextDisabled("Use Cover/Un-cover on the layer mask for local corrections.");
+    // Keep the displayed value when the pointer is released. Only the provisional Undo
+    // gesture ends here; the reference mask and slider position remain unchanged.
+    if ((!dragging && next != value) || released) {
+        const CommandResult finish = commands.invoke("mask.edge.finish", json::object());
+        error = finish.ok ? "" : finish.error;
+    }
+}
+
+void draw_edge_controls(AppState& state, CommandTable& commands) {
+    CanvasForm& form = state.canvas_form;
+    if (form.edge_preview_layer != 0 &&
+        (state.doc.empty() || state.active_layer().id != form.edge_preview_layer)) {
+        commands.invoke("mask.edge.finish", json::object());
+    }
+    if (state.doc.empty() || !state.active_layer().mask) {
+        return;
+    }
+    if (!ImGui::CollapsingHeader("Adjust layer edge")) {
+        if (form.edge_preview_layer != 0) {
+            commands.invoke("mask.edge.finish", json::object());
+        }
+        return;
+    }
+    const CommandResult current = commands.invoke("mask.edge.state", json::object());
+    if (!current.ok) {
+        ImGui::TextWrapped("%s", current.error.c_str());
+        return;
+    }
+    const json& edge = current.value;
+    ImGui::TextWrapped("Adjust the layer mask directly. Move either slider or click +/-; reversing the value restores the original edge.");
+    draw_edge_slider(commands, "Grow / shrink", "size", "shift",
+                     edge.at("shift").get<int>(), -edge.at("shift_limit").get<int>(),
+                     edge.at("shift_limit").get<int>(), edge.at("shift_min").get<int>(),
+                     edge.at("shift_max").get<int>(), form.edge_error);
+    draw_edge_slider(commands, "Feather (0 = hard edge)", "feather", "feather",
+                     edge.at("feather").get<int>(), 0, edge.at("feather_limit").get<int>(),
+                     edge.at("feather_min").get<int>(), edge.at("feather_max").get<int>(),
+                     form.edge_error);
+    ImGui::TextWrapped("The ranges follow the values at their limits. No Apply button or reset required.");
     if (!form.edge_error.empty()) {
         ImGui::TextWrapped("%s", form.edge_error.c_str());
     }

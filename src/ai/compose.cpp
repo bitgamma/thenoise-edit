@@ -55,17 +55,21 @@ LockBand lock_band(Rect crop, Extent canvas, int px) {
 // The feather is computed over the crop and not the canvas because the selection cannot reach past
 // the crop - the plan grew the crop around its bounds - so a crop-sized blur sees exactly the same
 // coverage and costs the crop.
-Mask paste_coverage(const Mask& coverage, Rect crop, Extent canvas, int feather_px,
-                    int lock_band_px) {
+Mask paste_coverage(const Mask& coverage, const Image& reference, Rect crop,
+                    int feather_px, int lock_band_px) {
     Mask soft = feathered_mask(coverage.region(crop), feather_px);
     std::vector<std::uint8_t> plane = soft.plane();
-    const LockBand band = lock_band(crop, canvas, lock_band_px);
+    const LockBand band = lock_band(crop, reference.size(), lock_band_px);
     for (int y = 0; y < crop.h; ++y) {
         for (int x = 0; x < crop.w; ++x) {
             const std::size_t at = static_cast<std::size_t>(y) * static_cast<std::size_t>(crop.w) +
                                    static_cast<std::size_t>(x);
-            if (band.holds(crop.x + x, crop.y + y, crop)) {
+            const int px = crop.x + x;
+            const int py = crop.y + y;
+            if (band.holds(px, py, crop)) {
                 plane[at] = kMaskOut;
+            } else if (reference.at(px, py)[3] == 0) {
+                plane[at] = std::max(plane[at], coverage.coverage(px, py));
             }
         }
     }
@@ -161,8 +165,8 @@ ComposeReport compose_impl(Image& target, Mask* layer_mask, const Image& referen
     const Image original = target.region(crop);
     const Image context = reference.region(crop);
     const Mask crop_mask =
-        paste_coverage(coverage, crop, target.size(), report.feather_px,
-                          policy.lock_band_px);
+        paste_coverage(coverage, reference, crop, report.feather_px,
+                       policy.lock_band_px);
 
     Image patch = resample_lanczos3(result, Extent{crop.w, crop.h});
     report.colour_corrected = policy.colour_match && colour_match_drift(patch, context, crop_mask);

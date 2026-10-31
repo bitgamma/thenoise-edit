@@ -4,6 +4,7 @@
 
 #include "ai/compose.h"
 #include "core/document.h"
+#include "core/blur.h"
 #include "core/maskops.h"
 
 #include <algorithm>
@@ -11,7 +12,9 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <random>
 #include <vector>
+#include <utility>
 
 using namespace noise;
 
@@ -291,6 +294,227 @@ void test_ai_result_stays_editable_without_changing_uncovered_pixels() {
     CHECK(adjustable.layer(1).mask == wider);
 }
 
+void test_outpaint_fills_transparent_expansion_without_alpha_seams() {
+    const Extent original{10, 8};
+    const Extent expanded{18, 8};
+    Layer base;
+    base.name = "original";
+    base.pixels = Image::filled(original, 40, 60, 90, 255);
+    Document doc;
+    doc.reset({base}, std::nullopt, "picture.noise");
+    REQUIRE(doc.resize_canvas(expanded, 4, 0, true));
+    REQUIRE(doc.selection().has_value());
+    const Mask added = *doc.selection();
+    const Image reference = doc.composite();
+    const Image answer = Image::filled(expanded, 200, 170, 130, 255);
+    ai::RegionPlan plan;
+    plan.crop = Rect{0, 0, expanded.w, expanded.h};
+    plan.requested = expanded;
+    for (const bool match_colour : {false, true}) {
+        const ai::CompositePolicy policy{match_colour ? std::nullopt : std::optional<int>(3),
+                                         match_colour, match_colour ? 4 : 0};
+        Image patch = Image::filled(expanded, 0, 0, 0, 0);
+        Mask edge;
+        const auto report = ai::compose_editable_result(patch, edge, reference, answer, plan,
+                                                        added, policy);
+        REQUIRE(report.composed);
+        for (int y = 0; y < expanded.h; ++y) {
+            for (int x = 0; x < expanded.w; ++x) {
+                const bool new_area = x < 4 || x >= 14;
+                if (new_area) {
+                    CHECK_EQ(edge.coverage(x, y), kMaskIn);
+                }
+            }
+        }
+        CHECK(edge.coverage(4, 4) > kMaskOut);
+        CHECK(edge.coverage(4, 4) < kMaskIn);
+        Layer result_layer;
+        result_layer.name = "outpaint";
+        result_layer.pixels = std::move(patch);
+        result_layer.mask = std::move(edge);
+        Document composed;
+        composed.reset({doc.layer(0), result_layer}, std::nullopt, "result.noise");
+        const Image& visible = composed.composite();
+        for (int y = 0; y < expanded.h; ++y) {
+            for (int x = 0; x < expanded.w; ++x) {
+                const bool new_area = x < 4 || x >= 14;
+                if (new_area) {
+                    CHECK_EQ(visible.at(x, y)[3], 255);
+                    if (!match_colour) {
+                        CHECK_EQ(visible.at(x, y)[0], 200);
+                    }
+                } else if (composed.layer(1).mask->coverage(x, y) == 0) {
+                    CHECK(same_pixel(visible, x, y, reference, x, y));
+                }
+            }
+        }
+    }
+}
+
+// Live edge controls keep one mask as their reference across multiple drags. Using the
+// provisional document API verifies the same full-plane restoration used by the UI.
+void test_absolute_edge_reversal_restores_every_original_mask_byte() {
+    const Extent size{100, 80};
+    Layer layer;
+    layer.name = "generated";
+    layer.pixels = Image::filled(size, 120, 140, 160, 255);
+    Mask hard(size);
+    hard.op(Rect{26, 19, 40, 35}, MaskOp::replace);
+    const Mask source = feathered_mask(hard, 6);
+    layer.mask = source;
+    Document doc;
+    doc.reset({layer}, std::nullopt, "masked.noise");
+    const std::string first_checksum = doc.checksum();
+    const Rect canvas{0, 0, size.w, size.h};
+    const auto place = [&](int shift, int feather) {
+        REQUIRE(doc.begin_provisional(canvas, LayerPlane::mask));
+        const Mask changed = (shift == 0 && feather == 6)
+            ? source : adjusted_edge(source, shift, true, feather);
+        doc.repaint_provisional_mask(canvas, PaintFence::own_coverage,
+                                     [&changed](Mask& mask, Rect) { mask = changed; });
+        doc.commit_provisional();
+    };
+    place(10, 6);
+    CHECK(doc.checksum() != first_checksum);
+    place(0, 6);
+    CHECK_EQ(doc.checksum(), first_checksum);
+    place(-10, 6);
+    CHECK(doc.checksum() != first_checksum);
+    place(0, 6);
+    CHECK_EQ(doc.checksum(), first_checksum);
+    place(0, 0);
+    CHECK_EQ(doc.layer(0).mask->coverage(32, 25), kMaskIn);
+    CHECK(doc.checksum() != first_checksum);
+    place(0, 6);
+    CHECK_EQ(doc.checksum(), first_checksum);
+    place(20, 0);
+    place(0, 6);
+    CHECK_EQ(doc.checksum(), first_checksum);
+}
+
+void test_edge_regions_match_whole_canvas_for_soft_and_hard_masks() {
+    std::mt19937 random(2026);
+    for (const Extent size : {Extent{2, 3}, Extent{7, 11}, Extent{32, 24},
+                              Extent{63, 47}}) {
+        for (int sample = 0; sample < 8; ++sample) {
+            std::vector<std::uint8_t> pixels(static_cast<std::size_t>(size.w) *
+                                             static_cast<std::size_t>(size.h));
+            for (auto& value : pixels) {
+                const unsigned r = static_cast<unsigned>(random() % 100u);
+                value = sample < 3 ? (r < static_cast<unsigned>(sample * 25) ? 255u : 0u)
+                                   : static_cast<std::uint8_t>(random() % 256u);
+            }
+            const Mask source = *Mask::from_plane(size, std::move(pixels));
+            for (const int shift : {-11, -3, 0, 1, 6}) {
+                for (const int feather : {0, 1, 4}) {
+                    for (const bool hard : {false, true}) {
+                        const Mask reference = adjusted_edge(source, shift, hard, feather);
+                        const Mask cropped = adjusted_edge_region(source, shift, hard, feather,
+                                                                 Rect{0, 0, size.w, size.h});
+                        CHECK(cropped == reference);
+                        const Rect support = adjusted_edge_bounds(source, shift, feather);
+                        for (int y = 0; y < size.h; ++y) {
+                            for (int x = 0; x < size.w; ++x) {
+                                if (!support.contains(x, y)) {
+                                    CHECK_EQ(reference.coverage(x, y), 0);
+                                }
+                            }
+                        }
+                        const int x = static_cast<int>(random() % static_cast<unsigned>(size.w));
+                        const int y = static_cast<int>(random() % static_cast<unsigned>(size.h));
+                        const Rect small{x, y, std::min(3, size.w - x),
+                                         std::min(4, size.h - y)};
+                        const Mask slice = adjusted_edge_region(source, shift, hard, feather, small);
+                        CHECK(slice == reference.region(small));
+                        if (hard) {
+                            std::vector<std::uint8_t> binary = source.plane();
+                            for (std::uint8_t& value : binary) {
+                                value = value >= 128 ? kMaskIn : kMaskOut;
+                            }
+                            const Mask hard_baseline = *Mask::from_plane(size, std::move(binary));
+                            CHECK(reference == adjusted_edge(hard_baseline, shift, false, feather));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void test_uniform_masks_skip_work_but_keep_the_edge_gesture() {
+    const Extent size{64, 53};
+    for (const std::uint8_t value : {kMaskOut, kMaskIn}) {
+        Mask baseline(size);
+        baseline.fill(value);
+        Layer layer;
+        layer.name = "uniform";
+        layer.pixels = Image::filled(size, 120, 80, 160, 255);
+        layer.mask = baseline;
+        Document doc;
+        doc.reset({layer}, std::nullopt, "uniform.noise");
+        const int original_depth = doc.history().undo_depth;
+        for (int shift : {-20, 0, 8}) {
+            for (int feather : {0, 4, 17}) {
+                const Rect small{0, 0, 1, 1};
+                const Mask patch = adjusted_edge_region(baseline, shift, true, feather, small);
+                CHECK(patch == baseline.region(small));
+                CHECK(adjusted_edge(baseline, shift, true, feather) == baseline);
+                REQUIRE(doc.begin_provisional(small, LayerPlane::mask));
+                doc.repaint_provisional_mask(small, PaintFence::own_coverage,
+                    [&](Mask& mask, Rect) { REQUIRE(mask.op(small, patch.plane(), MaskOp::replace)); });
+                doc.commit_provisional();
+                CHECK(doc.layer(0).mask == baseline);
+                CHECK_EQ(doc.history().undo_depth, original_depth);
+            }
+        }
+    }
+}
+
+void test_partial_edge_preview_matches_full_replacement_and_undo() {
+    const Extent size{340, 260};
+    Mask hard(size);
+    hard.op(Rect{111, 75, 85, 70}, MaskOp::replace);
+    const Mask baseline = feathered_mask(hard, 6);
+    Layer layer;
+    layer.name = "partial edge";
+    layer.pixels = Image::filled(size, 105, 180, 240, 255);
+    layer.mask = baseline;
+    Document doc;
+    doc.reset({layer}, std::nullopt, "fixture.noise");
+    Document reference;
+    reference.reset({layer}, std::nullopt, "fixture.noise");
+    const std::string original = doc.checksum();
+    int previous_shift = 0;
+    int previous_feather = 6;
+    for (const auto& [shift, feather] : std::array<std::pair<int, int>, 8>{
+             {{10, 6}, {11, 6}, {2, 0}, {0, 6}, {-8, 0}, {-2, 14}, {0, 0}, {0, 6}}}) {
+        const Rect changed = unite(adjusted_edge_bounds(baseline, previous_shift, previous_feather),
+                                   adjusted_edge_bounds(baseline, shift, feather));
+        REQUIRE(!changed.empty());
+        REQUIRE(doc.begin_provisional(changed, LayerPlane::mask));
+        const Mask patch = (shift == 0 && feather == 6)
+                               ? baseline.region(changed)
+                               : adjusted_edge_region(baseline, shift, true, feather, changed);
+        doc.repaint_provisional_mask(changed, PaintFence::own_coverage,
+            [&](Mask& mask, Rect) { REQUIRE(mask.op(changed, patch.plane(), MaskOp::replace)); });
+        const Mask wanted = (shift == 0 && feather == 6)
+                                ? baseline : adjusted_edge(baseline, shift, true, feather);
+        REQUIRE(doc.layer(0).mask.has_value());
+        CHECK(*doc.layer(0).mask == wanted);
+        REQUIRE(reference.set_layer_mask(0, wanted));
+        CHECK(std::equal(doc.composite().pixels().begin(), doc.composite().pixels().end(),
+                         reference.composite().pixels().begin()));
+        doc.commit_provisional();
+        previous_shift = shift;
+        previous_feather = feather;
+    }
+    CHECK_EQ(doc.checksum(), original);
+    CHECK(doc.undo());
+    CHECK(doc.checksum() != original);
+    CHECK(doc.redo());
+    CHECK_EQ(doc.checksum(), original);
+}
+
 }  // namespace
 
 int main() {
@@ -300,5 +524,10 @@ int main() {
     test_mask_edge_is_hard_soft_and_can_shift_inside_its_canvas();
     test_ai_layer_arrival_keeps_its_mask_in_one_undo_step();
     test_ai_result_stays_editable_without_changing_uncovered_pixels();
+    test_outpaint_fills_transparent_expansion_without_alpha_seams();
+    test_absolute_edge_reversal_restores_every_original_mask_byte();
+    test_edge_regions_match_whole_canvas_for_soft_and_hard_masks();
+    test_uniform_masks_skip_work_but_keep_the_edge_gesture();
+    test_partial_edge_preview_matches_full_replacement_and_undo();
     return noise::test::summary("canvas_edit");
 }

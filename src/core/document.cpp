@@ -1067,7 +1067,7 @@ void Document::repaint_provisional(Rect dirty, const std::function<void(Image&, 
     changed_layer(*layer_of(provisional_->layer));
 }
 
-void Document::repaint_provisional_mask(Rect dirty,
+void Document::repaint_provisional_mask(Rect dirty, PaintFence fence,
                                         const std::function<void(Mask&, Rect)>& paint) {
     if (!provisional_) {
         return;
@@ -1089,9 +1089,7 @@ void Document::repaint_provisional_mask(Rect dirty,
     copy_coverage_rows(*target, Rect{0, 0, target->size().w, target->size().h}, held,
                        provisional_->rect, area);
     paint(*target, area);
-    if (selection_) {
-        // The gesture's own buffer is what a pixel outside the selection returns to, exactly as for
-        // colour, so a masked stroke costs no extra copy.
+    if (fence == PaintFence::selection && selection_) {
         target->restrict_to(*selection_, area, held, provisional_->rect);
     }
     painted_ = unite(painted_, area);

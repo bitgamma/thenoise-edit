@@ -8,10 +8,13 @@
 #include "app/ai_session.h"
 #include "app/ai_verbs.h"
 #include "app/commands.h"
+#include "app/command_groups.h"
 #include "app/file_commands.h"
 #include "app/tools/select.h"
 #include "app/state.h"
 #include "core/image.h"
+#include "core/blur.h"
+#include "core/maskops.h"
 #include "io/file.h"
 #include "io/project.h"
 #include "io/jpeg.h"
@@ -4927,10 +4930,202 @@ void test_canvas_commands_and_editable_edges_use_the_document_timeline() {
     CHECK_EQ(h.state.document_epoch, marked_epoch + 4);
 }
 
+void test_outpaint_opens_fill_without_starting_a_job() {
+    Harness h;
+    h.value("doc.new", json{{"width", 8}, {"height", 6},
+                            {"fill", json::array({30, 50, 90, 255})}});
+    h.state.coverage_target = app::CoverageTarget::mask;
+    const std::string before = h.state.doc.checksum();
+    const int before_depth = h.state.doc.history().undo_depth;
+    CHECK(!h.run("doc.outpaint.prepare", json{{"width", 8}, {"height", 6}}).ok);
+    CHECK_EQ(h.state.doc.checksum(), before);
+    CHECK_EQ(h.state.doc.history().undo_depth, before_depth);
+    CHECK(!h.run("doc.outpaint.prepare",
+                 json{{"width", 12}, {"height", 6}, {"offset_x", 2147483647}}).ok);
+    CHECK_EQ(h.state.doc.checksum(), before);
+
+    const json result = h.value("doc.outpaint.prepare",
+        json{{"width", 12}, {"height", 6}, {"offset_x", 2}, {"offset_y", 0}});
+    CHECK(h.state.doc.size() == (Extent{12, 6}));
+    REQUIRE(h.state.doc.selection().has_value());
+    for (int y = 0; y < 6; ++y) {
+        for (int x = 0; x < 12; ++x) {
+            CHECK_EQ(h.state.doc.selection()->coverage(x, y),
+                     x >= 2 && x < 10 ? kMaskOut : kMaskIn);
+        }
+    }
+    CHECK_EQ(result["ask"]["verb"].get<std::string>(), std::string("fill"));
+    CHECK(h.state.coverage_target == app::CoverageTarget::marked);
+    CHECK_EQ(h.value("ai.intent", json::object())["vars"]["prompt"].get<std::string>(),
+             std::string("a natural continuation of the surrounding scene"));
+    CHECK(h.state.ai_intent.job.empty());
+    CHECK_EQ(h.state.doc.history().undo_depth, before_depth + 1);
+}
+
+void test_live_edge_adjustment_uses_one_step_and_original_mask() {
+    Harness h;
+    h.value("doc.new", json{{"width", 20}, {"height", 14},
+                            {"fill", json::array({30, 50, 90, 255})}});
+    h.value("select.rect", json{{"rect", json::array({7, 5, 6, 4})}});
+    h.value("mask.from_selection", json::object());
+    const Mask original = *h.state.doc.layer(0).mask;
+    const int depth = h.state.doc.history().undo_depth;
+
+    h.value("mask.edge.preview", json{{"shift", 3}});
+    CHECK(h.state.doc.layer(0).mask->coverage(5, 7) == kMaskIn);
+    CHECK_EQ(h.state.doc.history().undo_depth, depth);
+    h.value("mask.edge.preview", json{{"shift", -1}});
+    const Mask expected = adjusted_edge(original, -1, true, 0);
+    CHECK(*h.state.doc.layer(0).mask == expected);
+    CHECK_EQ(h.state.doc.history().undo_depth, depth);
+    CHECK(!h.run("mask.edge", json{{"shift", 1}}).ok);
+    h.value("mask.edge.finish", json::object());
+    CHECK(!h.state.doc.in_provisional());
+    CHECK_EQ(h.state.doc.history().undo_depth, depth + 1);
+    CHECK(h.state.doc.layer(0).mask == expected);
+    h.value("edit.undo", json::object());
+    CHECK(h.state.doc.layer(0).mask == original);
+    h.value("edit.redo", json::object());
+    CHECK(h.state.doc.layer(0).mask == expected);
+
+    h.value("mask.edge.preview", json{{"feather", 2}});
+    CHECK(h.state.doc.layer(0).mask != expected);
+    h.value("mask.edge.cancel", json::object());
+    CHECK(h.state.doc.layer(0).mask == expected);
+    CHECK_EQ(h.state.doc.history().undo_depth, depth + 1);
+}
+
+void test_absolute_edge_sliders_are_reversible_without_undo() {
+    Harness h;
+    h.value("doc.new", json{{"width", 256}, {"height", 128},
+                            {"fill", json::array({28, 52, 77, 255})}});
+    h.value("select.rect", json{{"rect", json::array({95, 38, 48, 35})}});
+    h.value("mask.from_selection", json::object());
+    // The first AI landing knows its feather radius even though the mask is already soft.
+    const Mask soft = feathered_mask(*h.state.doc.layer(0).mask, 8);
+    REQUIRE(h.state.doc.set_layer_mask(0, soft));
+    app::remember_editable_edge(h.state, h.state.doc.layer(0), 8);
+    const std::string initial = h.state.doc.checksum();
+    const int initial_undo = h.state.doc.history().undo_depth;
+
+    auto settings = [&] { return h.value("mask.edge.state", json::object()); };
+    auto apply = [&](const json& values) {
+        h.value("mask.edge.preview", values);
+        h.value("mask.edge.finish", json::object());
+    };
+    CHECK_EQ(settings()["feather"].get<int>(), 8);
+    CHECK_EQ(settings()["default_feather"].get<int>(), 8);
+    CHECK_EQ(settings()["shift"].get<int>(), 0);
+    CHECK_EQ(settings()["feather_min"].get<int>(), 0);
+    CHECK_EQ(settings()["feather_max"].get<int>(), 16);
+
+    // Two opposite operations return exactly to the starting bytes, not approximately.
+    apply(json{{"shift", 10}});
+    CHECK_EQ(settings()["shift"].get<int>(), 10);
+    CHECK(h.state.doc.checksum() != initial);
+    apply(json{{"shift", 0}});
+    CHECK_EQ(settings()["shift"].get<int>(), 0);
+    CHECK_EQ(h.state.doc.checksum(), initial);
+    apply(json{{"shift", -10}});
+    CHECK(h.state.doc.checksum() != initial);
+    apply(json{{"shift", 0}});
+    CHECK_EQ(h.state.doc.checksum(), initial);
+
+    // Feather is absolute, not an additional blur each time; zero is the hard edge.
+    apply(json{{"feather", 0}});
+    CHECK_EQ(settings()["feather"].get<int>(), 0);
+    CHECK_EQ(h.state.doc.layer(0).mask->coverage(110, 55), kMaskIn);
+    CHECK(h.state.doc.checksum() != initial);
+    apply(json{{"feather", 8}});
+    CHECK_EQ(settings()["feather"].get<int>(), 8);
+    CHECK_EQ(h.state.doc.checksum(), initial);
+
+    // Size and feather are independent and retain their own values.
+    apply(json{{"shift", 10}, {"feather", 0}});
+    CHECK_EQ(settings()["shift"].get<int>(), 10);
+    CHECK_EQ(settings()["feather"].get<int>(), 0);
+    apply(json{{"shift", 0}, {"feather", 8}});
+    CHECK_EQ(h.state.doc.checksum(), initial);
+    CHECK(h.state.doc.history().undo_depth > initial_undo);  // Undo remains optional.
+
+    // When a value hits the end, its display window scrolls, not the actual slider value.
+    apply(json{{"shift", 50}});
+    CHECK_EQ(settings()["shift_min"].get<int>(), 0);
+    CHECK_EQ(settings()["shift_max"].get<int>(), 100);
+    apply(json{{"shift", 100}});
+    CHECK_EQ(settings()["shift_min"].get<int>(), 50);
+    CHECK_EQ(settings()["shift_max"].get<int>(), 150);
+    // Move the window back by the same UI-compatible steps (no Undo).
+    apply(json{{"shift", 50}});
+    apply(json{{"shift", 0}});
+    CHECK_EQ(settings()["shift"].get<int>(), 0);
+    CHECK_EQ(h.state.doc.checksum(), initial);
+    CHECK(settings()["shift_min"].get<int>() <= 0);
+
+    apply(json{{"feather", 16}});
+    CHECK_EQ(settings()["feather_min"].get<int>(), 8);
+    CHECK_EQ(settings()["feather_max"].get<int>(), 24);
+    apply(json{{"feather", 24}});
+    CHECK_EQ(settings()["feather"].get<int>(), 24);
+    CHECK(settings()["feather_max"].get<int>() > 24);
+    apply(json{{"feather", 8}});
+    CHECK_EQ(h.state.doc.checksum(), initial);
+
+    // No external command may inherit an obsolete baseline after painting the mask.
+    h.value("mask.fill", json{{"to", "hide"}});
+    const Mask externally_changed = *h.state.doc.layer(0).mask;
+    CHECK(externally_changed != soft);
+    CHECK_EQ(settings()["shift"].get<int>(), 0);
+    CHECK_EQ(settings()["feather"].get<int>(), 8);
+    apply(json{{"shift", 1}});
+    apply(json{{"shift", 0}});
+    CHECK(h.state.doc.layer(0).mask == externally_changed);
+    CHECK(!h.run("mask.edge.preview", json{{"feather", -1}}).ok);
+    CHECK(!h.run("mask.edge.preview", json{{"shift", 257}}).ok);
+}
+
+void test_edge_slider_keeps_layer_and_preview_history_consistent() {
+    Harness h;
+    h.value("doc.new", json{{"width", 80}, {"height", 60},
+                            {"fill", json::array({12, 30, 48, 255})}});
+    h.value("select.rect", json{{"rect", json::array({20, 14, 22, 16})}});
+    h.value("mask.from_selection", json::object());
+    const Mask original = *h.state.doc.layer(0).mask;
+    const int depth = h.state.doc.history().undo_depth;
+    h.value("mask.edge.preview", json{{"shift", 5}});
+    h.value("mask.edge.preview", json{{"shift", 8}});
+    CHECK_EQ(h.state.doc.history().undo_depth, depth);
+    h.value("mask.edge.finish", json::object());
+    CHECK_EQ(h.state.doc.history().undo_depth, depth + 1);
+    CHECK_EQ(h.value("mask.edge.state", json::object())["shift"].get<int>(), 8);
+    h.value("mask.edge.preview", json{{"shift", 0}});
+    h.value("mask.edge.finish", json::object());
+    CHECK(h.state.doc.layer(0).mask == original);
+
+    h.value("mask.edge.preview", json{{"shift", 6}});
+    h.value("mask.edge.cancel", json::object());
+    CHECK_EQ(h.value("mask.edge.state", json::object())["shift"].get<int>(), 0);
+    CHECK(h.state.doc.layer(0).mask == original);
+
+    h.value("mask.edge.preview", json{{"shift", 3}});
+    h.value("mask.edge.finish", json::object());
+    const Mask adjusted = *h.state.doc.layer(0).mask;
+    h.value("layer.add", json{{"name", "Other"}});
+    h.value("layer.select", json{{"index", 0}});
+    CHECK_EQ(h.value("mask.edge.state", json::object())["shift"].get<int>(), 3);
+    CHECK(h.state.doc.layer(0).mask == adjusted);
+    h.value("edit.undo", json::object()); // Undo an unrelated action, no stale edge overwrite.
+    CHECK(h.state.doc.layer(0).mask.has_value());
+}
+
 int main() {
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
     test_canvas_commands_and_editable_edges_use_the_document_timeline();
+    test_outpaint_opens_fill_without_starting_a_job();
+    test_live_edge_adjustment_uses_one_step_and_original_mask();
+    test_absolute_edge_sliders_are_reversible_without_undo();
+    test_edge_slider_keeps_layer_and_preview_history_consistent();
     test_blend_takes_the_layer_for_its_region();
     test_ai_reference_commands_keep_images_separate_from_document_layers();
     test_ai_references_relink_after_undo_but_detach_across_documents();

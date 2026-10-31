@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <mutex>
+#include <unordered_map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -88,8 +89,24 @@ struct LayerCard {
     bool scaling = false;
 };
 
-// The tool-panel geometry form is input state, not a document edit until its command is applied.
-// The revision resets stale coordinates even when a new document has the same dimensions.
+// An edge slider always represents a position relative to one unchanged mask. Keeping that
+// mask per layer makes +10 followed by -10 exact, including after another layer was selected.
+struct EdgeAdjustment {
+    Mask baseline;
+    std::uint64_t known_revision = 0;
+    int shift = 0;
+    int feather = 0;
+    int default_feather = 0;
+    int shift_min = -50;
+    int shift_max = 50;
+    int feather_min = 0;
+    int feather_max = 50;
+    int drag_start_shift = 0;
+    int drag_start_feather = 0;
+};
+
+// Canvas form values are only applied through commands. Edge slider state is session-local;
+// the actual mask always lives on its layer, even after changing layers or saving the document.
 struct CanvasForm {
     Extent source{};
     std::uint64_t source_revision = 0;
@@ -98,9 +115,9 @@ struct CanvasForm {
     int anchor = 4;
     bool mark_added = true;
     Rect crop{};
-    int edge_shift = 0;
-    int edge_feather = 0;
-    bool edge_hard = false;
+    std::uint64_t edge_epoch = 0;
+    std::unordered_map<std::uint64_t, EdgeAdjustment> edge_adjustments;
+    std::uint64_t edge_preview_layer = 0;
     std::string error;
     std::string edge_error;
 };
