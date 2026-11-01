@@ -197,6 +197,7 @@ void register_mask_commands(AppState& state, CommandTable& table) {
         if (!state.doc.set_layer_mask(state.doc.active(), state.doc.selection())) {
             return fail("mask.from_selection", "the selection does not fit the layer");
         }
+        state.edit_plane = LayerPlane::mask;
         return command_ok(layer_mask_json(state.doc.layer(static_cast<std::size_t>(
             state.doc.active()))));
     });
@@ -231,6 +232,7 @@ void register_mask_commands(AppState& state, CommandTable& table) {
         if (!state.doc.set_layer_mask(state.doc.active(), mask)) {
             return fail("mask.add", "the mask did not fit the document");
         }
+        state.edit_plane = LayerPlane::mask;
         return command_ok(layer_mask_json(state.doc.layer(static_cast<std::size_t>(state.doc.active()))));
     });
 
@@ -243,6 +245,7 @@ void register_mask_commands(AppState& state, CommandTable& table) {
         if (!state.doc.set_layer_mask(state.doc.active(), std::nullopt)) {
             return fail("mask.remove", "the layer could not be changed");
         }
+        state.edit_plane = LayerPlane::pixels;
         return command_ok(layer_mask_json(state.doc.layer(static_cast<std::size_t>(state.doc.active()))));
     });
 

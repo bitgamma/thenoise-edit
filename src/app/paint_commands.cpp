@@ -6,7 +6,6 @@
 #include "app/commands.h"
 
 #include "core/brush.h"
-#include "app/coverage.h"
 #include "app/tools/brush.h"
 #include "app/tools/cover.h"
 #include "app/tools/move.h"
@@ -169,27 +168,26 @@ void register_paint_commands(AppState& state, CommandTable& table) {
                                    {"touched", json::array()},
                                    {"revision", state.doc.revision()}});
         }
-        const bool coverage_stroke = tool_action(tool) == ToolAction::coverage;
-        if (coverage_stroke && !state.coverage_writable()) {
-            return fail("tool.stroke", "the coverage target is '" +
-                                           std::string(coverage_target_name(state.coverage_target)) +
-                                           "' and layer '" + state.active_layer().name +
-                                           "' has none (mask.add)");
-        }
         std::optional<Rect> touched;
-        if (coverage_stroke && state.coverage_target == CoverageTarget::mask) {
-            state.doc.paint_mask(bounds, [&](Mask& mask) {
-                touched = paint_stroke_mask(mask, path, brush, mode);
-            });
-        } else if (coverage_stroke) {
-            // The marked area takes the same stroke through the same mask, and the whole polyline is
-            // painted into one copy of it, so the command is one coat at the brush's own opacity and
-            // `set_selection` records the coverage it replaces as one step - the same thing the pointer
-            // gesture commits at release, which is what makes a freehand mark and a marquee alike.
+        const bool coverage_stroke = tool_action(tool) == ToolAction::coverage;
+        if (coverage_stroke) {
             Mask marked = state.doc.selection().has_value() ? *state.doc.selection()
                                                             : Mask(state.doc.size());
             touched = paint_stroke_mask(marked, path, brush, mode);
             state.doc.set_selection(marked);
+        } else if (state.edit_plane == LayerPlane::mask) {
+            if (!state.active_layer().mask) {
+                return fail("tool.stroke", "layer '" + state.active_layer().name +
+                                           "' has no mask (mask.add)");
+            }
+            if (!state.doc.begin_provisional(bounds, LayerPlane::mask)) {
+                return fail("tool.stroke", "cannot begin a mask stroke during another gesture");
+            }
+            state.doc.repaint_provisional_mask(bounds, PaintFence::own_coverage,
+                [&](Mask& mask, Rect) {
+                    touched = paint_stroke_mask(mask, path, brush, mode);
+                });
+            state.doc.commit_provisional();
         } else {
             state.doc.paint(bounds, PaintFence::selection, [&](Image& image) {
                 touched = paint_stroke(image, path, brush, color, mode);
@@ -202,7 +200,8 @@ void register_paint_commands(AppState& state, CommandTable& table) {
         // across it, and a caller that wants one asks `doc.get`.
         return command_ok(json{{"tool", tool},
                                {"dabs", dabs},
-                               {"coverage", coverage_target_name(state.coverage_target)},
+                               {"target", coverage_stroke ? "selection" :
+                                               layer_plane_name(state.edit_plane)},
                                {"touched",
                                 json::array({touched->x, touched->y, touched->w, touched->h})},
                                {"revision", state.doc.revision()}});
@@ -273,13 +272,6 @@ void register_paint_commands(AppState& state, CommandTable& table) {
         }
         switch (*action) {
             case ToolAction::coverage: {
-                if (phase == "press" && !state.coverage_writable()) {
-                    return fail("tool.pointer", "the coverage target is '" +
-                                                    std::string(coverage_target_name(
-                                                        state.coverage_target)) +
-                                                    "' and layer '" + state.active_layer().name +
-                                                    "' has none (mask.add)");
-                }
                 if (phase == "press") {
                     cover_press(state, *point);
                 } else if (phase == "drag") {
@@ -293,6 +285,11 @@ void register_paint_commands(AppState& state, CommandTable& table) {
                 break;
             }
             case ToolAction::paint:
+                if (phase == "press" && state.edit_plane == LayerPlane::mask &&
+                    !state.active_layer().mask) {
+                    return fail("tool.pointer", "layer '" + state.active_layer().name +
+                                                "' has no mask (mask.add)");
+                }
                 if (phase == "press") {
                     brush_press(state, *point);
                 } else if (phase == "drag") {
@@ -307,12 +304,6 @@ void register_paint_commands(AppState& state, CommandTable& table) {
             case ToolAction::select:
                 if (phase == "press") {
                     if (!select_press(state, *point, mode)) {
-                        if (state.coverage_target == CoverageTarget::mask &&
-                            !state.coverage_writable()) {
-                            return fail("tool.pointer", "the coverage target is 'mask' and layer '" +
-                                                             state.active_layer().name +
-                                                             "' has none (mask.add)");
-                        }
                         return fail("tool.pointer", "the selection gesture could not start");
                     }
                 } else if (phase == "drag") {
@@ -436,6 +427,7 @@ void register_paint_commands(AppState& state, CommandTable& table) {
             ++state.document_epoch;
             request_fit(state);
         }
+        state.reconcile_edit_plane();
         return command_ok(history_json(state.doc));
     });
 
@@ -456,6 +448,7 @@ void register_paint_commands(AppState& state, CommandTable& table) {
             ++state.document_epoch;
             request_fit(state);
         }
+        state.reconcile_edit_plane();
         return command_ok(history_json(state.doc));
     });
 }

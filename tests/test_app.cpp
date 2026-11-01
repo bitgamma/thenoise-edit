@@ -1717,233 +1717,112 @@ void test_a_selection_holds_a_stroke_inside_it() {
     CHECK(h.state.doc.layer(0).pixels.checksum_hex() != before.checksum_hex());
 }
 
-// The two conversions, which are the reason a selection and a mask are the same type: each is a
-// copy, so neither can shift by a pixel or lose partial coverage on the way across.
-// Which coverage a stroke writes is a setting the wire can read, aim and refuse against; the aim
-// outlives the switch, because a gesture holds the lifetime it was pressed on. A stroke aimed at a mask
-// the layer does not have is refused by name rather than quietly marking something else.
-void test_the_coverage_target_decides_where_a_stroke_lands() {
+// Cover and selection tools always mark the document; Brush and Eraser write the explicitly selected
+// thumbnail's plane. This remains true when a different tool or layer was active beforehand.
+void test_cover_and_brush_have_independent_targets() {
     Harness h;
-    h.value("doc.new", json{{"width", 24}, {"height", 12}, {"fill", json::array({20, 20, 20, 255})}});
-    h.value("tool.set", json{{"tool", "cover"}, {"size", 8.0}, {"hardness", 1.0}, {"opacity", 1.0}});
-    const json points = json::array({json::array({6.0, 6.0}), json::array({14.0, 6.0})});
-
-    CHECK_EQ(h.value("app.state", json::object())["brush"]["coverage_target"].get<std::string>(),
-             std::string("marked"));
-    // The marked area is always writable; the mask half says so only once the layer has one.
-    CHECK(h.value("coverage.target", json::object())["writable"].get<bool>());
-    CHECK(h.value("mask.get", json::object())["mask"].is_null());
-
-    const json aimed = h.value("coverage.target", json{{"to", "mask"}});
-    CHECK_EQ(aimed["target"].get<std::string>(), std::string("mask"));
-    CHECK(!aimed["writable"].get<bool>());
-    const CommandResult nowhere = h.run("tool.stroke", json{{"points", points}});
-    CHECK(!nowhere.ok);
-    CHECK(nowhere.error.find("has none") != std::string::npos);
-    CHECK(nowhere.error.find("mask.add") != std::string::npos);
-    const CommandResult no_press = h.run("tool.pointer", json{{"phase", "press"}, {"at", json::array({6.0, 6.0})}});
-    CHECK(!no_press.ok);
-    CHECK(no_press.error.find("mask") != std::string::npos);
-    CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), 0);
-
-    const std::string before_plane = h.value("doc.get", json::object())["checksum"].get<std::string>();
-    const json added = h.value("mask.add", json::object());
-    CHECK_EQ(added["covered"].get<std::int64_t>(), 24 * 12);
-    CHECK_NEAR(added["area"].get<double>(), 24 * 12.0, 1e-9);
-    // A mask that shows everything hides nothing, so the canvas is as it was - but the plane is in the
-    // document, so putting one down is a step, and undoing it takes the mask off rather than moving a
-    // pixel.
-    CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), 1);
-    h.value("edit.undo", json::object());
-    CHECK(h.value("mask.get", json::object())["mask"].is_null());
-    CHECK_EQ(h.value("doc.get", json::object())["checksum"].get<std::string>(), before_plane);
-    h.value("edit.redo", json::object());
-    CHECK_EQ(h.value("mask.get", json::object())["mask"]["covered"].get<std::int64_t>(), 24 * 12);
-
-    // A fill of the whole mask is a write: one step, and undo puts the coverage back exactly.
-    const std::string shown = h.value("doc.get", json::object())["checksum"].get<std::string>();
-    const json hidden = h.value("mask.fill", json{{"to", "hide"}});
-    CHECK_EQ(hidden["covered"].get<std::int64_t>(), 0);
-    CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), 2);
-    const std::string filled = h.value("doc.get", json::object())["checksum"].get<std::string>();
-    CHECK_NE(filled, shown);
-    h.value("edit.undo", json::object());
-    CHECK_EQ(h.value("doc.get", json::object())["checksum"].get<std::string>(), shown);
-    h.value("edit.redo", json::object());
-    CHECK_EQ(h.value("doc.get", json::object())["checksum"].get<std::string>(), filled);
-
-    // A brush on a hidden mask brings coverage back where it went and nowhere else. The composite
-    // says so: the layer is opaque, so anywhere the mask still reads zero the canvas below it shows.
-    const std::string layer_bytes = h.value("layer.list", json::object())["layers"][0]["checksum"].get<std::string>();
-    const json stroke = h.value("tool.stroke", json{{"points", points}});
-    CHECK_EQ(stroke["coverage"].get<std::string>(), std::string("mask"));
-    const json facts = h.value("mask.get", json::object())["mask"];
-    CHECK(facts["covered"].get<std::int64_t>() > 0);
-    CHECK(facts["covered"].get<std::int64_t>() < 24 * 12);
-    // The stroke ran along y=6 from x=6 to x=14 with an 8 px brush: the revealed band reaches a few
-    // pixels past both ends and nowhere near the top or bottom rows.
-    const json bounds = facts["bounds"];
-    CHECK(bounds[0].get<int>() >= 1);
-    CHECK(bounds[0].get<int>() + bounds[2].get<int>() <= 20);
-    CHECK(bounds[1].get<int>() >= 1);
-    CHECK(bounds[1].get<int>() + bounds[3].get<int>() <= 11);
-    CHECK_EQ(h.value("layer.list", json::object())["layers"][0]["checksum"].get<std::string>(),
-             layer_bytes);  // coverage only: the layer's own bytes did not move
-
-    const std::string painted = h.value("doc.get", json::object())["checksum"].get<std::string>();
-    CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), 3);
-    h.value("edit.undo", json::object());
-    CHECK_EQ(h.value("doc.get", json::object())["checksum"].get<std::string>(), filled);
-    h.value("edit.redo", json::object());
-    CHECK_EQ(h.value("doc.get", json::object())["checksum"].get<std::string>(), painted);
-
-    // A live gesture reports the lifetime it has been writing since the press: aiming elsewhere
-    // mid-drag cannot split one gesture across two homes for the same coverage.
-    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({4.0, 4.0})}});
-    CHECK_EQ(h.value("app.state", json::object())["stroke"]["coverage"].get<std::string>(),
-             std::string("mask"));
-    h.value("coverage.target", json{{"to", "marked"}});
-    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({8.0, 4.0})}});
-    CHECK_EQ(h.value("app.state", json::object())["stroke"]["coverage"].get<std::string>(),
-             std::string("mask"));
-    h.value("tool.pointer", json{{"phase", "release"}, {"at", json::array({8.0, 4.0})}});
-    CHECK_EQ(h.value("coverage.target", json::object())["target"].get<std::string>(),
-             std::string("marked"));
-
-    // The same gesture over the other lifetime marks the area instead: the layer's own bytes and its
-    // mask both stay where they were, because a mark is coverage and not a picture - and the mark is
-    // one undo step, which is what lets a freehand mark be taken back at all.
-    const std::string coverage = h.value("mask.get", json::object())["mask"].dump();
-    const std::string before = h.value("layer.list", json::object())["layers"][0]["checksum"].get<std::string>();
-    const int undo_before = h.value("doc.get", json::object())["history"]["undo_depth"].get<int>();
-    h.value("tool.stroke", json{{"points", points}});
-    CHECK_EQ(h.value("layer.list", json::object())["layers"][0]["checksum"].get<std::string>(), before);
-    CHECK_EQ(h.value("mask.get", json::object())["mask"].dump(), coverage);
-    const std::int64_t marked_px = h.value("select.get", json::object())["covered"].get<std::int64_t>();
-    CHECK(marked_px > 0);
-    CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), undo_before + 1);
-
-    // The same dab at the other end of the coverage scale takes coverage back, so a mark is corrected
-    // rather than cleared and redrawn. Still no pixel byte, and one step for the stroke.
-    h.value("tool.set", json{{"tool", "un-cover"}, {"size", 10.0}, {"hardness", 1.0},
-                             {"opacity", 1.0}});
-    h.value("tool.stroke", json{{"points", json::array({json::array({3.0, 6.0})})}});
-    const json rubbed = h.value("select.get", json::object());
-    CHECK(rubbed["covered"].get<std::int64_t>() > 0);
-    CHECK(rubbed["covered"].get<std::int64_t>() < marked_px);
-    CHECK_EQ(h.value("layer.list", json::object())["layers"][0]["checksum"].get<std::string>(), before);
-    CHECK_EQ(h.value("doc.get", json::object())["history"]["undo_depth"].get<int>(), undo_before + 2);
-
-    // Colour is a tool, not a target: aimed at the mask, the brush still moves colour and leaves the
-    // coverage alone, because the switch decides where *coverage* goes and nothing else.
-    h.value("coverage.target", json{{"to", "mask"}});
-    h.value("tool.set", json{{"tool", "brush"}});
-    h.value("tool.stroke", json{{"points", points}});
-    CHECK_NE(h.value("layer.list", json::object())["layers"][0]["checksum"].get<std::string>(), before);
-    CHECK_EQ(h.value("mask.get", json::object())["mask"].dump(), coverage);
-}
-
-// The marquee is the other half of the same editor: aimed at the mask it puts its shape there, aimed at
-// the marked area it puts it there, and it never needs a second tool to do the other job.
-void test_the_marquee_lands_on_whichever_coverage_is_named() {
-    Harness h;
-    h.value("doc.new", json{{"width", 32}, {"height", 16}, {"fill", json::array({9, 9, 9, 255})}});
-    h.value("tool.set", json{{"tool", "select"}});
+    h.value("doc.new", json{{"width", 48}, {"height", 32},
+                            {"fill", json::array({20, 30, 40, 255})}});
+    CHECK_EQ(h.value("layer.plane", json::object())["plane"].get<std::string>(),
+             std::string("pixels"));
+    CHECK(!h.run("layer.plane", json{{"plane", "mask"}}).ok);
     h.value("mask.add", json::object());
     h.value("mask.fill", json{{"to", "hide"}});
+    h.value("layer.plane", json{{"plane", "mask"}});
+    const std::string pixels = h.state.doc.layer(0).pixels.checksum_hex();
+    const Mask initial = *h.state.doc.layer(0).mask;
+    const auto path = json::array({json::array({16.0, 16.0}), json::array({24.0, 16.0})});
+    h.value("tool.set", json{{"tool", "cover"}, {"size", 8.0}, {"hardness", 1.0},
+                             {"opacity", 1.0}});
+    h.value("tool.stroke", json{{"points", path}});
+    CHECK(*h.state.doc.layer(0).mask == initial);
+    REQUIRE(h.state.doc.selection().has_value());
+    CHECK(h.state.doc.selection()->covered() > 0);
+    h.value("tool.set", json{{"tool", "un-cover"}});
+    h.value("tool.stroke", json{{"points", json::array({json::array({16.0, 16.0})})}});
+    CHECK(*h.state.doc.layer(0).mask == initial);
 
+    h.value("tool.set", json{{"tool", "brush"}});
+    const int before_depth = undo_depth(h);
+    h.value("tool.stroke", json{{"points", path}});
+    const Mask revealed = *h.state.doc.layer(0).mask;
+    CHECK(revealed != initial);
+    CHECK(revealed.covered() > 0);
+    CHECK_EQ(h.state.doc.layer(0).pixels.checksum_hex(), pixels);
+    CHECK_EQ(undo_depth(h), before_depth + 1);
+    h.value("edit.undo", json::object());
+    CHECK(*h.state.doc.layer(0).mask == initial);
+    h.value("edit.redo", json::object());
+    CHECK(*h.state.doc.layer(0).mask == revealed);
+
+    h.value("tool.set", json{{"tool", "eraser"}, {"size", 10.0}});
+    h.value("tool.stroke", json{{"points", json::array({json::array({16.0, 16.0})})}});
+    CHECK(*h.state.doc.layer(0).mask != revealed);
+    CHECK_EQ(h.state.doc.layer(0).pixels.checksum_hex(), pixels);
+    h.value("layer.plane", json{{"plane", "pixels"}});
+    h.value("tool.set", json{{"tool", "brush"}});
+    h.value("select.clear", json::object());
+    h.value("tool.stroke", json{{"points", path}, {"color", json::array({200, 40, 30, 255})}});
+    CHECK_NE(h.state.doc.layer(0).pixels.checksum_hex(), pixels);
+    CHECK_EQ(h.value("view.mask_overlay", json{{"show", false}})["show"].get<bool>(), false);
+    CHECK_EQ(h.value("view.mask_overlay", json{{"show", true}})["show"].get<bool>(), true);
+
+    Harness undo_mask;
+    undo_mask.value("doc.new", json{{"width", 24}, {"height", 24}});
+    undo_mask.value("mask.add", json::object());
+    CHECK_EQ(undo_mask.value("layer.plane", json::object())["plane"], "mask");
+    undo_mask.value("edit.undo", json::object());
+    CHECK_EQ(undo_mask.value("layer.plane", json::object())["plane"], "pixels");
+    undo_mask.value("tool.set", json{{"tool", "brush"}});
+    CHECK(undo_mask.run("tool.stroke", json{{"points", json::array({json::array({12, 12})})}}).ok);
+}
+
+// A marquee always changes the marked area, even while the mask thumbnail is selected.
+void test_marquee_always_selects_document_area() {
+    Harness h;
+    h.value("doc.new", json{{"width", 32}, {"height", 16},
+                            {"fill", json::array({9, 9, 9, 255})}});
+    h.value("mask.add", json::object());
+    h.value("mask.fill", json{{"to", "hide"}});
+    h.value("layer.plane", json{{"plane", "mask"}});
+    h.value("tool.set", json{{"tool", "select"}});
+    const Mask initial = *h.state.doc.layer(0).mask;
     h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({4.0, 4.0})}});
     h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({12.0, 12.0})}});
     h.value("tool.pointer", json{{"phase", "release"}});
-    CHECK(h.value("select.get", json::object())["active"].get<bool>());
-    CHECK(h.value("mask.get", json::object())["mask"]["covered"].get<std::int64_t>() == 0);
+    REQUIRE(h.state.doc.selection().has_value());
+    CHECK_EQ(h.state.doc.selection()->covered(), std::size_t{64});
+    CHECK(*h.state.doc.layer(0).mask == initial);
+    CHECK_EQ(h.value("layer.plane", json::object())["plane"].get<std::string>(),
+             std::string("mask"));
 
-    // The mark from the first drag is still the fence on every write, so put it down first: the mask
-    // half of this test is about where the shape lands, not about the fence (which has its own test).
-    h.value("select.clear", json::object());
-    h.value("coverage.target", json{{"to", "mask"}});
-    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({20.0, 4.0})}});
-    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({28.0, 12.0})}});
-    h.value("tool.pointer", json{{"phase", "release"}});
-    const json masked = h.value("mask.get", json::object())["mask"];
-    CHECK(masked["covered"].get<std::int64_t>() > 0);
-    CHECK_EQ(masked["bounds"][0].get<int>(), 20);
 }
 
-// A marquee is one gesture and one undo step, whichever lifetime it lands on. Three pointer events
-// cost one step; the box that is marked is the one the button lifted on, not the union of the boxes the
-// drag swept; and undo hands back the coverage the press found without moving a pixel of the picture.
-void test_a_marquee_gesture_is_one_step_in_whichever_coverage() {
+// A marquee is one marked-area history step; selecting a different layer plane mid-gesture is refused.
+void test_marquee_gesture_is_one_marked_step() {
     Harness h;
-    h.value("doc.new", json{{"width", 40}, {"height", 20}, {"fill", json::array({9, 9, 9, 255})}});
+    h.value("doc.new", json{{"width", 40}, {"height", 20},
+                            {"fill", json::array({9, 9, 9, 255})}});
+    h.value("mask.add", json::object());
+    h.value("layer.plane", json{{"plane", "mask"}});
     h.value("tool.set", json{{"tool", "select"}});
-    const int clean = undo_depth(h);
-    const std::string picture = checksum_of(h);
-
+    const Mask original_mask = *h.state.doc.layer(0).mask;
+    const int initial = undo_depth(h);
     h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({4.0, 4.0})}});
     h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({24.0, 16.0})}});
-    CHECK(h.value("select.get", json::object())["active"].get<bool>());
-    CHECK_EQ(undo_depth(h), clean);  // live on the canvas, not yet an edit
+    CHECK_EQ(undo_depth(h), initial);
+    CHECK(!h.run("layer.plane", json{{"plane", "pixels"}}).ok);
     h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({12.0, 10.0})}});
     h.value("tool.pointer", json{{"phase", "release"}});
-    CHECK_EQ(undo_depth(h), clean + 1);
-
-    // The box the drag ended on rather than the one it swept: a trail of the wider box would mark
-    // area nobody described, and the verb pressed there would ask about it.
-    const json marked = h.value("select.get", json::object());
-    CHECK_EQ(marked["covered"].get<int>(), 8 * 6);
-    CHECK(marked["bounds"] == json::array({4, 4, 8, 6}));
-    CHECK_EQ(checksum_of(h), picture);
-
-    CHECK(h.run("edit.undo", json::object()).ok);
-    CHECK(!h.value("select.get", json::object())["active"].get<bool>());
-    CHECK_EQ(checksum_of(h), picture);  // a step over coverage puts coverage back, never colour
-    CHECK(h.run("edit.redo", json::object()).ok);
+    CHECK_EQ(undo_depth(h), initial + 1);
     CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 8 * 6);
-    CHECK_EQ(checksum_of(h), picture);
-
-    // The other lifetime, through the layer's provisional door: the same three events, one step, and
-    // the mask comes back wholly shown because that is what the press found.
-    h.value("select.clear", json::object());
-    h.value("mask.add", json::object());
-    h.value("mask.fill", json{{"to", "show"}});
-    h.value("coverage.target", json{{"to", "mask"}});
-    const int shown = undo_depth(h);
-    const std::string masked = checksum_of(h);  // wholly shown: what the press will find
-    CHECK_EQ(h.value("mask.get", json::object())["mask"]["covered"].get<int>(), 40 * 20);
-    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({6.0, 2.0})}});
-    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({30.0, 18.0})}});
-    CHECK_EQ(undo_depth(h), shown);
-    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({14.0, 8.0})}});
-    h.value("tool.pointer", json{{"phase", "release"}});
-    CHECK_EQ(undo_depth(h), shown + 1);
-    const json mask_now = h.value("mask.get", json::object())["mask"];
-    CHECK_EQ(mask_now["covered"].get<int>(), 8 * 6);
-    CHECK(mask_now["bounds"] == json::array({6, 2, 8, 6}));
-    CHECK(h.run("edit.undo", json::object()).ok);
-    CHECK_EQ(h.value("mask.get", json::object())["mask"]["covered"].get<int>(), 40 * 20);
-    CHECK_EQ(undo_depth(h), shown);
-    CHECK_EQ(checksum_of(h), masked);
-    CHECK_EQ(h.state.doc.composite().at(7, 3)[3], 255);  // the canvas shows the layer again
-
-    // A switch mid-drag moves neither the shape nor the lifetime. The press opened the marked door, so
-    // the box lands on the marked area, the mask keeps every byte, and the gesture shuts the door it
-    // came in by: read the switch at release instead and the marked gesture is never closed - after
-    // which every selection command would write coverage and record nothing.
-    h.value("coverage.target", json{{"to", "marked"}});
-    const int unswitched = undo_depth(h);
-    const std::string mask_before = h.value("mask.get", json::object())["mask"].dump();
-    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({4.0, 4.0})}});
-    CHECK_EQ(h.value("app.state", json::object())["stroke"]["marquee_coverage"].get<std::string>(),
-             std::string("marked"));
-    h.value("coverage.target", json{{"to", "mask"}});
-    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({12.0, 10.0})}});
-    CHECK_EQ(h.value("app.state", json::object())["stroke"]["marquee_coverage"].get<std::string>(),
-             std::string("marked"));
-    h.value("tool.pointer", json{{"phase", "release"}});
-    CHECK_EQ(undo_depth(h), unswitched + 1);
-    CHECK_EQ(h.value("mask.get", json::object())["mask"].dump(), mask_before);
+    CHECK(*h.state.doc.layer(0).mask == original_mask);
+    h.value("edit.undo", json::object());
+    CHECK(!h.state.doc.selection().has_value());
+    h.value("edit.redo", json::object());
     CHECK_EQ(h.value("select.get", json::object())["covered"].get<int>(), 8 * 6);
+    CHECK(*h.state.doc.layer(0).mask == original_mask);
+
 }
 
 void test_lasso_command_combines_coverage_and_never_changes_pixels() {
@@ -2010,7 +1889,7 @@ void test_lasso_pointer_commits_once_and_undo_redo_restore_exact_coverage() {
     CHECK_EQ(undo_depth(h), depth);
 
     h.value("tool.set", json{{"tool", "brush"}});
-    h.value("coverage.target", json{{"to", "mask"}});
+    CHECK(!h.run("layer.plane", json{{"plane", "mask"}}).ok);
     h.value("tool.pointer", json{{"phase", "release"}, {"at", json::array({10.0, 12.0})}});
     Mask expected = before;
     CHECK(op_lasso(expected, path, MaskOp::add));
@@ -2028,7 +1907,7 @@ void test_lasso_pointer_commits_once_and_undo_redo_restore_exact_coverage() {
     CHECK(*h.state.doc.selection() == after);
 
     const int before_cancel = undo_depth(h);
-    h.value("coverage.target", json{{"to", "marked"}});
+    h.value("layer.plane", json{{"plane", "pixels"}});
     h.value("tool.set", json{{"tool", "lasso"}});
     h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({3.0, 12.0})}});
     h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({8.0, 12.0})}});
@@ -2039,111 +1918,82 @@ void test_lasso_pointer_commits_once_and_undo_redo_restore_exact_coverage() {
     CHECK_EQ(undo_depth(h), before_cancel);
 }
 
-void test_lasso_edits_a_layer_mask_through_its_provisional_transaction() {
+void test_lasso_edits_selection_when_mask_thumbnail_is_active() {
     Harness h;
     h.value("doc.new", json{{"width", 20}, {"height", 16},
                             {"fill", json::array({40, 50, 60, 255})}});
     h.value("mask.add", json::object());
     h.value("mask.fill", json{{"to", "hide"}});
-    h.value("coverage.target", json{{"to", "mask"}});
+    h.value("layer.plane", json{{"plane", "mask"}});
     h.value("tool.set", json{{"tool", "lasso"}});
-    const Mask before = *h.state.doc.layer(0).mask;
-    const std::string pixels = h.state.doc.layer(0).pixels.checksum_hex();
+    const Mask original = *h.state.doc.layer(0).mask;
     const int depth = undo_depth(h);
     const std::vector<Vec2> path{{3.0, 3.0}, {15.0, 3.0}, {15.0, 12.0}, {3.0, 12.0}};
-
     h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({3.0, 3.0})}});
-    CHECK(h.state.doc.provisional_area() == Rect{3, 3, 1, 1});
     h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({15.0, 3.0})}});
     h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({15.0, 12.0})}});
     h.value("tool.pointer", json{{"phase", "release"}, {"at", json::array({3.0, 12.0})}});
     Mask expected(h.state.doc.size());
     CHECK(op_lasso(expected, path, MaskOp::replace));
-    const Mask after = *h.state.doc.layer(0).mask;
-    CHECK(after == expected);
-    CHECK(!h.state.doc.selection().has_value());
+    CHECK(h.state.doc.selection() == expected);
+    CHECK(*h.state.doc.layer(0).mask == original);
     CHECK_EQ(undo_depth(h), depth + 1);
-    CHECK_EQ(h.state.doc.layer(0).pixels.checksum_hex(), pixels);
-    CHECK(!h.state.doc.in_provisional());
-    CHECK(h.run("edit.undo", json::object()).ok);
-    CHECK(*h.state.doc.layer(0).mask == before);
-    CHECK(h.run("edit.redo", json::object()).ok);
-    CHECK(*h.state.doc.layer(0).mask == after);
+    h.value("edit.undo", json::object());
+    CHECK(!h.state.doc.selection().has_value());
+    h.value("edit.redo", json::object());
+    CHECK(h.state.doc.selection() == expected);
 
-    const int before_cancel = undo_depth(h);
-    h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({4.0, 4.0})}});
-    h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({10.0, 10.0})}});
-    h.value("tool.pointer", json{{"phase", "cancel"}});
-    CHECK(*h.state.doc.layer(0).mask == after);
-    CHECK_EQ(undo_depth(h), before_cancel);
-    CHECK(!h.state.doc.in_provisional());
-
-    h.value("mask.remove", json::object());
-    h.value("coverage.target", json{{"to", "mask"}});
-    const int without_mask = undo_depth(h);
-    const CommandResult refused = h.run(
-        "tool.pointer", json{{"phase", "press"}, {"at", json::array({4.0, 4.0})}});
-    CHECK(!refused.ok);
-    CHECK(!h.state.select.active);
-    CHECK_EQ(undo_depth(h), without_mask);
 }
 
 // Replacing a nonempty layer mask must clear its old coverage, not reveal the old bounds.
-void test_lasso_mask_replace_discards_previous_visible_pixels() {
+void test_lasso_replaces_selection_without_touching_mask() {
     Harness h;
     h.value("doc.new", json{{"width", 20}, {"height", 16},
                             {"fill", json::array({40, 50, 60, 255})}});
     h.value("mask.add", json::object());
-    h.value("mask.fill", json{{"to", "show"}});
-    h.value("coverage.target", json{{"to", "mask"}});
+    h.value("layer.plane", json{{"plane", "mask"}});
     h.value("tool.set", json{{"tool", "lasso"}});
-    const Mask before = *h.state.doc.layer(0).mask;
-    CHECK_EQ(before.coverage(16, 12), kMaskIn);
+    h.value("select.rect", json{{"rect", json::array({0, 0, 20, 16})}});
+    const Mask original = *h.state.doc.layer(0).mask;
     const int depth = undo_depth(h);
-
     h.value("tool.pointer", json{{"phase", "press"}, {"at", json::array({2.0, 2.0})}});
     h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({8.0, 2.0})}});
     h.value("tool.pointer", json{{"phase", "drag"}, {"at", json::array({8.0, 8.0})}});
     h.value("tool.pointer", json{{"phase", "release"}, {"at", json::array({2.0, 8.0})}});
-    const Mask after = *h.state.doc.layer(0).mask;
-    CHECK_EQ(after.coverage(4, 4), kMaskIn);
-    CHECK_EQ(after.coverage(16, 12), kMaskOut);
+    CHECK_EQ(h.state.doc.selection()->coverage(4, 4), kMaskIn);
+    CHECK_EQ(h.state.doc.selection()->coverage(16, 12), kMaskOut);
+    CHECK(*h.state.doc.layer(0).mask == original);
     CHECK_EQ(undo_depth(h), depth + 1);
-    CHECK(h.run("edit.undo", json::object()).ok);
-    CHECK(*h.state.doc.layer(0).mask == before);
-    CHECK(h.run("edit.redo", json::object()).ok);
-    CHECK(*h.state.doc.layer(0).mask == after);
+
 }
 
-// The selection fences every write, and a mask stroke is a write: what the brush did to coverage
-// happened only as far as the selection reached, which is the same rule the colour stroke runs.
-void test_a_selection_limits_a_mask_stroke() {
+// Mask painting is independent of the transient selection: the generated result can be revealed
+// outside the initial AI mark without first clearing that mark.
+void test_mask_painting_does_not_inherit_ai_selection() {
     Harness h;
-    h.value("doc.new", json{{"width", 24}, {"height", 12}, {"fill", json::array({0, 0, 0, 255})}});
-    h.value("tool.set", json{{"tool", "brush"}, {"size", 6.0}, {"hardness", 1.0}, {"opacity", 1.0}});
+    h.value("doc.new", json{{"width", 24}, {"height", 12},
+                            {"fill", json::array({20, 50, 80, 255})}});
     h.value("mask.add", json::object());
     h.value("mask.fill", json{{"to", "hide"}});
-    h.value("select.rect", json{{"rect", json::array({10, 0, 4, 12})}, {"mode", "replace"}});
+    h.value("select.rect", json{{"rect", json::array({10, 0, 4, 12})}});
+    h.value("layer.plane", json{{"plane", "mask"}});
+    const Mask selection = *h.state.doc.selection();
+    const std::string pixels = h.state.doc.layer(0).pixels.checksum_hex();
+    h.value("tool.set", json{{"tool", "brush"}, {"size", 6.0}, {"hardness", 1.0},
+                             {"opacity", 1.0}});
+    h.value("tool.stroke", json{{"points", json::array({json::array({2.0, 6.0}),
+                                                        json::array({22.0, 6.0})})}});
+    const Mask& painted = *h.state.doc.layer(0).mask;
+    CHECK(painted.coverage(4, 6) > 0);
+    CHECK(painted.coverage(20, 6) > 0);
+    CHECK_EQ(h.state.doc.layer(0).pixels.checksum_hex(), pixels);
+    CHECK(*h.state.doc.selection() == selection);
+    h.value("tool.set", json{{"tool", "cover"}});
+    const Mask before = painted;
+    h.value("tool.stroke", json{{"points", json::array({json::array({1.0, 1.0})})}});
+    CHECK(*h.state.doc.layer(0).mask == before);
+    CHECK(h.state.doc.selection()->coverage(1, 1) > 0);
 
-    h.value("tool.set", json{{"tool", "cover"}, {"size", 6.0}, {"hardness", 1.0}, {"opacity", 1.0}});
-    h.value("coverage.target", json{{"to", "mask"}});
-    h.value("tool.stroke", json{{"points", json::array({json::array({2.0, 6.0}), json::array({22.0, 6.0})})}});
-    const json facts = h.value("mask.get", json::object())["mask"];
-    const json bounds = facts["bounds"];
-    CHECK(facts["covered"].get<std::int64_t>() > 0);
-    CHECK(facts["covered"].get<std::int64_t>() <= 4 * 12);
-    // The whole stroke ran the width of the canvas; only the selected columns could change.
-    CHECK_EQ(bounds[0].get<int>(), 10);
-    CHECK_EQ(bounds[0].get<int>() + bounds[2].get<int>(), 14);
-
-    // With the fence gone the same stroke reaches the rest, so the limit above was the selection and
-    // not the brush.
-    h.value("mask.fill", json{{"to", "hide"}});
-    h.value("select.clear", json::object());
-    h.value("tool.stroke", json{{"points", json::array({json::array({2.0, 6.0}), json::array({22.0, 6.0})})}});
-    const json whole = h.value("mask.get", json::object())["mask"];
-    CHECK(whole["covered"].get<std::int64_t>() > facts["covered"].get<std::int64_t>());
-    CHECK(whole["bounds"][0].get<int>() < 10);
 }
 
 // The controls answer when there is nothing to act on, and say which layer they looked at.
@@ -2165,8 +2015,8 @@ void test_the_mask_controls_name_the_layer_they_refused() {
 
     // Vocabulary refusals name the words they accept.
     CHECK(h.run("mask.fill", json{{"to", "bright"}}).error.find("show") != std::string::npos);
-    CHECK(h.run("coverage.target", json{{"to", "colour"}}).error.find("marked") != std::string::npos);
-    CHECK(h.run("coverage.target", json{{"to", "colour"}}).error.find("mask") != std::string::npos);
+    CHECK(h.run("layer.plane", json{{"plane", "colour"}}).error.find("pixels") != std::string::npos);
+    CHECK(h.run("layer.plane", json{{"plane", "colour"}}).error.find("mask") != std::string::npos);
     CHECK(h.run("mask.fill", json::object()).error.find("'to'") != std::string::npos);
 
     // A mask belongs to exactly one layer: the active row gained one and the row beside it says it
@@ -2216,6 +2066,12 @@ void test_a_selection_becomes_a_mask_and_a_mask_becomes_a_selection() {
     CHECK(h.value("select.get", json::object())["active"].get<bool>());
     const std::string pixels_with_mask = h.state.doc.layer(0).pixels.checksum_hex();
     h.value("select.clear", json::object());
+    // Creating a mask selects its thumbnail. Switch to pixels for this stroke, which must
+    // change the image without changing the independently editable layer mask.
+    CHECK_EQ(h.value("layer.plane", json::object())["plane"].get<std::string>(),
+             std::string("mask"));
+    h.value("layer.plane", json{{"plane", "pixels"}});
+    const Mask copied_mask = *h.state.doc.layer(0).mask;
     // Putting the mark down is a step of its own, and the stroke after it is the one this claim is about.
     const int steps_after_mask = undo_depth(h);
     json wide = full_stroke();
@@ -2223,6 +2079,7 @@ void test_a_selection_becomes_a_mask_and_a_mask_becomes_a_selection() {
     wide["size"] = 10.0;
     h.value("tool.stroke", wide);
     CHECK(h.state.doc.layer(0).pixels.checksum_hex() != pixels_with_mask);
+    CHECK(*h.state.doc.layer(0).mask == copied_mask);
     CHECK_EQ(undo_depth(h), steps_after_mask + 1);
 
     // The canvas now shows only the masked rectangle, although the layer's pixels still cover the
@@ -4224,11 +4081,10 @@ void test_selection_edit_mode_follows_the_job_and_the_result_mask() {
         CHECK(!row["ready"].get<bool>());
         CHECK(row["reason"].get<std::string>().find("generating") != std::string::npos);
     }
-    // Read-only UI checks cannot finish a job. Attempt the explicit rearm before another
-    // AI command pumps the recorded queue, which may already contain a completed answer.
+    // The recorded answer may finish before another AI press pumps the queue. The disabled
+    // button rows above check the in-flight lock without accidentally starting a valid next edit.
     CHECK(!h.run("verb.new_edit", json::object()).ok);
     CHECK(!h.run("verb.ask", json{{"show", "fill"}}).ok);
-    CHECK(!h.run("ai.remove", json::object()).ok);
     CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(1));
 
     const json finished = h.value("job.wait", json{{"id", id}, {"timeout", 30}});
@@ -4236,34 +4092,45 @@ void test_selection_edit_mode_follows_the_job_and_the_result_mask() {
     CHECK(finished["landing"]["landed"].get<bool>());
     REQUIRE(h.state.doc.active() == 1);
     REQUIRE(h.state.active_layer().mask.has_value());
-    CHECK_EQ(h.value("coverage.target", json::object())["target"].get<std::string>(),
+    CHECK_EQ(h.value("layer.plane", json::object())["plane"].get<std::string>(),
              std::string("mask"));
     const json editing = h.value("verb.bar", json::object());
     CHECK_EQ(editing["mode"].get<std::string>(), std::string("editing"));
     CHECK(editing["shown"].get<bool>());
     CHECK(editing["buttons"].empty());
     CHECK(editing["ask"].is_null());
-    CHECK(!h.run("ai.heal", json::object()).ok);
-    CHECK(!h.run("verb.ask", json{{"show", "change"}}).ok);
+    // Switching tools does not change the selected thumbnail: Cover marks the blue selection,
+    // Brush restores the red mask editing view without any special mode switch.
+    h.value("tool.set", json{{"tool", "cover"}});
+    const json selection_actions = h.value("verb.bar", json::object());
+    CHECK_EQ(selection_actions["mode"], "actions");
+    CHECK_EQ(selection_actions["buttons"].size(), std::size_t(4));
+    CHECK_EQ(h.value("layer.plane", json::object())["plane"], "mask");
+    h.value("tool.set", json{{"tool", "brush"}});
+    const json back_to_mask = h.value("verb.bar", json::object());
+    CHECK_EQ(back_to_mask["mode"], "editing");
+    CHECK(back_to_mask["buttons"].empty());
+    CHECK(h.run("verb.ask", json{{"show", "change"}}).ok);
+    h.run("verb.ask", json{{"show", "close"}});
     // Selecting another layer must not quietly rebind the result edit to that layer's mask.
     h.value("layer.select", json{{"index", 0}});
     CHECK_EQ(h.value("verb.bar", json::object())["mode"].get<std::string>(),
-             std::string("editing"));
-    h.value("layer.select", json{{"index", 1}});
+             std::string("actions"));
+    h.value("layer.plane", json{{"index", 1}, {"plane", "mask"}});
 
     const std::string unchanged = checksum_of(h);
     const json retained_selection = h.value("select.get", json::object());
     const json new_edit = h.value("verb.new_edit", json::object());
     CHECK_EQ(new_edit["mode"].get<std::string>(), std::string("actions"));
-    CHECK_EQ(h.value("coverage.target", json::object())["target"].get<std::string>(),
-             std::string("marked"));
+    CHECK_EQ(h.value("layer.plane", json::object())["plane"].get<std::string>(),
+             std::string("pixels"));
     CHECK_EQ(checksum_of(h), unchanged);
     CHECK_EQ(h.value("select.get", json::object()), retained_selection);
     const json rearmed = h.value("verb.bar", json::object());
     CHECK_EQ(rearmed["mode"].get<std::string>(), std::string("actions"));
     CHECK_EQ(rearmed["buttons"].size(), std::size_t(4));
     CHECK(rearmed["buttons"][0]["ready"].get<bool>());
-    CHECK(!h.run("verb.new_edit", json::object()).ok);
+    CHECK(h.run("verb.new_edit", json::object()).ok);
 
     // The next edit builds on the result layer, not on a new empty one.
     const json again = h.value("ai.remove", json{{"seed", 12}});
@@ -4302,8 +4169,8 @@ void test_selection_edit_mode_follows_the_job_and_the_result_mask() {
     CHECK_EQ(undo.state.doc.layers().size(), std::size_t(1));
     CHECK_EQ(undo.value("verb.bar", json::object())["mode"].get<std::string>(),
              std::string("actions"));
-    CHECK_EQ(undo.value("coverage.target", json::object())["target"].get<std::string>(),
-             std::string("marked"));
+    CHECK_EQ(undo.value("layer.plane", json::object())["plane"].get<std::string>(),
+             std::string("pixels"));
     undo.value("edit.redo", json::object());
     CHECK_EQ(undo.state.doc.layers().size(), std::size_t(2));
     CHECK_EQ(undo.value("verb.bar", json::object())["mode"].get<std::string>(),
@@ -4934,7 +4801,7 @@ void test_outpaint_opens_fill_without_starting_a_job() {
     Harness h;
     h.value("doc.new", json{{"width", 8}, {"height", 6},
                             {"fill", json::array({30, 50, 90, 255})}});
-    h.state.coverage_target = app::CoverageTarget::mask;
+    h.state.edit_plane = LayerPlane::mask;
     const std::string before = h.state.doc.checksum();
     const int before_depth = h.state.doc.history().undo_depth;
     CHECK(!h.run("doc.outpaint.prepare", json{{"width", 8}, {"height", 6}}).ok);
@@ -4955,7 +4822,7 @@ void test_outpaint_opens_fill_without_starting_a_job() {
         }
     }
     CHECK_EQ(result["ask"]["verb"].get<std::string>(), std::string("fill"));
-    CHECK(h.state.coverage_target == app::CoverageTarget::marked);
+    CHECK(h.state.edit_plane == LayerPlane::pixels);
     CHECK_EQ(h.value("ai.intent", json::object())["vars"]["prompt"].get<std::string>(),
              std::string("a natural continuation of the surrounding scene"));
     CHECK(h.state.ai_intent.job.empty());
@@ -5187,14 +5054,14 @@ int main() {
     test_the_ellipse_command_selects_the_curve_and_not_its_box();
     test_the_ellipse_marquee_draws_the_shape_of_its_own_tool_row();
     test_the_select_gesture_draws_and_puts_down_the_selection();
-    test_the_coverage_target_decides_where_a_stroke_lands();
-    test_the_marquee_lands_on_whichever_coverage_is_named();
-    test_a_marquee_gesture_is_one_step_in_whichever_coverage();
+    test_cover_and_brush_have_independent_targets();
+    test_marquee_always_selects_document_area();
+    test_marquee_gesture_is_one_marked_step();
     test_lasso_command_combines_coverage_and_never_changes_pixels();
     test_lasso_pointer_commits_once_and_undo_redo_restore_exact_coverage();
-    test_lasso_edits_a_layer_mask_through_its_provisional_transaction();
-    test_lasso_mask_replace_discards_previous_visible_pixels();
-    test_a_selection_limits_a_mask_stroke();
+    test_lasso_edits_selection_when_mask_thumbnail_is_active();
+    test_lasso_replaces_selection_without_touching_mask();
+    test_mask_painting_does_not_inherit_ai_selection();
     test_the_mask_controls_name_the_layer_they_refused();
     test_a_selection_becomes_a_mask_and_a_mask_becomes_a_selection();
     test_a_layer_mask_is_one_step_and_reaches_the_file();

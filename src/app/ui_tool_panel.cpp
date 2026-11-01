@@ -35,31 +35,17 @@ void draw_tool_picker(AppState& state, CommandTable& commands) {
     }
 }
 
-void draw_coverage_target(AppState& state, CommandTable& commands, bool has_mask) {
-    if (ImGui::RadioButton("marked area", state.coverage_target == CoverageTarget::marked)) {
-        commands.invoke("coverage.target", json{{"to", "marked"}});
-    }
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!has_mask);
-    if (ImGui::RadioButton("layer mask", state.coverage_target == CoverageTarget::mask)) {
-        commands.invoke("coverage.target", json{{"to", "mask"}});
-    }
-    ImGui::EndDisabled();
-}
-
-void draw_coverage_operations(CommandTable& commands, bool at_mask) {
+void draw_coverage_operations(CommandTable& commands) {
     if (ImGui::Button("All")) {
-        commands.invoke(at_mask ? "mask.fill" : "select.all",
-                        at_mask ? json{{"to", "show"}} : json::object());
+        commands.invoke("select.all", json::object());
     }
     ImGui::SameLine();
     if (ImGui::Button("None")) {
-        commands.invoke(at_mask ? "mask.fill" : "select.clear",
-                        at_mask ? json{{"to", "hide"}} : json::object());
+        commands.invoke("select.clear", json::object());
     }
     ImGui::SameLine();
     if (ImGui::Button("Invert")) {
-        commands.invoke(at_mask ? "mask.invert" : "select.invert", json::object());
+        commands.invoke("select.invert", json::object());
     }
 }
 
@@ -216,7 +202,7 @@ void draw_edge_controls(AppState& state, CommandTable& commands) {
         (state.doc.empty() || state.active_layer().id != form.edge_preview_layer)) {
         commands.invoke("mask.edge.finish", json::object());
     }
-    if (state.doc.empty() || !state.active_layer().mask) {
+    if (!state.editing_mask()) {
         return;
     }
     if (!ImGui::CollapsingHeader("Adjust layer edge")) {
@@ -247,16 +233,16 @@ void draw_edge_controls(AppState& state, CommandTable& commands) {
 }
 
 void draw_coverage_controls(AppState& state, CommandTable& commands) {
-    ImGui::SeparatorText("coverage");
-    const bool has_mask = !state.doc.empty() && state.active_layer().mask.has_value();
-    draw_coverage_target(state, commands, has_mask);
-    const bool at_mask = state.coverage_target == CoverageTarget::mask;
-    const json selection = selection_json(state);
-    if (at_mask && commands.invoke("mask.get", json::object()).value["mask"].is_null()) {
-        ImGui::TextDisabled("no mask on this layer yet - Add mask in the Layers panel");
+    ImGui::SeparatorText("Selection (blue)");
+    ImGui::TextDisabled("Cover / Un-cover and selection tools always edit this area");
+    draw_coverage_operations(commands);
+    draw_coverage_transfer(state, commands, selection_json(state));
+    if (!state.doc.empty()) {
+        ImGui::SeparatorText("Layer editing");
+        ImGui::TextUnformatted(state.editing_mask() ? "Editing layer mask: Brush reveals, Eraser hides"
+                                                : "Editing image pixels");
+        ImGui::TextDisabled("Click the image or mask thumbnail in Layers to switch");
     }
-    draw_coverage_operations(commands, at_mask);
-    draw_coverage_transfer(state, commands, selection);
 }
 
 std::string brush_step_hint(const CommandTable& commands, const char* field) {
@@ -342,7 +328,9 @@ void draw_tool_panel(AppState& state, CommandTable& commands, const json& intent
     draw_verb_section(commands, intent, state.ui_theme);
     if (tool_mode(state.tool).has_value()) {
         draw_brush_sliders(state, commands);
-        draw_brush_color(state, commands);
+        if (!state.editing_mask()) {
+            draw_brush_color(state, commands);
+        }
     }
     ImGui::End();
 }

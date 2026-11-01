@@ -31,7 +31,6 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
     register_paint_commands(state, table);
     register_layer_commands(state, table);
     register_select_commands(state, table);
-    register_coverage_commands(state, table);
     register_verb_bar_commands(state, table);
     register_mask_commands(state, table);
     register_pointer_commands(state, table);

@@ -32,7 +32,8 @@ SelectionEditPhase selection_edit_phase(const AppState& state) {
         return SelectionEditPhase::generating;
     }
     if (record->state == ai::JobState::succeeded && record->landing.landed &&
-        edit.layer_id != 0 && state.coverage_target == CoverageTarget::mask &&
+        edit.layer_id != 0 && state.painting_mask() &&
+        state.active_layer().id == edit.layer_id &&
         selection_edit_result_layer(state) != nullptr) {
         return SelectionEditPhase::editing;
     }
@@ -65,14 +66,16 @@ void selection_edit_landed(AppState& state, const std::string& job) {
     // completely blank canvas has no result mask, so it cannot truthfully enter mask-edit mode.
     if (state.active_layer().mask.has_value()) {
         edit.layer_id = state.active_layer().id;
-        state.coverage_target = CoverageTarget::mask;
+        state.edit_plane = LayerPlane::mask;
+        state.tool = "brush";
     }
 }
 
 void selection_edit_new(AppState& state) {
     state.selection_edit = {};
     state.ask_verb = std::nullopt;
-    state.coverage_target = CoverageTarget::marked;
+    state.edit_plane = LayerPlane::pixels;
+    state.tool = "cover";
 }
 
 void selection_edit_reconcile(AppState& state) {

@@ -257,9 +257,7 @@ Readiness assess(noise::AppState& state, const ai::Recipe* recipe) {
                 out.fix = "job.list";
                 return out;
             case SelectionEditPhase::editing:
-                out.reason = "the result mask is being edited; choose New AI edit first";
-                out.fix = "verb.new_edit";
-                return out;
+                break;
             case SelectionEditPhase::actions:
                 break;
         }

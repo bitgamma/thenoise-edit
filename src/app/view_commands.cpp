@@ -12,6 +12,17 @@
 namespace noise::app {
 
 void register_view_commands(AppState& state, CommandTable& table) {
+    table.add("view.mask_overlay", "Show the hidden mask area in translucent red", {}, {"show"},
+              [&state](const json& args) -> CommandResult {
+        if (args.contains("show")) {
+            if (!args.at("show").is_boolean()) {
+                return fail("view.mask_overlay", "'show' must be a boolean");
+            }
+            state.mask_overlay_visible = args.at("show").get<bool>();
+        }
+        return command_ok(json{{"show", state.mask_overlay_visible}});
+    });
+
     table.add("view.fit", "Fit the document into the viewport", {"F"}, {},
               [&state](const json&) -> CommandResult {
         CommandResult guard = require_document(state);

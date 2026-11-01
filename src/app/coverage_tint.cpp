@@ -71,4 +71,44 @@ void CoverageTint::sync(const Mask& coverage) {
     drawn = true;
 }
 
+void CoverageTint::sync_hidden(const Mask& mask, std::uint64_t layer,
+                               std::uint64_t revision) {
+    if (!mask.sized()) {
+        drawn = false;
+        return;
+    }
+    if (hidden && source_layer == layer && source_revision == revision) {
+        return;
+    }
+    const Rect box = mask.bounds();
+    bounds = box;
+    source_layer = layer;
+    source_revision = revision;
+    hidden = true;
+    if (box.empty()) {
+        texture.discard();
+        drawn = false;
+        return;
+    }
+    const std::size_t width = static_cast<std::size_t>(box.w);
+    std::vector<std::uint8_t> rgba(width * static_cast<std::size_t>(box.h) * 4, 0);
+    for (int y = 0; y < box.h; ++y) {
+        const std::span<const std::uint8_t> row = mask.row(box.y + y);
+        for (int x = 0; x < box.w; ++x) {
+            const std::size_t at =
+                (static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x)) * 4;
+            rgba[at] = 235;
+            rgba[at + 1] = 65;
+            rgba[at + 2] = 65;
+            rgba[at + 3] = static_cast<std::uint8_t>(
+                ((static_cast<int>(kMaskIn) - static_cast<int>(row[static_cast<std::size_t>(box.x + x)]))
+                 * 110 + 127) / static_cast<int>(kMaskIn));
+        }
+    }
+    const std::uint64_t token = (layer * 1099511628211ULL) ^ revision;
+    texture.sync(Image::from_rgba(Extent{box.w, box.h}, std::move(rgba)), token);
+    stamp = token;
+    drawn = true;
+}
+
 }  // namespace noise::app

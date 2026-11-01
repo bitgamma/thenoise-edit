@@ -572,6 +572,23 @@ through a window — the claims are unit and command-table level (`test_document
 run since. `ctest --test-dir build`: 40 tests, 0 failed, 15 skipped. Getting there needed the harness
 fixed first — see the note below on `prep_proof` and `coverage_view_probe` aborting instead of skipping.
 
+## 2026-11-01 - Separate the AI selection from layer-mask painting
+
+The earlier `coverage.target` design (described in the historical milestones below) has been
+replaced. It made Cover/Un-cover unexpectedly mutate a result mask and required a manual switch to
+mark the next edit. The single source of truth is now the selected layer's `LayerPlane` (`layer.plane`),
+which affects **only Brush/Eraser**. Cover, Un-cover and selection gestures always edit the transient,
+blue AI selection. Clicking the image or mask thumbnail chooses pixel or mask painting; a selected
+mask's hidden region is shown in translucent red and can be toggled off. The same Brush/Eraser
+controls reveal/hide the result without applying or committing it.
+
+After a successful AI edit, the new result layer's mask is selected for immediate adjustment.
+`verb.new_edit` selects Cover and the image plane as a convenience, **not** a prerequisite for running
+another AI operation on a marked selection. The bar remains reachable over the result; selection
+verbs are available whenever a valid mark exists. Tool targeting, result handoff, the two overlay
+colours and the thumbnail hitboxes are observable on the debug wire; the mask and pixel editing
+routes retain one undo step per stroke. Regression tests and probe scripts now use `layer.plane`.
+
 ## 2026-10-16 - The stack becomes one layer, and the history entry that can say so
 
 `layer.flatten`, with a `Flatten` button on the panel's own row: PRODUCT's beat 11, *"I am lost in layers"*.
@@ -872,7 +889,7 @@ fine a minute before.
 | `ai/queue` | one worker, cancellable, in-memory; a job's timeout is predicted when it is queued so it cannot change under it; **a re-ask is another request** | `test_backend` |
 | `ai/server` | latency EMA per `(model, w×h, steps)` → ETA and `timeout_request`; a reply inside 1 s is the box's own answer and never a sample | `test_backend`, `docs/probes/` |
 | `app::kVerbs` + `ai.verbs` | five verbs bound to recipes; a row whose recipe contradicts it — wrong operation, an `ask` that grew, two verbs on one recipe — makes the row not-ready at session open | `test_app`, `ai.verbs` |
-| `app/coverage.h` (`coverage.target`) | one coverage, two lifetimes: `cover` and the marquee write whichever `marked`/`mask` says, a gesture keeps the lifetime it was pressed on, marking writes no pixel byte and costs one undo step per gesture, and colour stays a tool rather than a target | `test_app`, `wire_input`, `mask_speed_probe` |
+| `app/layer_commands.cpp` (`layer.plane`) | the image/mask thumbnails select which layer plane Brush/Eraser paint; Cover/Un-cover and marquee/lasso never switch away from the document selection; mask paint is independent of the selection fence | `test_app`, `wire_input`, `mask_speed_probe` |
 | `Document::set_layer_mask` + `Kind::mask_replaced` | a layer's mask plane has one write door: putting one on, taking one off and replacing one are each one step that *swaps* the plane, so the coverage the layer was hidden by comes back rather than a fresh mask, the writes underneath it stay reachable, and `History` needs no `drop_mask` | `test_document`, `test_history`, `test_app` |
 | `Document::set_selection` + `begin_marked` | the marked area is one write door and one step per gesture: the marquee from press to release and a `cover` stroke commit once, in one coat, and undoing a mark puts coverage back without moving a pixel, a revision or a thumbnail | `test_document`, `test_history`, `test_app` |
 | `app/verb_bar.cpp` (`verb.bar`) | the bar offers exactly the verbs whose recipe has `scope: selection`, hangs off the mark and clear of it, and presses the panel's command; where it drew itself is read back rather than remembered by the caller | `test_app`, `verb_bar_probe` |

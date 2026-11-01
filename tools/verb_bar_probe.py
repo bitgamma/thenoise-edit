@@ -174,9 +174,9 @@ def main() -> int:
         wd.settle(wire)
         editor = wire.call("verb.bar")
         p.check(editor["mode"] == "editing" and editor["buttons"] == [],
-                "the completed edit replaces the verbs with editor mode", str(editor["mode"]))
-        p.check(wire.call("coverage.target")["target"] == "mask",
-                "Cover now edits the new result layer mask")
+                "the completed edit shows only result editing and New AI edit", str(editor))
+        p.check(wire.call("layer.plane")["plane"] == "mask",
+                "the new result mask thumbnail becomes selected")
         nx, ny, nw, nh = editor["new_edit_screen"]
         p.check(nw > 0 and nh > 0, "New AI edit has a clickable button", str(editor["new_edit_screen"]))
 
@@ -193,8 +193,8 @@ def main() -> int:
         bar_after_new = wire.call("verb.bar")
         p.check(bar_after_new["mode"] == "actions" and not bar_after_new["shown"],
                 "New AI edit re-arms the verbs only when a mark exists")
-        p.check(wire.call("coverage.target")["target"] == "marked",
-                "New AI edit points Cover back at the marked area")
+        p.check(wire.call("layer.plane")["plane"] == "pixels",
+                "New AI edit selects image pixels and the Cover tool")
         wire.call("select.rect", {"rect": MARK})
         wd.settle(wire)
         returned = wire.call("verb.bar")

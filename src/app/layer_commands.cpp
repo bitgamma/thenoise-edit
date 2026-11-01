@@ -103,6 +103,7 @@ void register_layer_commands(AppState& state, CommandTable& table) {
                         "the last layer cannot be removed: a document needs a canvas");
         }
         log::info("removed " + removed);
+        state.reconcile_edit_plane();
         return command_ok(json{{"active", state.doc.active()},
                                {"layers", layers_json(state)},
                                {"revision", state.doc.revision()}});
@@ -235,7 +236,44 @@ void register_layer_commands(AppState& state, CommandTable& table) {
             return fail("layer.select",
                         range_error("layer.select", index, state.doc.layers().size()));
         }
+        state.edit_plane = LayerPlane::pixels;
         return command_ok(json{{"active", state.doc.active()}, {"layers", layers_json(state)}});
+    });
+
+    table.add("layer.plane", "Select a layer's image or mask thumbnail", {}, {"index", "plane"},
+              [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        int index = state.doc.active();
+        if (!arg_int(args, "index", index) || index < 0 ||
+            static_cast<std::size_t>(index) >= state.doc.layers().size()) {
+            return fail("layer.plane", "'index' is outside the layer stack");
+        }
+        if (args.contains("plane")) {
+            if (!args.at("plane").is_string()) {
+                return fail("layer.plane", "'plane' must be pixels or mask");
+            }
+            const auto selected = layer_plane_from_name(args.at("plane").get<std::string>());
+            if (!selected) {
+                return fail("layer.plane", "'plane' must be " + layer_plane_names());
+            }
+            if (*selected == LayerPlane::mask && !state.doc.layer(static_cast<std::size_t>(index)).mask) {
+                return fail("layer.plane", "layer '" +
+                    state.doc.layer(static_cast<std::size_t>(index)).name + "' has no mask");
+            }
+            if (state.gesturing() || state.doc.in_provisional()) {
+                return fail("layer.plane", "finish the current gesture first");
+            }
+            if (!state.doc.select_layer(index)) {
+                return fail("layer.plane", "could not select the layer");
+            }
+            state.edit_plane = *selected;
+        }
+        return command_ok(json{{"index", state.doc.active()},
+                               {"plane", layer_plane_name(state.edit_plane)},
+                               {"has_mask", state.active_layer().mask.has_value()}});
     });
 
     // The stack's order, moved one step at a time by the arrows on a card and to any index by a driver.
@@ -280,6 +318,7 @@ void register_layer_commands(AppState& state, CommandTable& table) {
             return fail("layer.flatten",
                         "'" + state.doc.layer(0).name + "' is the only layer: there is nothing to flatten");
         }
+        state.reconcile_edit_plane();
         return command_ok(layers_json(state));
     });
 
@@ -353,6 +392,7 @@ void register_layer_commands(AppState& state, CommandTable& table) {
         if (!state.doc.merge_down(index)) {
             return fail("layer.merge", "the document refused to merge the layer down");
         }
+        state.reconcile_edit_plane();
         return command_ok(layers_json(state));
     });
 

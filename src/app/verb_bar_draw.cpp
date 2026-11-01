@@ -158,17 +158,21 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
     double width = kBarPadPx * 2.0;
     double height = 0.0;
     if (mode == SelectionEditPhase::editing) {
-        width += std::max(static_cast<double>(ImGui::CalcTextSize("Editor mode active").x),
+        width += std::max(static_cast<double>(ImGui::CalcTextSize("Editing result mask").x),
                           static_cast<double>(ImGui::CalcTextSize("New AI edit").x +
                                               style.FramePadding.x * 2.0f));
         height = ImGui::GetTextLineHeight() + ImGui::GetFrameHeight() + style.ItemSpacing.y;
-    } else {
+    } else if (!rows.empty()) {
+        double row_width = kBarPadPx * 2.0;
+        double row_height = 0.0;
         for (const json& row : rows) {
             const ImVec2 text = ImGui::CalcTextSize(row["label"].get<std::string>().c_str());
-            width += text.x + style.FramePadding.x * 2.0 + style.ItemSpacing.x;
-            height = std::max(height, static_cast<double>(text.y + style.FramePadding.y * 2.0f));
+            row_width += text.x + style.FramePadding.x * 2.0 + style.ItemSpacing.x;
+            row_height = std::max(row_height, static_cast<double>(text.y + style.FramePadding.y * 2.0f));
         }
-        width -= style.ItemSpacing.x;
+        row_width -= style.ItemSpacing.x;
+        width = std::max(width, row_width);
+        height = row_height;
     }
     height += kBarPadPx * 2.0;
 
@@ -212,14 +216,14 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
     // The panel keeps the full controls - the words a verb asks for, the style and the model warning.
     // The bar is the shortcut, and it presses the same command the panel button presses.
     if (mode == SelectionEditPhase::editing) {
-        ImGui::TextUnformatted("Editor mode active");
+        ImGui::TextUnformatted("Editing result mask");
         if (ImGui::Button("New AI edit")) {
             commands.invoke("verb.new_edit", json::object());
         }
         state.verb_new_edit = {ImGui::GetItemRectMin().x, ImGui::GetItemRectMin().y,
                                ImGui::GetItemRectSize().x, ImGui::GetItemRectSize().y};
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-            ImGui::SetTooltip("Keep the result layer; switch Cover back to the next marked area");
+            ImGui::SetTooltip("Keep this result; select its image pixels and choose Cover for a new selection");
         }
     }
     for (std::size_t i = 0; i < rows.size(); ++i) {
@@ -227,7 +231,7 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
         if (i > 0) {
             ImGui::SameLine();
         }
-        ImGui::BeginDisabled(mode != SelectionEditPhase::actions ||
+        ImGui::BeginDisabled(mode == SelectionEditPhase::generating ||
                              !row["ready"].get<bool>());
         const bool pressed = ImGui::Button(row["label"].get<std::string>().c_str());
         ImGui::EndDisabled();

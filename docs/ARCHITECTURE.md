@@ -88,7 +88,7 @@ src/
                        container reader all ask here, so no file and no keystroke can leave a layer named
                        something another of them would refuse. `LayerPlane` names which of a layer's two
                        planes - `pixels`, `mask` - a write or a step belongs to, and its name table is
-                       the vocabulary `mask.target` and `stroke.plane` speak
+                       the vocabulary `layer.plane` and `stroke.plane` speak
     history.{h,cpp}    undo/redo as stacked (layer, plane, rectangle) deltas, budgeted by stored bytes,
                        as structural entries that put a layer back, take one away, reorder the stack or
                        replace it whole, as swapped planes for the two coverages - the document's marked
@@ -196,11 +196,11 @@ src/
     view_commands.cpp  view.*, and the fit that waits for a real canvas area
     tools/             one file per tool: brush.cpp (press/drag/release over the provisional edit),
                        move.cpp (the same gesture, sliding the layer's pixels), select.cpp (rectangle,
-                       ellipse and freehand path gestures over either coverage lifetime). Lasso paths
+                       ellipse and freehand path gestures over the marked selection). Lasso paths
                        stay in document coordinates and are rasterized once on release. Which file
                        the pointer talks to is the `action` column of `core::kTools`; selection rows
-                       also name their gesture there, while `PointerSelection` holds the gesture,
-                       operation and coverage target captured at press.
+                       also name their gesture there, while `PointerSelection` holds the gesture
+                       and operation captured at press.
     shortcuts.{h,cpp}  platform key event -> canonical shortcut text (the only sokol-aware
                        part of the app layer)
     ui.cpp             docking layout and status bar; it reads the AI intent once per frame and shares
@@ -222,8 +222,8 @@ src/
     ui_theme.{h,cpp}   shared semantic palette and ImGui style for dark and light themes; no
                        window control chooses between them - `ui.theme` and the persisted pref do
     ui_internal.h     declarations shared by the UI translation units    select_commands.cpp select.rect/all/clear/invert/get, and the `Ctrl+D`/`Ctrl+I` bindings
-    coverage.cpp        the two lifetimes coverage has (`marked`, `mask`): one id, one title each
-    coverage_commands.cpp `coverage.target`, read and set, answering with what the target can do
+    layer_commands.cpp   `layer.plane {index?,plane?}` selects a layer's image or mask thumbnail;
+                         Brush/Eraser write that plane, selection tools never do
     verb_bar.cpp          the marked-area verbs and the floating bar's wire (`verb.bar`,
                           `verb.ask`, `verb.new_edit`); read-only geometry and explicit re-arm
     selection_edit.{h,cpp} queue/land/result-mask lifecycle for the on-canvas bar: tracks a
@@ -268,8 +268,8 @@ src/
                        family member the intent holds
     mask_commands.cpp mask.from_selection, mask.add/remove/fill/invert and mask.get -
                        the two directions between a selection and the active layer's mask (both copies
-                       of one `Mask`) and the mask's own life cycle; which coverage a stroke writes is
-                       `coverage.target`, since the marked area is as much a target as the mask
+                       of one `Mask`) and the mask's own life cycle; the selected mask thumbnail
+                       controls whether Brush/Eraser paint coverage instead of image pixels
   ai/
     profile.{h,cpp}    what `/models` and `/health` say: a model's labels, recipe, whether it is
                        downloaded, its `image_defaults` (steps, cfg, size). Discovery parsing only -
@@ -544,16 +544,19 @@ and taking a mask off drops the steps that name its coverage, because restoring 
 without one would replace the whole canvas with a mask nobody painted. `mask.add` and `mask.remove` are
 therefore not steps, while `mask.fill` and `mask.invert` are: they write coverage through the same door
 a brush does.
-* **`coverage.target` is a claim, not a shadow of the document.** It names which lifetime of one
-  coverage a stroke writes — the marked area, or the active layer's mask. Layer selection alone
-  never changes it. A successfully landed selection AI edit deliberately points it at the result
-  mask; `verb.new_edit` points it back at the next marked area, and removing/undoing the tracked
-  result safely ends that edit session.
-  `cover` aimed at a mask the layer lacks is refused naming the layer, `app.state` reports the aim and
-  `stroke.coverage` the lifetime the press is holding (a gesture keeps the one it was pressed on, so
-  switching mid-drag cannot split it across two homes), and `coverage.target` answers with `writable`
-  whether that lifetime exists here at all. Colour is a tool and not a target: the brush paints colour
-  whichever way this is aimed.
+* **The marked selection and a layer mask have different ownership and controls.** `cover`,
+  `un-cover`, marquee, ellipse and lasso always change the document's transient selection. That
+  area stays the input to the next selection-scoped AI edit. The selected image or mask thumbnail
+  determines whether Brush/Eraser write layer colour or layer coverage: `layer.plane
+  {index?,plane?}` is the wire equivalent of clicking the thumbnail, and `brush.edit_plane`
+  and `stroke.plane` report the current target and the press-time target respectively. A mask
+  brush uses a provisional coverage transaction and its own history step; a live mask stroke does
+  not inherit an unrelated AI selection as a fence. There is no global `coverage.target` switch.
+  After a selection AI result lands, its layer mask is selected for immediate refinement;
+  `verb.new_edit` is an optional shortcut to choose image pixels and Cover, never an obligation
+  before the next AI request. A red wash shows masked-out regions while Brush/Eraser edit the
+  selected mask (and can be toggled with `view.mask_overlay`); Cover and selection tools show the
+  marked area in blue. These previews do not change saved pixels.
 * **`select.from_mask` and `mask.from_selection` are copies**, which is why a selection and a layer
   mask are one type rather than two with an adapter between them: an adapter needs rules, and rules
   are where "the mask moved by a pixel" and "the partial coverage got rounded" come from. Converting
@@ -1594,10 +1597,11 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | Group | Commands | Why |
 |---|---|---|
 | state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `ai.references`, `server.state`, `job.list`, `job.get {id}`, `ai.roles`, `ai.recipes`, `log.tail` | read what the app believes, cheaply |
-| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.lasso {points, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `ui.theme {theme?}`, `doc.new/open/save/export {path, quality?}/get`, `doc.resize {width, height, offset_x?, offset_y?, mark_added?}`, `doc.outpaint.prepare {width, height, offset_x?, offset_y?, prompt?}`, `doc.crop {rect?}`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at?, mode?}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `layer.move {index?, to}`, `layer.merge {index?}`, `layer.flatten`, `layer.rename {index?, name}`, `layer.rename.begin {index?}` (`F2`), `layer.scale {index?, factor}`, `layer.import {path, at}`, `mask.from_selection/add/remove/fill {to}/invert/target {plane}/get`, `mask.edge {shift?, hard?, feather?}`, `mask.edge.state`, `mask.edge.preview {shift?, feather?}`, `mask.edge.finish`, `mask.edge.cancel`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
+| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.lasso {points, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `ui.theme {theme?}`, `doc.new/open/save/export {path, quality?}/get`, `doc.resize {width, height, offset_x?, offset_y?, mark_added?}`, `doc.outpaint.prepare {width, height, offset_x?, offset_y?, prompt?}`, `doc.crop {rect?}`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at?, mode?}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `layer.move {index?, to}`, `layer.merge {index?}`, `layer.flatten`, `layer.rename {index?, name}`, `layer.rename.begin {index?}` (`F2`), `layer.scale {index?, factor}`, `layer.import {path, at}`, `mask.from_selection/add/remove/fill {to}/invert/get`, `layer.plane {index?, plane?}`, `view.mask_overlay {show?}`, `mask.edge {shift?, hard?, feather?}`, `mask.edge.state`, `mask.edge.preview {shift?, feather?}`, `mask.edge.finish`, `mask.edge.cancel`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
  `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. Its `cancel` phase closes a provisional selection without committing it; Lasso press may also carry `mode: replace|add|subtract`. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
-| ai | `verb.bar {}` (mode `actions`, `generating`, `editing`; bar/return-button screen rectangles), `verb.ask {show}`, `verb.new_edit {}` (finish result-mask editing and re-arm selection), `ai.verbs` (the verb rows: id, command, key, recipe, label, operation, `ask`, scope, `ready`, `reason`, `model`, `resident`, `swap`), `ai.heal` / `ai.remove` / `ai.fill` / `ai.change` / `ai.generate` / `ai.blend` `{vars?, seed?, confirm?, include_references?}` (one verb row pressed - they call `ai.intent` with their recipe named, so a key and a scripted intent cannot diverge), `ai.references {}`, `ai.references.add {path?, paths?, layer?}`, `ai.references.remove {id}`, `ai.references.move {id, to}`, `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?, include_references?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?, include_references?}`, `ai.intent {recipe?, vars?, aspect?, include_references?, seed?, seed_pin?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pinned}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.apply {id, feather?, colour_match?}` (the idempotent landing door - answers land by themselves, so this one brings one back or overrides the policy, and says `already_landed` otherwise), | `ai.references` reads ordered session references; its add/remove/move commands are the same actions the GUI uses, and `ai.preview` shows every image's order, source, dimensions, hash and encoded size plus the actual request field names and body size. It also reports whether configured references are included for the selected operation. `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact request before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel and land without a UI; `ai.intent` is the whole surface of the action, so a scripted run and a key press cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command; absent, the request takes the panel's pin or a fresh draw, and every report says which (`seed`, `seed_source`) |
+| layer editing | `layer.plane {index?,plane?}` (select image/mask thumbnail), `view.mask_overlay {show?}` (red hidden-area preview), `brush.edit_plane`, `stroke.plane` and `layer_cards[*].editing_mask/editing_pixels` (wire-observable targets) | Selection tools always edit the marked area; Brush/Eraser use the thumbnail. `verb.new_edit` selects Cover as a shortcut without gating AI verbs. |
+| ai | `verb.bar {}` (mode `actions`, `generating`, `editing`; bar/return-button screen rectangles), `verb.ask {show}`, `verb.new_edit {}` (optional shortcut: select image pixels and Cover; no prerequisite for AI actions), `ai.verbs` (the verb rows: id, command, key, recipe, label, operation, `ask`, scope, `ready`, `reason`, `model`, `resident`, `swap`), `ai.heal` / `ai.remove` / `ai.fill` / `ai.change` / `ai.generate` / `ai.blend` `{vars?, seed?, confirm?, include_references?}` (one verb row pressed - they call `ai.intent` with their recipe named, so a key and a scripted intent cannot diverge), `ai.references {}`, `ai.references.add {path?, paths?, layer?}`, `ai.references.remove {id}`, `ai.references.move {id, to}`, `ai.compose {image, apply?, feather?, colour_match?, lock_band?}`, `ai.preview {recipe, vars?, seed?, steps?, cfg_scale?, include_references?}` (compiled request + prepped PNG, **no send**), `ai.run {recipe, vars?, seed?, steps?, cfg_scale?, include_references?}`, `ai.intent {recipe?, vars?, aspect?, include_references?, seed?, seed_pin?, job?, run?, confirm?, connect?}` (the selection panel: intents, values, price, job and session - read with no arguments, which costs nothing), `server.connect`, `server.load {model, pinned}`, `server.state`, `ai.roles`, `ai.recipes`, `job.list`, `job.get {id}`, `job.wait {id, timeout?}`, `job.cancel {id}`, `job.apply {id, feather?, colour_match?}` (the idempotent landing door - answers land by themselves, so this one brings one back or overrides the policy, and says `already_landed` otherwise), | `ai.references` reads ordered session references; its add/remove/move commands are the same actions the GUI uses, and `ai.preview` shows every image's order, source, dimensions, hash and encoded size plus the actual request field names and body size. It also reports whether configured references are included for the selected operation. `ai.compose` lands a returned image on the document and reports the effective coverage, so pixel-lock is checkable without a server; `ai.preview` shows the exact request before anything is sent; `server.*` and `job.*` are the session and the queue, so a driver can connect, run, wait, cancel and land without a UI; `ai.intent` is the whole surface of the action, so a scripted run and a key press cannot mean different things - including the handshake, which is `connect` here and a button in the window, never a line of UI code that owns a socket. `seed` is optional on every request-building command; absent, the request takes the panel's pin or a fresh draw, and every report says which (`seed`, `seed_source`) |
 
 Live now: every row. The AI row is driven end to end by `tools/ai_job_probe.py` against
 `tests/fixtures/http` (a recorded server), so the whole path - discovery, role resolution, the compiled
@@ -1612,17 +1616,17 @@ with `canvas` present only while one exists, because a sized mask that covers no
 and must not read as no selection). `covered` counts pixels touched, `area` adds the coverage bytes
 up: for a rectangle they are equal, for an anti-aliased curve `area` measures partial coverage and
 `covered` is the pixels it grazes. While a pointer gesture is down, `stroke` also reports `marquee` —
-the box a rectangle or ellipse tool is drawing, live, `marquee_shape`, which gesture is active, `lasso_points` in document coordinates for Lasso, `selection_mode`, and `marquee_coverage`,
-which lifetime that press opened: the only way to tell a marquee that tracks the pointer from one that
-appears on release, and the only way to see which tool row a gesture was started with and which coverage
-it will commit to when the button lifts. The mask is reported the same way a selection is - `layer.list`
+the box a rectangle or ellipse tool is drawing, live, `marquee_shape`, which gesture is active, `lasso_points` in document coordinates for Lasso, `selection_mode`, and `target`,
+which is `selection` for a marquee or Cover and a layer plane for Brush/Eraser: the only way to tell a marquee that tracks the pointer from one that
+appears on release, and the only way to see which selection the gesture will commit on release. The mask is reported the same way a selection is - `layer.list`
 rows carry `mask` (`covered`, `area`, `bounds`, or `null` for none), `mask.get` answers with the mask
-itself, and `brush.coverage_target` with `writable` says which lifetime the next stroke writes - so a
+itself, and `brush.edit_plane` names whether Brush/Eraser write pixels or the mask - so a
 driver can tell a mask that hides everything from a layer that has no mask, and a stroke that painted
 colour from one that painted coverage. The Layers panel reports where it is as well as what it shows:
 `layer_cards` rows carry a layer's `index`, `id`, `name`, whether it is `active`, `renaming` or `scaling`
 while the card holds the name field or the factor field, and the screen box of every control on the card
-(`title`, `visibility`, `move_up`, `move_down`, `merge`, `opacity`, `mode`, `scale`), while `layer_panel`
+(`title`, `visibility`, `picture`, `mask_picture`, `editing_pixels`, `editing_mask`,
+`move_up`, `move_down`, `merge`, `opacity`, `mode`, `scale`), while `layer_panel`
 carries the boxes of the stack's own row, the `can_flatten` that says whether the row can do anything to
 this stack, and the box of the scrolling list the cards live in. A driver presses a control where the app says it is, which is the only way to catch the
 failure this found: a widget submitted inside another widget's rect draws, lights up under the pointer and

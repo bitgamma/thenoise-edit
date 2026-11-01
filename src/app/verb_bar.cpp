@@ -24,7 +24,7 @@ using nlohmann::json;
 // What the bar's phrase box holds, if one stands open: the verb, the field its words belong to, and
 // the words themselves read back from the intent rather than from a buffer the view owns.
 json verb_ask_state(AppState& state, CommandTable& table) {
-    if (!state.ask_verb || selection_edit_phase(state) != SelectionEditPhase::actions) {
+    if (!state.ask_verb || selection_edit_phase(state) == SelectionEditPhase::generating) {
         return nullptr;
     }
     const VerbInfo* info = find_verb(*state.ask_verb);
@@ -132,8 +132,8 @@ void register_verb_bar_commands(AppState& state, CommandTable& table) {
             state.ask_verb = std::nullopt;
             return command_ok(verb_ask_state(state, table));
         }
-        if (selection_edit_phase(state) != SelectionEditPhase::actions) {
-            return fail("verb.ask", "finish the current edit or choose New AI edit first");
+        if (selection_edit_phase(state) == SelectionEditPhase::generating) {
+            return fail("verb.ask", "the AI edit is still generating");
         }
         const std::optional<VerbId> id = verb_from_name(shown);
         if (!id) {
@@ -158,13 +158,13 @@ void register_verb_bar_commands(AppState& state, CommandTable& table) {
     });
 
 
-    table.add("verb.new_edit", "Finish editing the result mask and mark the next AI edit", {}, {},
+    table.add("verb.new_edit", "Switch to Cover to mark the next AI edit", {}, {},
               [&state](const json&) -> CommandResult {
-        const SelectionEditPhase phase = selection_edit_phase(state);
-        if (phase != SelectionEditPhase::editing) {
-            return fail("verb.new_edit", phase == SelectionEditPhase::generating
-                                        ? "the AI edit is still generating"
-                                        : "there is no result mask being edited");
+        if (selection_edit_phase(state) == SelectionEditPhase::generating) {
+            return fail("verb.new_edit", "the AI edit is still generating");
+        }
+        if (state.doc.empty()) {
+            return fail("verb.new_edit", "there is no document");
         }
         selection_edit_new(state);
         return command_ok(json{{"mode", "actions"},

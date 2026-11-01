@@ -231,7 +231,7 @@ def landing_claims(p: Probe, wire: wd.Wire, live: bool, tmp: pathlib.Path, row: 
     if row.get("scope") == "selection":
         bar = wire.call("verb.bar")
         p.check(bar["mode"] == "editing" and
-                wire.call("coverage.target")["target"] == "mask",
+                wire.call("layer.plane")["plane"] == "mask",
                 f"{verb}: a landed edit exposes its result mask", str(bar["mode"]))
     p.check(str(landing.get("landed_layer", "")) == f"{label} {job_id}",
             f"{verb}: the layer is named for the verb and the job", str(names))
@@ -539,7 +539,7 @@ def run_case(live: bool, args: argparse.Namespace, tmp: pathlib.Path, p: Probe) 
                     "repeat fill: the first answer enters result editing")
             rearmed = wire.call("verb.new_edit")
             p.check(rearmed["mode"] == "actions" and
-                    wire.call("coverage.target")["target"] == "marked",
+                    wire.call("layer.plane")["plane"] == "pixels",
                     "repeat fill: New AI edit rearms the marked area")
             first = wire.call(fill["command"], {"seed": args.seed})
             first_waited = wire.call("job.wait", {"id": first["job"]["id"], "timeout": 30})

@@ -32,10 +32,18 @@ void add_dabs(AppState& state, const std::vector<Vec2>& path) {
     const Rect touched = scratch_stamp(state.stroke.scratch, dabs, state.brush, state.doc.size());
     state.doc.begin_provisional(touched, state.stroke.plane);
     state.stroke.dabs += dabs.size();
-    state.doc.repaint_provisional(touched, [&state](Image& image, Rect region) {
-        scratch_composite(image, state.stroke.scratch, state.color, state.brush, mode_of(state),
-                          region);
-    });
+    if (state.stroke.plane == LayerPlane::mask) {
+        state.doc.repaint_provisional_mask(touched, PaintFence::own_coverage,
+                                           [&state](Mask& mask, Rect region) {
+            mask.paint(region, scratch_coverage(state.stroke.scratch, region, state.brush.opacity),
+                       mask_ink(mode_of(state)));
+        });
+    } else {
+        state.doc.repaint_provisional(touched, [&state](Image& image, Rect region) {
+            scratch_composite(image, state.stroke.scratch, state.color, state.brush,
+                              mode_of(state), region);
+        });
+    }
 }
 
 }  // namespace
@@ -45,7 +53,10 @@ void brush_press(AppState& state, Vec2 document_point) {
         return;
     }
     state.stroke = PointerStroke{};
-    state.stroke.plane = LayerPlane::pixels;
+    if (state.edit_plane == LayerPlane::mask && !state.active_layer().mask) {
+        return;
+    }
+    state.stroke.plane = state.edit_plane;
     state.stroke.active = true;
     state.stroke.last = document_point;
     // The held-aside pixels are taken by `add_dabs`, over the rectangle the dabs actually

@@ -32,6 +32,7 @@ namespace {
 // door that replaces the document says so here - a door that forgot would let an answer queued against
 // the last file land in this one.
 void note_new_document(AppState& state) {
+    state.edit_plane = LayerPlane::pixels;
     ++state.document_epoch;
     // The door is the way in, and a document in hand closes it - whoever made the document: the
     // picker, the recent list, a launch argument, a driver.
