@@ -38,7 +38,6 @@ void paste_coverage(Mask& mask, Rect rect, const std::uint8_t* bytes) {
 
 History::History(std::size_t budget_bytes) : budget_bytes_(budget_bytes) {}
 
-
 void History::record(std::uint64_t layer_id, LayerPlane plane, Rect rect,
                      std::vector<std::uint8_t> before) {
     redo_stack_.clear();
@@ -168,6 +167,18 @@ void History::record_stack_replaced(std::vector<Layer> stack) {
     drop_oldest_until_within_budget();
 }
 
+void History::record_canvas_replaced(std::vector<Layer> stack, std::optional<Mask> marked) {
+    redo_stack_.clear();
+    Stacked entry;
+    entry.kind = Kind::canvas_replaced;
+    entry.step = open_step_ != 0 ? open_step_ : ++next_step_;
+    entry.stack = std::move(stack);
+    entry.marked = std::move(marked);
+    bytes_ += held(entry);
+    undo_stack_.push_back(std::move(entry));
+    drop_oldest_until_within_budget();
+}
+
 void History::record_layer_order(std::vector<std::uint64_t> order) {
     redo_stack_.clear();
     const int step = open_step_ != 0 ? open_step_ : ++next_step_;
@@ -286,7 +297,7 @@ bool History::fits(const Layer* layer, const Stacked& entry) {
             // The name belongs to a layer, so the layer has to be there. The name itself always fits.
             return layer != nullptr;
         case Kind::stack_replaced:
-            // Nothing to check: it supplies every layer rather than reading one.
+        case Kind::canvas_replaced:
             return true;
         case Kind::coverage:
             // Checked against the canvas by `fits_coverage`; it reads no layer.
@@ -349,6 +360,13 @@ void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
         if (Layer* target = layer_of(layers, entry.layer)) {
             std::swap(target->mask, entry.mask);
         }
+        entry.step = step;
+        into.push_back(std::move(entry));
+        return;
+    }
+    if (entry.kind == Kind::canvas_replaced) {
+        std::swap(layers, entry.stack);
+        std::swap(marked, entry.marked);
         entry.step = step;
         into.push_back(std::move(entry));
         return;
@@ -470,8 +488,8 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
             }
             continue;
         }
-        if (entry.kind == Kind::stack_replaced) {
-            continue;  // it replaces every layer, so there is nothing about this stack to check
+        if (entry.kind == Kind::stack_replaced || entry.kind == Kind::canvas_replaced) {
+            continue;
         }
         if (entry.kind == Kind::coverage) {
             if (!fits_coverage(layers, entry)) {
@@ -520,13 +538,19 @@ std::optional<History::Applied> History::step_back(std::vector<Stacked>& from,
             const std::size_t carried = held(entry);
             const bool paints_nothing =
                 entry.kind == Kind::coverage || entry.kind == Kind::layer_renamed;
+            touched.canvas_changed = touched.canvas_changed || entry.kind == Kind::canvas_replaced;
             step_structure(entry, into, layers, marked, step);
             // A structural entry trades content with the stack, so what it costs the budget changes with
             // the trade: a step that takes a layer away starts paying for it, and one that gives it back
             // stops. The entry is moved by now, so the price of what stays is read where it landed - a
             // `stack_replaced` entry leaves holding the stack the document just gave up, and pricing that
             // as nothing underflows `bytes_` and drops the whole timeline.
-            bytes_ += held(into.back()) - carried;
+            const std::size_t replaced = held(into.back());
+            if (replaced >= carried) {
+                bytes_ += replaced - carried;
+            } else {
+                bytes_ -= carried - replaced;
+            }
             // Trading coverage or a name put back no pixel and moved no layer, so it is not
             // `structure`: telling the document it was would repaint the whole canvas to show a mark
             // moving or a card relabelling itself.
@@ -599,7 +623,9 @@ int History::steps_in(const std::vector<Stacked>& stack) {
 }
 
 void History::drop_oldest_until_within_budget() {
-    while (bytes_ > budget_bytes_ && !undo_stack_.empty()) {
+    // Never drop the last step: a geometry edit must remain undoable even when one
+    // old full-canvas snapshot alone exceeds the nominal history budget.
+    while (bytes_ > budget_bytes_ && steps_in(undo_stack_) > 1) {
         const int step = undo_stack_.front().step;
         while (!undo_stack_.empty() && undo_stack_.front().step == step) {
             bytes_ -= held(undo_stack_.front());

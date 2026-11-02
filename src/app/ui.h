@@ -23,7 +23,8 @@ inline constexpr int kUiVertexLimit = 131072;
 // same table the debug wire drives. The canvas texture is GPU state the caller
 // owns, so that `AppState` stays windowless and testable.
 void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
-             const gfx::Checker& checker, CoverageTint& tint, LayerThumbs& thumbs,
+             const gfx::Checker& checker, CoverageTint& tint, CoverageTint& mask_tint,
+             LayerThumbs& thumbs,
              ReferenceThumbs& reference_thumbs);
 
 }

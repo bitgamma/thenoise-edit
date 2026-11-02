@@ -21,6 +21,8 @@ inline constexpr int kGaussianBoxPasses = 3;
 // integers so a blur of bytes stays exact - the rounding is one division per sample, and it rounds
 // away from zero for the same reason a brush does.
 void box_blur(std::vector<int>& samples, Extent size, int channels, int radius, int passes);
+void box_blur(std::vector<std::uint8_t>& samples, Extent size, int channels, int radius,
+              int passes);
 
 // The same coverage with a transition band instead of a hard edge: every cell becomes the mean of
 // the cells within `radius` of it. A feather is a softening, not a threshold, so a partly covered

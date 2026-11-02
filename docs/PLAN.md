@@ -1,12 +1,79 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the tree against the docs: **2026-10-26**, after the merge of the inline-rename and
-layer-scale branch back over the UI module split — the layers panel, its two inline fields and the history
-kinds were checked against `docs/ARCHITECTURE.md`, the command table and the probe. The file
-selection path was last checked against the command table, host loop, platform boundary and WASM bridge in
-the movable-native-picker note. The selected next architecture milestone remains `doc.crop` /
-`doc.resize`, blocked on `History::fits_coverage` validating coverage when a history entry's canvas extent
-differs from the current stack extent. `AGENTS.md` is normative and outranks this file.
+Last re-read of the document geometry and AI landing path: **2026-10-29**. `doc.resize` and
+`doc.crop` now move pixels, masks and marked coverage together, and undo/redo exchange entire
+canvas states so older per-pixel history is valid again once the original extent returns. New AI
+answers retain the generated crop under a separately editable mask. The prior 2026-10-26 notes
+below remain historical. Image-size resampling and dedicated AI upscale methods are still planned.
+`AGENTS.md` is normative and outranks this file.
+
+## 2026-10-30 - Explicit selection-edit cycle over the AI result
+
+The marked-area bar now has three queue-backed states: actions, generating and editing. During
+execution, the four operations are disabled in the floating bar and by the shared `ai.intent`
+readiness guard (which also protects shortcuts and the panel). Only a successfully **landed**
+masked result enters `Editor mode active`; errors, cancellations, refused landings and the
+blank-first-layer special case do not pretend an editable mask exists. A new `verb.new_edit`
+command re-arms marking without changing the result layer, and `verb.bar` exposes mode and
+clickable button coordinates for the native probe. Result identity and document epoch prevent
+new layers, document replacement or Undo from inheriting an old edit state. The return button
+anchors to the resulting mask or its saved job bounds even after clearing a selection/mask.
+
+The AI job queue remains the source of progress and landing; the selection-edit controller only
+records which request owns the on-canvas UI cycle. No new AI backend path or document format.
+
+## 2026-10-31 - Outpaint launch and continuous AI-mask editing
+
+**Architecture verdict:** The existing `doc.resize` geometry step and `region-fill` recipe
+already cover outpainting; a new backend recipe or layer format would duplicate the same
+concept. The missing piece was the user-facing handoff: `doc.outpaint.prepare` composes
+one geometry change, the newly exposed selection, the existing Fill phrase box and a suggested
+prompt. The model request still requires an explicit **Run**. Geometry-only resizing remains
+separate. The command ensures Coverage targets the marked area after an earlier mask edit.
+
+**Seam correctness:** `compose_editable_result` keeps the full generated crop and the editable
+coverage mask. At newly transparent source pixels, preserve the original selected coverage
+instead of blurring it toward zero at the outer canvas boundary; feather the transition over
+existing source pixels only. A whole-image pixel test confirms the expansion is opaque and
+original pixels beyond the selected/feathered region are unchanged.
+
+**No extra mask commit:** The original Document provisional mask gesture is reused for edge
+sliders: each move recomputes from the gesture's start mask, release writes one history step,
+and cancel restores it. Mask gestures now choose the `PaintFence` explicitly, so editing the
+result mask is not clipped to an unrelated marked area for the next generation. The panel
+removes Apply edge; Undo/Redo remain the reversal mechanism. No project-format migration.
+
+**Verification scope:** core canvas/compose/document tests were run using local C++20
+compilation; the app command/UI and full recorded-backend suites still require the normal
+CMake dependencies and live verification requires an opt-in configured backend.
+
+## 2026-10-29 - Crop, canvas size, outpainting and editable AI seams
+
+**Landed in this change:** `doc.resize` translates all layer pixel planes and layer masks without
+resampling; `doc.crop` keeps the requested rectangle. The Canvas size / Crop panel exposes an
+anchor, pixel dimensions, a crop rectangle and crop-to-selection. Resizing selects precisely the
+newly exposed pixels by default. That mark is immediately usable with the existing Fill workflow;
+selecting a different region or selecting everything lets the editor regenerate only that portion
+or the complete enlarged canvas. The actual AI request can still be downsampled by the model's
+published pixel cap; the resized **document** has the requested size regardless.
+
+**History and jobs:** `Kind::canvas_replaced` holds the old layer stack **and** the marked area
+as a single reversible state. Earlier rectangles remain valid when the old extent is restored.
+`geometry_revision` propagates to the document epoch on resize, crop and undo/redo, so a queued
+answer cannot be pasted onto a canvas whose coordinates have changed. A large single geometry
+snapshot remains undoable even if it exceeds the nominal 128 MiB history budget.
+
+**Editable seam:** A generated edit now keeps the full colour-matched requested crop on its
+new layer, with the original coverage/lock-band as an editable layer mask. `mask.edge` applies
+harden, pixel growth/shrinkage and optional feathering; painting on the layer mask makes local
+corrections. Undo records mask changes. **Only pixels returned in the generated crop can be
+revealed**: reaching outside it requires a new AI request. The empty-first-layer special case
+still lands directly on that canvas. The existing flattened `ai.compose` preview remains unchanged.
+
+**Still outstanding:** actual image-size resampling (Lanczos, AI upscale) is separate from
+canvas size; a dedicated `extend` recipe can refine the outpainting language later. The native
+ImGui/runtime and a live model round trip require the normal full dependency-equipped build.
+See [CANVAS_OUTPAINT.md](CANVAS_OUTPAINT.md) for the commands and workflow.
 
 ## 2026-10-26 - The window stops offering a theme
 
@@ -194,16 +261,17 @@ quote remains deliberately cut. Slice 3's coverage and verb bar are in place; lo
 6. **Blend, and images as input.** Landed: Insert/drop places an image on its own layer; no-prompt *Blend*
    uses `region: layer`, whose source is the layer's pixels and whose coverage is its alpha. *Blend* with a
    prompt and control images (openpose) remain future work through the same input path.
-7. **Document geometry.** `doc.crop`, `doc.resize` for the canvas - with *AI fill* on the grown strip, the
-   outpaint mechanism below - and *Image size* with a method: Lanczos, `AI upscale (fast)` (ESRGAN),
-   `AI upscale (best)` (an edit model, so one `roles.json` row and one recipe). The seam to think about
-   first is history: `Document` fixes its `Extent` at creation today, and the journal holds full-size
-   snapshots, so a size change needs a decision about what undo means across it.
+7. **Document geometry.** Canvas `doc.crop` and `doc.resize` **landed 2026-10-29**.
+   `History::canvas_replaced` exchanges the entire document extent, layers and marked selection;
+   new exposure is selected for Fill. *Image size*, which **resamples** rather than enlarges an
+   empty border, is still future work: Lanczos, `AI upscale (fast)` (ESRGAN) and
+   `AI upscale (best)` (an edit model with a recipe and a role).
 
-   **Outpaint, the mechanism.** Grow the `Extent`, mark the grown border as the coverage, compile the
-   region with the original frame *inside* it as context, and let the answer land on a new layer clipped to
-   the grown strip, so the original pixels stay byte-untouched. It is `reconstruct` with a different mask
-   story, which is why it wants its own `operation: extend` rather than a weakened call.
+   **Outpaint, the mechanism (landed via Fill):** Grow `Extent`, mark newly exposed coverage,
+   compile the crop with the original frame as context, and land on a new mask-clipped layer.
+   Existing document pixels remain untouched. The present path deliberately reuses the existing
+   selection-scoped recipe; a dedicated `operation: extend` may be worth adding when its prompt
+   or backend needs to behave differently, not as a prerequisite for outpainting.
 8. **The tuning pass and the parked niceties.** Recipe wording and `prep.radius_px` per verb against hole
    size (specified at the end of this file, needs the box), the `enhance` prompt-improver behind its own
    button, the keymap file, autosave.
@@ -503,6 +571,23 @@ through a window — the claims are unit and command-table level (`test_document
 `test_app`), and `coverage_view_probe`, `verb_bar_probe`, `layer_panel_probe` and `wire_input` have not
 run since. `ctest --test-dir build`: 40 tests, 0 failed, 15 skipped. Getting there needed the harness
 fixed first — see the note below on `prep_proof` and `coverage_view_probe` aborting instead of skipping.
+
+## 2026-11-01 - Separate the AI selection from layer-mask painting
+
+The earlier `coverage.target` design (described in the historical milestones below) has been
+replaced. It made Cover/Un-cover unexpectedly mutate a result mask and required a manual switch to
+mark the next edit. The single source of truth is now the selected layer's `LayerPlane` (`layer.plane`),
+which affects **only Brush/Eraser**. Cover, Un-cover and selection gestures always edit the transient,
+blue AI selection. Clicking the image or mask thumbnail chooses pixel or mask painting; a selected
+mask's hidden region is shown in translucent red and can be toggled off. The same Brush/Eraser
+controls reveal/hide the result without applying or committing it.
+
+After a successful AI edit, the new result layer's mask is selected for immediate adjustment.
+`verb.new_edit` selects Cover and the image plane as a convenience, **not** a prerequisite for running
+another AI operation on a marked selection. The bar remains reachable over the result; selection
+verbs are available whenever a valid mark exists. Tool targeting, result handoff, the two overlay
+colours and the thumbnail hitboxes are observable on the debug wire; the mask and pixel editing
+routes retain one undo step per stroke. Regression tests and probe scripts now use `layer.plane`.
 
 ## 2026-10-16 - The stack becomes one layer, and the history entry that can say so
 
@@ -804,7 +889,7 @@ fine a minute before.
 | `ai/queue` | one worker, cancellable, in-memory; a job's timeout is predicted when it is queued so it cannot change under it; **a re-ask is another request** | `test_backend` |
 | `ai/server` | latency EMA per `(model, w×h, steps)` → ETA and `timeout_request`; a reply inside 1 s is the box's own answer and never a sample | `test_backend`, `docs/probes/` |
 | `app::kVerbs` + `ai.verbs` | five verbs bound to recipes; a row whose recipe contradicts it — wrong operation, an `ask` that grew, two verbs on one recipe — makes the row not-ready at session open | `test_app`, `ai.verbs` |
-| `app/coverage.h` (`coverage.target`) | one coverage, two lifetimes: `cover` and the marquee write whichever `marked`/`mask` says, a gesture keeps the lifetime it was pressed on, marking writes no pixel byte and costs one undo step per gesture, and colour stays a tool rather than a target | `test_app`, `wire_input`, `mask_speed_probe` |
+| `app/layer_commands.cpp` (`layer.plane`) | the image/mask thumbnails select which layer plane Brush/Eraser paint; Cover/Un-cover and marquee/lasso never switch away from the document selection; mask paint is independent of the selection fence | `test_app`, `wire_input`, `mask_speed_probe` |
 | `Document::set_layer_mask` + `Kind::mask_replaced` | a layer's mask plane has one write door: putting one on, taking one off and replacing one are each one step that *swaps* the plane, so the coverage the layer was hidden by comes back rather than a fresh mask, the writes underneath it stay reachable, and `History` needs no `drop_mask` | `test_document`, `test_history`, `test_app` |
 | `Document::set_selection` + `begin_marked` | the marked area is one write door and one step per gesture: the marquee from press to release and a `cover` stroke commit once, in one coat, and undoing a mark puts coverage back without moving a pixel, a revision or a thumbnail | `test_document`, `test_history`, `test_app` |
 | `app/verb_bar.cpp` (`verb.bar`) | the bar offers exactly the verbs whose recipe has `scope: selection`, hangs off the mark and clear of it, and presses the panel's command; where it drew itself is read back rather than remembered by the caller | `test_app`, `verb_bar_probe` |
@@ -1182,3 +1267,27 @@ the app command protocol, or moving file routing into the platform adapter. The 
 the queued request/result from file operations, and the existing selection order is deterministic after
 the NFD path set is collected. The crop/resize milestone and the document/history constraint it needs are
 unchanged. See `docs/FILE_BROWSER.md`.
+
+## 2026-11-02 - Remove forced edit handoff; add 90-degree rotation
+
+**Architecture verdict:** The blue AI selection and each result layer's mask already have
+independent editing tools. The `New AI edit` UI and automatic mask selection duplicated a
+mode switch the user did not need and obstructed the canvas in compact windows. A landed
+answer now keeps the image plane active; the floating AI verb bar stays hidden until the
+selection changes. The result mask stays independently accessible through its thumbnail,
+without a new dialog or additional Apply action. Selection revision, not a guessed timeout
+or a costly mask copy, determines when the existing verb bar is relevant again.
+
+`doc.rotate` uses the same whole-canvas replacement history as resize and crop: pixels,
+all layer masks and the marked selection rotate together. It exchanges width and height,
+bumps the geometry epoch to invalidate pending AI work and keeps one Undo step. The default
+Outpaint Fill suggestion is now `extended the background` based on user feedback; no
+new recipe, model dependency or upscaling code was introduced.
+
+## 2026-11-02 - Mask-thumbnail visual feedback
+
+**Architecture verdict:** A mask thumbnail is an editing target, not a second coverage mode.
+Selecting it now activates Brush only when the current tool cannot paint the mask; this makes
+the existing red mask preview visible immediately while preserving Eraser and the separation
+of Cover/selection (blue) from mask painting (red). No new overlay state or UI command is needed.
+The wire and the thumbnail continue to share the `layer.plane` command.

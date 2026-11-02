@@ -14,8 +14,6 @@
 #include "core/layer.h"
 #include "core/mask.h"
 
-#include <optional>
-
 namespace noise {
 
 // Budgeted in stored bytes rather than step count: one region operation on a large document
@@ -25,6 +23,8 @@ inline constexpr std::size_t kHistoryBudgetBytes = 128 * 1024 * 1024;
 // A document with no layer has no canvas, and every command that edits pixels needs one, so
 // the last layer cannot be removed.
 inline constexpr std::size_t kMinLayers = 1;
+// An upper bound on geometry allocations, shared by all canvas commands.
+inline constexpr std::int64_t kMaxCanvasPixels = 64LL * 1024 * 1024;
 
 // What limits a write to a layer. `own_coverage` is the claim that the edit's own extent is the limit:
 // an AI composite arrives with a feathered mask deliberately wider than the selection it was compiled
@@ -72,6 +72,10 @@ public:
     int width() const;
     int height() const;
     Extent size() const;
+    // Advances on any canvas geometry edit, including undo/redo of that edit.
+    // Pending AI jobs compiled for the previous geometry must not land after it changes.
+    std::uint64_t geometry_revision() const;
+    std::uint64_t selection_revision() const;
 
     // Bottom-first. `active` is the layer `paint` and a gesture edit.
     std::span<const Layer> layers() const;
@@ -87,10 +91,10 @@ public:
     // A new layer where the creation and everything `write` puts into it are one step, rather than the
     // arrival alone as `add_layer` records, so an AI answer is a single edit - `Ctrl+Z` removes the result together with the layer it
     // arrived on, instead of leaving an empty one named after a job. The layer is transparent, goes
-    // directly above the active one and becomes active. `write` gets the layer's own pixels; a `false`
-    // means it refused, and then nothing is added and nothing is recorded. Returns the new index, or -1.
+    // directly above the active one and becomes active. `write` gets the layer (pixels and optional
+    // mask) in one transaction; a `false` means it refused, and then nothing is added and nothing is recorded. Returns the new index, or -1.
     int add_layer_written(std::string name, Rect bounds,
-                          const std::function<bool(Image&)>& write);
+                          const std::function<bool(Layer&)>& write);
     // False when `index` is out of range or it is the last layer standing. The step holds the whole
     // layer, so undo returns its picture, mask, mode and opacity as well as its name - and the steps
     // written on it stay reachable underneath, which is why nothing invalidates them.
@@ -128,6 +132,14 @@ public:
     // layer exist at all, not what was written into them. One undo step, holding the rectangle both planes
     // moved over, and a scale that fits its own box exactly (factor 1) records nothing.
     LayerScale scale_layer(int index, double factor);
+
+    // Change the extent without resampling existing pixels. `offset` is where old (0,0)
+    // sits in the new canvas. Negative offsets crop, positive offsets expose empty pixels.
+    // `mark_added` selects precisely the newly exposed area for AI Fill/outpainting.
+    // Undo/redo exchange every layer, mask and selection as one state.
+    bool resize_canvas(Extent target, int offset_x, int offset_y, bool mark_added);
+    bool crop_canvas(Rect crop);
+    bool rotate_canvas(bool clockwise);
 
     // The layer at `index` onto the one under it, exactly as the canvas shows them: the upper layer's
     // mask, blend mode and opacity are applied on the way down, and it leaves the stack while the layer
@@ -250,7 +262,10 @@ public:
     // made a drag cost more with every event: 2.9 ms to 108 ms over one 40-event stroke at 2048².
     // Each one writes the plane its gesture began on; the other is refused in the log.
     void repaint_provisional(Rect dirty, const std::function<void(Image&, Rect)>& paint);
-    void repaint_provisional_mask(Rect dirty, const std::function<void(Mask&, Rect)>& paint);
+    // The mask is independent of the marked area when `own_coverage` is requested; only
+    // selection-fenced gestures use the document selection as a clip.
+    void repaint_provisional_mask(Rect dirty, PaintFence fence,
+                                  const std::function<void(Mask&, Rect)>& paint);
     void commit_provisional();
     void discard_provisional();
     bool in_provisional() const;
@@ -263,6 +278,8 @@ public:
     HistoryStats history() const;
 
 private:
+    std::uint64_t geometry_revision_ = 0;
+    std::uint64_t selection_revision_ = 0;
     struct Provisional {
         std::uint64_t layer;
         LayerPlane plane;

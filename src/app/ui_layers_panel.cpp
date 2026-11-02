@@ -156,11 +156,31 @@ void draw_layer_preview(AppState& state, LayerCard& card_state, const Layer& lay
     if (preview.pixels.valid()) {
         ImGui::Image(simgui_imtextureid(preview.pixels.view), thumb_draw_size(layer.pixels.size()));
         card_state.picture = item_rect();
+        if (ImGui::IsItemClicked()) {
+            commands.invoke("layer.plane", json{{"index", row}, {"plane", "pixels"}});
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Edit image pixels (Brush / Eraser)");
+        }
+        if (card_state.editing_pixels) {
+            ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                                                IM_COL32(100, 185, 255, 255), 0.0f, 0, 2.0f);
+        }
     }
     if (preview.has_mask && preview.mask.valid()) {
         ImGui::SameLine();
         ImGui::Image(simgui_imtextureid(preview.mask.view), thumb_draw_size(layer.mask->size()));
         card_state.mask_picture = item_rect();
+        if (ImGui::IsItemClicked()) {
+            commands.invoke("layer.plane", json{{"index", row}, {"plane", "mask"}});
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Edit layer mask: Brush reveals, Eraser hides");
+        }
+        if (card_state.editing_mask) {
+            ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                                                IM_COL32(235, 95, 95, 255), 0.0f, 0, 2.0f);
+        }
     } else if (preview.pixels.valid()) {
         ImGui::SameLine();
         ImGui::TextDisabled("no mask");
@@ -264,6 +284,8 @@ void draw_layer_card(AppState& state, CommandTable& commands, LayerThumbs& thumb
     card.name = layer.name;
     card.active = active;
     card.visible = layer.visible;
+    card.editing_pixels = active && state.edit_plane == LayerPlane::pixels;
+    card.editing_mask = active && state.editing_mask();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
                         ImVec2(kLayerCardPaddingX, kLayerCardPaddingY));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
@@ -336,6 +358,14 @@ void draw_mask_controls(AppState& state, CommandTable& commands) {
     ImGui::SameLine();
     if (ImGui::Button("Invert")) {
         commands.invoke("mask.invert", json::object());
+    }
+    if (state.editing_mask()) {
+        ImGui::Separator();
+        bool overlay = state.mask_overlay_visible;
+        if (ImGui::Checkbox("Show hidden area in red", &overlay)) {
+            commands.invoke("view.mask_overlay", json{{"show", overlay}});
+        }
+        ImGui::TextDisabled("Brush reveals / Eraser hides. Cover always marks an AI selection.");
     }
     const json& bounds = facts["bounds"];
     ImGui::TextDisabled("%d px touched, %.1f px shown",

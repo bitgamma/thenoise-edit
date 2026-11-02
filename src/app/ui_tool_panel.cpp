@@ -4,9 +4,11 @@
 #include "app/brush_steps.h"
 #include "app/command_args.h"
 #include "app/ui_theme.h"
+#include "core/maskops.h"
 #include "imgui.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -33,31 +35,17 @@ void draw_tool_picker(AppState& state, CommandTable& commands) {
     }
 }
 
-void draw_coverage_target(AppState& state, CommandTable& commands, bool has_mask) {
-    if (ImGui::RadioButton("marked area", state.coverage_target == CoverageTarget::marked)) {
-        commands.invoke("coverage.target", json{{"to", "marked"}});
-    }
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!has_mask);
-    if (ImGui::RadioButton("layer mask", state.coverage_target == CoverageTarget::mask)) {
-        commands.invoke("coverage.target", json{{"to", "mask"}});
-    }
-    ImGui::EndDisabled();
-}
-
-void draw_coverage_operations(CommandTable& commands, bool at_mask) {
+void draw_coverage_operations(CommandTable& commands) {
     if (ImGui::Button("All")) {
-        commands.invoke(at_mask ? "mask.fill" : "select.all",
-                        at_mask ? json{{"to", "show"}} : json::object());
+        commands.invoke("select.all", json::object());
     }
     ImGui::SameLine();
     if (ImGui::Button("None")) {
-        commands.invoke(at_mask ? "mask.fill" : "select.clear",
-                        at_mask ? json{{"to", "hide"}} : json::object());
+        commands.invoke("select.clear", json::object());
     }
     ImGui::SameLine();
     if (ImGui::Button("Invert")) {
-        commands.invoke(at_mask ? "mask.invert" : "select.invert", json::object());
+        commands.invoke("select.invert", json::object());
     }
 }
 
@@ -83,17 +71,188 @@ void draw_coverage_transfer(AppState& state, CommandTable& commands, const json&
     }
 }
 
-void draw_coverage_controls(AppState& state, CommandTable& commands) {
-    ImGui::SeparatorText("coverage");
-    const bool has_mask = !state.doc.empty() && state.active_layer().mask.has_value();
-    draw_coverage_target(state, commands, has_mask);
-    const bool at_mask = state.coverage_target == CoverageTarget::mask;
-    const json selection = selection_json(state);
-    if (at_mask && commands.invoke("mask.get", json::object()).value["mask"].is_null()) {
-        ImGui::TextDisabled("no mask on this layer yet - Add mask in the Layers panel");
+void draw_canvas_controls(AppState& state, CommandTable& commands) {
+    if (!ImGui::CollapsingHeader("Canvas size / Crop")) {
+        return;
     }
-    draw_coverage_operations(commands, at_mask);
-    draw_coverage_transfer(state, commands, selection);
+    if (state.doc.empty()) {
+        ImGui::TextDisabled("Open an image first");
+        return;
+    }
+    CanvasForm& form = state.canvas_form;
+    const Extent old = state.doc.size();
+    if (form.source != old || form.source_revision != state.doc.geometry_revision()) {
+        form.source = old;
+        form.source_revision = state.doc.geometry_revision();
+        form.width = old.w;
+        form.height = old.h;
+        form.crop = Rect{0, 0, old.w, old.h};
+        form.error.clear();
+    }
+    ImGui::TextDisabled("Resize canvas without scaling the picture");
+    ImGui::SetNextItemWidth(110.0f);
+    ImGui::InputInt("Width##canvas", &form.width);
+    ImGui::SetNextItemWidth(110.0f);
+    ImGui::InputInt("Height##canvas", &form.height);
+    constexpr const char* kAnchors[]{"top left", "top", "top right", "left", "centre",
+                                     "right", "bottom left", "bottom", "bottom right"};
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::Combo("Anchor##canvas", &form.anchor, kAnchors, 9);
+    ImGui::Checkbox("Select added area for AI Fill", &form.mark_added);
+    const auto resize = [&](bool fill) {
+        if (form.width <= 0 || form.height <= 0 ||
+            static_cast<std::int64_t>(form.width) * form.height > kMaxCanvasPixels) {
+            form.error = "Canvas must be positive and at most " +
+                         std::to_string(kMaxCanvasPixels) + " pixels";
+            return;
+        }
+        const int column = form.anchor % 3;
+        const int row = form.anchor / 3;
+        const int dx = column == 0 ? 0 : column == 2 ? form.width - old.w
+                                                      : (form.width - old.w) / 2;
+        const int dy = row == 0 ? 0 : row == 2 ? form.height - old.h
+                                                   : (form.height - old.h) / 2;
+        const CommandResult result = fill
+            ? commands.invoke("doc.outpaint.prepare",
+                              json{{"width", form.width}, {"height", form.height},
+                                   {"offset_x", dx}, {"offset_y", dy}})
+            : commands.invoke("doc.resize",
+                              json{{"width", form.width}, {"height", form.height},
+                                   {"offset_x", dx}, {"offset_y", dy},
+                                   {"mark_added", form.mark_added}});
+        form.error = result.ok ? "" : result.error;
+    };
+    if (ImGui::Button("Resize canvas")) {
+        resize(false);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Resize & Fill...")) {
+        resize(true);
+    }
+    ImGui::TextDisabled("Fill opens a prompt; Run starts the AI request.");
+    ImGui::SeparatorText("Rotate");
+    if (ImGui::Button("90 deg CCW")) {
+        const CommandResult result = commands.invoke("doc.rotate", json{{"direction", "ccw"}});
+        form.error = result.ok ? "" : result.error;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("90 deg CW")) {
+        const CommandResult result = commands.invoke("doc.rotate", json{{"direction", "cw"}});
+        form.error = result.ok ? "" : result.error;
+    }
+    ImGui::SeparatorText("Crop");
+    std::array<int, 4> crop{form.crop.x, form.crop.y, form.crop.w, form.crop.h};
+    if (ImGui::InputInt4("x, y, w, h##crop", crop.data())) {
+        form.crop = Rect{crop[0], crop[1], crop[2], crop[3]};
+    }
+    if (ImGui::Button("Crop to rectangle")) {
+        const auto result = commands.invoke("doc.crop", json{{"rect", json::array(
+            {form.crop.x, form.crop.y, form.crop.w, form.crop.h})}});
+        form.error = result.ok ? "" : result.error;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Crop to selection")) {
+        const auto result = commands.invoke("doc.crop", json::object());
+        form.error = result.ok ? "" : result.error;
+    }
+    if (!form.error.empty()) {
+        ImGui::TextWrapped("%s", form.error.c_str());
+    }
+}
+
+// One absolute value, shown both on a slider and on pixel-precise +/- buttons.
+// A click commits immediately; a drag shows live and records at most one history step on release.
+void draw_edge_slider(CommandTable& commands, const char* title, const char* id,
+                      const char* key, int value, int min_value, int max_value,
+                      int scale_min, int scale_max, std::string& error) {
+    ImGui::TextUnformatted(title);
+    ImGui::PushID(id);
+    int next = value;
+    ImGui::BeginDisabled(value <= min_value);
+    if (ImGui::SmallButton("-")) {
+        next = value - 1;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(std::max(100.0f, std::min(230.0f,
+                              ImGui::GetContentRegionAvail().x - 88.0f)));
+    ImGui::BeginDisabled(min_value == max_value);
+    const bool moved = ImGui::SliderInt("##edge", &next, scale_min, scale_max);
+    const bool dragging = ImGui::IsItemActive();
+    const bool released = ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(value >= max_value);
+    if (ImGui::SmallButton("+")) {
+        next = value + 1;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::Text("%d px", next);
+    ImGui::PopID();
+
+    if (next != value && (moved || !dragging)) {
+        const CommandResult preview = commands.invoke("mask.edge.preview", json{{key, next}});
+        error = preview.ok ? "" : preview.error;
+        if (!preview.ok) {
+            return;
+        }
+    }
+    // Keep the displayed value when the pointer is released. Only the provisional Undo
+    // gesture ends here; the reference mask and slider position remain unchanged.
+    if ((!dragging && next != value) || released) {
+        const CommandResult finish = commands.invoke("mask.edge.finish", json::object());
+        error = finish.ok ? "" : finish.error;
+    }
+}
+
+void draw_edge_controls(AppState& state, CommandTable& commands) {
+    CanvasForm& form = state.canvas_form;
+    if (form.edge_preview_layer != 0 &&
+        (state.doc.empty() || state.active_layer().id != form.edge_preview_layer)) {
+        commands.invoke("mask.edge.finish", json::object());
+    }
+    if (!state.editing_mask()) {
+        return;
+    }
+    if (!ImGui::CollapsingHeader("Adjust layer edge")) {
+        if (form.edge_preview_layer != 0) {
+            commands.invoke("mask.edge.finish", json::object());
+        }
+        return;
+    }
+    const CommandResult current = commands.invoke("mask.edge.state", json::object());
+    if (!current.ok) {
+        ImGui::TextWrapped("%s", current.error.c_str());
+        return;
+    }
+    const json& edge = current.value;
+    ImGui::TextWrapped("Adjust the layer mask directly. Move either slider or click +/-; reversing the value restores the original edge.");
+    draw_edge_slider(commands, "Grow / shrink", "size", "shift",
+                     edge.at("shift").get<int>(), -edge.at("shift_limit").get<int>(),
+                     edge.at("shift_limit").get<int>(), edge.at("shift_min").get<int>(),
+                     edge.at("shift_max").get<int>(), form.edge_error);
+    draw_edge_slider(commands, "Feather (0 = hard edge)", "feather", "feather",
+                     edge.at("feather").get<int>(), 0, edge.at("feather_limit").get<int>(),
+                     edge.at("feather_min").get<int>(), edge.at("feather_max").get<int>(),
+                     form.edge_error);
+    ImGui::TextWrapped("The ranges follow the values at their limits. No Apply button or reset required.");
+    if (!form.edge_error.empty()) {
+        ImGui::TextWrapped("%s", form.edge_error.c_str());
+    }
+}
+
+void draw_coverage_controls(AppState& state, CommandTable& commands) {
+    ImGui::SeparatorText("Selection (blue)");
+    ImGui::TextDisabled("Cover / Un-cover and selection tools always edit this area");
+    draw_coverage_operations(commands);
+    draw_coverage_transfer(state, commands, selection_json(state));
+    if (!state.doc.empty()) {
+        ImGui::SeparatorText("Layer editing");
+        ImGui::TextUnformatted(state.editing_mask() ? "Editing layer mask: Brush reveals, Eraser hides"
+                                                : "Editing image pixels");
+        ImGui::TextDisabled("Click the image or mask thumbnail in Layers to switch");
+    }
 }
 
 std::string brush_step_hint(const CommandTable& commands, const char* field) {
@@ -170,6 +329,8 @@ void draw_tool_panel(AppState& state, CommandTable& commands, const json& intent
                      ReferenceThumbs& reference_thumbs) {
     ImGui::Begin(kWindowTool);
     draw_file_row(state, commands);
+    draw_canvas_controls(state, commands);
+    draw_edge_controls(state, commands);
     ImGui::Separator();
     draw_tool_picker(state, commands);
     draw_coverage_controls(state, commands);
@@ -177,7 +338,9 @@ void draw_tool_panel(AppState& state, CommandTable& commands, const json& intent
     draw_verb_section(commands, intent, state.ui_theme);
     if (tool_mode(state.tool).has_value()) {
         draw_brush_sliders(state, commands);
-        draw_brush_color(state, commands);
+        if (!state.editing_mask()) {
+            draw_brush_color(state, commands);
+        }
     }
     ImGui::End();
 }

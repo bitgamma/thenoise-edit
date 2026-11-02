@@ -217,8 +217,13 @@ bool Mask::op(Rect area, const std::vector<std::uint8_t>& patch, MaskOp operatio
             plane_.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(size_.w);
         const std::uint8_t* source =
             patch.data() + static_cast<std::size_t>(y - area.y) * static_cast<std::size_t>(area.w);
-        for (int x = written.x; x < written.right(); ++x) {
-            row[x] = combined(row[x], source[x - area.x], operation);
+        if (operation == MaskOp::replace) {
+            std::memmove(row + written.x, source + written.x - area.x,
+                        static_cast<std::size_t>(written.w));
+        } else {
+            for (int x = written.x; x < written.right(); ++x) {
+                row[x] = combined(row[x], source[x - area.x], operation);
+            }
         }
     }
     return true;

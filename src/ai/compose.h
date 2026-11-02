@@ -99,4 +99,12 @@ ComposeReport compose_result(Image& target, const Image& reference, const Image&
                              const RegionPlan& plan, const Mask& coverage,
                              const CompositePolicy& policy);
 
+// A generated layer keeps the full colour-matched crop behind its own editable coverage
+// mask. The same geometry, colour match and lock band as compose_result; unlike the
+// flattened preview the result can be revealed or hidden after generation without a rerun.
+ComposeReport compose_editable_result(Image& target, Mask& layer_mask,
+                                     const Image& reference, const Image& result,
+                                     const RegionPlan& plan, const Mask& coverage,
+                                     const CompositePolicy& policy);
+
 }  // namespace noise::ai

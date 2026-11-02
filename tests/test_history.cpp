@@ -475,7 +475,8 @@ void test_an_added_layer_and_its_pixels_come_back_as_one_step() {
     const int depth_before = doc.history().undo_depth;
     const Rect bounds{2, 2, 4, 4};
 
-    const int index = doc.add_layer_written("Remove j0001", bounds, [bounds](Image& image) {
+    const int index = doc.add_layer_written("Remove j0001", bounds, [bounds](Layer& layer) {
+        Image& image = layer.pixels;
         paint_rect(image, bounds, 200);
         return true;
     });
@@ -503,7 +504,7 @@ void test_a_refused_write_adds_no_layer_and_records_nothing() {
     doc.reset(one_layer(Image::filled(Extent{8, 8}, 10, 20, 30, 255)), std::nullopt, "");
     CHECK(!doc.can_undo());
 
-    const int index = doc.add_layer_written("Nothing", Rect{0, 0, 4, 4}, [](Image&) { return false; });
+    const int index = doc.add_layer_written("Nothing", Rect{0, 0, 4, 4}, [](Layer&) { return false; });
     CHECK_EQ(index, -1);
     CHECK_EQ(doc.layers().size(), std::size_t(1));
     CHECK(!doc.can_undo());
@@ -516,7 +517,8 @@ void test_undoing_an_answer_leaves_the_layer_under_it_byte_for_byte() {
     const Image base = doc.layer(0).pixels;
     const std::uint64_t base_id = id_of(doc, 0);
 
-    doc.add_layer_written("Fill j0002", Rect{0, 0, 8, 8}, [](Image& image) {
+    doc.add_layer_written("Fill j0002", Rect{0, 0, 8, 8}, [](Layer& layer) {
+        Image& image = layer.pixels;
         paint_rect(image, Rect{0, 0, 8, 8}, 123);
         return true;
     });

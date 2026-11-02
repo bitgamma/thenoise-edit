@@ -107,10 +107,9 @@ def apart(a: Image.Image, b: Image.Image) -> str:
     return f"{moved} of {a.size[0] * a.size[1]} px differ, worst step {worst}"
 
 
-def interior(image: Image.Image, edge: int = 1) -> Image.Image:
-    """A reported rect is fractional and a capture is not, so the outermost pixel of a grab can belong to
-    the frame around the widget rather than to the widget - which is how a thumbnail that had not changed
-    differed from itself by one column of card border. Compare what is inside."""
+def interior(image: Image.Image, edge: int = 3) -> Image.Image:
+    """Exclude the 2 px active-plane outline and its antialiasing, which are drawn over
+    the image and can change when a layer becomes active without changing its pixels."""
     return image.crop((edge, edge, image.size[0] - edge, image.size[1] - edge))
 
 
@@ -190,6 +189,47 @@ def main() -> int:
                        for i in range(1, len(got)))
         p.check(disjoint, "and no two share a pixel",
                 str([[round(v) for v in c["box"]] for c in got]))
+
+        # The mask thumbnail enters visible mask painting immediately. Cover still marks the
+        # independent selection when explicitly chosen afterwards.
+        wire.call("layer.select", {"index": 0})
+        wire.call("mask.add", {})
+        wire.call("mask.fill", {"to": "hide"})
+        wire.call("layer.plane", {"plane": "pixels"})
+        wire.call("tool.set", {"tool": "cover"})
+        wd.settle(wire)
+        without_mask_preview = canvas_shot(wire, "mask-thumbnail-before")
+        bottom = card_at(cards(wire), 0)
+        p.check(inside_box(bottom["mask_picture"], bottom["box"]),
+                "a layer mask has a clickable thumbnail inside its card",
+                str(bottom["mask_picture"]))
+        if bottom["mask_picture"][2] > 0:
+            click(inj, *centre(bottom["mask_picture"]))
+            wd.settle(wire)
+            state = wire.call("app.state")
+            p.check(wire.call("layer.plane")["plane"] == "mask" and
+                    card_at(cards(wire), 0)["editing_mask"] and
+                    state["brush"]["tool"] == "brush",
+                    "clicking the mask thumbnail activates mask Brush immediately")
+            with_mask_preview = canvas_shot(wire, "mask-thumbnail-red")
+            p.check(differs(without_mask_preview, with_mask_preview)[0] > 0,
+                    "the red mask overlay appears on thumbnail click without painting")
+            wire.call("tool.set", {"tool": "cover"})
+            wd.settle(wire)
+            with_cover = canvas_shot(wire, "mask-thumbnail-cover")
+            p.check(differs(without_mask_preview, with_cover)[0] == 0,
+                    "Cover shows selection editing without leaving the red mask overlay up")
+            wire.call("mask.fill", {"to": "show"})
+            click(inj, *centre(card_at(cards(wire), 0)["picture"]))
+            wd.settle(wire)
+            p.check(wire.call("layer.plane")["plane"] == "pixels" and
+                    card_at(cards(wire), 0)["editing_pixels"],
+                    "clicking the image thumbnail selects pixel painting")
+        wire.call("mask.remove", {})
+        # The overlay check deliberately used Cover. Restore the paint tool before the
+        # remaining probe checks that strokes really change a layer's image pixels.
+        wire.call("tool.set", {"tool": "brush"})
+        wd.settle(wire)
 
         blank = grab(wire, got[0]["picture"], "thumb-blank")
         picture = grab(wire, got[1]["picture"], "thumb-picture")
@@ -304,7 +344,7 @@ def main() -> int:
         thumb_moved_on = grab(wire, card_at(cards(wire), 2)["picture"], "thumb-after-up")
         p.check(ImageChops.difference(interior(thumb_moved), interior(thumb_moved_on)).getbbox() is None,
                 "and its picture went with it, inside the box the card reported",
-                apart(thumb_moved, thumb_moved_on))
+                apart(interior(thumb_moved), interior(thumb_moved_on)))
         p.check(rebuilds(wire) == sampled_stack, "and the reorder resampled nothing either",
                 f"{sampled_stack} to {rebuilds(wire)}")
         wire.call("edit.undo", {})
@@ -692,9 +732,11 @@ def main() -> int:
         back_at = card_at(cards(wire), victim)["picture"]
         p.check([round(v) for v in back_at] == [round(v) for v in place],
                 "and its card sitting in the same pixels again", f"{back_at} from {place}")
-        p.check(ImageChops.difference(victim_thumb,
-                                      grab(wire, back_at, "after-delete-thumb")).getbbox() is None,
-                "holding the picture again, not the blank a brand-new layer would show")
+        restored_thumb = grab(wire, back_at, "after-delete-thumb")
+        p.check(ImageChops.difference(interior(victim_thumb),
+                                      interior(restored_thumb)).getbbox() is None,
+                "holding the picture again, not the blank a brand-new layer would show",
+                apart(interior(victim_thumb), interior(restored_thumb)))
 
     finally:
         wd.shutdown(proc, wire)

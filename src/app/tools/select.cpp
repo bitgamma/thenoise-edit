@@ -3,7 +3,6 @@
 
 #include "app/state.h"
 
-#include "app/coverage.h"
 #include "core/brush.h"
 #include "core/log.h"
 #include "core/maskops.h"
@@ -15,18 +14,6 @@ namespace noise::app {
 namespace {
 
 constexpr double kLassoPointSpacingPx = 0.5;
-
-Rect canvas(const AppState& state) {
-    return Rect{0, 0, state.doc.size().w, state.doc.size().h};
-}
-
-Rect lasso_anchor(Vec2 point, Extent bounds) {
-    const int x = static_cast<int>(
-        std::clamp(std::floor(point.x), 0.0, static_cast<double>(bounds.w - 1)));
-    const int y = static_cast<int>(
-        std::clamp(std::floor(point.y), 0.0, static_cast<double>(bounds.h - 1)));
-    return Rect{x, y, 1, 1};
-}
 
 std::optional<MaskShape> mask_shape(SelectionGesture gesture) {
     switch (gesture) {
@@ -51,28 +38,12 @@ void apply_marquee_replace(AppState& state) {
     }
     Mask shaped(state.doc.size());
     op_shape(shaped, *shape, state.select.rect, MaskOp::replace);
-    if (state.select.coverage == CoverageTarget::mask) {
-        state.doc.repaint_provisional_mask(canvas(state), [&shaped](Mask& mask, Rect) {
-            mask = shaped;
-        });
-        return;
-    }
     state.doc.set_selection(std::move(shaped));
 }
 
 void apply_marquee_operation(AppState& state) {
     const std::optional<MaskShape> shape = mask_shape(state.select.gesture);
     if (!shape) {
-        return;
-    }
-    if (state.select.coverage == CoverageTarget::mask) {
-        const Rect dirty = state.select.mode == MaskOp::replace ? canvas(state) : state.select.rect;
-        state.doc.repaint_provisional_mask(dirty, [&state, shape](Mask& mask, Rect) {
-            if (state.select.mode == MaskOp::replace) {
-                mask.fill(kMaskOut);
-            }
-            op_shape(mask, *shape, state.select.rect, state.select.mode);
-        });
         return;
     }
     Mask selected = state.select.mode == MaskOp::replace ? Mask(state.doc.size())
@@ -100,53 +71,25 @@ void finish_lasso(AppState& state) {
         select_cancel(state);
         return;
     }
-    if (state.select.coverage == CoverageTarget::mask) {
-        Rect dirty = patch->area;
-        if (state.select.mode == MaskOp::replace) {
-            dirty = unite(dirty, state.select.mask_bounds);
-        }
-        if (!state.doc.begin_provisional(dirty, LayerPlane::mask)) {
-            select_cancel(state);
-            return;
-        }
-        state.doc.repaint_provisional_mask(dirty, [&state, &patch](Mask& mask, Rect) {
-            if (state.select.mode == MaskOp::replace) {
-                mask.fill(kMaskOut);
-            }
-            mask.op(patch->area, patch->coverage, state.select.mode);
-        });
-        state.doc.commit_provisional();
-    } else {
-        Mask selected = state.select.mode == MaskOp::replace ? Mask(state.doc.size())
-                                                             : current_or_empty(state);
-        selected.op(patch->area, patch->coverage, state.select.mode);
-        state.doc.set_selection(std::move(selected));
-        state.doc.commit_marked();
-    }
+    Mask selected = state.select.mode == MaskOp::replace ? Mask(state.doc.size())
+                                                         : current_or_empty(state);
+    selected.op(patch->area, patch->coverage, state.select.mode);
+    state.doc.set_selection(std::move(selected));
+    state.doc.commit_marked();
     state.select = PointerSelection{};
 }
 
 void finish_marquee(AppState& state) {
     if (state.select.rect.empty()) {
         if (state.select.mode == MaskOp::replace) {
-            if (state.select.coverage == CoverageTarget::mask) {
-                state.doc.repaint_provisional_mask(canvas(state), [](Mask& mask, Rect) {
-                    mask.fill(kMaskOut);
-                });
-            } else {
-                state.doc.set_selection(std::nullopt);
-            }
+            state.doc.set_selection(std::nullopt);
         }
     } else if (state.select.mode == MaskOp::replace) {
         apply_marquee_replace(state);
     } else {
         apply_marquee_operation(state);
     }
-    if (state.select.coverage == CoverageTarget::mask) {
-        state.doc.commit_provisional();
-    } else {
-        state.doc.commit_marked();
-    }
+    state.doc.commit_marked();
     state.select = PointerSelection{};
 }
 
@@ -175,23 +118,7 @@ bool select_press(AppState& state, Vec2 document_point, MaskOp mode) {
     state.select.origin = document_point;
     state.select.gesture = *gesture;
     state.select.mode = mode;
-    state.select.coverage = state.coverage_target;
-    bool begun = false;
-    if (state.select.coverage == CoverageTarget::mask) {
-        if (*gesture == SelectionGesture::lasso) {
-            if (!state.active_layer().mask) {
-                state.select = PointerSelection{};
-                return false;
-            }
-            state.select.mask_bounds = state.active_layer().mask->bounds();
-            begun = state.doc.begin_provisional(lasso_anchor(document_point, state.doc.size()),
-                                                LayerPlane::mask);
-        } else {
-            begun = state.doc.begin_provisional(canvas(state), LayerPlane::mask);
-        }
-    } else {
-        begun = state.doc.begin_marked();
-    }
+    const bool begun = state.doc.begin_marked();
     if (!begun) {
         state.select = PointerSelection{};
         return false;
@@ -244,11 +171,7 @@ void select_cancel(AppState& state) {
     if (!state.select.active) {
         return;
     }
-    if (state.select.coverage == CoverageTarget::mask) {
-        state.doc.discard_provisional();
-    } else {
-        state.doc.cancel_marked();
-    }
+    state.doc.cancel_marked();
     state.select = PointerSelection{};
 }
 

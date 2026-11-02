@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "core/maskops.h"
+#include "core/blur.h"
+
+#include <deque>
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -415,5 +419,171 @@ bool op_lasso(Mask& mask, const std::vector<Vec2>& path, MaskOp op) {
     return patch.has_value() && mask.op(patch->area, patch->coverage, op);
 }
 
+
+namespace {
+
+std::vector<std::uint8_t> extreme_pass(const std::vector<std::uint8_t>& input, Extent size,
+                                       int radius, bool grow, bool horizontal) {
+    std::vector<std::uint8_t> output(input.size());
+    const int lines = horizontal ? size.h : size.w;
+    const int length = horizontal ? size.w : size.h;
+    const int stride = horizontal ? 1 : size.w;
+    const int line_stride = horizontal ? size.w : 1;
+    for (int line = 0; line < lines; ++line) {
+        const std::size_t start = static_cast<std::size_t>(line) *
+                                  static_cast<std::size_t>(line_stride);
+        std::deque<int> window;
+        int added = 0;
+        for (int position = 0; position < length; ++position) {
+            const int right = std::min(length - 1, position + radius);
+            while (added <= right) {
+                const auto sample = [&](int at) {
+                    return input[start + static_cast<std::size_t>(at) *
+                                         static_cast<std::size_t>(stride)];
+                };
+                while (!window.empty() &&
+                       (grow ? sample(window.back()) <= sample(added)
+                             : sample(window.back()) >= sample(added))) {
+                    window.pop_back();
+                }
+                window.push_back(added++);
+            }
+            while (window.front() < position - radius) {
+                window.pop_front();
+            }
+            output[start + static_cast<std::size_t>(position) *
+                           static_cast<std::size_t>(stride)] =
+                input[start + static_cast<std::size_t>(window.front()) *
+                               static_cast<std::size_t>(stride)];
+        }
+    }
+    return output;
+}
+
+// The hard-edged slider produces only 0 or 255. For this case a running
+// count answers the same min/max window question without allocating and
+// maintaining thousands of deques for every preview frame.
+std::vector<std::uint8_t> binary_extreme_pass(const std::vector<std::uint8_t>& input,
+                                              Extent size, int radius, bool grow,
+                                              bool horizontal) {
+    std::vector<std::uint8_t> output(input.size());
+    const int lines = horizontal ? size.h : size.w;
+    const int length = horizontal ? size.w : size.h;
+    const int stride = horizontal ? 1 : size.w;
+    const int line_stride = horizontal ? size.w : 1;
+    std::vector<int> prefix(static_cast<std::size_t>(length) + 1u);
+    for (int line = 0; line < lines; ++line) {
+        const std::size_t start = static_cast<std::size_t>(line) *
+                                  static_cast<std::size_t>(line_stride);
+        prefix[0] = 0;
+        for (int i = 0; i < length; ++i) {
+            const std::size_t index = start + static_cast<std::size_t>(i) *
+                                             static_cast<std::size_t>(stride);
+            prefix[static_cast<std::size_t>(i + 1)] =
+                prefix[static_cast<std::size_t>(i)] + (input[index] == kMaskIn ? 1 : 0);
+        }
+        for (int i = 0; i < length; ++i) {
+            const int left = std::max(0, i - radius);
+            const int right = std::min(length - 1, i + radius);
+            const int hits = prefix[static_cast<std::size_t>(right + 1)] -
+                             prefix[static_cast<std::size_t>(left)];
+            const bool inside = grow ? hits != 0 : hits == right - left + 1;
+            const std::size_t index = start + static_cast<std::size_t>(i) *
+                                             static_cast<std::size_t>(stride);
+            output[index] = inside ? kMaskIn : kMaskOut;
+        }
+    }
+    return output;
+}
+
+}  // namespace
+
+Mask adjusted_edge(const Mask& source, int shift_px, bool hard, int feather_px) {
+    if (!source.sized()) {
+        return source;
+    }
+    const Rect whole{0, 0, source.size().w, source.size().h};
+    if (source.covers_all(whole) || source.covers_nothing(whole)) {
+        return source;
+    }
+    std::vector<std::uint8_t> plane = source.plane();
+    if (hard) {
+        for (std::uint8_t& sample : plane) {
+            sample = sample >= 128 ? kMaskIn : kMaskOut;
+        }
+    }
+    if (shift_px != 0) {
+        const bool grow = shift_px > 0;
+        const int radius = std::abs(shift_px);
+        if (hard) {
+            plane = binary_extreme_pass(plane, source.size(), radius, grow, true);
+            plane = binary_extreme_pass(plane, source.size(), radius, grow, false);
+        } else {
+            plane = extreme_pass(plane, source.size(), radius, grow, true);
+            plane = extreme_pass(plane, source.size(), radius, grow, false);
+        }
+    }
+    Mask adjusted = *Mask::from_plane(source.size(), std::move(plane));
+    if (feather_px > 0) {
+        adjusted = feathered_mask(adjusted, feather_px);
+    }
+    return adjusted;
+}
+
+Rect adjusted_edge_bounds(const Mask& source, int shift_px, int feather_px) {
+    if (!source.sized()) {
+        return {};
+    }
+    const Rect bounds = source.bounds();
+    if (bounds.empty()) {
+        return {};
+    }
+    // A box blur has kGaussianBoxPasses passes of radius feather_px. This
+    // conservative halo also leaves a zero row at an internal crop boundary,
+    // so replicated edge samples cannot change the cropped computation.
+    const std::int64_t halo = static_cast<std::int64_t>(std::abs(shift_px)) +
+                              static_cast<std::int64_t>(kGaussianBoxPasses) * feather_px + 1;
+    const std::int64_t left = std::max<std::int64_t>(0, static_cast<std::int64_t>(bounds.x) - halo);
+    const std::int64_t top = std::max<std::int64_t>(0, static_cast<std::int64_t>(bounds.y) - halo);
+    const std::int64_t right = std::min<std::int64_t>(source.size().w,
+                                                      static_cast<std::int64_t>(bounds.right()) + halo);
+    const std::int64_t bottom = std::min<std::int64_t>(source.size().h,
+                                                       static_cast<std::int64_t>(bounds.bottom()) + halo);
+    return Rect{static_cast<int>(left), static_cast<int>(top),
+                static_cast<int>(right - left), static_cast<int>(bottom - top)};
+}
+
+Mask adjusted_edge_region(const Mask& source, int shift_px, bool hard, int feather_px,
+                          Rect area) {
+    if (!source.sized() || area.empty() || !area.inside(source.size())) {
+        return {};
+    }
+    Mask result(Extent{area.w, area.h});
+    const Rect whole{0, 0, source.size().w, source.size().h};
+    if (source.covers_all(whole)) {
+        return source.region(area);
+    }
+    if (source.covers_nothing(whole)) {
+        return result;
+    }
+    const Rect support = adjusted_edge_bounds(source, shift_px, feather_px);
+    const Rect overlap = intersect(area, support);
+    if (overlap.empty()) {
+        return result;
+    }
+    if (shift_px == 0 && !hard && feather_px == 0) {
+        return source.region(area);
+    }
+    const Mask cropped = source.region(support);
+    const Mask calculated = adjusted_edge(cropped, shift_px, hard, feather_px);
+    for (int y = overlap.y; y < overlap.bottom(); ++y) {
+        const auto source_row = calculated.row(y - support.y);
+        auto destination_row = result.row(y - area.y);
+        std::copy_n(source_row.begin() + (overlap.x - support.x),
+                    static_cast<std::size_t>(overlap.w),
+                    destination_row.begin() + (overlap.x - area.x));
+    }
+    return result;
+}
 
 }  // namespace noise

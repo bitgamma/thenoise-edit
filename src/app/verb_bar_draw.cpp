@@ -4,6 +4,7 @@
 #include "imgui.h"
 
 #include "app/verb_fields.h"
+#include "app/selection_edit.h"
 #include "imgui_internal.h"  // BringWindowToDisplayFront: the bar has to sit above the canvas
 #include <nlohmann/json.hpp>
 
@@ -130,8 +131,9 @@ void draw_ask(AppState& state, CommandTable& commands, const json& ask, bool bar
 
 void draw_verb_bar(AppState& state, CommandTable& commands) {
     state.verb_bar = {};
+    const SelectionEditPhase mode = selection_edit_phase(state);
     const std::optional<Rect> mark = verb_bar_mark(state);
-    if (!mark) {
+    if (!mark || selection_edit_hides_bar(state)) {
         return;
     }
     const json rows = verb_bar_rows(commands, nullptr);
@@ -153,12 +155,16 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
     const ImGuiStyle& style = ImGui::GetStyle();
     double width = kBarPadPx * 2.0;
     double height = 0.0;
+    double row_width = kBarPadPx * 2.0;
+    double row_height = 0.0;
     for (const json& row : rows) {
         const ImVec2 text = ImGui::CalcTextSize(row["label"].get<std::string>().c_str());
-        width += text.x + style.FramePadding.x * 2.0 + style.ItemSpacing.x;
-        height = std::max(height, static_cast<double>(text.y + style.FramePadding.y * 2.0f));
+        row_width += text.x + style.FramePadding.x * 2.0 + style.ItemSpacing.x;
+        row_height = std::max(row_height, static_cast<double>(text.y + style.FramePadding.y * 2.0f));
     }
-    width -= style.ItemSpacing.x;
+    row_width -= style.ItemSpacing.x;
+    width = std::max(width, row_width);
+    height = row_height;
     height += kBarPadPx * 2.0;
 
     // Above the mark when there is room, below when there is not, and always inside the canvas area so
@@ -205,7 +211,8 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
         if (i > 0) {
             ImGui::SameLine();
         }
-        ImGui::BeginDisabled(!row["ready"].get<bool>());
+        ImGui::BeginDisabled(mode == SelectionEditPhase::generating ||
+                             !row["ready"].get<bool>());
         const bool pressed = ImGui::Button(row["label"].get<std::string>().c_str());
         ImGui::EndDisabled();
         // A verb that wants words opens the box over the mark instead of running on whatever the panel

@@ -21,8 +21,12 @@ struct CoverageTint {
     Rect bounds{};
     std::uint64_t stamp = 0;
     bool drawn = false;
+    std::uint64_t source_layer = 0;
+    std::uint64_t source_revision = 0;
+    bool hidden = false;
 
     void sync(const Mask& coverage);
+    void sync_hidden(const Mask& mask, std::uint64_t layer, std::uint64_t revision);
 };
 
 }  // namespace noise::app

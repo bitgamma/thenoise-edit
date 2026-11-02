@@ -137,6 +137,20 @@ def main() -> int:
             p.check(wire.call("doc.get")["checksum"] != blank_checksum,
                     "and the canvas changed")
 
+        # Once a result lands, the old mark remains but its floating bar stays hidden.
+        # Start the next edit with a fresh selection, as a user would, and read the newly
+        # drawn button positions instead of clicking where the previous bar used to be.
+        completed_bar = wire.call("verb.bar")
+        p.check(not completed_bar["shown"], "the completed edit hides the previous bar")
+        wire.call("select.clear")
+        wire.call("select.rect", {"rect": MARK})
+        wd.settle(wire)
+        bar = wire.call("verb.bar")
+        p.check(bar["shown"] and [b["command"] for b in bar["buttons"]] == EXPECTED,
+                "a fresh selection brings the AI verbs back")
+        bx, by, bw, bh = bar["screen"]
+        step = bw / len(bar["buttons"])
+
         # A verb that wants words answers a click with a box over the mark, not with a run on whatever
         # the panel happens to hold - and not with a job either, until the words are in.
         fill = next(b for b in bar["buttons"] if b["verb"] == "fill")
@@ -171,12 +185,31 @@ def main() -> int:
             p.check(done_fill["state"] == "succeeded", "and it finished",
                     str(done_fill.get("job", {}).get("error", "")))
         p.check(wire.call("verb.bar")["ask"] is None, "and the box closed when the press was taken")
+        wd.settle(wire)
+        editor = wire.call("verb.bar")
+        p.check(editor["mode"] == "actions" and not editor["shown"] and editor["buttons"] == [],
+                "the completed edit leaves no floating dialog", str(editor))
+        p.check(wire.call("layer.plane")["plane"] == "pixels",
+                "the result leaves image pixels selected rather than the mask")
+        wire.call("layer.plane", {"plane": "mask"})
+        p.check(wire.call("layer.plane")["plane"] == "mask",
+                "the result mask remains available by its thumbnail")
+        wire.call("layer.plane", {"plane": "pixels"})
+        wire.call("select.clear")
+        wd.settle(wire)
+        p.check(not wire.call("verb.bar")["shown"],
+                "clearing the old selection does not reveal a return dialog")
+        wire.call("select.rect", {"rect": MARK})
+        wd.settle(wire)
+        returned = wire.call("verb.bar")
+        p.check(returned["shown"] and len(returned["buttons"]) == len(EXPECTED),
+                "a new selection brings back Heal, Remove, Fill and Change")
 
         # With the mark gone the bar is gone, and the pixels where it used to be are only canvas: a
         # click there starts nothing rather than pressing an invisible button.
         wire.call("select.clear")
         wd.settle(wire)
-        p.check(wire.call("verb.bar")["shown"] is False, "clearing the mark takes the bar away")
+        p.check(wire.call("verb.bar")["shown"] is False, "clearing the new mark takes the bar away")
         jobs_now = len(wire.call("job.list")["jobs"])
         click(inj, bx + step * (index + 0.5), by + bh / 2)
         wd.settle(wire, 2)

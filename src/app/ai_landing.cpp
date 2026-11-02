@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/ai_landing.h"
+#include "app/command_groups.h"
 
 #include "app/command_args.h"
 #include "app/state.h"
+#include "app/selection_edit.h"
 
 #include "core/log.h"
 #include "io/file.h"
@@ -266,9 +268,13 @@ CommandResult land_answer(const char* command, AppState& state, const AnswerLand
             // one edit it was asked to be: layer and pixels together. A refusal adds nothing - there is
             // no empty layer left named after a job that produced no answer.
             landed_layer = state.doc.add_layer_written(
-                landing.layer_name, landing.plan.crop, [&](Image& layer) {
-                    report = compose_result(layer, reference, landing.answer, landing.plan,
-                                            landing.coverage, landing.policy);
+                landing.layer_name, landing.plan.crop, [&](Layer& layer) {
+                    Mask edge;
+                    report = compose_editable_result(layer.pixels, edge, reference, landing.answer,
+                                                     landing.plan, landing.coverage, landing.policy);
+                    if (report.composed) {
+                        layer.mask = std::move(edge);
+                    }
                     return report.composed;
                 });
             if (landed_layer < 0 && report.composed) {
@@ -278,9 +284,12 @@ CommandResult land_answer(const char* command, AppState& state, const AnswerLand
         if (landed_layer < 0) {
             return fail(command, report.refusal);
         }
+        const Layer& result_layer = state.doc.layer(static_cast<std::size_t>(landed_layer));
+        if (result_layer.mask) {
+            remember_editable_edge(state, result_layer, report.feather_px);
+        }
     } else {
-        // The preview is what the new layer would hold - an empty destination receiving the answer under
-        // its coverage - not a merge into whatever is active now.
+        // The preview shows the masked composite, not the hidden pixels on the editable layer.
         Image candidate = Image::filled(state.doc.size(), 0, 0, 0, 0);
         report = compose_result(candidate, reference, landing.answer, landing.plan,
                                 landing.coverage, landing.policy);
@@ -394,6 +403,7 @@ CommandResult land_job(AppState& state, const ai::JobRecord& record, const char*
     }
     if (record_outcome) {
         state.ai.jobs->set_landed(record.id, layer_name, result.value);
+        selection_edit_landed(state, record.id);
     }
     result.value["layer_name"] = layer_name;
     return result;

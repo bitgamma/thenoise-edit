@@ -258,9 +258,8 @@ add_library(noise_app STATIC
     src/app/ants.cpp
     src/app/select_commands.cpp
     src/app/mask_commands.cpp
-    src/app/coverage.cpp
-    src/app/coverage_commands.cpp
     src/app/verb_bar.cpp
+    src/app/selection_edit.cpp
     src/app/verb_fields.cpp
     src/app/tools/brush.cpp
     src/app/tools/cover.cpp

@@ -108,6 +108,7 @@ struct Runtime {
     gfx::Texture canvas_texture;
     gfx::Checker checker;
     app::CoverageTint coverage_tint;
+    app::CoverageTint mask_tint;
     app::LayerThumbs layer_thumbs;
     app::ReferenceThumbs reference_thumbs;
     CommandTable commands;
@@ -244,7 +245,7 @@ void frame(void) {
 
     // Pick results are routed on the frame thread before a queued native dialog opens.
     app::pump_picked_files(g.state, g.commands);
-    app::draw_ui(g.state, g.commands, g.canvas_texture, g.checker, g.coverage_tint,
+    app::draw_ui(g.state, g.commands, g.canvas_texture, g.checker, g.coverage_tint, g.mask_tint,
                  g.layer_thumbs, g.reference_thumbs);
 #ifndef __EMSCRIPTEN__
     app::draw_native_file_dialog(g.state);

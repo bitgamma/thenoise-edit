@@ -4,6 +4,7 @@
 #include "app/ai_verbs.h"
 #include "app/command_args.h"
 #include "app/command_groups.h"
+#include "app/selection_edit.h"
 
 #include <nlohmann/json.hpp>
 
@@ -23,7 +24,7 @@ using nlohmann::json;
 // What the bar's phrase box holds, if one stands open: the verb, the field its words belong to, and
 // the words themselves read back from the intent rather than from a buffer the view owns.
 json verb_ask_state(AppState& state, CommandTable& table) {
-    if (!state.ask_verb) {
+    if (!state.ask_verb || selection_edit_phase(state) == SelectionEditPhase::generating) {
         return nullptr;
     }
     const VerbInfo* info = find_verb(*state.ask_verb);
@@ -104,6 +105,9 @@ void register_verb_bar_commands(AppState& state, CommandTable& table) {
             state.ask_verb = std::nullopt;
             return command_ok(verb_ask_state(state, table));
         }
+        if (selection_edit_phase(state) == SelectionEditPhase::generating) {
+            return fail("verb.ask", "the AI edit is still generating");
+        }
         const std::optional<VerbId> id = verb_from_name(shown);
         if (!id) {
             return fail("verb.ask", "'show' names no verb: '" + shown + "' (" + verb_names() +
@@ -131,15 +135,21 @@ void register_verb_bar_commands(AppState& state, CommandTable& table) {
               "The verbs the marked area is an instruction for, and where the bar was last drawn",
               {}, {},
               [&state, &table](const json&) -> CommandResult {
+        selection_edit_reconcile(state);
+        const SelectionEditPhase mode = selection_edit_phase(state);
         const std::optional<Rect> mark = verb_bar_mark(state);
         std::string why;
-        const json rows = mark ? verb_bar_rows(table, &why) : json::array();
+        const bool hidden = selection_edit_hides_bar(state);
+        const json rows = mark && !hidden ? verb_bar_rows(table, &why) : json::array();
         if (!why.empty()) {
             return command_error("verb.bar: " + why);
         }
         // `shown` is the decision to draw; `screen` is where a frame actually did, and stays zero
         // outside one - a headless caller can read the first and must not trust the second.
         return command_ok(json{{"shown", mark.has_value() && !rows.empty()},
+                               {"mode", selection_edit_phase_name(mode)},
+                               {"job", state.selection_edit.job.empty() ? json(nullptr)
+                                         : json(state.selection_edit.job)},
                                {"mark", mark == std::nullopt
                                             ? json(nullptr)
                                             : json::array({mark->x, mark->y, mark->w, mark->h})},

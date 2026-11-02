@@ -55,17 +55,21 @@ LockBand lock_band(Rect crop, Extent canvas, int px) {
 // The feather is computed over the crop and not the canvas because the selection cannot reach past
 // the crop - the plan grew the crop around its bounds - so a crop-sized blur sees exactly the same
 // coverage and costs the crop.
-Mask paste_coverage(const Mask& coverage, Rect crop, Extent canvas, int feather_px,
-                    int lock_band_px) {
+Mask paste_coverage(const Mask& coverage, const Image& reference, Rect crop,
+                    int feather_px, int lock_band_px) {
     Mask soft = feathered_mask(coverage.region(crop), feather_px);
     std::vector<std::uint8_t> plane = soft.plane();
-    const LockBand band = lock_band(crop, canvas, lock_band_px);
+    const LockBand band = lock_band(crop, reference.size(), lock_band_px);
     for (int y = 0; y < crop.h; ++y) {
         for (int x = 0; x < crop.w; ++x) {
             const std::size_t at = static_cast<std::size_t>(y) * static_cast<std::size_t>(crop.w) +
                                    static_cast<std::size_t>(x);
-            if (band.holds(crop.x + x, crop.y + y, crop)) {
+            const int px = crop.x + x;
+            const int py = crop.y + y;
+            if (band.holds(px, py, crop)) {
                 plane[at] = kMaskOut;
+            } else if (reference.at(px, py)[3] == 0) {
+                plane[at] = std::max(plane[at], coverage.coverage(px, py));
             }
         }
     }
@@ -106,9 +110,10 @@ int auto_feather_radius(const Mask& coverage) {
     return std::clamp(radius, kAutoFeatherMinPx, kAutoFeatherMaxPx);
 }
 
-ComposeReport compose_result(Image& target, const Image& reference, const Image& result,
-                             const RegionPlan& plan, const Mask& coverage,
-                             const CompositePolicy& policy) {
+namespace {
+ComposeReport compose_impl(Image& target, Mask* layer_mask, const Image& reference,
+                           const Image& result, const RegionPlan& plan, const Mask& coverage,
+                           const CompositePolicy& policy) {
     ComposeReport report;
     report.result_dims = result.size();
     report.answered_as_requested = result.size() == plan.requested;
@@ -160,25 +165,44 @@ ComposeReport compose_result(Image& target, const Image& reference, const Image&
     const Image original = target.region(crop);
     const Image context = reference.region(crop);
     const Mask crop_mask =
-        paste_coverage(coverage, crop, target.size(), report.feather_px,
-                          policy.lock_band_px);
+        paste_coverage(coverage, reference, crop, report.feather_px,
+                       policy.lock_band_px);
 
     Image patch = resample_lanczos3(result, Extent{crop.w, crop.h});
     report.colour_corrected = policy.colour_match && colour_match_drift(patch, context, crop_mask);
 
     report.coverage = in_document(crop_mask, target.size(), crop);
     target.blit(patch, crop.x, crop.y);
-    restrict_to(report.coverage, crop, original, crop, target);
+    if (layer_mask != nullptr) {
+        *layer_mask = report.coverage;
+    } else {
+        restrict_to(report.coverage, crop, original, crop, target);
+    }
 
     for (int y = 0; y < crop.h; ++y) {
         for (int x = 0; x < crop.w; ++x) {
-            if (std::memcmp(target.at(crop.x + x, crop.y + y), original.at(x, y), kChannels) != 0) {
+            if (crop_mask.coverage(x, y) > 0 &&
+                std::memcmp(target.at(crop.x + x, crop.y + y), original.at(x, y), kChannels) != 0) {
                 ++report.pixels_changed;
             }
         }
     }
     report.composed = true;
     return report;
+}
+}  // namespace
+
+ComposeReport compose_result(Image& target, const Image& reference, const Image& result,
+                             const RegionPlan& plan, const Mask& coverage,
+                             const CompositePolicy& policy) {
+    return compose_impl(target, nullptr, reference, result, plan, coverage, policy);
+}
+
+ComposeReport compose_editable_result(Image& target, Mask& layer_mask,
+                                     const Image& reference, const Image& result,
+                                     const RegionPlan& plan, const Mask& coverage,
+                                     const CompositePolicy& policy) {
+    return compose_impl(target, &layer_mask, reference, result, plan, coverage, policy);
 }
 
 }  // namespace noise::ai

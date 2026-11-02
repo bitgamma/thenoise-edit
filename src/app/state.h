@@ -5,9 +5,9 @@
 #include "app/ai_session.h"
 #include "app/ants.h"
 #include "app/ai_verbs.h"
-#include "app/coverage.h"
 #include "app/new_document.h"
 #include "app/pointer.h"
+#include "app/selection_edit.h"
 
 #include "core/brush.h"
 #include "core/document.h"
@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <mutex>
+#include <unordered_map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -60,6 +61,8 @@ struct LayerCard {
     std::string name;
     bool active = false;
     bool visible = true;
+    bool editing_pixels = false;
+    bool editing_mask = false;
     ScreenRect box{};
     ScreenRect visibility{};
     ScreenRect title{};
@@ -87,10 +90,40 @@ struct LayerCard {
     bool scaling = false;
 };
 
-// A card's inline field: which card holds one, and what has been typed into it so far. The text is the
-// panel's rather than the document's, because neither a half-typed name nor a half-typed factor is a fact
-// about the document - each reaches it through its own command, on `Enter`. Sized by the longest thing a
-// card is asked to type, which is a layer's name.
+// An edge slider always represents a position relative to one unchanged mask. Keeping that
+// mask per layer makes +10 followed by -10 exact, including after another layer was selected.
+struct EdgeAdjustment {
+    Mask baseline;
+    std::uint64_t known_revision = 0;
+    int shift = 0;
+    int feather = 0;
+    int default_feather = 0;
+    int shift_min = -50;
+    int shift_max = 50;
+    int feather_min = 0;
+    int feather_max = 50;
+    int drag_start_shift = 0;
+    int drag_start_feather = 0;
+};
+
+// Canvas form values are only applied through commands. Edge slider state is session-local;
+// the actual mask always lives on its layer, even after changing layers or saving the document.
+struct CanvasForm {
+    Extent source{};
+    std::uint64_t source_revision = 0;
+    int width = 0;
+    int height = 0;
+    int anchor = 4;
+    bool mark_added = true;
+    Rect crop{};
+    std::uint64_t edge_epoch = 0;
+    std::unordered_map<std::uint64_t, EdgeAdjustment> edge_adjustments;
+    std::uint64_t edge_preview_layer = 0;
+    std::string error;
+    std::string edge_error;
+};
+
+// A card's inline field: its pending name or scale factor belongs to the panel, not the document.
 struct InlineField {
     std::uint64_t layer = 0;  // 0: no card holds a field
     bool just_opened = false;
@@ -127,8 +160,6 @@ struct PointerStroke {
     // rather than read per event because the held-aside bytes are one plane's: a target switched
     // mid-drag would otherwise leave a gesture writing coverage into a snapshot of colour.
     LayerPlane plane = LayerPlane::pixels;
-    // And, for a coverage press, which lifetime it was aimed at, for the same reason.
-    app::CoverageTarget coverage = app::CoverageTarget::marked;
 };
 
 // The gesture the pointer is making with the move tool. The snapshot is the active layer as it was
@@ -157,10 +188,6 @@ struct PointerSelection {
     MaskOp mode = kDefaultSelectionMode;
     std::vector<Vec2> path;
     Rect mask_bounds{};
-    // The same argument for the lifetime: the press opened one door - the layer's provisional bytes or
-    // the document's marked coverage - and releasing has to shut that one, however the switch was
-    // aimed by then.
-    app::CoverageTarget coverage = app::CoverageTarget::marked;
 };
 
 struct AppState {
@@ -171,10 +198,10 @@ struct AppState {
     Brush brush = kBrushDefaults;
     Rgba8 color = kDefaultColor;
     std::string tool = kDefaultTool;
-    // Which coverage a coverage-writing tool is aimed at. No reset policy of its own: the layer may
-    // have no mask, and then a stroke aimed at one is refused naming the layer, rather than quietly
-    // painting the marked area instead.
-    app::CoverageTarget coverage_target = app::CoverageTarget::marked;
+    // Selected layer plane. Cover/Un-cover and selection tools always edit the marked area; only
+    // Brush/Eraser use this plane. The panel makes it explicit via the two thumbnails.
+    LayerPlane edit_plane = LayerPlane::pixels;
+    bool mask_overlay_visible = true;
     // How marked coverage is drawn: boundary, wash, or both.
     app::CoverageView coverage_view = app::CoverageView::both;
     // What the pointer overlay drew last frame, and the probe's force switch for the brush ring.
@@ -183,6 +210,7 @@ struct AppState {
     // The verb whose words the bar's popup is holding, if one is open. A verb that asks for nothing is
     // never in here: its button runs, and a popup for it would be an empty box.
     std::optional<app::VerbId> ask_verb;
+    app::SelectionEdit selection_edit;
     // An ask to leave that unsaved work is holding. It is state rather than a dialog the window
     // remembers, so the wire sees the question and answers it the same way the button does.
     bool quit_pending = false;
@@ -226,6 +254,7 @@ struct AppState {
     LayerPanelControls layer_panel{};
     InlineField renaming{};
     InlineField scaling{};
+    CanvasForm canvas_form{};
     ScreenRect ai_references_rect{};
     std::uint64_t reference_thumb_rebuilds = 0;
     // And the same for the phrase box the bar opens, so a driver can read the box's own rect rather
@@ -286,15 +315,18 @@ struct AppState {
     // the button held by being forgotten in a condition elsewhere.
     bool gesturing() const { return stroke.active || move.active || select.active; }
 
-    // Whether the active layer holds the plane a stroke is aimed at. The panel hides the affordance,
-    // the commands refuse with this question, and the tool never starts a gesture it cannot hold - so
-    // "there is no mask here" is answered in one place rather than guessed at three.
-    bool coverage_writable() const {
-        if (doc.empty()) {
-            return false;
+    bool editing_mask() const {
+        return !doc.empty() && edit_plane == LayerPlane::mask && active_layer().mask.has_value();
+    }
+
+    bool painting_mask() const {
+        return editing_mask() && tool_action(tool) == ToolAction::paint;
+    }
+
+    void reconcile_edit_plane() {
+        if (edit_plane == LayerPlane::mask && !editing_mask()) {
+            edit_plane = LayerPlane::pixels;
         }
-        return coverage_target == app::CoverageTarget::marked ||
-               active_layer().mask.has_value();
     }
 
     // The layer a write, a mask or a refusal is about.

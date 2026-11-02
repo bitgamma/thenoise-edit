@@ -5,13 +5,17 @@
 
 namespace noise {
 
-void box_blur(std::vector<int>& samples, Extent size, int channels, int radius, int passes) {
+namespace {
+
+template <typename Sample>
+void box_blur_samples(std::vector<Sample>& samples, Extent size, int channels,
+                      int radius, int passes) {
     if (samples.empty() || size.w <= 0 || size.h <= 0 || channels <= 0 || radius <= 0 ||
         passes <= 0) {
         return;  // nothing to blur, or a blur that would be the identity
     }
     const int span = 2 * radius + 1;
-    std::vector<int> out(samples.size());
+    std::vector<Sample> out(samples.size());
     std::vector<int> sum(static_cast<std::size_t>(channels));
     const auto index = [size, channels](int x, int y) {
         return (static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) +
@@ -53,36 +57,33 @@ void box_blur(std::vector<int>& samples, Extent size, int channels, int radius, 
                 }
                 const std::size_t to = horizontal ? index(cell, line) : index(line, cell);
                 for (int c = 0; c < channels; ++c) {
-                    out[to + static_cast<std::size_t>(c)] =
-                        (sum[static_cast<std::size_t>(c)] + span / 2) / span;
+                    out[to + static_cast<std::size_t>(c)] = static_cast<Sample>(
+                        (sum[static_cast<std::size_t>(c)] + span / 2) / span);
                 }
             }
         }
-        samples = out;
+        samples.swap(out);
     }
+}
+
+}  // namespace
+
+void box_blur(std::vector<int>& samples, Extent size, int channels, int radius, int passes) {
+    box_blur_samples(samples, size, channels, radius, passes);
+}
+
+void box_blur(std::vector<std::uint8_t>& samples, Extent size, int channels, int radius,
+              int passes) {
+    box_blur_samples(samples, size, channels, radius, passes);
 }
 
 Mask feathered_mask(const Mask& coverage, int radius) {
     if (radius <= 0 || !coverage.sized()) {
         return coverage;
     }
-    const Extent size = coverage.size();
-    std::vector<int> samples(static_cast<std::size_t>(size.w) * static_cast<std::size_t>(size.h));
-    for (int y = 0; y < size.h; ++y) {
-        const std::span<const std::uint8_t> row = coverage.row(y);
-        for (int x = 0; x < size.w; ++x) {
-            samples[static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) +
-                    static_cast<std::size_t>(x)] = row[static_cast<std::size_t>(x)];
-        }
-    }
-    box_blur(samples, size, 1, radius, kGaussianBoxPasses);
-
-    std::vector<std::uint8_t> plane(samples.size());
-    // A box average of bytes cannot leave the range, so no clamping: the samples are already means.
-    for (std::size_t i = 0; i < samples.size(); ++i) {
-        plane[i] = static_cast<std::uint8_t>(samples[i]);
-    }
-    return Mask::from_plane(size, plane).value();
+    std::vector<std::uint8_t> plane = coverage.plane();
+    box_blur(plane, coverage.size(), 1, radius, kGaussianBoxPasses);
+    return *Mask::from_plane(coverage.size(), std::move(plane));
 }
 
 }  // namespace noise

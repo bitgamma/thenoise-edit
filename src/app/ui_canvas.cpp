@@ -110,7 +110,9 @@ void draw_ants_phases(ImDrawList* list, AppState& state, const ImVec2& origin,
 // actually drew for a screenshot to be reproducible.
 void draw_selection(ImDrawList* list, AppState& state, const ImVec2& origin, CoverageTint& tint) {
     state.ants.time = ImGui::GetTime();
-    if (!state.doc.selection()) {
+    // Editing the layer mask has its own red preview. Keep the independently retained AI
+    // selection available for Cover, but do not draw its blue wash or ants over the mask.
+    if (state.painting_mask() || !state.doc.selection()) {
         tint.sync(Mask{});
         return;
     }
@@ -218,8 +220,8 @@ void draw_lasso_path(ImDrawList* list, const AppState& state, const ImVec2& orig
 }
 
 void draw_document(ImDrawList* list, AppState& state, gfx::Texture& canvas_texture,
-                   const gfx::Checker& checker, CoverageTint& tint, const ImVec2& origin,
-                   const ImVec2& avail, const ImGuiIO& io) {
+                   const gfx::Checker& checker, CoverageTint& tint, CoverageTint& mask_tint,
+                   const ImVec2& origin, const ImVec2& avail, const ImGuiIO& io) {
     const ImVec2 canvas_min = image_screen_min(state, origin);
     const ImVec2 canvas_max(canvas_min.x + static_cast<float>(state.view.image_width()),
                             canvas_min.y + static_cast<float>(state.view.image_height()));
@@ -231,6 +233,30 @@ void draw_document(ImDrawList* list, AppState& state, gfx::Texture& canvas_textu
     const ui_theme::Palette& colors = ui_theme::palette(state.ui_theme);
     list->AddRect(canvas_min, canvas_max,
                   ImGui::ColorConvertFloat4ToU32(colors.canvas_border));
+    if (state.painting_mask() && state.mask_overlay_visible) {
+        const Layer& layer = state.active_layer();
+        mask_tint.sync_hidden(*layer.mask, layer.id, layer.content_revision);
+        const Rect box = mask_tint.bounds;
+        const auto screen = [&](double x, double y) {
+            const Vec2 point = state.view.world_to_view({x, y});
+            return ImVec2(origin.x + static_cast<float>(point.x),
+                          origin.y + static_cast<float>(point.y));
+        };
+        const auto wash = [&](int x0, int y0, int x1, int y1) {
+            if (x0 < x1 && y0 < y1) {
+                list->AddRectFilled(screen(x0, y0), screen(x1, y1),
+                                    IM_COL32(235, 65, 65, 110));
+            }
+        };
+        wash(0, 0, state.doc.width(), box.y);
+        wash(0, box.bottom(), state.doc.width(), state.doc.height());
+        wash(0, box.y, box.x, box.bottom());
+        wash(box.right(), box.y, state.doc.width(), box.bottom());
+        if (mask_tint.drawn && mask_tint.texture.valid()) {
+            list->AddImage(simgui_imtextureid(mask_tint.texture.view),
+                           screen(box.x, box.y), screen(box.right(), box.bottom()));
+        }
+    }
     draw_selection(list, state, origin, tint);
     if (state.pointer.drawn) {
         draw_footprint(list, ImVec2(io.MousePos.x, io.MousePos.y),
@@ -298,7 +324,7 @@ void handle_canvas_input(AppState& state, CommandTable& commands, const ImVec2& 
 }
 
 void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
-                 const gfx::Checker& checker, CoverageTint& tint) {
+                 const gfx::Checker& checker, CoverageTint& tint, CoverageTint& mask_tint) {
     if (!ImGui::Begin(kWindowCanvas)) {
         ImGui::End();
         return;
@@ -315,7 +341,7 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
     ImGuiIO& io = ImGui::GetIO();
     const bool hovered = update_canvas_pointer(state, origin, io);
     if (!state.doc.empty()) {
-        draw_document(list, state, canvas_texture, checker, tint, origin, avail, io);
+        draw_document(list, state, canvas_texture, checker, tint, mask_tint, origin, avail, io);
         handle_canvas_input(state, commands, origin, io, hovered);
     }
     ImGui::End();

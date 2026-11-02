@@ -5,6 +5,7 @@
 #include "core/mask.h"
 
 #include <cstdint>
+#include <random>
 #include <vector>
 
 using namespace noise;
@@ -121,6 +122,31 @@ void test_the_blur_is_exact_on_a_sample_plane() {
     CHECK_EQ(single[lit + 1], 85);  // the window slides, the sample it holds does not
 }
 
+void test_byte_blur_matches_integer_blur_exactly() {
+    const Extent size{37, 21};
+    std::mt19937 random(641);
+    for (int channels : {1, 3, 4}) {
+        std::vector<std::uint8_t> source(static_cast<std::size_t>(size.w) *
+                                         static_cast<std::size_t>(size.h) *
+                                         static_cast<std::size_t>(channels));
+        for (std::uint8_t& value : source) {
+            value = static_cast<std::uint8_t>(random() % 256u);
+        }
+        for (int radius : {0, 1, 3, 11}) {
+            for (int passes : {1, 2, 3, 4}) {
+                std::vector<int> integers(source.begin(), source.end());
+                std::vector<std::uint8_t> bytes = source;
+                box_blur(integers, size, channels, radius, passes);
+                box_blur(bytes, size, channels, radius, passes);
+                REQUIRE(integers.size() == bytes.size());
+                for (std::size_t index = 0; index < bytes.size(); ++index) {
+                    CHECK_EQ(integers[index], static_cast<int>(bytes[index]));
+                }
+            }
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -129,5 +155,6 @@ int main() {
     test_a_hard_edge_gains_a_ramp_and_no_coverage();
     test_a_feather_keeps_a_partial_pixel_partial();
     test_the_blur_is_exact_on_a_sample_plane();
+    test_byte_blur_matches_integer_blur_exactly();
     return noise::test::summary(__FILE__);
 }

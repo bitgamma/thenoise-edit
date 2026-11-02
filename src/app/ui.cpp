@@ -109,7 +109,8 @@ void draw_status_bar(AppState& state, CommandTable& commands, const json& ai_vie
 }
 
 void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
-             const gfx::Checker& checker, CoverageTint& tint, LayerThumbs& thumbs,
+             const gfx::Checker& checker, CoverageTint& tint, CoverageTint& mask_tint,
+             LayerThumbs& thumbs,
              ReferenceThumbs& reference_thumbs) {
     ui_theme::apply(state.ui_theme);
     state.ai_references_rect = ScreenRect{};
@@ -127,7 +128,7 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
         build_default_dock(dockspace, viewport->WorkSize);
     }
 
-    draw_canvas(state, commands, canvas_texture, checker, tint);
+    draw_canvas(state, commands, canvas_texture, checker, tint, mask_tint);
     // One read of the AI action per frame, shared by the verb rows and the status line: the answer is
     // what a press would do and what it costs, and asking twice would ask the settle rule to notice a
     // change in half a frame.

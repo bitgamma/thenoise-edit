@@ -169,7 +169,8 @@ json view_json(const AppState& state) {
                 {"origin", json::array({state.view.origin.x, state.view.origin.y})},
                 {"image", json::array({state.view.image.w, state.view.image.h})},
                 {"fit_pending", state.fit_pending},
-                {"coverage", coverage_view_name(state.coverage_view)}};
+                {"coverage", coverage_view_name(state.coverage_view)},
+                {"mask_overlay", state.mask_overlay_visible}};
 }
 
 namespace {
@@ -185,6 +186,8 @@ json layer_cards_json(const AppState& state) {
                          {"name", card.name},
                          {"active", card.active},
                          {"visible", card.visible},
+                         {"editing_pixels", card.editing_pixels},
+                         {"editing_mask", card.editing_mask},
                          {"box", screen_json(card.box)},
                          {"visibility", screen_json(card.visibility)},
                          {"title", screen_json(card.title)},
@@ -343,8 +346,9 @@ json stroke_json(const AppState& state) {
                 // Which plane this press has been writing since the button went down, which is the
                 // target as it was then rather than as it is now.
                 {"plane", layer_plane_name(state.stroke.plane)},
-                // And, for a coverage press, the lifetime it was aimed at when the button went down.
-                {"coverage", coverage_target_name(state.stroke.coverage)},
+                {"target", (state.stroke.active && tool_action(state.tool) == ToolAction::coverage) ||
+                                    state.select.active ? "selection" :
+                                    layer_plane_name(state.stroke.plane)},
                 // Where a move gesture has got to. Zero for a paint gesture, so one reply shape
                 // serves both and a client reading `dabs` is unaffected.
                 {"dx", state.move.dx},
@@ -361,9 +365,6 @@ json stroke_json(const AppState& state) {
                 {"marquee_shape", selection_gesture_name(state.select.gesture)},
                 {"lasso_points", std::move(lasso_points)},
                 {"selection_mode", mask_op_name(state.select.mode)},
-                // The lifetime the marquee's press opened, which outlives wherever the switch has been
-                // aimed by now.
-                {"marquee_coverage", coverage_target_name(state.select.coverage)},
                 {"provisional_area",
                  json::array({state.doc.provisional_area().x, state.doc.provisional_area().y,
                               state.doc.provisional_area().w, state.doc.provisional_area().h})}};
@@ -371,10 +372,7 @@ json stroke_json(const AppState& state) {
 
 json brush_json(const AppState& state) {
     return json{{"tool", state.tool},
-                // Which plane of the active layer the next stroke writes. `mask.get` says whether that
-                // plane is there; a target aimed at a plane the layer lacks refuses strokes rather
-                // than silently painting colour.
-                {"coverage_target", coverage_target_name(state.coverage_target)},
+                {"edit_plane", layer_plane_name(state.edit_plane)},
                 {"color", json::array({state.color.r, state.color.g, state.color.b,
                                        state.color.a})},
                 {"size", state.brush.size},

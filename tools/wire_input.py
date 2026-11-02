@@ -637,13 +637,10 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
         fails.append(f"select.from_mask gave {loaded_back}, expected the mask's {masked}")
     print(f"select.from_mask: bounds {loaded_back['bounds']}, covered {loaded_back['covered']}")
 
-    # Painting the mask itself with the pointer. The claim is about the seam: `cover` aimed at the
-    # saved lifetime moves coverage and nothing else, so the layer's own bytes sit still while the
-    # canvas changes, the gesture reports the lifetime it is writing, and one drag is one undo step
-    # that puts the coverage back. A screenshot cannot tell this from painting colour, and neither can
-    # a test that only reads the mask back.
+    # A mask thumbnail selects the plane for Brush/Eraser, never Cover/Un-cover or a
+    # marquee. The selection survives mask editing independently of the layer pixels.
     wire.call("select.clear", {})
-    wire.call("coverage.target", {"to": "mask"})
+    wire.call("layer.plane", {"plane": "mask"})
     wire.call("mask.fill", {"to": "hide"})
 
     def mask_view() -> tuple:
@@ -652,16 +649,24 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
         facts = wire.call("mask.get", {})
         return facts, listed["layers"][active]["checksum"], listed["composite_checksum"]
 
-    aimed = wire.call("app.state", {})["brush"]["coverage_target"]
+    plane = wire.call("app.state", {})["brush"]["edit_plane"]
     cleared, _, _ = mask_view()
-    print(f"coverage.target mask: {aimed}, filled with nothing shown: "
-          f"covered {cleared['mask']['covered']}")
-    if aimed != "mask":
-        fails.append(f"coverage.target reported '{aimed}'")
+    print(f"mask thumbnail selected: {plane}, initially visible {cleared['mask']['covered']}")
+    if plane != "mask":
+        fails.append(f"layer plane reported '{plane}' instead of mask")
     if cleared["mask"]["covered"] != 0:
-        fails.append(f"a filled-to-hidden mask covers {cleared['mask']['covered']} px")
+        fails.append("mask.fill(hide) failed")
 
+    # Cover always edits the blue selection, including while the mask thumbnail is active.
     wire.call("tool.set", {"tool": "cover", "size": 14.0, "hardness": 1.0})
+    wire.call("tool.stroke", {"points": [[18.0, 17.0]]})
+    if wire.call("select.get")["covered"] == 0:
+        fails.append("Cover did not mark the AI selection while the mask was active")
+    if wire.call("mask.get")["mask"]["covered"] != 0:
+        fails.append("Cover changed the layer mask")
+    wire.call("select.clear", {})
+
+    wire.call("tool.set", {"tool": "brush", "size": 14.0, "hardness": 1.0})
     doc = wd.document_screen_rect(wire.call("app.state", {}))
     before_facts, layer_before, composite_before = mask_view()
     depth_before = wire.call("app.state", {})["document"]["history"]["undo_depth"]
@@ -670,70 +675,77 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
     wd.settle(wire)
     inj.move(doc[0] + doc[2] * 0.7, doc[1] + doc[3] * 0.55)
     wd.settle(wire)
-    # Read between the move and the release: after the release the gesture is over and its own record
-    # is gone, which is what a press-only read found - one dab, and no evidence of a drag.
     during = wire.call("app.state", {})["stroke"]
     inj.button(1, False)
     wd.settle(wire)
     after_facts, layer_after, composite_after = mask_view()
     depth_after = wire.call("app.state", {})["document"]["history"]["undo_depth"]
-    print(f"brush on the mask: gesture plane {during['plane']}, dabs {during['dabs']}, "
-          f"covered {before_facts['mask']['covered']} -> {after_facts['mask']['covered']}, "
-          f"layer bytes unchanged {layer_after == layer_before}, composite "
-          f"{composite_before[:8]} -> {composite_after[:8]}, {depth_before} -> {depth_after} steps")
-    if during["coverage"] != "mask":
-        fails.append(f"the press reported coverage '{during['coverage']}', expected 'mask'")
+    print(f"Brush on mask: plane {during['plane']}, dabs {during['dabs']}, "
+          f"visible {before_facts['mask']['covered']} -> {after_facts['mask']['covered']}, "
+          f"layer bytes unchanged {layer_after == layer_before}; "
+          f"history {depth_before} -> {depth_after}")
+    if during["plane"] != "mask":
+        fails.append("mask brush gesture targeted the pixel plane")
     if during["dabs"] < 2:
-        fails.append("the drag laid no dabs, so nothing below proves anything")
+        fails.append("mask brush gesture laid no drag dabs")
     if after_facts["mask"]["covered"] == 0:
-        fails.append("painting the mask revealed nothing")
+        fails.append("mask brush did not reveal anything")
     if layer_after != layer_before:
-        fails.append("a mask stroke moved the layer's colour bytes")
+        fails.append("mask brush modified colour pixels")
     if composite_before == composite_after:
-        fails.append("the canvas did not change, so the mask stroke never reached the composite")
+        fails.append("mask brush did not change the composite")
     if depth_after != depth_before + 1:
-        fails.append(f"a mask drag cost {depth_after - depth_before} undo steps, expected one")
+        fails.append("mask stroke was not one undo step")
 
     inj.modified_key(KEY_Z, KEY_CTRL_L)
     wd.settle(wire)
     reverted, _, _ = mask_view()
-    print(f"Ctrl+Z after the mask stroke: covered back to {reverted['mask']['covered']}")
     if reverted["mask"]["covered"] != 0:
-        fails.append("undo did not put the mask back to hidden")
+        fails.append("undo did not restore the hidden mask")
 
-    # Colour is a tool and not a target: aimed at the saved lifetime, pressing `B` still writes colour
-    # and the mask's own facts stop moving. The switch decides where coverage goes, nothing else.
+    # Brush retains its meaning when selected through its keyboard shortcut, and the
+    # thumbnail - not the tool - determines whether it edits colour or visibility.
     inj.key(KEY_B)
     wd.settle(wire)
-    _, layer_before_colour, _ = mask_view()
+    _, pixels_before_brush, _ = mask_view()
     inj.move(doc[0] + doc[2] * 0.3, doc[1] + doc[3] * 0.3)
     inj.button(1, True)
     inj.move(doc[0] + doc[2] * 0.6, doc[1] + doc[3] * 0.5)
     wd.settle(wire)
     inj.button(1, False)
     wd.settle(wire)
-    facts_colour, layer_after_colour, _ = mask_view()
-    print(f"brush aimed at the mask - same drag: layer bytes changed "
-          f"{layer_after_colour != layer_before_colour}, mask covered stayed "
-          f"{reverted['mask']['covered']} -> {facts_colour['mask']['covered']}")
-    if layer_after_colour == layer_before_colour:
-        fails.append("the brush painted nothing")
-    if facts_colour["mask"]["covered"] != reverted["mask"]["covered"]:
-        fails.append("the brush edited the mask")
+    painted_mask, pixels_after_brush, _ = mask_view()
+    if painted_mask["mask"]["covered"] == 0:
+        fails.append("Brush shortcut failed to edit the selected mask")
+    if pixels_before_brush != pixels_after_brush:
+        fails.append("Brush shortcut changed pixels while the mask was active")
 
-    # With the mask taken off, `cover` aimed at it is refused by name rather than marking the area or
-    # painting colour behind the user's back.
+    wire.call("layer.plane", {"plane": "pixels"})
+    wire.call("select.clear", {})
+    pixels_before_colour, _ = view()
+    inj.move(doc[0] + doc[2] * 0.5, doc[1] + doc[3] * 0.5)
+    inj.button(1, True)
+    wd.settle(wire)
+    inj.button(1, False)
+    wd.settle(wire)
+    pixels_after_colour, _ = view()
+    if pixels_before_colour == pixels_after_colour:
+        fails.append("Brush did not edit image pixels after selecting the image thumbnail")
+    if wire.call("mask.get")["mask"]["covered"] != painted_mask["mask"]["covered"]:
+        fails.append("image Brush unexpectedly changed layer mask")
+
     wire.call("mask.remove", {})
-    wire.call("tool.set", {"tool": "cover"})
-    wire.call("coverage.target", {"to": "mask"})
     try:
-        wire.call("tool.stroke", {"points": [[10.0, 10.0]]})
-        fails.append("a stroke aimed at a removed mask was accepted")
+        wire.call("layer.plane", {"plane": "mask"})
+        fails.append("a non-existent mask thumbnail was selected")
     except wd.WireError as why:
-        print(f"stroke aimed at a removed mask: {why}")
-        if "has none" not in str(why):
-            fails.append(f"the refusal did not name the missing mask: {why}")
-    wire.call("coverage.target", {"to": "marked"})
+        if "has no mask" not in str(why):
+            fails.append(f"missing-mask refusal was unclear: {why}")
+    wire.call("tool.set", {"tool": "cover"})
+    wire.call("tool.stroke", {"points": [[10.0, 10.0]]})
+    if wire.call("select.get")["covered"] == 0:
+        fails.append("Cover stopped working when the layer mask was removed")
+    wire.call("select.clear", {})
 
     # The step keys, through the real key path. `,`/`.` move hardness by one step and Shift takes
     # the same two keys to opacity - which only a real modifier state can demonstrate, because the
