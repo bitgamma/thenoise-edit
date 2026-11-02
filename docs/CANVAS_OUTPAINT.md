@@ -10,9 +10,9 @@ are also available from the command/debug wire.
    anchor fixes the original image's position; the operation moves pixels and masks without
    resampling.
 2. Press **Resize & Fill...**. This resizes the document, selects *only* the exposed area,
-   and opens the normal **Fill** prompt with an
-   editable suggestion. **No AI request is sent by resizing.** Press **Run** to start the
-   existing `region-fill` recipe. A model connection is required for generation, not for
+   and opens the normal **Fill** prompt with the editable suggestion
+   `extended the background`. **No AI request is sent by resizing.** Press **Run** to start
+   the existing `region-fill` recipe. A model connection is required for generation, not for
    resizing. Alternatively press **Resize canvas** for geometry alone; with **Select added
    area for AI Fill** enabled, the new border is selected but the Fill prompt does not open.
 3. Once the generated answer lands, it becomes a new result layer with a retained editable
@@ -27,33 +27,25 @@ The canvas has the requested pixel dimensions (up to 64 megapixels). The *AI req
 may be rescaled to the model's pixel budget; the floating prompt's **Run** is the point
 where an expensive request is actually submitted.
 
-## From a marked area to the next AI edit
+## Mark, generate, and refine
 
-The floating **Heal / Remove / Fill / Change** bar has three states:
+Cover / Un-cover and selection tools **always edit the blue marked area**.
+The floating **Heal / Remove / Fill / Change** buttons are available when a mark is
+present, and disabled while the AI request is running. After a successful landing the
+floating bar disappears, leaving the original selection intact rather than blocking
+part of the image. Adjust the selection or draw another to show the buttons again.
 
-1. **Ready:** select an area and choose an operation. Cover/Un-cover writes to the **marked
-   area** for the next AI request.
-2. **Generating:** the bar stays in place but all four operations are disabled. The same
-   readiness check also blocks repeat launches from the panel and keyboard shortcuts. A failed
-   or cancelled job unlocks the buttons without entering result editing.
-3. **Result editing:** after the answer has **successfully landed** as a masked result layer,
-   the bar shows **Editing result mask** and **New AI edit** instead of the four AI actions.
-   The result mask is selected for Brush / Eraser adjustments; no regeneration is needed.
+The answer appears on a new result layer; the **image thumbnail stays selected**.
+Click the mask thumbnail only if you want to refine the result with Brush / Eraser,
+shown with an optional red mask overlay. Clicking the image thumbnail returns to pixel
+painting. No New AI edit button or extra commit/apply step is needed. Undo/Redo never
+repeat the AI request.
 
-Cover / Un-cover and selection shapes **always edit the blue marked area**. Selecting the
-result layer's **mask thumbnail** directs Brush / Eraser to the mask, with a toggleable red
-overlay; selecting the **image thumbnail** directs them back to image pixels. Switching to
-Cover shows the AI actions for the blue selection, while switching back to Brush on the
-result mask shows only the result-editing bar. No global coverage switch is required.
+## Rotate
 
-**New AI edit** is an optional shortcut that selects image pixels and Cover for another AI
-selection; it does not remove the previous mask, discard generated pixels or clear the existing
-selection. The four AI actions are shown when a selection exists and the result mask is not
-being painted. If the selection was cleared, the return button remains near the result mask
-(or the original request bounds when its mask is empty). Changing the active layer does not
-silently rebind the result-edit UI to a different layer. Undoing/removing the result layer ends
-its edit session, and undo/redo never repeats an AI request. The special first AI result on a
-fully blank canvas has no separate layer mask, so it stays in ready mode.
+The **90 deg CW** and **90 deg CCW** buttons rotate the whole document: every layer's
+pixels, its optional mask, and the marked area. Width and height swap. Each rotation
+is one Undo/Redo step and invalidates AI answers queued for the old geometry.
 
 ## Crop
 
@@ -100,7 +92,9 @@ The tool panel invokes these same commands (arguments are JSON objects):
 
 ```json
 {"cmd": "doc.resize", "args": {"width": 1536, "height": 1024, "offset_x": 256, "offset_y": 0, "mark_added": true}}
-{"cmd": "doc.outpaint.prepare", "args": {"width": 1536, "height": 1024, "offset_x": 256, "offset_y": 0, "prompt": "a continuation of the forest"}}
+{"cmd": "doc.outpaint.prepare", "args": {"width": 1536, "height": 1024, "offset_x": 256, "offset_y": 0, "prompt": "extended the background"}}
+{"cmd": "doc.rotate", "args": {"direction": "cw"}}
+{"cmd": "doc.rotate", "args": {"direction": "ccw"}}
 {"cmd": "doc.crop", "args": {"rect": [100, 50, 900, 700]}}
 {"cmd": "doc.crop", "args": {}}
 {"cmd": "mask.edge.state", "args": {}}

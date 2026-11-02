@@ -243,8 +243,6 @@ struct AppState {
     // mark to anchor it to. Published for the wire: a driver clicks the bar by reading this back
     // rather than by measuring a screenshot.
     ScreenRect verb_bar{};
-    // The bar button that explicitly returns mask editing to marking the next AI edit.
-    ScreenRect verb_new_edit{};
     // Where the layers panel drew this frame: the panel's own box and one card per layer, top card
     // first, each with the box its visibility control occupies. A driver clicks what the app reports
     // rather than a coordinate it remembered from a screenshot.

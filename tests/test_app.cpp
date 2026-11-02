@@ -1777,6 +1777,40 @@ void test_cover_and_brush_have_independent_targets() {
     CHECK(undo_mask.run("tool.stroke", json{{"points", json::array({json::array({12, 12})})}}).ok);
 }
 
+// Selecting the mask thumbnail enters visible mask editing immediately, even when Cover was active.
+// Selecting Cover again still marks the independent blue selection.
+void test_mask_thumbnail_opens_visible_mask_editing_without_a_stroke() {
+    Harness h;
+    h.value("doc.new", json{{"width", 32}, {"height", 24}});
+    h.value("mask.add", json::object());
+    h.value("mask.fill", json{{"to", "hide"}});
+    h.value("layer.plane", json{{"plane", "pixels"}});
+    h.value("tool.set", json{{"tool", "cover"}});
+    const Mask mask_before = *h.state.doc.layer(0).mask;
+    CHECK(!h.state.painting_mask());
+
+    h.value("layer.plane", json{{"plane", "mask"}});
+    CHECK(h.state.editing_mask());
+    CHECK(h.state.painting_mask());
+    CHECK(h.state.mask_overlay_visible);
+    CHECK_EQ(h.state.tool, std::string(kDefaultTool));
+    CHECK(*h.state.doc.layer(0).mask == mask_before);
+
+    h.value("tool.set", json{{"tool", "cover"}});
+    CHECK(!h.state.painting_mask());
+    h.value("tool.stroke", json{{"points", json::array({json::array({12.0, 12.0})})}});
+    REQUIRE(h.state.doc.selection().has_value());
+    CHECK(h.state.doc.selection()->covered() > 0);
+    CHECK(*h.state.doc.layer(0).mask == mask_before);
+
+    h.value("layer.plane", json{{"plane", "mask"}});
+    CHECK(h.state.painting_mask());
+    CHECK_EQ(h.state.tool, std::string(kDefaultTool));
+    CHECK(h.state.doc.selection()->covered() > 0);
+    h.value("layer.plane", json{{"plane", "pixels"}});
+    CHECK(!h.state.painting_mask());
+}
+
 // A marquee always changes the marked area, even while the mask thumbnail is selected.
 void test_marquee_always_selects_document_area() {
     Harness h;
@@ -4041,10 +4075,11 @@ void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
     CHECK(applied["composite"]["composed"].get<bool>());
     CHECK_EQ(h.state.doc.layers().size(), landed_layers);
 
-    // The on-canvas bar is now in result-mask editing mode; opening the next edit is explicit.
-    CHECK_EQ(h.value("verb.bar", json::object())["mode"].get<std::string>(),
-             std::string("editing"));
-    h.value("verb.new_edit", json::object());
+    // A completed result leaves the mark intact but hides the floating actions until it changes.
+    const json completed = h.value("verb.bar", json::object());
+    CHECK_EQ(completed["mode"].get<std::string>(), std::string("actions"));
+    CHECK(!completed["shown"].get<bool>());
+    CHECK_EQ(h.value("layer.plane", json::object())["plane"], "pixels");
     // The other verbs keep their one question: the same press on Fill refuses rather than guessing
     // what the marked area should become.
     const CommandResult wordless = h.run("ai.fill", json{{"seed", 7}});
@@ -4059,9 +4094,8 @@ void test_the_remove_key_runs_the_whole_sequence_with_no_words() {
     CHECK(bogus.error.find("ai.bleach") != std::string::npos);
 }
 
-// A marked-area edit is one deliberate cycle: queue -> locked buttons -> editable result ->
-// explicit rearm. The controller follows the actual landing rather than the HTTP result alone, and
-// never lets a shortcut silently queue a second edit while the user's brush is aimed at a layer mask.
+// A marked edit disables the AI actions while running, then returns to normal pixel editing.
+// Its mask remains available via the thumbnail, without forcing a different tool or a modal.
 void test_selection_edit_mode_follows_the_job_and_the_result_mask() {
     Harness h;
     h.value("doc.new", json{{"width", 96}, {"height", 64},
@@ -4082,9 +4116,7 @@ void test_selection_edit_mode_follows_the_job_and_the_result_mask() {
         CHECK(row["reason"].get<std::string>().find("generating") != std::string::npos);
     }
     // The recorded answer may finish before another AI press pumps the queue. The disabled
-    // button rows above check the in-flight lock without accidentally starting a valid next edit.
-    CHECK(!h.run("verb.new_edit", json::object()).ok);
-    CHECK(!h.run("verb.ask", json{{"show", "fill"}}).ok);
+    // button rows above check the in-flight lock without accidentally queuing another edit.
     CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(1));
 
     const json finished = h.value("job.wait", json{{"id", id}, {"timeout", 30}});
@@ -4092,59 +4124,42 @@ void test_selection_edit_mode_follows_the_job_and_the_result_mask() {
     CHECK(finished["landing"]["landed"].get<bool>());
     REQUIRE(h.state.doc.active() == 1);
     REQUIRE(h.state.active_layer().mask.has_value());
-    CHECK_EQ(h.value("layer.plane", json::object())["plane"].get<std::string>(),
-             std::string("mask"));
-    const json editing = h.value("verb.bar", json::object());
-    CHECK_EQ(editing["mode"].get<std::string>(), std::string("editing"));
-    CHECK(editing["shown"].get<bool>());
-    CHECK(editing["buttons"].empty());
-    CHECK(editing["ask"].is_null());
-    // Switching tools does not change the selected thumbnail: Cover marks the blue selection,
-    // Brush restores the red mask editing view without any special mode switch.
-    h.value("tool.set", json{{"tool", "cover"}});
-    const json selection_actions = h.value("verb.bar", json::object());
-    CHECK_EQ(selection_actions["mode"], "actions");
-    CHECK_EQ(selection_actions["buttons"].size(), std::size_t(4));
+    CHECK_EQ(h.value("layer.plane", json::object())["plane"], "pixels");
+    const json completed = h.value("verb.bar", json::object());
+    CHECK_EQ(completed["mode"], "actions");
+    CHECK(!completed["shown"].get<bool>());
+    CHECK(completed["buttons"].empty());
+    CHECK(!h.run("verb.new_edit", json::object()).ok);
+    CHECK(h.state.doc.selection().has_value());
+    const json old_selection = h.value("select.get", json::object());
+
+    // Selecting the mask is an explicit thumbnail action; it must not change the marked area.
+    h.value("layer.plane", json{{"plane", "mask"}});
     CHECK_EQ(h.value("layer.plane", json::object())["plane"], "mask");
-    h.value("tool.set", json{{"tool", "brush"}});
-    const json back_to_mask = h.value("verb.bar", json::object());
-    CHECK_EQ(back_to_mask["mode"], "editing");
-    CHECK(back_to_mask["buttons"].empty());
-    CHECK(h.run("verb.ask", json{{"show", "change"}}).ok);
-    h.run("verb.ask", json{{"show", "close"}});
-    // Selecting another layer must not quietly rebind the result edit to that layer's mask.
-    h.value("layer.select", json{{"index", 0}});
-    CHECK_EQ(h.value("verb.bar", json::object())["mode"].get<std::string>(),
-             std::string("actions"));
-    h.value("layer.plane", json{{"index", 1}, {"plane", "mask"}});
+    CHECK_EQ(h.value("select.get", json::object()), old_selection);
+    CHECK(!h.value("verb.bar", json::object())["shown"].get<bool>());
+    h.value("layer.plane", json{{"plane", "pixels"}});
+    CHECK_EQ(h.value("layer.plane", json::object())["plane"], "pixels");
 
+    // Changing the marked area makes the normal AI actions available without a special button.
     const std::string unchanged = checksum_of(h);
-    const json retained_selection = h.value("select.get", json::object());
-    const json new_edit = h.value("verb.new_edit", json::object());
-    CHECK_EQ(new_edit["mode"].get<std::string>(), std::string("actions"));
-    CHECK_EQ(h.value("layer.plane", json::object())["plane"].get<std::string>(),
-             std::string("pixels"));
+    h.value("select.rect", json{{"rect", json::array({5, 5, 12, 10})}});
+    const json next = h.value("verb.bar", json::object());
+    CHECK_EQ(next["mode"], "actions");
+    CHECK(next["shown"].get<bool>());
+    CHECK_EQ(next["buttons"].size(), std::size_t(4));
+    CHECK(next["buttons"][0]["ready"].get<bool>());
     CHECK_EQ(checksum_of(h), unchanged);
-    CHECK_EQ(h.value("select.get", json::object()), retained_selection);
-    const json rearmed = h.value("verb.bar", json::object());
-    CHECK_EQ(rearmed["mode"].get<std::string>(), std::string("actions"));
-    CHECK_EQ(rearmed["buttons"].size(), std::size_t(4));
-    CHECK(rearmed["buttons"][0]["ready"].get<bool>());
-    CHECK(h.run("verb.new_edit", json::object()).ok);
 
-    // The next edit builds on the result layer, not on a new empty one.
     const json again = h.value("ai.remove", json{{"seed", 12}});
     const json second = h.value("job.wait", json{{"id", again["job"]["id"]},
-                                              {"timeout", 30}});
+                                               {"timeout", 30}});
     CHECK_EQ(second["state"].get<std::string>(), std::string("succeeded"));
     REQUIRE(h.state.doc.layers().size() == std::size_t(3));
-    CHECK_EQ(h.value("verb.bar", json::object())["mode"].get<std::string>(),
-             std::string("editing"));
+    CHECK_EQ(h.value("layer.plane", json::object())["plane"], "pixels");
+    CHECK(!h.value("verb.bar", json::object())["shown"].get<bool>());
 
-    // Clearing the selection does not strand New AI edit: the bar anchors to the result mask.
     h.value("select.clear", json::object());
-    CHECK(h.value("verb.bar", json::object())["shown"].get<bool>());
-    h.value("verb.new_edit", json::object());
     CHECK(!h.value("verb.bar", json::object())["shown"].get<bool>());
     h.value("select.rect", json{{"rect", json::array({5, 5, 12, 10})}});
     CHECK(h.value("verb.bar", json::object())["shown"].get<bool>());
@@ -4163,8 +4178,7 @@ void test_selection_edit_mode_follows_the_job_and_the_result_mask() {
     undo.value("select.rect", json{{"rect", json::array({20, 12, 36, 24})}});
     const json to_undo = undo.value("ai.remove", json{{"seed", 13}});
     undo.value("job.wait", json{{"id", to_undo["job"]["id"]}, {"timeout", 30}});
-    CHECK_EQ(undo.value("verb.bar", json::object())["mode"].get<std::string>(),
-             std::string("editing"));
+    CHECK(!undo.value("verb.bar", json::object())["shown"].get<bool>());
     undo.value("edit.undo", json::object());
     CHECK_EQ(undo.state.doc.layers().size(), std::size_t(1));
     CHECK_EQ(undo.value("verb.bar", json::object())["mode"].get<std::string>(),
@@ -4268,7 +4282,6 @@ void test_the_typed_verbs_carry_their_words_to_their_own_layer() {
         CHECK_EQ(outside, std::size_t(0));
         CHECK_NE(checksum_of(h), scene);
 
-        h.value("verb.new_edit", json::object());
         // One `Ctrl+Z` takes the answer and the layer holding it together, back to the scene.
         h.value("edit.undo", json::object());
         CHECK_EQ(h.state.doc.layers().size(), layers_before);
@@ -4795,6 +4808,21 @@ void test_canvas_commands_and_editable_edges_use_the_document_timeline() {
     h.value("edit.undo", json::object());
     CHECK(h.state.doc.size() == (Extent{12, 10}));
     CHECK_EQ(h.state.document_epoch, marked_epoch + 4);
+    const std::string before_rotate = h.state.doc.checksum();
+    const std::uint64_t before_rotation_epoch = h.state.document_epoch;
+    CHECK(!h.run("doc.rotate", json{{"direction", "sideways"}}).ok);
+    CHECK(!h.run("doc.rotate", json::object()).ok);
+    CHECK_EQ(h.state.document_epoch, before_rotation_epoch);
+    h.value("doc.rotate", json{{"direction", "cw"}});
+    CHECK(h.state.doc.size() == (Extent{10, 12}));
+    CHECK_EQ(h.state.document_epoch, before_rotation_epoch + 1);
+    h.value("doc.rotate", json{{"direction", "ccw"}});
+    CHECK(h.state.doc.size() == (Extent{12, 10}));
+    CHECK_EQ(h.state.doc.checksum(), before_rotate);
+    h.value("edit.undo", json::object());
+    CHECK(h.state.doc.size() == (Extent{10, 12}));
+    h.value("edit.redo", json::object());
+    CHECK(h.state.doc.size() == (Extent{12, 10}));
 }
 
 void test_outpaint_opens_fill_without_starting_a_job() {
@@ -4824,7 +4852,7 @@ void test_outpaint_opens_fill_without_starting_a_job() {
     CHECK_EQ(result["ask"]["verb"].get<std::string>(), std::string("fill"));
     CHECK(h.state.edit_plane == LayerPlane::pixels);
     CHECK_EQ(h.value("ai.intent", json::object())["vars"]["prompt"].get<std::string>(),
-             std::string("a natural continuation of the surrounding scene"));
+             std::string("extended the background"));
     CHECK(h.state.ai_intent.job.empty());
     CHECK_EQ(h.state.doc.history().undo_depth, before_depth + 1);
 }
@@ -5055,6 +5083,7 @@ int main() {
     test_the_ellipse_marquee_draws_the_shape_of_its_own_tool_row();
     test_the_select_gesture_draws_and_puts_down_the_selection();
     test_cover_and_brush_have_independent_targets();
+    test_mask_thumbnail_opens_visible_mask_editing_without_a_stroke();
     test_marquee_always_selects_document_area();
     test_marquee_gesture_is_one_marked_step();
     test_lasso_command_combines_coverage_and_never_changes_pixels();

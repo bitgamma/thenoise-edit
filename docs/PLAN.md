@@ -1267,3 +1267,27 @@ the app command protocol, or moving file routing into the platform adapter. The 
 the queued request/result from file operations, and the existing selection order is deterministic after
 the NFD path set is collected. The crop/resize milestone and the document/history constraint it needs are
 unchanged. See `docs/FILE_BROWSER.md`.
+
+## 2026-11-02 - Remove forced edit handoff; add 90-degree rotation
+
+**Architecture verdict:** The blue AI selection and each result layer's mask already have
+independent editing tools. The `New AI edit` UI and automatic mask selection duplicated a
+mode switch the user did not need and obstructed the canvas in compact windows. A landed
+answer now keeps the image plane active; the floating AI verb bar stays hidden until the
+selection changes. The result mask stays independently accessible through its thumbnail,
+without a new dialog or additional Apply action. Selection revision, not a guessed timeout
+or a costly mask copy, determines when the existing verb bar is relevant again.
+
+`doc.rotate` uses the same whole-canvas replacement history as resize and crop: pixels,
+all layer masks and the marked selection rotate together. It exchanges width and height,
+bumps the geometry epoch to invalidate pending AI work and keeps one Undo step. The default
+Outpaint Fill suggestion is now `extended the background` based on user feedback; no
+new recipe, model dependency or upscaling code was introduced.
+
+## 2026-11-02 - Mask-thumbnail visual feedback
+
+**Architecture verdict:** A mask thumbnail is an editing target, not a second coverage mode.
+Selecting it now activates Brush only when the current tool cannot paint the mask; this makes
+the existing red mask preview visible immediately while preserving Eraser and the separation
+of Cover/selection (blue) from mask painting (red). No new overlay state or UI command is needed.
+The wire and the thumbnail continue to share the `layer.plane` command.

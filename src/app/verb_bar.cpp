@@ -90,33 +90,6 @@ std::optional<Rect> verb_bar_mark(const AppState& state) {
     return Rect{bounds[0].get<int>(), bounds[1].get<int>(), bounds[2].get<int>(), bounds[3].get<int>()};
 }
 
-// A completed edit keeps its small return button near the result even if the user has cleared the
-// marked area to inspect the edge. Re-arming a new edit without a mark hides the action bar again.
-std::optional<Rect> verb_bar_anchor_mark(const AppState& state) {
-    if (const std::optional<Rect> marked = verb_bar_mark(state); marked.has_value()) {
-        return marked;
-    }
-    if (selection_edit_phase(state) == SelectionEditPhase::editing) {
-        if (const Layer* layer = selection_edit_result_layer(state); layer != nullptr) {
-            const Rect bounds = layer->mask->bounds();
-            if (bounds.w > 0 && bounds.h > 0) {
-                return bounds;
-            }
-        }
-        // A fully hidden result has an empty mask. Its original request bounds still locate the
-        // return button, so Un-cover never makes it impossible to start the next edit.
-        if (state.ai.jobs != nullptr) {
-            const std::optional<ai::JobRecord> job =
-                state.ai.jobs->find(state.selection_edit.job);
-            if (job.has_value() && job->landing.mask_bounds.w > 0 &&
-                job->landing.mask_bounds.h > 0) {
-                return job->landing.mask_bounds;
-            }
-        }
-    }
-    return std::nullopt;
-}
-
 void register_verb_bar_commands(AppState& state, CommandTable& table) {
     // The phrase box a marked-area verb needs, opened over the mark. Words themselves are the intent's
     // (`ai.intent`), the press is the verb's (`ai.<verb>`): this command only decides that a box is
@@ -158,36 +131,22 @@ void register_verb_bar_commands(AppState& state, CommandTable& table) {
     });
 
 
-    table.add("verb.new_edit", "Switch to Cover to mark the next AI edit", {}, {},
-              [&state](const json&) -> CommandResult {
-        if (selection_edit_phase(state) == SelectionEditPhase::generating) {
-            return fail("verb.new_edit", "the AI edit is still generating");
-        }
-        if (state.doc.empty()) {
-            return fail("verb.new_edit", "there is no document");
-        }
-        selection_edit_new(state);
-        return command_ok(json{{"mode", "actions"},
-                               {"selection", selection_json(state)}});
-    });
-
     table.add("verb.bar",
               "The verbs the marked area is an instruction for, and where the bar was last drawn",
               {}, {},
               [&state, &table](const json&) -> CommandResult {
         selection_edit_reconcile(state);
         const SelectionEditPhase mode = selection_edit_phase(state);
-        const std::optional<Rect> mark = verb_bar_anchor_mark(state);
+        const std::optional<Rect> mark = verb_bar_mark(state);
         std::string why;
-        const json rows = mark && mode != SelectionEditPhase::editing
-                              ? verb_bar_rows(table, &why) : json::array();
+        const bool hidden = selection_edit_hides_bar(state);
+        const json rows = mark && !hidden ? verb_bar_rows(table, &why) : json::array();
         if (!why.empty()) {
             return command_error("verb.bar: " + why);
         }
         // `shown` is the decision to draw; `screen` is where a frame actually did, and stays zero
         // outside one - a headless caller can read the first and must not trust the second.
-        return command_ok(json{{"shown", mark.has_value() &&
-                                             (mode == SelectionEditPhase::editing || !rows.empty())},
+        return command_ok(json{{"shown", mark.has_value() && !rows.empty()},
                                {"mode", selection_edit_phase_name(mode)},
                                {"job", state.selection_edit.job.empty() ? json(nullptr)
                                          : json(state.selection_edit.job)},
@@ -196,10 +155,6 @@ void register_verb_bar_commands(AppState& state, CommandTable& table) {
                                             : json::array({mark->x, mark->y, mark->w, mark->h})},
                                {"screen", json::array({state.verb_bar.x, state.verb_bar.y,
                                                        state.verb_bar.w, state.verb_bar.h})},
-                               {"new_edit_screen", json::array({state.verb_new_edit.x,
-                                                                  state.verb_new_edit.y,
-                                                                  state.verb_new_edit.w,
-                                                                  state.verb_new_edit.h})},
                                {"buttons", rows},
                                {"ask", verb_ask_state(state, table)}});
     });

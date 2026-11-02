@@ -20,6 +20,7 @@ Document::Document() : history_(kHistoryBudgetBytes) {}
 void Document::reset(std::vector<Layer> layers, std::optional<Mask> selection, std::string path) {
     layers_ = std::move(layers);
     ++geometry_revision_;
+    ++selection_revision_;
     for (Layer& layer : layers_) {
         layer.id = next_layer_id_++;
     }
@@ -51,6 +52,7 @@ int Document::width() const { return layers_.empty() ? 0 : layers_.front().pixel
 int Document::height() const { return layers_.empty() ? 0 : layers_.front().pixels.size().h; }
 Extent Document::size() const { return layers_.empty() ? Extent{0, 0} : layers_.front().pixels.size(); }
 std::uint64_t Document::geometry_revision() const { return geometry_revision_; }
+std::uint64_t Document::selection_revision() const { return selection_revision_; }
 
 namespace {
 
@@ -128,6 +130,7 @@ bool Document::resize_canvas(Extent target, int offset_x, int offset_y, bool mar
     history_.record_canvas_replaced(std::move(layers_), std::move(selection_));
     layers_ = std::move(transformed);
     selection_ = std::move(marked);
+    ++selection_revision_;
     ++geometry_revision_;
     pending_ = Rect{0, 0, target.w, target.h};
     dirty_ = true;
@@ -140,6 +143,70 @@ bool Document::crop_canvas(Rect crop) {
         return false;
     }
     return resize_canvas(Extent{crop.w, crop.h}, -crop.x, -crop.y, false);
+}
+
+bool Document::rotate_canvas(bool clockwise) {
+    if (empty()) {
+        return false;
+    }
+    const Extent old = size();
+    const Extent rotated{old.h, old.w};
+    discard_provisional();
+    cancel_marked();
+    const auto rotate_position = [clockwise, old](int x, int y) {
+        return clockwise ? std::pair{old.h - 1 - y, x}
+                         : std::pair{y, old.w - 1 - x};
+    };
+    const auto rotate_image = [&](const Image& source) {
+        Image result = Image::filled(rotated, 0, 0, 0, 0);
+        for (int y = 0; y < old.h; ++y) {
+            for (int x = 0; x < old.w; ++x) {
+                const auto to = rotate_position(x, y);
+                std::copy_n(source.at(x, y), kChannels,
+                            result.at(to.first, to.second));
+            }
+        }
+        return result;
+    };
+    const auto rotate_mask = [&](const Mask& source) {
+        Mask result(rotated);
+        for (int y = 0; y < old.h; ++y) {
+            const auto row = source.row(y);
+            for (int x = 0; x < old.w; ++x) {
+                const auto to = rotate_position(x, y);
+                result.row(to.second)[static_cast<std::size_t>(to.first)] =
+                    row[static_cast<std::size_t>(x)];
+            }
+        }
+        return result;
+    };
+    std::vector<Layer> transformed;
+    transformed.reserve(layers_.size());
+    for (const Layer& source : layers_) {
+        Layer next;
+        next.id = source.id;
+        next.name = source.name;
+        next.visible = source.visible;
+        next.opacity = source.opacity;
+        next.mode = source.mode;
+        next.content_revision = source.content_revision;
+        next.pixels = rotate_image(source.pixels);
+        if (source.mask) {
+            next.mask = rotate_mask(*source.mask);
+        }
+        transformed.push_back(std::move(next));
+    }
+    std::optional<Mask> marked = selection_ ? std::optional<Mask>(rotate_mask(*selection_))
+                                            : std::nullopt;
+    history_.record_canvas_replaced(std::move(layers_), std::move(selection_));
+    layers_ = std::move(transformed);
+    selection_ = std::move(marked);
+    ++geometry_revision_;
+    ++selection_revision_;
+    pending_ = Rect{0, 0, rotated.w, rotated.h};
+    dirty_ = true;
+    changed_all_layers();
+    return true;
 }
 
 std::span<const Layer> Document::layers() const { return layers_; }
@@ -875,6 +942,7 @@ bool Document::set_selection(std::optional<Mask> selection) {
         history_.record_coverage(selection_);
     }
     selection_ = std::move(selection);
+    ++selection_revision_;
     dirty_ = true;
     return true;
 }
@@ -939,6 +1007,7 @@ void Document::cancel_marked() {
     }
     marked_gesture_ = false;
     selection_ = marked_had_selection_ ? std::optional<Mask>(marked_held_) : std::nullopt;
+    ++selection_revision_;
     marked_held_ = Mask();
 }
 
@@ -1224,6 +1293,7 @@ bool Document::undo() {
     if (moved->canvas_changed) {
         ++geometry_revision_;
     }
+    ++selection_revision_;
     retarget_active(was);
     pending_ = unite(pending_, moved->rect);
     if (moved->structure) {
@@ -1253,6 +1323,7 @@ bool Document::redo() {
     if (moved->canvas_changed) {
         ++geometry_revision_;
     }
+    ++selection_revision_;
     retarget_active(was);
     pending_ = unite(pending_, moved->rect);
     if (moved->structure) {

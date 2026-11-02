@@ -130,6 +130,16 @@ void draw_canvas_controls(AppState& state, CommandTable& commands) {
         resize(true);
     }
     ImGui::TextDisabled("Fill opens a prompt; Run starts the AI request.");
+    ImGui::SeparatorText("Rotate");
+    if (ImGui::Button("90 deg CCW")) {
+        const CommandResult result = commands.invoke("doc.rotate", json{{"direction", "ccw"}});
+        form.error = result.ok ? "" : result.error;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("90 deg CW")) {
+        const CommandResult result = commands.invoke("doc.rotate", json{{"direction", "cw"}});
+        form.error = result.ok ? "" : result.error;
+    }
     ImGui::SeparatorText("Crop");
     std::array<int, 4> crop{form.crop.x, form.crop.y, form.crop.w, form.crop.h};
     if (ImGui::InputInt4("x, y, w, h##crop", crop.data())) {

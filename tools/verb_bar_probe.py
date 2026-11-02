@@ -137,6 +137,20 @@ def main() -> int:
             p.check(wire.call("doc.get")["checksum"] != blank_checksum,
                     "and the canvas changed")
 
+        # Once a result lands, the old mark remains but its floating bar stays hidden.
+        # Start the next edit with a fresh selection, as a user would, and read the newly
+        # drawn button positions instead of clicking where the previous bar used to be.
+        completed_bar = wire.call("verb.bar")
+        p.check(not completed_bar["shown"], "the completed edit hides the previous bar")
+        wire.call("select.clear")
+        wire.call("select.rect", {"rect": MARK})
+        wd.settle(wire)
+        bar = wire.call("verb.bar")
+        p.check(bar["shown"] and [b["command"] for b in bar["buttons"]] == EXPECTED,
+                "a fresh selection brings the AI verbs back")
+        bx, by, bw, bh = bar["screen"]
+        step = bw / len(bar["buttons"])
+
         # A verb that wants words answers a click with a box over the mark, not with a run on whatever
         # the panel happens to hold - and not with a job either, until the words are in.
         fill = next(b for b in bar["buttons"] if b["verb"] == "fill")
@@ -173,28 +187,18 @@ def main() -> int:
         p.check(wire.call("verb.bar")["ask"] is None, "and the box closed when the press was taken")
         wd.settle(wire)
         editor = wire.call("verb.bar")
-        p.check(editor["mode"] == "editing" and editor["buttons"] == [],
-                "the completed edit shows only result editing and New AI edit", str(editor))
+        p.check(editor["mode"] == "actions" and not editor["shown"] and editor["buttons"] == [],
+                "the completed edit leaves no floating dialog", str(editor))
+        p.check(wire.call("layer.plane")["plane"] == "pixels",
+                "the result leaves image pixels selected rather than the mask")
+        wire.call("layer.plane", {"plane": "mask"})
         p.check(wire.call("layer.plane")["plane"] == "mask",
-                "the new result mask thumbnail becomes selected")
-        nx, ny, nw, nh = editor["new_edit_screen"]
-        p.check(nw > 0 and nh > 0, "New AI edit has a clickable button", str(editor["new_edit_screen"]))
-
-        # The status/return button stays near the result even when the user cleared the old mark.
+                "the result mask remains available by its thumbnail")
+        wire.call("layer.plane", {"plane": "pixels"})
         wire.call("select.clear")
         wd.settle(wire)
-        after_clear = wire.call("verb.bar")
-        p.check(after_clear["shown"] and after_clear["mode"] == "editing",
-                "clearing the mark does not strand the return button")
-        nx, ny, nw, nh = after_clear["new_edit_screen"]
-        if nw > 0 and nh > 0:
-            click(inj, nx + nw / 2, ny + nh / 2)
-            wd.settle(wire)
-        bar_after_new = wire.call("verb.bar")
-        p.check(bar_after_new["mode"] == "actions" and not bar_after_new["shown"],
-                "New AI edit re-arms the verbs only when a mark exists")
-        p.check(wire.call("layer.plane")["plane"] == "pixels",
-                "New AI edit selects image pixels and the Cover tool")
+        p.check(not wire.call("verb.bar")["shown"],
+                "clearing the old selection does not reveal a return dialog")
         wire.call("select.rect", {"rect": MARK})
         wd.settle(wire)
         returned = wire.call("verb.bar")

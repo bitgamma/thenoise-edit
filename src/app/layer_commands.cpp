@@ -270,6 +270,10 @@ void register_layer_commands(AppState& state, CommandTable& table) {
                 return fail("layer.plane", "could not select the layer");
             }
             state.edit_plane = *selected;
+            if (*selected == LayerPlane::mask &&
+                tool_action(state.tool) != ToolAction::paint) {
+                state.tool = kDefaultTool;
+            }
         }
         return command_ok(json{{"index", state.doc.active()},
                                {"plane", layer_plane_name(state.edit_plane)},

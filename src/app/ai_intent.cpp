@@ -256,8 +256,6 @@ Readiness assess(noise::AppState& state, const ai::Recipe* recipe) {
                 out.reason = "an AI edit is already generating";
                 out.fix = "job.list";
                 return out;
-            case SelectionEditPhase::editing:
-                break;
             case SelectionEditPhase::actions:
                 break;
         }

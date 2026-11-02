@@ -4,17 +4,32 @@
 #include "app/state.h"
 
 namespace noise::app {
+namespace {
 
-// An AI result is one specific layer, not whichever masked layer is selected next.
-// Looking it up also catches an Undo that removed the result while another mask still exists.
-const Layer* selection_edit_result_layer(const AppState& state) {
+bool result_layer_exists(const AppState& state) {
+    if (state.selection_edit.layer_id == 0) {
+        return true;
+    }
     for (const Layer& layer : state.doc.layers()) {
-        if (layer.id == state.selection_edit.layer_id && layer.mask.has_value()) {
-            return &layer;
+        if (layer.id == state.selection_edit.layer_id) {
+            return true;
         }
     }
-    return nullptr;
+    return false;
 }
+
+bool landed_result(const AppState& state) {
+    const SelectionEdit& edit = state.selection_edit;
+    if (edit.job.empty() || edit.document_epoch != state.document_epoch ||
+        state.ai.jobs == nullptr || state.doc.empty() || !result_layer_exists(state)) {
+        return false;
+    }
+    const std::optional<ai::JobRecord> record = state.ai.jobs->find(edit.job);
+    return record.has_value() && record->state == ai::JobState::succeeded &&
+           record->landing.landed;
+}
+
+}  // namespace
 
 SelectionEditPhase selection_edit_phase(const AppState& state) {
     const SelectionEdit& edit = state.selection_edit;
@@ -31,12 +46,6 @@ SelectionEditPhase selection_edit_phase(const AppState& state) {
          !record->landing.land_refused)) {
         return SelectionEditPhase::generating;
     }
-    if (record->state == ai::JobState::succeeded && record->landing.landed &&
-        edit.layer_id != 0 && state.painting_mask() &&
-        state.active_layer().id == edit.layer_id &&
-        selection_edit_result_layer(state) != nullptr) {
-        return SelectionEditPhase::editing;
-    }
     return SelectionEditPhase::actions;
 }
 
@@ -46,14 +55,17 @@ const char* selection_edit_phase_name(SelectionEditPhase phase) {
             return "actions";
         case SelectionEditPhase::generating:
             return "generating";
-        case SelectionEditPhase::editing:
-            return "editing";
     }
     return "actions";
 }
 
+bool selection_edit_hides_bar(const AppState& state) {
+    return landed_result(state) &&
+           state.doc.selection_revision() == state.selection_edit.landed_selection_revision;
+}
+
 void selection_edit_queued(AppState& state, const std::string& job) {
-    state.selection_edit = SelectionEdit{job, state.document_epoch, 0};
+    state.selection_edit = SelectionEdit{job, state.document_epoch, 0, 0};
     state.ask_verb = std::nullopt;
 }
 
@@ -62,16 +74,13 @@ void selection_edit_landed(AppState& state, const std::string& job) {
     if (edit.job != job || edit.document_epoch != state.document_epoch || state.doc.empty()) {
         return;
     }
-    // A new result can edit its own boundary without regenerating. The special first answer on a
-    // completely blank canvas has no result mask, so it cannot truthfully enter mask-edit mode.
-    if (state.active_layer().mask.has_value()) {
-        edit.layer_id = state.active_layer().id;
-        state.edit_plane = LayerPlane::mask;
-        state.tool = "brush";
-    }
+    edit.layer_id = state.active_layer().id;
+    edit.landed_selection_revision = state.doc.selection_revision();
+    // Landing never selects the mask or changes the active tool. A mask remains a thumbnail click away.
+    state.edit_plane = LayerPlane::pixels;
 }
 
-void selection_edit_new(AppState& state) {
+void selection_edit_prepare_outpaint(AppState& state) {
     state.selection_edit = {};
     state.ask_verb = std::nullopt;
     state.edit_plane = LayerPlane::pixels;
@@ -84,8 +93,8 @@ void selection_edit_reconcile(AppState& state) {
         return;
     }
     if (state.selection_edit.document_epoch != state.document_epoch ||
-        (state.selection_edit.layer_id != 0 && selection_edit_result_layer(state) == nullptr)) {
-        selection_edit_new(state);
+        !result_layer_exists(state)) {
+        state.selection_edit = {};
     }
 }
 

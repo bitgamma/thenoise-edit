@@ -190,11 +190,15 @@ def main() -> int:
         p.check(disjoint, "and no two share a pixel",
                 str([[round(v) for v in c["box"]] for c in got]))
 
-        # The thumbnails are independent editing targets. A click selects which plane
-        # Brush/Eraser paint, without changing the selection tool's own blue coverage.
+        # The mask thumbnail enters visible mask painting immediately. Cover still marks the
+        # independent selection when explicitly chosen afterwards.
         wire.call("layer.select", {"index": 0})
         wire.call("mask.add", {})
+        wire.call("mask.fill", {"to": "hide"})
+        wire.call("layer.plane", {"plane": "pixels"})
+        wire.call("tool.set", {"tool": "cover"})
         wd.settle(wire)
+        without_mask_preview = canvas_shot(wire, "mask-thumbnail-before")
         bottom = card_at(cards(wire), 0)
         p.check(inside_box(bottom["mask_picture"], bottom["box"]),
                 "a layer mask has a clickable thumbnail inside its card",
@@ -202,15 +206,29 @@ def main() -> int:
         if bottom["mask_picture"][2] > 0:
             click(inj, *centre(bottom["mask_picture"]))
             wd.settle(wire)
+            state = wire.call("app.state")
             p.check(wire.call("layer.plane")["plane"] == "mask" and
-                    card_at(cards(wire), 0)["editing_mask"],
-                    "clicking the mask thumbnail selects coverage painting")
+                    card_at(cards(wire), 0)["editing_mask"] and
+                    state["brush"]["tool"] == "brush",
+                    "clicking the mask thumbnail activates mask Brush immediately")
+            with_mask_preview = canvas_shot(wire, "mask-thumbnail-red")
+            p.check(differs(without_mask_preview, with_mask_preview)[0] > 0,
+                    "the red mask overlay appears on thumbnail click without painting")
+            wire.call("tool.set", {"tool": "cover"})
+            wd.settle(wire)
+            with_cover = canvas_shot(wire, "mask-thumbnail-cover")
+            p.check(differs(without_mask_preview, with_cover)[0] == 0,
+                    "Cover shows selection editing without leaving the red mask overlay up")
+            wire.call("mask.fill", {"to": "show"})
             click(inj, *centre(card_at(cards(wire), 0)["picture"]))
             wd.settle(wire)
             p.check(wire.call("layer.plane")["plane"] == "pixels" and
                     card_at(cards(wire), 0)["editing_pixels"],
                     "clicking the image thumbnail selects pixel painting")
         wire.call("mask.remove", {})
+        # The overlay check deliberately used Cover. Restore the paint tool before the
+        # remaining probe checks that strokes really change a layer's image pixels.
+        wire.call("tool.set", {"tool": "brush"})
         wd.settle(wire)
 
         blank = grab(wire, got[0]["picture"], "thumb-blank")

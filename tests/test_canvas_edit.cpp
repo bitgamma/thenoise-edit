@@ -123,6 +123,59 @@ void test_canvas_resize_moves_every_plane_and_marks_only_new_pixels() {
     CHECK_EQ(doc.selection()->coverage(4, 2), kMaskOut);
 }
 
+void test_rotation_moves_all_layer_planes_and_selection_as_one_undo_step() {
+    const Extent original{7, 5};
+    Mask selected(original);
+    selected.op(Rect{1, 2, 3, 2}, MaskOp::replace);
+    Document doc;
+    doc.reset(layers(original), selected, "rotation.noise");
+    doc.select_layer(0);
+    const std::vector<Layer> before(doc.layers().begin(), doc.layers().end());
+    const Image before_composite = doc.composite();
+    const std::string checksum = doc.checksum();
+    const int depth = doc.history().undo_depth;
+    const std::uint64_t revision = doc.geometry_revision();
+    CHECK(doc.rotate_canvas(true));
+    CHECK(doc.size() == (Extent{5, 7}));
+    CHECK_EQ(doc.geometry_revision(), revision + 1);
+    CHECK_EQ(doc.history().undo_depth, depth + 1);
+    CHECK_EQ(doc.active(), 0);
+    REQUIRE(doc.selection().has_value());
+    for (int y = 0; y < original.h; ++y) {
+        for (int x = 0; x < original.w; ++x) {
+            const int rx = original.h - 1 - y;
+            const int ry = x;
+            for (std::size_t i = 0; i < before.size(); ++i) {
+                CHECK_EQ(doc.layer(i).id, before[i].id);
+                CHECK_EQ(doc.layer(i).name, before[i].name);
+                CHECK_EQ(doc.layer(i).visible, before[i].visible);
+                CHECK_EQ(doc.layer(i).opacity, before[i].opacity);
+                CHECK(doc.layer(i).mode == before[i].mode);
+                CHECK(same_pixel(doc.layer(i).pixels, rx, ry, before[i].pixels, x, y));
+                if (before[i].mask) {
+                    REQUIRE(doc.layer(i).mask.has_value());
+                    CHECK_EQ(doc.layer(i).mask->coverage(rx, ry), before[i].mask->coverage(x, y));
+                }
+            }
+            CHECK_EQ(doc.selection()->coverage(rx, ry), selected.coverage(x, y));
+            CHECK(same_pixel(doc.composite(), rx, ry, before_composite, x, y));
+        }
+    }
+    const std::string rotated_checksum = doc.checksum();
+    CHECK(doc.undo());
+    CHECK(doc.size() == original);
+    CHECK_EQ(doc.checksum(), checksum);
+    CHECK(doc.selection().has_value() && *doc.selection() == selected);
+    CHECK(doc.redo());
+    CHECK(doc.size() == (Extent{5, 7}));
+    CHECK_EQ(doc.checksum(), rotated_checksum);
+    CHECK(doc.rotate_canvas(false));
+    CHECK(doc.size() == original);
+    CHECK_EQ(doc.checksum(), checksum);
+    CHECK(doc.selection().has_value() && *doc.selection() == selected);
+    CHECK(!doc.empty());
+}
+
 void test_crop_and_undo_keep_geometry_and_previous_edits() {
     const Extent original{16, 12};
     Document doc;
@@ -519,6 +572,7 @@ void test_partial_edge_preview_matches_full_replacement_and_undo() {
 
 int main() {
     test_canvas_resize_moves_every_plane_and_marks_only_new_pixels();
+    test_rotation_moves_all_layer_planes_and_selection_as_one_undo_step();
     test_crop_and_undo_keep_geometry_and_previous_edits();
     test_oversized_geometry_step_can_always_be_undone();
     test_mask_edge_is_hard_soft_and_can_shift_inside_its_canvas();

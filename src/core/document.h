@@ -75,6 +75,7 @@ public:
     // Advances on any canvas geometry edit, including undo/redo of that edit.
     // Pending AI jobs compiled for the previous geometry must not land after it changes.
     std::uint64_t geometry_revision() const;
+    std::uint64_t selection_revision() const;
 
     // Bottom-first. `active` is the layer `paint` and a gesture edit.
     std::span<const Layer> layers() const;
@@ -138,6 +139,7 @@ public:
     // Undo/redo exchange every layer, mask and selection as one state.
     bool resize_canvas(Extent target, int offset_x, int offset_y, bool mark_added);
     bool crop_canvas(Rect crop);
+    bool rotate_canvas(bool clockwise);
 
     // The layer at `index` onto the one under it, exactly as the canvas shows them: the upper layer's
     // mask, blend mode and opacity are applied on the way down, and it leaves the stack while the layer
@@ -277,6 +279,7 @@ public:
 
 private:
     std::uint64_t geometry_revision_ = 0;
+    std::uint64_t selection_revision_ = 0;
     struct Provisional {
         std::uint64_t layer;
         LayerPlane plane;

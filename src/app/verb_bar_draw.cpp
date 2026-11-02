@@ -131,15 +131,13 @@ void draw_ask(AppState& state, CommandTable& commands, const json& ask, bool bar
 
 void draw_verb_bar(AppState& state, CommandTable& commands) {
     state.verb_bar = {};
-    state.verb_new_edit = {};
     const SelectionEditPhase mode = selection_edit_phase(state);
-    const std::optional<Rect> mark = verb_bar_anchor_mark(state);
-    if (!mark) {
+    const std::optional<Rect> mark = verb_bar_mark(state);
+    if (!mark || selection_edit_hides_bar(state)) {
         return;
     }
-    const json rows = mode == SelectionEditPhase::editing
-                          ? json::array() : verb_bar_rows(commands, nullptr);
-    if (rows.empty() && mode != SelectionEditPhase::editing) {
+    const json rows = verb_bar_rows(commands, nullptr);
+    if (rows.empty()) {
         return;
     }
 
@@ -157,23 +155,16 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
     const ImGuiStyle& style = ImGui::GetStyle();
     double width = kBarPadPx * 2.0;
     double height = 0.0;
-    if (mode == SelectionEditPhase::editing) {
-        width += std::max(static_cast<double>(ImGui::CalcTextSize("Editing result mask").x),
-                          static_cast<double>(ImGui::CalcTextSize("New AI edit").x +
-                                              style.FramePadding.x * 2.0f));
-        height = ImGui::GetTextLineHeight() + ImGui::GetFrameHeight() + style.ItemSpacing.y;
-    } else if (!rows.empty()) {
-        double row_width = kBarPadPx * 2.0;
-        double row_height = 0.0;
-        for (const json& row : rows) {
-            const ImVec2 text = ImGui::CalcTextSize(row["label"].get<std::string>().c_str());
-            row_width += text.x + style.FramePadding.x * 2.0 + style.ItemSpacing.x;
-            row_height = std::max(row_height, static_cast<double>(text.y + style.FramePadding.y * 2.0f));
-        }
-        row_width -= style.ItemSpacing.x;
-        width = std::max(width, row_width);
-        height = row_height;
+    double row_width = kBarPadPx * 2.0;
+    double row_height = 0.0;
+    for (const json& row : rows) {
+        const ImVec2 text = ImGui::CalcTextSize(row["label"].get<std::string>().c_str());
+        row_width += text.x + style.FramePadding.x * 2.0 + style.ItemSpacing.x;
+        row_height = std::max(row_height, static_cast<double>(text.y + style.FramePadding.y * 2.0f));
     }
+    row_width -= style.ItemSpacing.x;
+    width = std::max(width, row_width);
+    height = row_height;
     height += kBarPadPx * 2.0;
 
     // Above the mark when there is room, below when there is not, and always inside the canvas area so
@@ -215,17 +206,6 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
                       ImGui::GetWindowSize().y};
     // The panel keeps the full controls - the words a verb asks for, the style and the model warning.
     // The bar is the shortcut, and it presses the same command the panel button presses.
-    if (mode == SelectionEditPhase::editing) {
-        ImGui::TextUnformatted("Editing result mask");
-        if (ImGui::Button("New AI edit")) {
-            commands.invoke("verb.new_edit", json::object());
-        }
-        state.verb_new_edit = {ImGui::GetItemRectMin().x, ImGui::GetItemRectMin().y,
-                               ImGui::GetItemRectSize().x, ImGui::GetItemRectSize().y};
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-            ImGui::SetTooltip("Keep this result; select its image pixels and choose Cover for a new selection");
-        }
-    }
     for (std::size_t i = 0; i < rows.size(); ++i) {
         const json& row = rows[i];
         if (i > 0) {

@@ -309,6 +309,27 @@ void register_document_commands(AppState& state, CommandTable& table) {
         return command_ok(result);
     });
 
+    table.add("doc.rotate", "Rotate the entire canvas 90 degrees", {}, {"direction"},
+              [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        if (!args.contains("direction") || !args.at("direction").is_string()) {
+            return fail("doc.rotate", "'direction' must be 'cw' or 'ccw'");
+        }
+        const std::string direction = args.at("direction").get<std::string>();
+        if (direction != "cw" && direction != "ccw") {
+            return fail("doc.rotate", "'direction' must be 'cw' or 'ccw'");
+        }
+        if (!state.doc.rotate_canvas(direction == "cw")) {
+            return fail("doc.rotate", "could not rotate the canvas");
+        }
+        ++state.document_epoch;
+        request_fit(state);
+        return command_ok(document_json(state));
+    });
+
     table.add("doc.outpaint.prepare", "Enlarge the canvas and open Fill for its added area", {},
               {"width", "height", "offset_x", "offset_y", "prompt"},
               [&state, &table](const json& args) -> CommandResult {
@@ -320,7 +341,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         int height = 0;
         int dx = 0;
         int dy = 0;
-        std::string prompt = "a natural continuation of the surrounding scene";
+        std::string prompt = "extended the background";
         if (!want_int(args, "width", width) || !want_int(args, "height", height) ||
             !arg_int(args, "offset_x", dx) || !arg_int(args, "offset_y", dy) ||
             !arg_text(args, "prompt", prompt)) {
@@ -355,7 +376,7 @@ void register_document_commands(AppState& state, CommandTable& table) {
         if (!resized.ok) {
             return resized;
         }
-        selection_edit_new(state);
+        selection_edit_prepare_outpaint(state);
         const CommandResult asked = table.invoke("verb.ask", json{{"show", "fill"}});
         if (!asked.ok) {
             return asked;
