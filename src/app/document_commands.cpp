@@ -330,6 +330,59 @@ void register_document_commands(AppState& state, CommandTable& table) {
         return command_ok(document_json(state));
     });
 
+    table.add("doc.resample", "Resize the image and every layer using Lanczos3", {},
+              {"width", "height"}, [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        int width = 0;
+        int height = 0;
+        if (!want_int(args, "width", width) || !want_int(args, "height", height)) {
+            return fail("doc.resample", "expected integer width and height");
+        }
+        if (width <= 0 || height <= 0 ||
+            static_cast<std::int64_t>(width) * height > kMaxCanvasPixels) {
+            return fail("doc.resample", "image dimensions must be positive and at most " +
+                                         std::to_string(kMaxCanvasPixels) + " pixels");
+        }
+        const Extent target{width, height};
+        const Extent previous = state.doc.size();
+        if (!state.doc.resample_image(target)) {
+            return fail("doc.resample", "could not resize the image");
+        }
+        if (previous != target) {
+            ++state.document_epoch;
+            request_fit(state);
+        }
+        return command_ok(document_json(state));
+    });
+
+    table.add("image.upscale", "Upscale the full composite with the assigned AI upscaler", {},
+              {"confirm"}, [&state, &table](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        bool confirm = false;
+        if (!arg_bool(args, "confirm", confirm)) {
+            return fail("image.upscale", "'confirm' must be a boolean");
+        }
+        const ai::Recipe* recipe = state.ai.recipes.find("upscale");
+        const Readiness ready = assess(state, recipe);
+        if (!ready.ready) {
+            return fail("image.upscale", ready.reason +
+                                         (ready.fix.empty() ? "" : "; " + ready.fix));
+        }
+        if (needs_swap(state, ready) && !confirm) {
+            return fail("image.upscale", "upscaling requires loading '" + ready.model +
+                                         "' instead of '" + state.ai.health.model_loaded +
+                                         "'; retry with confirm=true");
+        }
+        return table.invoke("ai.run", json{{"recipe", "upscale"},
+                                           {"include_references", false}});
+    });
+
     table.add("doc.outpaint.prepare", "Enlarge the canvas and open Fill for its added area", {},
               {"width", "height", "offset_x", "offset_y", "prompt"},
               [&state, &table](const json& args) -> CommandResult {

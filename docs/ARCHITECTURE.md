@@ -1420,7 +1420,7 @@ has through `region_scope_name`, the one place a scope becomes a word, and the p
 `selection_intents()` plus `layer_intents()` - the second offered whether or not anything is marked.
 
 The palette of selection operations is therefore `recipes/*.json` filtered to `region: selection` with
-an `edits` or `upscale` endpoint (`RecipeSet::selection_intents`): adding an operation means adding a
+an `edits` endpoint (`RecipeSet::selection_intents`): adding an operation means adding a
 file, and a recipe that stops being a selection operation leaves the palette by itself.
 
 Variables come from the user's instruction (whatever the recipe's `ask` lists) and the layer name. A
@@ -1468,7 +1468,7 @@ fidelity is not a server knob.
 | `heal` | edits | edit | reconstruct | average | selection | the in-process Telea/Chan path for a box with no edit model is designed and **not built**, so `heal` refuses when the edit role is unresolved |
 | `flatten-colorize` | edits | edit | in_place | none | full doc | e.g. "colorize this line art" — the highest-value raster trick for illustration workflows |
 | `reimagine` | edits | edit | in_place | none | full doc | full-frame edit. The whole frame is the region, so there is no hole and nothing to blend at the edge; its answer lands on a layer like any other, and 50 % opacity is a number the user owns |
-| `upscale` | upscale | — | transform | none | full doc or mask bbox | ESRGAN model choice + composite back into the layer |
+| `upscale` | upscale | upscale | transform | none | full document | ESRGAN model choice; native 2x/4x output changes document size and adds a top layer over hidden scaled originals |
 | `free-command` | user's choice | user's choice | user's choice | user's choice | user's choice | escape hatch below |
 
 (`variations` deleted — unsupported endpoint.)

@@ -86,12 +86,29 @@ bool satisfies(const ModelEntry& entry, const RoleDefinition& role) {
     if (!role.recipe.empty() && entry.recipe != role.recipe) {
         return false;
     }
+    bool has_capabilities = true;
     for (const std::string& label : role.requires_labels) {
-        if (!entry.has_label(label)) {
-            return false;
+        has_capabilities = has_capabilities && entry.has_label(label);
+    }
+    if (has_capabilities) {
+        return true;
+    }
+    // Some TheNoise catalogues omit the 'upscaling' label on working ESRGAN models.
+    // Only an explicit role preference is sufficient evidence to use that endpoint.
+    if (role.id != "upscale") {
+        return false;
+    }
+    for (const std::string& preferred : role.preference) {
+        if (entry.id == preferred) {
+            return true;
+        }
+        for (const char* prefix : {"user.", "extra.", "builtin."}) {
+            if (entry.id == std::string(prefix) + preferred) {
+                return true;
+            }
         }
     }
-    return true;
+    return false;
 }
 
 // Lemonade exposes the bare name for the winning catalog entry and a canonical ID (user., extra.,

@@ -252,7 +252,7 @@ std::optional<BuiltRequest> build_request(RequestInput input, const SizePolicy& 
                 "px ceiling; compile a smaller region";
         return std::nullopt;
     }
-    if (size_policy.multiple > 1 &&
+    if (recipe.endpoint != Endpoint::upscale && size_policy.multiple > 1 &&
         (input.width % size_policy.multiple != 0 || input.height % size_policy.multiple != 0)) {
         // The region compiler rounds up to this multiple, so arriving here means a request was built
         // around it. The engine would snap the size and answer at dimensions nobody planned.
@@ -348,7 +348,7 @@ std::optional<BuiltRequest> build_request(RequestInput input, const SizePolicy& 
     const int steps = input.steps_override.has_value()
                           ? *input.steps_override
                           : (input.model != nullptr ? input.model->image_defaults.steps : 0);
-    if (steps <= 0 || steps > kMaxSteps) {
+    if (recipe.endpoint != Endpoint::upscale && (steps <= 0 || steps > kMaxSteps)) {
         error = "recipe '" + recipe.id + "': no usable 'steps' for model '" + input.model_id +
                 "' (got " + std::to_string(steps) + ", ceiling " + std::to_string(kMaxSteps) +
                 "); the model's image_defaults do not carry one, so pass steps";
@@ -357,7 +357,7 @@ std::optional<BuiltRequest> build_request(RequestInput input, const SizePolicy& 
     const double cfg = input.cfg_scale_override.has_value()
                            ? *input.cfg_scale_override
                            : (input.model != nullptr ? input.model->image_defaults.cfg_scale : 0.0);
-    if (!(cfg >= 0.0) || std::isnan(cfg) || cfg > 100.0) {
+    if (recipe.endpoint != Endpoint::upscale && (!(cfg >= 0.0) || std::isnan(cfg) || cfg > 100.0)) {
         error = "recipe '" + recipe.id + "': no usable 'cfg_scale' for model '" + input.model_id +
                 "' (got " + trimmed_double(cfg) + ")";
         return std::nullopt;

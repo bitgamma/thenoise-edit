@@ -111,6 +111,33 @@ Attempt compile_region(const char* command, AppState& state, const ai::Recipe& r
         coverage_source = "selection";
     }
 
+    // Pixel upscalers must receive the native document bytes. Snapping or shrinking the
+    // upload to the edit model's grid would create a different image and a wrong output size.
+    if (recipe.endpoint == ai::Endpoint::upscale) {
+        if (!recipe.whole_document()) {
+            attempt.failure = fail(command, "upscale must operate on the complete document");
+            return attempt;
+        }
+        const ai::RegionPolicy policy = policy_for(state, &recipe);
+        if (static_cast<std::int64_t>(state.doc.width()) * state.doc.height() > policy.max_area_px) {
+            attempt.failure = fail(command, "the image exceeds the upscaler input limit of " +
+                                                std::to_string(policy.max_area_px) +
+                                                " pixels; resize it locally first");
+            return attempt;
+        }
+        ai::RegionPlan native;
+        native.crop = Rect{0, 0, state.doc.width(), state.doc.height()};
+        native.mask_bounds = native.crop;
+        native.requested = state.doc.size();
+        native.snapped_width = true;
+        native.snapped_height = true;
+        attempt.assembled.recipe = &recipe;
+        attempt.assembled.plan = native;
+        attempt.assembled.coverage = std::move(coverage);
+        attempt.assembled.coverage_source = "whole document (AI upscale)";
+        attempt.ok = true;
+        return attempt;
+    }
     const std::optional<ai::RegionPlan> plan =
         ai::plan_region(state.doc.size(), coverage, policy_for(state, &recipe));
     if (!plan.has_value()) {
@@ -134,17 +161,20 @@ Attempt compile_region(const char* command, AppState& state, const ai::Recipe& r
 Attempt prep_bytes(const char* command, AppState& state, Assembly assembled, std::uint64_t seed) {
     Attempt attempt;
     const ai::RegionPlan& plan = assembled.plan;
-    const Image base = state.doc.flatten_over(plan.crop, static_cast<std::size_t>(state.doc.active()));
-    if (base.empty()) {
-        attempt.failure = fail(command, "the region lies outside the document, so there is nothing to upload");
-        return attempt;
+    Image uploaded;
+    if (assembled.recipe->endpoint == ai::Endpoint::upscale) {
+        uploaded = state.doc.composite();
+    } else {
+        const Image base = state.doc.flatten_over(plan.crop, static_cast<std::size_t>(state.doc.active()));
+        if (base.empty()) {
+            attempt.failure = fail(command, "the region lies outside the document, so there is nothing to upload");
+            return attempt;
+        }
+        const Mask hole = assembled.coverage.region(plan.crop);
+        const Image flattened = ai::flatten_over_ring(base, hole);
+        const Image prepped = ai::prep_region(flattened, hole, assembled.recipe->prep, seed);
+        uploaded = resample_lanczos3(prepped, plan.requested);
     }
-    // The same crop-local coverage for both: the colour the transparency is flattened over, and the hole
-    // whose identity prep destroys. Everything else in the crop goes to the model as it stands.
-    const Mask hole = assembled.coverage.region(plan.crop);
-    const Image flattened = ai::flatten_over_ring(base, hole);
-    const Image prepped = ai::prep_region(flattened, hole, assembled.recipe->prep, seed);
-    const Image uploaded = resample_lanczos3(prepped, plan.requested);
 
     std::string error;
     assembled.prepped_path = captures_dir(state) + "/ai-prep-" +
@@ -402,15 +432,26 @@ std::optional<RequestQuote> quote_request(AppState& state, const ai::Recipe& rec
         }
         coverage = *selection;
     }
-    const std::optional<ai::RegionPlan> plan =
-        ai::plan_region(state.doc.size(), coverage, policy_for(state, &recipe));
-    if (!plan.has_value()) {
-        return std::nullopt;
+    ai::RegionPlan plan;
+    if (recipe.endpoint == ai::Endpoint::upscale) {
+        if (!recipe.whole_document() || aspect.has_value() ||
+            static_cast<std::int64_t>(state.doc.width()) * state.doc.height() >
+                policy_for(state, &recipe).max_area_px) {
+            return std::nullopt;
+        }
+        plan.requested = state.doc.size();
+    } else {
+        const std::optional<ai::RegionPlan> planned =
+            ai::plan_region(state.doc.size(), coverage, policy_for(state, &recipe));
+        if (!planned.has_value()) {
+            return std::nullopt;
+        }
+        plan = *planned;
     }
     RequestQuote quote;
     quote.endpoint = ai::request_path(recipe.endpoint);
-    quote.size = plan->requested;
-    quote.resampled = plan->resampled;
+    quote.size = plan.requested;
+    quote.resampled = plan.resampled;
     if (state.ai.registry != nullptr) {
         const ai::ModelEntry* entry = state.ai.registry->resolved_model(recipe.role);
         if (entry != nullptr) {
@@ -575,6 +616,14 @@ void register_ai_commands(AppState& state, CommandTable& table) {
         }
         Assembly& assembled = attempt.assembled;
         const ai::Recipe& recipe = *assembled.recipe;
+        if (recipe.endpoint == ai::Endpoint::upscale) {
+            for (const ai::JobRecord& job : state.ai.jobs->all()) {
+                if (job.recipe_id == recipe.id &&
+                    (job.state == ai::JobState::queued || job.state == ai::JobState::running)) {
+                    return fail("ai.run", "an AI upscale is already running (" + job.id + ")");
+                }
+            }
+        }
 
         ai::Landing landing;
         landing.crop = assembled.plan.crop;
@@ -592,7 +641,8 @@ void register_ai_commands(AppState& state, CommandTable& table) {
         const std::string request_path = assembled.request.path;
         const std::string id = state.ai.jobs->enqueue(
             std::move(assembled.request), recipe.id, recipe.role, landing,
-            coverage_png(assembled.coverage));
+            recipe.endpoint == ai::Endpoint::upscale
+                ? std::vector<std::uint8_t>{} : coverage_png(assembled.coverage));
         log::info("queued " + recipe.id + " as job " + id + " (" +
                   std::to_string(assembled.plan.requested.w) + "x" +
                   std::to_string(assembled.plan.requested.h) + " at " + request_path + ")");

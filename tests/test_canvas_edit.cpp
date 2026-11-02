@@ -6,6 +6,7 @@
 #include "core/document.h"
 #include "core/blur.h"
 #include "core/maskops.h"
+#include "core/resample.h"
 
 #include <algorithm>
 #include <array>
@@ -568,9 +569,119 @@ void test_partial_edge_preview_matches_full_replacement_and_undo() {
     CHECK_EQ(doc.checksum(), original);
 }
 
+void test_image_resample_resizes_each_layer_mask_and_selection_in_one_step() {
+    const Extent original{13, 11};
+    const Extent target{39, 22};
+    Mask selected(original);
+    selected.op(Rect{4, 3, 5, 4}, MaskOp::replace);
+    Document doc;
+    doc.reset(layers(original), selected, "fixture.noise");
+    const std::vector<Layer> before(doc.layers().begin(), doc.layers().end());
+    const std::string checksum_before = doc.checksum();
+    const Image original_composite = doc.composite();
+    const auto revision = doc.geometry_revision();
+    const auto selection_revision = doc.selection_revision();
+    const int undo_depth = doc.history().undo_depth;
+
+    CHECK(doc.resample_image(target));
+    CHECK(doc.size() == target);
+    CHECK_EQ(doc.geometry_revision(), revision + 1);
+    CHECK_EQ(doc.selection_revision(), selection_revision + 1);
+    CHECK_EQ(doc.history().undo_depth, undo_depth + 1);
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        CHECK_EQ(doc.layer(i).id, before[i].id);
+        CHECK_EQ(doc.layer(i).name, before[i].name);
+        CHECK_EQ(doc.layer(i).visible, before[i].visible);
+        CHECK_EQ(doc.layer(i).opacity, before[i].opacity);
+        CHECK(doc.layer(i).mode == before[i].mode);
+        CHECK(same_pixels(doc.layer(i).pixels, resample_lanczos3(before[i].pixels, target)));
+        if (before[i].mask) {
+            REQUIRE(doc.layer(i).mask.has_value());
+            CHECK(*doc.layer(i).mask == resample_coverage_lanczos3(*before[i].mask, target));
+        }
+    }
+    REQUIRE(doc.selection().has_value());
+    CHECK(*doc.selection() == resample_coverage_lanczos3(selected, target));
+    const std::string resized_checksum = doc.checksum();
+    CHECK(doc.resample_image(target));
+    CHECK_EQ(doc.history().undo_depth, undo_depth + 1);
+    CHECK(!doc.resample_image(Extent{0, 2}));
+    CHECK(!doc.resample_image(Extent{8193, 8193}));
+    CHECK_EQ(doc.history().undo_depth, undo_depth + 1);
+
+    CHECK(doc.undo());
+    CHECK_EQ(doc.checksum(), checksum_before);
+    CHECK(doc.size() == original);
+    CHECK(same_pixels(doc.composite(), original_composite));
+    REQUIRE(doc.selection().has_value());
+    CHECK(*doc.selection() == selected);
+    CHECK(doc.redo());
+    CHECK_EQ(doc.checksum(), resized_checksum);
+    CHECK(doc.size() == target);
+}
+
+void test_ai_upscale_retains_original_stack_hidden_and_undoes_atomically() {
+    const Extent initial{16, 12};
+    const Extent target{64, 48};
+    Mask selection(initial);
+    selection.op(Rect{2, 3, 7, 5}, MaskOp::replace);
+    Document doc;
+    doc.reset(layers(initial), selection, "fixture.noise");
+    const std::string before = doc.checksum();
+    const Image original_composite = doc.composite();
+    const std::vector<Layer> original(doc.layers().begin(), doc.layers().end());
+    const int history = doc.history().undo_depth;
+    const auto selection_revision = doc.selection_revision();
+    Image enhanced = Image::filled(target, 220, 30, 70, 255);
+    CHECK(!doc.apply_upscaled_image(Image::filled(Extent{32, 36}, 200, 0, 0, 255), "wrong ratio"));
+    CHECK(!doc.apply_upscaled_image(Image::filled(initial, 200, 0, 0, 255), "same size"));
+    CHECK_EQ(doc.history().undo_depth, history);
+    REQUIRE(doc.apply_upscaled_image(enhanced, "AI 4x"));
+    CHECK(doc.size() == target);
+    CHECK_EQ(doc.selection_revision(), selection_revision + 1);
+    CHECK_EQ(doc.history().undo_depth, history + 1);
+    CHECK_EQ(doc.layers().size(), original.size() + 1);
+    CHECK_EQ(doc.active(), static_cast<int>(original.size()));
+    for (std::size_t i = 0; i < original.size(); ++i) {
+        CHECK(!doc.layer(i).visible);
+        CHECK_EQ(doc.layer(i).id, original[i].id);
+        CHECK(same_pixels(doc.layer(i).pixels, resample_lanczos3(original[i].pixels, target)));
+        if (original[i].mask) {
+            REQUIRE(doc.layer(i).mask.has_value());
+            CHECK(*doc.layer(i).mask == resample_coverage_lanczos3(*original[i].mask, target));
+        }
+    }
+    CHECK_EQ(doc.layer(original.size()).name, std::string("AI 4x"));
+    CHECK(doc.layer(original.size()).visible);
+    CHECK(!doc.layer(original.size()).mask.has_value());
+    REQUIRE(doc.selection().has_value());
+    CHECK(*doc.selection() == resample_coverage_lanczos3(selection, target));
+    const Image restored_alpha = resample_lanczos3(original_composite, target);
+    for (int y = 0; y < target.h; ++y) {
+        for (int x = 0; x < target.w; ++x) {
+            CHECK_EQ(doc.composite().at(x, y)[3], restored_alpha.at(x, y)[3]);
+            CHECK_EQ(doc.layer(original.size()).pixels.at(x, y)[0], 220);
+        }
+    }
+    const std::string after = doc.checksum();
+    CHECK(doc.undo());
+    CHECK(doc.size() == initial);
+    CHECK_EQ(doc.checksum(), before);
+    CHECK(same_pixels(doc.composite(), original_composite));
+    CHECK_EQ(doc.layers().size(), original.size());
+    for (std::size_t i = 0; i < original.size(); ++i) {
+        CHECK_EQ(doc.layer(i).visible, original[i].visible);
+    }
+    CHECK(doc.redo());
+    CHECK(doc.size() == target);
+    CHECK_EQ(doc.checksum(), after);
+}
+
 }  // namespace
 
 int main() {
+    test_image_resample_resizes_each_layer_mask_and_selection_in_one_step();
+    test_ai_upscale_retains_original_stack_hidden_and_undoes_atomically();
     test_canvas_resize_moves_every_plane_and_marks_only_new_pixels();
     test_rotation_moves_all_layer_planes_and_selection_as_one_undo_step();
     test_crop_and_undo_keep_geometry_and_previous_edits();

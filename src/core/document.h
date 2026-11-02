@@ -141,6 +141,16 @@ public:
     bool crop_canvas(Rect crop);
     bool rotate_canvas(bool clockwise);
 
+    // Resample all layer pixels, masks and the marked area in one undoable geometry edit.
+    // Unlike canvas resize, the content itself grows or shrinks with the document.
+    bool resample_image(Extent target);
+
+    // The upscaler returns a flattened image at 2x or 4x. Keep the resized original
+    // layers hidden beneath it so the AI result can be toggled off, and undo restores
+    // the entire original document in a single step.
+    bool apply_upscaled_image(Image result, std::string name);
+
+
     // The layer at `index` onto the one under it, exactly as the canvas shows them: the upper layer's
     // mask, blend mode and opacity are applied on the way down, and it leaves the stack while the layer
     // under it keeps its identity - name, mode, opacity, mask - which is what makes the undo exact. An

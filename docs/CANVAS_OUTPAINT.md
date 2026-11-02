@@ -1,8 +1,37 @@
 # Canvas size, crop, outpaint and editable edges
 
 The editor distinguishes **canvas size** (change the picture's bounds, preserve source pixels)
-from **image size** (resample the picture, a separate feature not implemented here). All commands
-are also available from the command/debug wire.
+from **image size** (resample all image content). All commands are also available from the
+command/debug wire.
+
+## Image size and AI upscaling
+
+Open **Image size / Upscale** to increase or reduce the pixel resolution. This is distinct
+from changing the canvas boundaries:
+
+- **Resize image (Lanczos3):** Enter a width and height, optionally lock the aspect ratio,
+  or use the 2x/4x shortcuts. All layers, masks and the blue selection are resampled to
+  the new size in **one Undo step**. No model or server is required. Lanczos improves
+  interpolation but cannot invent details that are not in a small source image.
+- **AI Upscale:** A configured model from the `upscale` role enhances the *visible full
+  composite* through `POST /images/upscale` at the **original input resolution**. The
+  native 2x/4x answer becomes a top layer at the returned resolution. The original layer
+  stack is also resized and retained **hidden underneath**, so it can be toggled and
+  inspected without losing the original structure. Undo removes the entire AI-upscale
+  operation and returns to the original dimensions in one step. Choose the 2x/4x model
+  through the role/model assignment; the server determines the output factor. The
+  editor does not claim AI has run until the job succeeds and lands.
+
+The backend must be configured and expose a preferred or labelled upscaler. AI Upscale
+requires a model switch confirmation if another model is loaded; the upscale button
+refuses unconfirmed swaps. An upscale request may be refused if the source exceeds the
+model/table input pixel cap (2 megapixels by default) or the 2x/4x answer would exceed
+the 64-megapixel canvas limit. The edit-model pixel grid **does not** apply: e.g. a
+137x89 source uploads exactly 137x89 pixels. A model response with a wrong factor is
+refused, not squashed back onto the original canvas.
+
+Debug wire: `doc.resample {"width": n, "height": n}`, `ai.preview {"recipe": "upscale"}`,
+`image.upscale {"confirm": true}`, and the existing `job.wait` / `job.get` commands.
 
 ## Enlarge the canvas and outpaint
 

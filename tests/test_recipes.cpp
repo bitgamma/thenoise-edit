@@ -107,6 +107,7 @@ void test_an_operation_and_a_hole_are_the_same_concept_or_neither() {
     transform["prep"] = "none";
     transform["endpoint"] = "upscale";
     transform["role"] = "upscale";
+    transform["region"] = "document";
     transform["prompt"] = json::array({"Make this picture larger."});
     transform["ask"] = json::array();
     CHECK(operation_name(parse_or_fail(transform).operation) == std::string("transform"));
@@ -270,6 +271,7 @@ void test_the_words_an_operation_asks_for_are_the_words_it_is_given() {
         body["prep"] = "none";
         body["endpoint"] = "upscale";
         body["role"] = "upscale";
+        body["region"] = "document";
         body["ask"] = json::array({"target"});
         return body;
     }(), "not a sentence");
@@ -353,13 +355,13 @@ void test_the_shipped_recipes_agree_with_the_shipped_roles() {
     CHECK(load_error.find("file name says") != std::string::npos);
     std::filesystem::remove_all(scratch);
 
-    // `upscale` is the one recipe whose size is not its own: it asks for a scale, and the region
-    // compiler is what turns that into pixels.
+    // The upscaler works on the complete document, not on a selection which would
+    // return to the old canvas geometry and discard the extra pixels.
     const Recipe* upscale = set->find("upscale");
     REQUIRE(upscale != nullptr);
     CHECK(upscale->endpoint == Endpoint::upscale);
     CHECK(upscale->role == std::string("upscale"));
-    CHECK(!upscale->whole_document());
+    CHECK(upscale->whole_document());
 }
 
 
@@ -558,12 +560,13 @@ void test_a_selection_offers_the_selection_recipes() {
     for (const Recipe* intent : set->selection_intents()) {
         offered.push_back(intent->id);
         CHECK(intent->region == RegionScope::selection);
-        CHECK(intent->endpoint == Endpoint::edits || intent->endpoint == Endpoint::upscale);
+        CHECK(intent->endpoint == Endpoint::edits);
     }
     const std::vector<std::string> wanted = {"heal", "inpaint-remove", "inpaint-replace",
-                                             "region-fill", "upscale"};
+                                             "region-fill"};
     CHECK_EQ(offered, wanted);
-    for (const char* id : {"new-image", "new-image-photo", "reimagine", "flatten-colorize"}) {
+    for (const char* id : {"new-image", "new-image-photo", "reimagine", "flatten-colorize",
+                           "upscale"}) {
         CHECK(std::find(offered.begin(), offered.end(), std::string(id)) == offered.end());
     }
 

@@ -308,9 +308,29 @@ void test_discovery_reads_what_the_server_actually_sends() {
     CHECK(!bad_error.empty());
 }
 
+
+void test_upscaler_preference_survives_missing_discovery_label() {
+    const RoleTable roles = table_or_fail(json{{"roles", json::array({
+        json{{"id", "upscale"}, {"recipe", "thenoise"},
+             {"requires", json::array({"upscaling"})},
+             {"preference", json::array({"RealESRGAN-4xplus-TheNoise"})}}
+    })}});
+    Registry registry(roles);
+    registry.update({entry("RealESRGAN-4xplus-TheNoise", "thenoise", {}, true, 0.1),
+                     entry("Unknown-model", "thenoise", {}, true, 0.1),
+                     entry("RealESRGAN-4xplus-TheNoise-bad-recipe", "wrong", {}, true, 0.1)});
+    CHECK_EQ(registry.resolve("upscale").model_id,
+             std::string("RealESRGAN-4xplus-TheNoise"));
+    CHECK_EQ(registry.resolve("upscale").candidates.size(), std::size_t(1));
+    registry.update({entry("builtin.RealESRGAN-4xplus-TheNoise", "thenoise", {}, true, 0.1)});
+    CHECK_EQ(registry.resolve("upscale").model_id,
+             std::string("builtin.RealESRGAN-4xplus-TheNoise"));
+}
+
 }  // namespace
 
 int main() {
+    test_upscaler_preference_survives_missing_discovery_label();
     test_the_shipped_table_states_the_policy_the_compiler_uses();
     test_a_role_table_refuses_to_be_half_read();
     test_resolution_follows_assignment_then_preference_then_capability();

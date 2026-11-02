@@ -3144,10 +3144,10 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     // What is on show is what a headless run would send: the recipe's own defaults, and no question.
     CHECK_EQ(read["vars"]["context_desc"].get<std::string>(), std::string("background"));
     std::fprintf(stderr, "  [mark B]\n");
-    // Five intents read the marked area and one reads the active layer's own coverage, so the panel has
+    // Four intents read the marked area and one reads the active layer's own coverage, so the panel has
     // *Blend* to offer whether or not anything is marked. The count is here because a dropped intent
     // would otherwise show up only as a missing row somewhere below.
-    CHECK_EQ(read["intents"].size(), std::size_t(6));
+    CHECK_EQ(read["intents"].size(), std::size_t(5));
     bool offers_blend = false;
     for (const json& offered : read["intents"]) {
         offers_blend = offers_blend || offered["id"].get<std::string>() == "blend";
@@ -4456,6 +4456,57 @@ void test_an_answer_lands_on_its_own_layer_over_another_one() {
     CHECK(!odd.ok);
     CHECK(odd.error.find("extent") != std::string::npos);
 }
+
+void test_image_size_and_ai_upscale_keep_resolution_and_undo() {
+    Harness h;
+    h.value("doc.new", json{{"width", 16}, {"height", 16},
+                            {"fill", json::array({32, 64, 128, 255})}});
+    const std::string original = h.state.doc.checksum();
+    CHECK(!h.run("doc.resample", json{{"width", 0}, {"height", 32}}).ok);
+    const json resized = h.value("doc.resample", json{{"width", 32}, {"height", 48}});
+    CHECK_EQ(resized["width"].get<int>(), 32);
+    CHECK_EQ(resized["height"].get<int>(), 48);
+    CHECK_EQ(h.state.doc.size(), (Extent{32, 48}));
+    CHECK_EQ(h.state.doc.history().undo_depth, 1);
+    h.value("edit.undo", json::object());
+    CHECK_EQ(h.state.doc.checksum(), original);
+    h.value("edit.redo", json::object());
+    CHECK_EQ(h.state.doc.size(), (Extent{32, 48}));
+    h.value("edit.undo", json::object());
+
+    const json connection = h.value("server.connect", json::object());
+    CHECK(connection["connected"].get<bool>());
+    const json preview = h.value("ai.preview", json{{"recipe", "upscale"}});
+    CHECK_EQ(preview["request"]["path"].get<std::string>(), std::string("/images/upscale"));
+    CHECK_EQ(preview["request"]["size"].get<std::string>(), std::string("16x16"));
+    CHECK_EQ(preview["request"]["images"].size(), std::size_t(1));
+    CHECK_EQ(preview["request"]["images"][0]["dimensions"], json::array({16, 16}));
+    CHECK_EQ(preview["request"]["fields"].size(), std::size_t(2));
+    CHECK(preview["request"]["fields"][0][0] == "model");
+    CHECK(preview["request"]["fields"][1][0] == "image");
+    CHECK_EQ(h.state.doc.checksum(), original);
+
+    const json started = h.value("image.upscale", json{{"confirm", true}});
+    const std::string id = started["job"]["id"].get<std::string>();
+    const json finished = h.value("job.wait", json{{"id", id}, {"timeout", 30}});
+    CHECK_EQ(finished["state"].get<std::string>(), std::string("succeeded"));
+    CHECK(finished["landing"]["landed"].get<bool>());
+    CHECK(finished["landing"]["report"]["upscaled"].get<bool>());
+    CHECK_EQ(finished["landing"]["report"]["before"], json::array({16, 16}));
+    CHECK_EQ(finished["landing"]["report"]["after"], json::array({64, 64}));
+    CHECK_EQ(h.state.doc.size(), (Extent{64, 64}));
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(2));
+    CHECK(!h.state.doc.layer(0).visible);
+    CHECK(h.state.doc.layer(1).visible);
+    const std::string upscaled = h.state.doc.checksum();
+    h.value("edit.undo", json::object());
+    CHECK_EQ(h.state.doc.size(), (Extent{16, 16}));
+    CHECK_EQ(h.state.doc.checksum(), original);
+    h.value("edit.redo", json::object());
+    CHECK_EQ(h.state.doc.size(), (Extent{64, 64}));
+    CHECK_EQ(h.state.doc.checksum(), upscaled);
+}
+
 }  // namespace
 
 // The front door is state, not an ImGui flag: whether the app is waiting for a person is a fact the
@@ -5014,6 +5065,7 @@ void test_edge_slider_keeps_layer_and_preview_history_consistent() {
 }
 
 int main() {
+    test_image_size_and_ai_upscale_keep_resolution_and_undo();
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
     test_canvas_commands_and_editable_edges_use_the_document_timeline();

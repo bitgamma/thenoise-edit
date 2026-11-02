@@ -212,7 +212,13 @@ void test_what_goes_out_is_exactly_the_table() {
     CHECK_EQ(generation.request.json_body()["response_format"].get<std::string>(),
              std::string("b64_json"));
 
-    const Built up = build(json{{"endpoint", "upscale"}}, policy, png(), 7);
+    const Built up = build(json{{"endpoint", "upscale"},
+                                 {"role", "upscale"},
+                                 {"region", "document"},
+                                 {"operation", "transform"},
+                                 {"prep", "none"},
+                                 {"prompt", json::array()}},
+                           policy, png(), 7);
     REQUIRE(up.error.empty());
     CHECK(on_the_wire(up.request) == sorted(noise::ai::allowed_fields(Endpoint::upscale)));
     CHECK(follows_the_table(up.request));
@@ -545,11 +551,44 @@ void test_recorded_match_includes_every_image_and_its_order() {
     CHECK_EQ(transport->hits().size(), std::size_t(2));
 }
 
+
+void test_upscale_accepts_native_odd_size_without_diffusion_defaults() {
+    const Recipe recipe = recipe_of(json{{"endpoint", "upscale"},
+                                          {"region", "document"},
+                                          {"prep", "none"},
+                                          {"operation", "transform"},
+                                          {"prompt", json::array()}});
+    ModelEntry entry = model("RealESRGAN-4xplus-TheNoise");
+    entry.image_defaults = noise::ai::ImageDefaults{};
+    const auto bytes = png(137, 89, 73);
+    RequestInput input;
+    input.recipe = &recipe;
+    input.server_name = "recorded";
+    input.model_id = entry.id;
+    input.model = &entry;
+    input.width = 137;
+    input.height = 89;
+    input.images.push_back(RequestImageInput{"document", "current", 137, 89, bytes});
+    std::string error;
+    const std::optional<BuiltRequest> request = build_request(input, SizePolicy{16, 1024 * 1024}, error);
+    REQUIRE(request.has_value());
+    CHECK(error.empty());
+    CHECK_EQ(request->path, std::string("/images/upscale"));
+    CHECK(on_the_wire(*request) == std::vector<std::string>({"image", "model"}));
+    CHECK_EQ(request->images.front().width, 137);
+    CHECK_EQ(request->images.front().height, 89);
+    CHECK_EQ(request->images.front().png, bytes);
+    CHECK(!request->json_body().contains("steps"));
+    CHECK(!request->json_body().contains("cfg_scale"));
+    CHECK(!request->json_body().contains("size"));
+}
+
 }  // namespace
 
 int main() {
     test_a_seed_the_field_cannot_carry_is_refused_here();
     test_the_whitelist_is_per_endpoint();
+    test_upscale_accepts_native_odd_size_without_diffusion_defaults();
     test_what_goes_out_is_exactly_the_table();
     test_a_request_the_server_could_not_answer_is_refused_here();
     test_the_upload_blob_names_the_pixels_and_nothing_else();

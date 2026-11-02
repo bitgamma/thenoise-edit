@@ -138,6 +138,103 @@ bool Document::resize_canvas(Extent target, int offset_x, int offset_y, bool mar
     return true;
 }
 
+namespace {
+
+std::vector<Layer> resampled_layers(std::span<const Layer> layers, Extent target) {
+    std::vector<Layer> resized;
+    resized.reserve(layers.size());
+    for (const Layer& source : layers) {
+        Layer layer;
+        layer.id = source.id;
+        layer.name = source.name;
+        layer.visible = source.visible;
+        layer.opacity = source.opacity;
+        layer.mode = source.mode;
+        layer.content_revision = source.content_revision;
+        layer.pixels = resample_lanczos3(source.pixels, target);
+        if (source.mask) {
+            layer.mask = resample_coverage_lanczos3(*source.mask, target);
+        }
+        resized.push_back(std::move(layer));
+    }
+    return resized;
+}
+
+}  // namespace
+
+bool Document::resample_image(Extent target) {
+    if (empty() || target.w <= 0 || target.h <= 0 ||
+        static_cast<std::int64_t>(target.w) * target.h > kMaxCanvasPixels) {
+        return false;
+    }
+    if (target == size()) {
+        return true;
+    }
+    discard_provisional();
+    cancel_marked();
+    std::vector<Layer> transformed = resampled_layers(layers_, target);
+    std::optional<Mask> marked = selection_
+                                     ? std::optional<Mask>(resample_coverage_lanczos3(*selection_, target))
+                                     : std::nullopt;
+    history_.record_canvas_replaced(std::move(layers_), std::move(selection_));
+    layers_ = std::move(transformed);
+    selection_ = std::move(marked);
+    ++geometry_revision_;
+    ++selection_revision_;
+    pending_ = Rect{0, 0, target.w, target.h};
+    dirty_ = true;
+    changed_all_layers();
+    return true;
+}
+
+bool Document::apply_upscaled_image(Image result, std::string name) {
+    if (empty() || result.empty()) {
+        return false;
+    }
+    const Extent old = size();
+    const Extent target = result.size();
+    if (target.w <= old.w || target.h <= old.h ||
+        static_cast<std::int64_t>(target.w) * target.h > kMaxCanvasPixels ||
+        target.w % old.w != 0 || target.h % old.h != 0 ||
+        target.w / old.w != target.h / old.h ||
+        (target.w / old.w != 2 && target.w / old.w != 4)) {
+        return false;
+    }
+    discard_provisional();
+    cancel_marked();
+    const Image original = composite();
+    const Image resized_composite = resample_lanczos3(original, target);
+    for (int y = 0; y < target.h; ++y) {
+        for (int x = 0; x < target.w; ++x) {
+            const unsigned int source_alpha = resized_composite.at(x, y)[3];
+            const unsigned int answer_alpha = result.at(x, y)[3];
+            result.at(x, y)[3] = static_cast<std::uint8_t>((source_alpha * answer_alpha + 127U) / 255U);
+        }
+    }
+    std::vector<Layer> transformed = resampled_layers(layers_, target);
+    for (Layer& layer : transformed) {
+        layer.visible = false;
+    }
+    Layer upscaled;
+    upscaled.id = next_layer_id_++;
+    upscaled.name = name.empty() ? "Upscaled image" : std::move(name);
+    upscaled.pixels = std::move(result);
+    transformed.push_back(std::move(upscaled));
+    std::optional<Mask> marked = selection_
+                                     ? std::optional<Mask>(resample_coverage_lanczos3(*selection_, target))
+                                     : std::nullopt;
+    history_.record_canvas_replaced(std::move(layers_), std::move(selection_));
+    layers_ = std::move(transformed);
+    selection_ = std::move(marked);
+    active_ = static_cast<int>(layers_.size()) - 1;
+    ++geometry_revision_;
+    ++selection_revision_;
+    pending_ = Rect{0, 0, target.w, target.h};
+    dirty_ = true;
+    changed_all_layers();
+    return true;
+}
+
 bool Document::crop_canvas(Rect crop) {
     if (empty() || crop.empty() || !crop.inside(size())) {
         return false;

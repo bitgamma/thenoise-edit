@@ -71,6 +71,106 @@ void draw_coverage_transfer(AppState& state, CommandTable& commands, const json&
     }
 }
 
+void draw_image_size_controls(AppState& state, CommandTable& commands) {
+    if (!ImGui::CollapsingHeader("Image size / Upscale")) {
+        return;
+    }
+    if (state.doc.empty()) {
+        ImGui::TextDisabled("Open an image first");
+        return;
+    }
+    ImageSizeForm& form = state.image_size_form;
+    const Extent original = state.doc.size();
+    if (form.source != original || form.source_revision != state.doc.geometry_revision()) {
+        form.source = original;
+        form.source_revision = state.doc.geometry_revision();
+        form.width = original.w;
+        form.height = original.h;
+        form.error.clear();
+    }
+    ImGui::TextDisabled("Image size scales pixels; Canvas size only adds/crops space.");
+    ImGui::SetNextItemWidth(110.0f);
+    const bool changed_width = ImGui::InputInt("Width##image", &form.width);
+    ImGui::SetNextItemWidth(110.0f);
+    const bool changed_height = ImGui::InputInt("Height##image", &form.height);
+    if (form.lock_aspect && (changed_width || changed_height)) {
+        if (changed_width && form.width > 0) {
+            form.height = std::max(1, static_cast<int>(std::lround(
+                static_cast<double>(form.width) * original.h / original.w)));
+        } else if (changed_height && form.height > 0) {
+            form.width = std::max(1, static_cast<int>(std::lround(
+                static_cast<double>(form.height) * original.w / original.h)));
+        }
+    }
+    ImGui::Checkbox("Keep aspect ratio##image", &form.lock_aspect);
+    for (int factor : {2, 4}) {
+        ImGui::PushID(factor);
+        if (factor == 4) {
+            ImGui::SameLine();
+        }
+        if (ImGui::SmallButton(factor == 2 ? "2x" : "4x")) {
+            const std::int64_t width = static_cast<std::int64_t>(original.w) * factor;
+            const std::int64_t height = static_cast<std::int64_t>(original.h) * factor;
+            if (width * height <= kMaxCanvasPixels) {
+                form.width = static_cast<int>(width);
+                form.height = static_cast<int>(height);
+                form.error.clear();
+            } else {
+                form.error = "Target exceeds the canvas pixel limit";
+            }
+        }
+        ImGui::PopID();
+    }
+    const bool valid = form.width > 0 && form.height > 0 &&
+                       static_cast<std::int64_t>(form.width) * form.height <= kMaxCanvasPixels;
+    ImGui::BeginDisabled(!valid ||
+                         (form.width == original.w && form.height == original.h));
+    if (ImGui::Button("Resize image (Lanczos3)")) {
+        const CommandResult result = commands.invoke("doc.resample",
+            json{{"width", form.width}, {"height", form.height}});
+        form.error = result.ok ? "" : result.error;
+    }
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("Local scaling keeps layers, masks, selection and Undo/Redo.");
+
+    ImGui::SeparatorText("AI upscale");
+    const ai::Recipe* recipe = state.ai.recipes.find("upscale");
+    const Readiness ready = assess(state, recipe);
+    ImGui::TextWrapped("Upscale the visible image using the server's selected model (native 2x or 4x).");
+    if (ready.ready) {
+        ImGui::TextDisabled("Model: %s", ready.model.c_str());
+        if (needs_swap(state, ready)) {
+            ImGui::Checkbox("Allow model switch##upscale", &form.confirm_swap);
+        }
+    } else {
+        ImGui::TextWrapped("Unavailable: %s", ready.reason.c_str());
+    }
+    bool upscale_pending = false;
+    if (state.ai.jobs) {
+        for (const ai::JobRecord& job : state.ai.jobs->all()) {
+            upscale_pending = upscale_pending ||
+                (job.recipe_id == "upscale" &&
+                 (job.state == ai::JobState::queued || job.state == ai::JobState::running));
+        }
+    }
+    const bool can_run = ready.ready && !upscale_pending &&
+                         (!needs_swap(state, ready) || form.confirm_swap);
+    ImGui::BeginDisabled(!can_run);
+    if (ImGui::Button("AI Upscale (run)")) {
+        const CommandResult result = commands.invoke("image.upscale",
+            json{{"confirm", form.confirm_swap}});
+        form.error = result.ok ? "" : result.error;
+    }
+    ImGui::EndDisabled();
+    if (upscale_pending) {
+        ImGui::TextDisabled("AI upscaling in progress...");
+    }
+    ImGui::TextDisabled("AI result becomes a new top layer. Original layers remain hidden below.");
+    if (!form.error.empty()) {
+        ImGui::TextWrapped("%s", form.error.c_str());
+    }
+}
+
 void draw_canvas_controls(AppState& state, CommandTable& commands) {
     if (!ImGui::CollapsingHeader("Canvas size / Crop")) {
         return;
@@ -329,6 +429,7 @@ void draw_tool_panel(AppState& state, CommandTable& commands, const json& intent
                      ReferenceThumbs& reference_thumbs) {
     ImGui::Begin(kWindowTool);
     draw_file_row(state, commands);
+    draw_image_size_controls(state, commands);
     draw_canvas_controls(state, commands);
     draw_edge_controls(state, commands);
     ImGui::Separator();

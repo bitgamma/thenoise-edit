@@ -4,8 +4,31 @@ Last re-read of the document geometry and AI landing path: **2026-10-29**. `doc.
 `doc.crop` now move pixels, masks and marked coverage together, and undo/redo exchange entire
 canvas states so older per-pixel history is valid again once the original extent returns. New AI
 answers retain the generated crop under a separately editable mask. The prior 2026-10-26 notes
-below remain historical. Image-size resampling and dedicated AI upscale methods are still planned.
+below remain historical. Local image resampling and fast model upscaling are now implemented;
+best-quality generative upscaling remains a separate future option.
 `AGENTS.md` is normative and outranks this file.
+
+## 2026-11-01 - Image size and pixel upscaling
+
+**Architecture verdict:** Canvas resize only moves image coordinates, while image size
+changes their scale. `Document::resample_image` now performs Lanczos3 over every layer's
+pixels and coverage, including the independent selection, as one undoable geometry step.
+`doc.resample` is the command and UI entry point; geometry epochs invalidate pending
+AI edits when dimensions change.
+
+**Dedicated AI upscale:** The existing `upscale` recipe uses `/images/upscale`, but
+must not share the inpaint region compiler's grid-aligned request or the landing
+compositor that returns an answer to the original canvas. The native composite is
+sent unchanged and the returned 2x/4x image is installed at its native dimensions;
+underlying layers are resampled and kept hidden below the enhancement. Only this
+path bypasses edit-grid snapping. The ordinary model roles, job queue, field-policy
+and recorded transport remain in use. The explicit role preferences can resolve
+known upscalers whose catalogue entry lacks the optional `upscaling` label; model
+recipe and explicit name remain checked.
+
+**Remaining:** A generative `AI upscale (best)` recipe is distinct from fast ESRGAN
+pixel enhancement and is not implemented. Verify the normal ImGui build and full
+recorded-backend suite in CI; the headless core is independently tested with C++20.
 
 ## 2026-10-30 - Explicit selection-edit cycle over the AI result
 

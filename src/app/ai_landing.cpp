@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/ai_landing.h"
 #include "app/command_groups.h"
+#include "app/commands.h"
 
 #include "app/command_args.h"
 #include "app/state.h"
@@ -359,6 +360,52 @@ CommandResult land_job(AppState& state, const ai::JobRecord& record, const char*
         }
         return fail(command, why);
     }
+    const ai::Recipe* job_recipe = state.ai.recipes.find(record.recipe_id);
+    if (job_recipe != nullptr && job_recipe->endpoint == ai::Endpoint::upscale) {
+        const Extent initial = record.landing.canvas;
+        const Extent target = answer.size();
+        const bool correct_document = record.landing.document_epoch == state.document_epoch &&
+                                      state.doc.size() == initial &&
+                                      state.doc.composite().checksum_hex() ==
+                                          record.landing.document_checksum_before;
+        const bool valid_scale = initial.w > 0 && initial.h > 0 &&
+                                 target.w % initial.w == 0 && target.h % initial.h == 0 &&
+                                 target.w / initial.w == target.h / initial.h &&
+                                 (target.w / initial.w == 2 || target.w / initial.w == 4) &&
+                                 static_cast<std::int64_t>(target.w) * target.h <= kMaxCanvasPixels;
+        if (!correct_document || !valid_scale) {
+            const std::string refusal = !correct_document
+                ? "the document changed while the upscaler was running"
+                : "the upscaler returned " + std::to_string(target.w) + "x" +
+                      std::to_string(target.h) + "; expected a 2x or 4x image within the canvas limit";
+            if (record_outcome) {
+                state.ai.jobs->set_land_refusal(record.id, refusal);
+            }
+            return fail(command, refusal);
+        }
+        const std::string layer_name = job_recipe->label + " " + record.id;
+        if (!state.doc.apply_upscaled_image(answer, layer_name)) {
+            const std::string refusal = "could not install the upscaled image";
+            if (record_outcome) {
+                state.ai.jobs->set_land_refusal(record.id, refusal);
+            }
+            return fail(command, refusal);
+        }
+        state.edit_plane = LayerPlane::pixels;
+        ++state.document_epoch;
+        request_fit(state);
+        json result{{"applied", true},
+                    {"layer", state.doc.active()},
+                    {"layer_name", layer_name},
+                    {"upscaled", true},
+                    {"before", json::array({initial.w, initial.h})},
+                    {"after", json::array({target.w, target.h})},
+                    {"document", document_json(state)}};
+        if (record_outcome) {
+            state.ai.jobs->set_landed(record.id, layer_name, result);
+        }
+        return command_ok(std::move(result));
+    }
     const Mask coverage = mask_for_landing(record, state.doc.size(), error);
     if (!coverage.sized()) {
         if (record_outcome) {
@@ -415,6 +462,9 @@ void pump_ai_landings(AppState& state) {
     }
     const std::vector<ai::JobRecord> pending = state.ai.jobs->pending_landings(state.document_epoch);
     for (const ai::JobRecord& record : pending) {
+        if (record.landing.document_epoch != state.document_epoch) {
+            continue;
+        }
         const CommandResult landed = land_job(state, record, "answer", std::nullopt, std::nullopt,
                                              /*record_outcome=*/true);
         if (landed.ok) {
