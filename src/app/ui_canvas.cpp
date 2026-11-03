@@ -68,7 +68,7 @@ void draw_ants(ImDrawList* list, const AppState& state, const ImVec2& origin, fl
                const Mask& selection) {
     const AntRing ring{selection.bounds()};
     const float scale = static_cast<float>(state.view.scale);
-    for (const MaskRun& run : selection.boundary()) {
+    for (const MaskRun& run : selection.display_boundary()) {
         const bool along_x = run.side == MaskSide::up || run.side == MaskSide::down;
         // The edge itself: coverage ends at `fixed` on the up and left sides and one pixel further on
         // the down and right ones, so the ants sit between the selected pixel and the unselected one

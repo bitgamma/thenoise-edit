@@ -18,6 +18,12 @@ namespace noise {
 Document::Document() : history_(kHistoryBudgetBytes) {}
 
 void Document::reset(std::vector<Layer> layers, std::optional<Mask> selection, std::string path) {
+    archived_.clear();
+    current_version_ = 1;
+    current_version_parent_ = 0;
+    next_version_id_ = 2;
+    current_version_name_ = "Original";
+    version_redo_.clear();
     layers_ = std::move(layers);
     ++geometry_revision_;
     ++selection_revision_;
@@ -153,7 +159,7 @@ std::vector<Layer> resampled_layers(std::span<const Layer> layers, Extent target
         layer.content_revision = source.content_revision;
         layer.pixels = resample_lanczos3(source.pixels, target);
         if (source.mask) {
-            layer.mask = resample_coverage_lanczos3(*source.mask, target);
+            layer.mask = resample_coverage_linear(*source.mask, target);
         }
         resized.push_back(std::move(layer));
     }
@@ -170,69 +176,226 @@ bool Document::resample_image(Extent target) {
     if (target == size()) {
         return true;
     }
+    std::vector<Layer> transformed = resampled_layers(layers_, target);
+    const std::optional<Mask> marked = selection_
+        ? std::optional<Mask>(resample_coverage_linear(*selection_, target)) : std::nullopt;
+    return begin_version(std::move(transformed), "Lanczos3 layer stack", marked);
+}
+
+std::uint64_t Document::current_version() const { return current_version_; }
+
+std::vector<DocumentVersionView> Document::versions() const {
+    std::vector<DocumentVersionView> views;
+    views.reserve(archived_.size() + 1);
+    views.push_back(DocumentVersionView{current_version_, current_version_name_, layers_,
+                                        &selection_, active_, true, current_version_parent_});
+    for (const ArchivedVersion& version : archived_) {
+        const DocumentVersion& data = version.data;
+        views.push_back(DocumentVersionView{data.id, data.name, data.layers,
+                                            &data.selection, data.active_layer, false,
+                                            data.parent_id});
+    }
+    std::sort(views.begin(), views.end(), [](const auto& a, const auto& b) {
+        return a.id < b.id;
+    });
+    return views;
+}
+
+bool Document::switch_version(std::uint64_t id) {
+    if (!activate_version(id)) {
+        return false;
+    }
+    version_redo_.clear();
+    return true;
+}
+
+bool Document::activate_version(std::uint64_t id) {
+    if (id == current_version_) {
+        return true;
+    }
+    auto found = std::find_if(archived_.begin(), archived_.end(), [id](const auto& version) {
+        return version.data.id == id;
+    });
+    if (found == archived_.end() || empty()) {
+        return false;
+    }
     discard_provisional();
     cancel_marked();
-    std::vector<Layer> transformed = resampled_layers(layers_, target);
-    std::optional<Mask> marked = selection_
-                                     ? std::optional<Mask>(resample_coverage_lanczos3(*selection_, target))
-                                     : std::nullopt;
-    history_.record_canvas_replaced(std::move(layers_), std::move(selection_));
-    layers_ = std::move(transformed);
-    selection_ = std::move(marked);
+    std::swap(layers_, found->data.layers);
+    std::swap(selection_, found->data.selection);
+    std::swap(active_, found->data.active_layer);
+    std::swap(current_version_, found->data.id);
+    std::swap(current_version_parent_, found->data.parent_id);
+    std::swap(current_version_name_, found->data.name);
+    std::swap(history_, found->history);
     ++geometry_revision_;
     ++selection_revision_;
-    pending_ = Rect{0, 0, target.w, target.h};
+    pending_ = Rect{0, 0, width(), height()};
     dirty_ = true;
     changed_all_layers();
     return true;
 }
 
-bool Document::apply_upscaled_image(Image result, std::string name) {
+bool Document::load_versions(std::vector<DocumentVersion> versions, std::uint64_t current,
+                             std::string path) {
+    if (versions.empty() || current == 0) {
+        return false;
+    }
+    auto found = std::find_if(versions.begin(), versions.end(), [current](const auto& version) {
+        return version.id == current;
+    });
+    if (found == versions.end()) {
+        return false;
+    }
+    std::uint64_t maximum = 0;
+    for (const DocumentVersion& version : versions) {
+        if (version.id == 0 || (version.parent_id != 0 && version.parent_id >= version.id) ||
+            version.name.empty() || version.layers.empty() ||
+            version.active_layer < 0 ||
+            static_cast<std::size_t>(version.active_layer) >= version.layers.size()) {
+            return false;
+        }
+        const Extent size = version.layers.front().pixels.size();
+        if (size.w <= 0 || size.h <= 0 ||
+            static_cast<std::int64_t>(size.w) * size.h > kMaxCanvasPixels ||
+            (version.selection && version.selection->size() != size)) {
+            return false;
+        }
+        for (const Layer& layer : version.layers) {
+            if (layer.pixels.size() != size || (layer.mask && layer.mask->size() != size)) {
+                return false;
+            }
+        }
+        maximum = std::max(maximum, version.id);
+    }
+    for (std::size_t i = 0; i < versions.size(); ++i) {
+        for (std::size_t j = i + 1; j < versions.size(); ++j) {
+            if (versions[i].id == versions[j].id) {
+                return false;
+            }
+        }
+        if (versions[i].parent_id != 0 &&
+            std::none_of(versions.begin(), versions.end(), [&](const DocumentVersion& version) {
+                return version.id == versions[i].parent_id;
+            })) {
+            return false;
+        }
+    }
+    DocumentVersion chosen = std::move(*found);
+    reset(std::move(chosen.layers), std::move(chosen.selection), std::move(path));
+    current_version_ = chosen.id;
+    current_version_parent_ = chosen.parent_id;
+    current_version_name_ = std::move(chosen.name);
+    active_ = chosen.active_layer;
+    next_version_id_ = maximum + 1;
+    archived_.reserve(versions.size() - 1);
+    for (DocumentVersion& version : versions) {
+        if (version.id == current) {
+            continue;
+        }
+        for (Layer& layer : version.layers) {
+            layer.id = next_layer_id_++;
+        }
+        ArchivedVersion archived;
+        archived.data = std::move(version);
+        archived_.push_back(std::move(archived));
+    }
+    return true;
+}
+
+bool Document::begin_version(std::vector<Layer> next_layers, std::string name,
+                             std::optional<Mask> marked) {
+    if (empty() || next_layers.empty() || next_layers.front().pixels.empty() ||
+        static_cast<std::int64_t>(next_layers.front().pixels.size().w) *
+            next_layers.front().pixels.size().h > kMaxCanvasPixels) {
+        return false;
+    }
+    const Extent size = next_layers.front().pixels.size();
+    if ((marked && marked->size() != size) ||
+        std::any_of(next_layers.begin(), next_layers.end(), [size](const Layer& layer) {
+            return layer.pixels.size() != size || (layer.mask && layer.mask->size() != size);
+        })) {
+        return false;
+    }
+    discard_provisional();
+    cancel_marked();
+    ArchivedVersion archived;
+    version_redo_.clear();
+    archived.data.id = current_version_;
+    archived.data.parent_id = current_version_parent_;
+    archived.data.name = std::move(current_version_name_);
+    archived.data.layers = std::move(layers_);
+    archived.data.selection = std::move(selection_);
+    archived.data.active_layer = active_;
+    archived.history = std::move(history_);
+    archived_.push_back(std::move(archived));
+    current_version_parent_ = current_version_;
+    current_version_ = next_version_id_++;
+    current_version_name_ = name.empty() ? "Resized image" : std::move(name);
+    layers_ = std::move(next_layers);
+    for (Layer& layer : layers_) {
+        layer.id = next_layer_id_++;
+    }
+    selection_ = std::move(marked);
+    active_ = 0;
+    history_ = History(kHistoryBudgetBytes);
+    ++geometry_revision_;
+    ++selection_revision_;
+    pending_ = Rect{0, 0, width(), height()};
+    dirty_ = true;
+    changed_all_layers();
+    return true;
+}
+
+bool Document::resample_composite(Extent target) {
+    if (empty() || target.w <= 0 || target.h <= 0 ||
+        static_cast<std::int64_t>(target.w) * target.h > kMaxCanvasPixels || target == size()) {
+        return false;
+    }
+    Image resized = resample_lanczos3(composite(), target);
+    const std::optional<Mask> marked = selection_
+        ? std::optional<Mask>(resample_coverage_linear(*selection_, target)) : std::nullopt;
+    Layer image_layer;
+    image_layer.name = "Lanczos3 resized";
+    image_layer.pixels = std::move(resized);
+    std::vector<Layer> next;
+    next.push_back(std::move(image_layer));
+    return begin_version(std::move(next), "Lanczos3 resized", marked);
+}
+
+bool Document::apply_upscaled_image(Image result, std::string name, bool generative) {
     if (empty() || result.empty()) {
         return false;
     }
     const Extent old = size();
     const Extent target = result.size();
-    if (target.w <= old.w || target.h <= old.h ||
-        static_cast<std::int64_t>(target.w) * target.h > kMaxCanvasPixels ||
-        target.w % old.w != 0 || target.h % old.h != 0 ||
-        target.w / old.w != target.h / old.h ||
-        (target.w / old.w != 2 && target.w / old.w != 4)) {
+    const std::int64_t source_pixels = static_cast<std::int64_t>(old.w) * old.h;
+    const std::int64_t target_pixels = static_cast<std::int64_t>(target.w) * target.h;
+    const std::int64_t cross = std::abs(static_cast<std::int64_t>(target.w) * old.h -
+                                        static_cast<std::int64_t>(target.h) * old.w);
+    if (target_pixels <= source_pixels || target_pixels > kMaxCanvasPixels ||
+        (!generative && cross > std::max(old.w, old.h))) {
         return false;
     }
-    discard_provisional();
-    cancel_marked();
-    const Image original = composite();
-    const Image resized_composite = resample_lanczos3(original, target);
-    for (int y = 0; y < target.h; ++y) {
-        for (int x = 0; x < target.w; ++x) {
-            const unsigned int source_alpha = resized_composite.at(x, y)[3];
-            const unsigned int answer_alpha = result.at(x, y)[3];
-            result.at(x, y)[3] = static_cast<std::uint8_t>((source_alpha * answer_alpha + 127U) / 255U);
+    if (!generative) {
+        const Image resized = resample_lanczos3(composite(), target);
+        for (int y = 0; y < target.h; ++y) {
+            for (int x = 0; x < target.w; ++x) {
+                const unsigned int source_alpha = resized.at(x, y)[3];
+                const unsigned int answer_alpha = result.at(x, y)[3];
+                result.at(x, y)[3] = static_cast<std::uint8_t>(
+                    (source_alpha * answer_alpha + 127U) / 255U);
+            }
         }
     }
-    std::vector<Layer> transformed = resampled_layers(layers_, target);
-    for (Layer& layer : transformed) {
-        layer.visible = false;
-    }
-    Layer upscaled;
-    upscaled.id = next_layer_id_++;
-    upscaled.name = name.empty() ? "Upscaled image" : std::move(name);
-    upscaled.pixels = std::move(result);
-    transformed.push_back(std::move(upscaled));
-    std::optional<Mask> marked = selection_
-                                     ? std::optional<Mask>(resample_coverage_lanczos3(*selection_, target))
-                                     : std::nullopt;
-    history_.record_canvas_replaced(std::move(layers_), std::move(selection_));
-    layers_ = std::move(transformed);
-    selection_ = std::move(marked);
-    active_ = static_cast<int>(layers_.size()) - 1;
-    ++geometry_revision_;
-    ++selection_revision_;
-    pending_ = Rect{0, 0, target.w, target.h};
-    dirty_ = true;
-    changed_all_layers();
-    return true;
+    const std::optional<Mask> marked = selection_
+        ? std::optional<Mask>(resample_coverage_linear(*selection_, target)) : std::nullopt;
+    Layer image_layer;
+    image_layer.name = name.empty() ? "Upscaled image" : name;
+    image_layer.pixels = std::move(result);
+    std::vector<Layer> next;
+    next.push_back(std::move(image_layer));
+    return begin_version(std::move(next), std::move(name), marked);
 }
 
 bool Document::crop_canvas(Rect crop) {
@@ -1378,12 +1541,24 @@ Mask Document::held_aside_coverage(Rect absolute) const {
 bool Document::undo() {
     discard_provisional();
     cancel_marked();
+    if (!history_.can_undo()) {
+        if (current_version_parent_ == 0) {
+            return false;
+        }
+        const std::uint64_t created = current_version_;
+        if (!activate_version(current_version_parent_)) {
+            return false;
+        }
+        version_redo_.push_back(VersionRedo{current_version_, created, history_.stats()});
+        return true;
+    }
     const std::uint64_t was =
         layers_.empty() ? 0 : layers_[static_cast<std::size_t>(active_)].id;
     const auto moved = history_.undo(layers_, selection_);
     if (!moved) {
         return false;
     }
+    version_redo_.clear();
     // Stepping back is a change: what the document holds now is not what the file holds, and a quit guard
     // that read this as clean would discard the step it just took.
     dirty_ = true;
@@ -1410,6 +1585,15 @@ bool Document::undo() {
 bool Document::redo() {
     discard_provisional();
     cancel_marked();
+    if (version_redo_ready()) {
+        const std::uint64_t recreated = version_redo_.back().to;
+        if (!activate_version(recreated)) {
+            return false;
+        }
+        version_redo_.pop_back();
+        return true;
+    }
+    version_redo_.clear();
     const std::uint64_t was =
         layers_.empty() ? 0 : layers_[static_cast<std::size_t>(active_)].id;
     const auto moved = history_.redo(layers_, selection_);
@@ -1432,8 +1616,27 @@ bool Document::redo() {
     changed_all_layers();
     return true;
 }
-bool Document::can_undo() const { return history_.can_undo(); }
-bool Document::can_redo() const { return history_.can_redo(); }
-HistoryStats Document::history() const { return history_.stats(); }
+bool Document::version_redo_ready() const {
+    if (version_redo_.empty() || version_redo_.back().from != current_version_) {
+        return false;
+    }
+    const HistoryStats now = history_.stats();
+    const HistoryStats before = version_redo_.back().parent_history;
+    return now.undo_depth == before.undo_depth && now.redo_depth == before.redo_depth &&
+           now.bytes == before.bytes;
+}
+
+bool Document::can_undo() const { return history_.can_undo() || current_version_parent_ != 0; }
+bool Document::can_redo() const { return version_redo_ready() || history_.can_redo(); }
+HistoryStats Document::history() const {
+    HistoryStats result = history_.stats();
+    if (current_version_parent_ != 0) {
+        ++result.undo_depth;
+    }
+    if (version_redo_ready()) {
+        result.redo_depth += static_cast<int>(version_redo_.size());
+    }
+    return result;
+}
 
 }  // namespace noise

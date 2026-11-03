@@ -7,6 +7,9 @@
 
 #include "app/commands.h"
 #include "core/base64.h"
+#include "ai/provider.h"
+#include "ai/region.h"
+#include "ai/registry.h"
 #include "core/log.h"
 #include "io/file.h"
 #include "io/config.h"
@@ -19,6 +22,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -33,6 +39,7 @@ namespace {
 // the last file land in this one.
 void note_new_document(AppState& state) {
     state.edit_plane = LayerPlane::pixels;
+    state.deferred_upscale.reset();
     ++state.document_epoch;
     // The door is the way in, and a document in hand closes it - whoever made the document: the
     // picker, the recent list, a launch argument, a driver.
@@ -96,8 +103,16 @@ void register_document_commands(AppState& state, CommandTable& table) {
             if (!io::load_project(path, project, error)) {
                 return fail("doc.open", error);
             }
-            loaded = std::move(project.layers);
-            opened_selection = std::move(project.selection);
+            std::vector<DocumentVersion> versions = std::move(project.archived_versions);
+            versions.push_back(DocumentVersion{project.active_version_id,
+                                                std::move(project.active_version_name),
+                                                std::move(project.layers),
+                                                std::move(project.selection),
+                                                project.active_layer,
+                                                project.active_version_parent_id});
+            if (!state.doc.load_versions(std::move(versions), project.active_version_id, path)) {
+                return fail("doc.open", "invalid document versions in " + path);
+            }
             state.carried = std::move(project.carried);
         } else if (!sniff_error.empty()) {
             return fail("doc.open", sniff_error);
@@ -112,7 +127,9 @@ void register_document_commands(AppState& state, CommandTable& table) {
             loaded.push_back(std::move(base));
             state.carried.clear();
         }
-        state.doc.reset(std::move(loaded), std::move(opened_selection), path);
+        if (!loaded.empty()) {
+            state.doc.reset(std::move(loaded), std::move(opened_selection), path);
+        }
         note_new_document(state);
         io::remember_recent_file(path);
         request_fit(state);
@@ -160,9 +177,9 @@ void register_document_commands(AppState& state, CommandTable& table) {
                             "; use doc.export for a flat image (got '" + path + "')");
         }
         std::string error;
+        const std::vector<DocumentVersionView> versions = state.doc.versions();
         if (!io::save_project(path, state.doc.layers(), state.doc.composite(),
-                              state.doc.selection(), state.carried,
-                              error)) {
+                              state.doc.selection(), versions, state.carried, error)) {
             return fail("doc.save", error);
         }
 #ifdef __EMSCRIPTEN__
@@ -330,8 +347,8 @@ void register_document_commands(AppState& state, CommandTable& table) {
         return command_ok(document_json(state));
     });
 
-    table.add("doc.resample", "Resize the image and every layer using Lanczos3", {},
-              {"width", "height"}, [&state](const json& args) -> CommandResult {
+    table.add("doc.resample", "Resize the composite or the whole stack using Lanczos3", {},
+              {"width", "height", "whole_stack"}, [&state](const json& args) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
             return guard;
@@ -348,7 +365,15 @@ void register_document_commands(AppState& state, CommandTable& table) {
         }
         const Extent target{width, height};
         const Extent previous = state.doc.size();
-        if (!state.doc.resample_image(target)) {
+        bool whole_stack = false;
+        if (!arg_bool(args, "whole_stack", whole_stack)) {
+            return fail("doc.resample", "'whole_stack' must be a boolean");
+        }
+        if (previous == target) {
+            return command_ok(document_json(state));
+        }
+        if (!(whole_stack ? state.doc.resample_image(target)
+                          : state.doc.resample_composite(target))) {
             return fail("doc.resample", "could not resize the image");
         }
         if (previous != target) {
@@ -358,29 +383,174 @@ void register_document_commands(AppState& state, CommandTable& table) {
         return command_ok(document_json(state));
     });
 
-    table.add("image.upscale", "Upscale the full composite with the assigned AI upscaler", {},
-              {"confirm"}, [&state, &table](const json& args) -> CommandResult {
+    table.add("doc.version.list", "List document versions and their native sizes", {}, {},
+              [&state](const json&) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {
             return guard;
         }
-        bool confirm = false;
-        if (!arg_bool(args, "confirm", confirm)) {
-            return fail("image.upscale", "'confirm' must be a boolean");
+        json versions = json::array();
+        for (const DocumentVersionView& version : state.doc.versions()) {
+            const Extent size = version.layers.front().pixels.size();
+            versions.push_back(json{{"id", version.id}, {"name", version.name},
+                                    {"width", size.w}, {"height", size.h},
+                                    {"layers", version.layers.size()},
+                                    {"active", version.current},
+                                    {"parent", version.parent_id}});
+        }
+        return command_ok(json{{"versions", versions},
+                               {"active", state.doc.current_version()}});
+    });
+
+    table.add("doc.version.select", "Switch to another resolution version", {}, {"id"},
+              [&state](const json& args) -> CommandResult {
+        if (!args.contains("id") || !args.at("id").is_number_unsigned()) {
+            return fail("doc.version.select", "expected unsigned version 'id'");
+        }
+        const std::uint64_t id = args.at("id").get<std::uint64_t>();
+        if (!state.doc.switch_version(id)) {
+            return fail("doc.version.select", "no version with id " + std::to_string(id));
+        }
+        state.deferred_upscale.reset();
+        state.edit_plane = LayerPlane::pixels;
+        ++state.document_epoch;
+        request_fit(state);
+        return command_ok(document_json(state));
+    });
+
+    table.add("image.upscale.defer", "Use a larger resolution on the next AI image edit", {},
+              {"enabled", "width", "height"},
+              [&state](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        bool enabled = true;
+        if (!arg_bool(args, "enabled", enabled)) {
+            return fail("image.upscale.defer", "'enabled' must be a boolean");
+        }
+        if (!enabled) {
+            state.deferred_upscale.reset();
+            return command_ok(json{{"armed", false}});
+        }
+        if (state.image_size_form.whole_stack) {
+            return fail("image.upscale.defer", "Entire layer stack is only supported by Lanczos3; "
+                       "disable it before requesting an AI upscale");
+        }
+        int width = 0;
+        int height = 0;
+        if (!want_int(args, "width", width) || !want_int(args, "height", height)) {
+            return fail("image.upscale.defer", "expected integer width and height");
+        }
+        const Extent source = state.doc.size();
+        const std::int64_t target_area = static_cast<std::int64_t>(width) * height;
+        const std::int64_t source_area = static_cast<std::int64_t>(source.w) * source.h;
+        const int multiple = state.ai.roles.size_policy.multiple;
+        if (width <= 0 || height <= 0 || target_area <= source_area ||
+            target_area > kMaxCanvasPixels) {
+            return fail("image.upscale.defer", "target must be larger than the current image "
+                         "and fit within the document pixel limit");
+        }
+        if (width > ai::kMaxGeneratedDimensionPx ||
+            height > ai::kMaxGeneratedDimensionPx || multiple <= 0) {
+            return fail("image.upscale.defer", "target exceeds the edit model's maximum "
+                         "output dimensions");
+        }
+        const Extent request_size = ai::edit_output_size(Extent{width, height}, multiple);
+        if (request_size.w > ai::kMaxGeneratedDimensionPx ||
+            request_size.h > ai::kMaxGeneratedDimensionPx) {
+            return fail("image.upscale.defer", "the output grid would exceed the edit model's "
+                         "maximum dimensions");
+        }
+        if (const ai::Recipe* edit = state.ai.recipes.find("inpaint-replace")) {
+            const int budget = state.ai.region_policy(*edit).max_area_px;
+            if (budget > 0 && static_cast<std::int64_t>(request_size.w) * request_size.h > budget) {
+                return fail("image.upscale.defer", "edit model allows " +
+                    std::to_string(budget) + " output pixels, but the " +
+                    std::to_string(request_size.w) + "x" + std::to_string(request_size.h) +
+                    " model request after grid alignment needs more");
+            }
+        }
+        state.deferred_upscale = DeferredUpscale{source, Extent{width, height},
+                                                  state.document_epoch};
+        return command_ok(json{{"armed", true},
+                               {"source", json::array({source.w, source.h})},
+                               {"target", json::array({width, height})},
+                               {"model_request", json::array({request_size.w, request_size.h})}});
+    });
+
+    table.add("image.upscale.status", "Report the next-AI-edit resolution", {}, {},
+              [&state](const json&) -> CommandResult {
+        const std::optional<DeferredUpscale>& pending = state.deferred_upscale;
+        const bool valid = pending && pending->source == state.doc.size() &&
+                           pending->document_epoch == state.document_epoch;
+        const Extent request_size = valid
+            ? ai::edit_output_size(pending->target, state.ai.roles.size_policy.multiple)
+            : Extent{};
+        return command_ok(json{{"armed", valid},
+                               {"target", valid ? json::array({pending->target.w, pending->target.h})
+                                                : json(nullptr)},
+                               {"model_request", valid
+                                   ? json::array({request_size.w, request_size.h})
+                                   : json(nullptr)}});
+    });
+
+    table.add("image.upscale", "Upscale the visible image to the requested size", {},
+              {"model", "width", "height"},
+              [&state, &table](const json& args) -> CommandResult {
+        CommandResult guard = require_document(state);
+        if (!guard.ok) {
+            return guard;
+        }
+        if (state.image_size_form.whole_stack) {
+            return fail("image.upscale", "Entire layer stack is only supported by Lanczos3; "
+                        "disable it before requesting an AI upscale");
         }
         const ai::Recipe* recipe = state.ai.recipes.find("upscale");
-        const Readiness ready = assess(state, recipe);
-        if (!ready.ready) {
-            return fail("image.upscale", ready.reason +
-                                         (ready.fix.empty() ? "" : "; " + ready.fix));
+        Readiness ready = assess(state, recipe);
+        std::string model = ready.model;
+        if (!arg_text(args, "model", model)) {
+            return fail("image.upscale", "'model' must be a string");
         }
-        if (needs_swap(state, ready) && !confirm) {
-            return fail("image.upscale", "upscaling requires loading '" + ready.model +
-                                         "' instead of '" + state.ai.health.model_loaded +
-                                         "'; retry with confirm=true");
+        if (state.ai.registry == nullptr || !state.ai.connected || recipe == nullptr) {
+            return fail("image.upscale", ready.reason);
+        }
+        const std::vector<std::string> offered =
+            state.ai.registry->candidates("upscale", /*include_not_downloaded=*/true);
+        if (std::find(offered.begin(), offered.end(), model) == offered.end()) {
+            return fail("image.upscale", "model '" + model + "' is not an available upscaler");
+        }
+        ready.ready = true;
+        const int native = ai::native_upscale_factor(model);
+        if (native == 0) {
+            return fail("image.upscale", "model '" + model + "' does not expose a native scale");
+        }
+        const Extent source = state.doc.size();
+        int width = source.w * native;
+        int height = source.h * native;
+        if (args.contains("width") && !want_int(args, "width", width)) {
+            return fail("image.upscale", "'width' must be an integer");
+        }
+        if (args.contains("height") && !want_int(args, "height", height)) {
+            return fail("image.upscale", "'height' must be an integer");
+        }
+        const std::int64_t target_area = static_cast<std::int64_t>(width) * height;
+        const std::int64_t cross = std::abs(static_cast<std::int64_t>(width) * source.h -
+                                            static_cast<std::int64_t>(height) * source.w);
+        if (width <= source.w || height <= source.h ||
+            width > static_cast<std::int64_t>(source.w) * native ||
+            height > static_cast<std::int64_t>(source.h) * native ||
+            target_area > kMaxCanvasPixels || cross > std::max(source.w, source.h)) {
+            return fail("image.upscale", "requested size must preserve aspect ratio, exceed the "
+                                         "source size, fit the model's native " +
+                                         std::to_string(native) + "x output, and stay within "
+                                         "the 64-Mi pixel document limit");
         }
         return table.invoke("ai.run", json{{"recipe", "upscale"},
-                                           {"include_references", false}});
+                                           {"include_references", false},
+                                           {"model", model},
+                                           {"output_width", width},
+                                           {"output_height", height}});
     });
 
     table.add("doc.outpaint.prepare", "Enlarge the canvas and open Fill for its added area", {},

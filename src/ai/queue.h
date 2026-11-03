@@ -40,6 +40,8 @@ struct Landing {
     // how a rescale went unreported on the path that actually lands answers.
     bool resampled = false;
     Extent canvas{};
+    Extent upscale_target{};
+    bool generative_upscale = false;
     // Where the coverage the region was compiled from lives: a canvas-sized PNG with the coverage in
     // the alpha channel, written by `enqueue` beside the job. Kept because a result that lands in a
     // later session must composite under the mask that was in force when it was asked for, not under

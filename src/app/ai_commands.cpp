@@ -22,6 +22,9 @@
 #include <nlohmann/json.hpp>
 
 #include <map>
+#include <algorithm>
+#include <cstdint>
+#include <cmath>
 #include <optional>
 #include <filesystem>
 #include <string>
@@ -46,7 +49,11 @@ struct Assembly {
     // The prepped region, written out so a person can look at the exact image that is being uploaded.
     std::string prepped_path;
     ai::BuiltRequest request{};
-    bool include_references;
+    bool include_references = false;
+    Extent uploaded_size{};
+    Extent upscale_target{};
+    bool generative_upscale = false;
+    std::string model_id;
     // Which of the three ways a seed is chosen this one came from: `named`, `pinned` or `random`.
     std::string seed_source;
 };
@@ -118,13 +125,6 @@ Attempt compile_region(const char* command, AppState& state, const ai::Recipe& r
             attempt.failure = fail(command, "upscale must operate on the complete document");
             return attempt;
         }
-        const ai::RegionPolicy policy = policy_for(state, &recipe);
-        if (static_cast<std::int64_t>(state.doc.width()) * state.doc.height() > policy.max_area_px) {
-            attempt.failure = fail(command, "the image exceeds the upscaler input limit of " +
-                                                std::to_string(policy.max_area_px) +
-                                                " pixels; resize it locally first");
-            return attempt;
-        }
         ai::RegionPlan native;
         native.crop = Rect{0, 0, state.doc.width(), state.doc.height()};
         native.mask_bounds = native.crop;
@@ -164,6 +164,11 @@ Attempt prep_bytes(const char* command, AppState& state, Assembly assembled, std
     Image uploaded;
     if (assembled.recipe->endpoint == ai::Endpoint::upscale) {
         uploaded = state.doc.composite();
+    } else if (assembled.generative_upscale) {
+        const Image original = state.doc.composite();
+        const Mask hole = assembled.coverage;
+        uploaded = ai::prep_region(ai::flatten_over_ring(original, hole), hole,
+                                   assembled.recipe->prep, seed);
     } else {
         const Image base = state.doc.flatten_over(plan.crop, static_cast<std::size_t>(state.doc.active()));
         if (base.empty()) {
@@ -184,6 +189,7 @@ Attempt prep_bytes(const char* command, AppState& state, Assembly assembled, std
         return attempt;
     }
     ++state.upload_encodes;
+    assembled.uploaded_size = uploaded.size();
     assembled.png = io::encode_png(uploaded);
     attempt.assembled = std::move(assembled);
     attempt.ok = true;
@@ -242,6 +248,36 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
     if (!region.ok) {
         return region;
     }
+    if (state.deferred_upscale &&
+        (state.deferred_upscale->source != state.doc.size() ||
+         state.deferred_upscale->document_epoch != state.document_epoch)) {
+        state.deferred_upscale.reset();
+    }
+    const std::optional<DeferredUpscale>& deferred = state.deferred_upscale;
+    if (deferred && recipe->endpoint == ai::Endpoint::edits &&
+        recipe->region == ai::RegionScope::selection) {
+        const Extent target = deferred->target;
+        const ai::RegionPolicy policy = policy_for(state, recipe);
+        const Extent requested = ai::edit_output_size(target,
+            state.ai.roles.size_policy.multiple);
+        if (requested.w > ai::kMaxGeneratedDimensionPx ||
+            requested.h > ai::kMaxGeneratedDimensionPx ||
+            (policy.max_area_px > 0 &&
+             static_cast<std::int64_t>(requested.w) * requested.h > policy.max_area_px)) {
+            return Attempt{false, Assembly{}, fail(command,
+                "deferred upscale " + std::to_string(target.w) + "x" +
+                std::to_string(target.h) + " needs a " +
+                std::to_string(requested.w) + "x" + std::to_string(requested.h) +
+                " model output, beyond this edit model's output limits")};
+        }
+        region.assembled.plan.crop = Rect{0, 0, state.doc.width(), state.doc.height()};
+        region.assembled.plan.mask_bounds = region.assembled.coverage.bounds();
+        region.assembled.plan.requested = requested;
+        region.assembled.plan.resampled = false;
+        region.assembled.generative_upscale = true;
+        region.assembled.upscale_target = target;
+        region.assembled.coverage_source = "selection (full image at deferred resolution)";
+    }
 
     std::map<std::string, std::string> vars;
     std::string error;
@@ -253,6 +289,23 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
         return Attempt{false, Assembly{}, fail(command, error)};
     }
     region.assembled.prompt = *prompt;
+    if (region.assembled.generative_upscale) {
+        // The normal edit request gets a crop, so the model knows what "marked" means.
+        // Deferred upscale uploads the whole image instead; retain that spatial clue
+        // as text because /images/edits has no independent mask field.
+        const Rect marked = region.assembled.coverage.bounds();
+        const Extent source = state.doc.size();
+        const Extent target = region.assembled.upscale_target;
+        region.assembled.prompt +=
+            "\nThe selected region is bounded by original-image coordinates (" +
+            std::to_string(marked.x) + ", " + std::to_string(marked.y) + ") to (" +
+            std::to_string(marked.x + marked.w) + ", " +
+            std::to_string(marked.y + marked.h) + ") in the " +
+            std::to_string(source.w) + "x" + std::to_string(source.h) +
+            " input. Keep the rest of the composition as consistent as possible. " +
+            "Return the complete image at " + std::to_string(target.w) + "x" +
+            std::to_string(target.h) + " pixels.";
+    }
 
     // One seed per request. A call that names one gets exactly it; a call that names none takes the
     // panel's pin or a fresh draw, because two asks over the same pixels with the same seed are the
@@ -279,6 +332,56 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
         region.assembled.seed_source = state.ai.seed_pin.has_value() ? "pinned" : "random";
     }
 
+    // The role resolves against what this server answered. Previewing without a connection is allowed
+    // only when the caller supplies the numbers the model would have supplied, because guessing them
+    // would be the app asserting a fact it has not read.
+    const ai::Resolution resolution = state.ai.registry->resolve(recipe->role);
+    std::string model_id = resolution.model_id;
+    if (args.contains("model")) {
+        if (recipe->endpoint != ai::Endpoint::upscale || !args.at("model").is_string()) {
+            return Attempt{false, Assembly{}, fail(command,
+                "'model' may only name an available pixel upscaler")};
+        }
+        model_id = args.at("model").get<std::string>();
+        const std::vector<std::string> offered =
+            state.ai.registry->candidates("upscale", /*include_not_downloaded=*/true);
+        if (std::find(offered.begin(), offered.end(), model_id) == offered.end()) {
+            return Attempt{false, Assembly{}, fail(command,
+                "model '" + model_id + "' is not an available upscaler")};
+        }
+    }
+    const ai::ModelEntry* entry = state.ai.registry->model(model_id);
+    if (recipe->endpoint == ai::Endpoint::upscale) {
+        const int native = ai::native_upscale_factor(model_id);
+        if (native == 0) {
+            return Attempt{false, Assembly{}, fail(command,
+                "model '" + model_id + "' has no known native factor")};
+        }
+        const Extent source = state.doc.size();
+        const std::int64_t native_w = static_cast<std::int64_t>(source.w) * native;
+        const std::int64_t native_h = static_cast<std::int64_t>(source.h) * native;
+        int width = static_cast<int>(native_w);
+        int height = static_cast<int>(native_h);
+        const bool width_specified = args.contains("output_width");
+        const bool height_specified = args.contains("output_height");
+        if (width_specified != height_specified ||
+            (width_specified && (!want_int(args, "output_width", width) ||
+                                 !want_int(args, "output_height", height)))) {
+            return Attempt{false, Assembly{}, fail(command,
+                "'output_width' and 'output_height' must be provided together as integers")};
+        }
+        const std::int64_t area = static_cast<std::int64_t>(width) * height;
+        const std::int64_t cross = std::abs(static_cast<std::int64_t>(width) * source.h -
+                                            static_cast<std::int64_t>(height) * source.w);
+        if (width <= source.w || height <= source.h ||
+            width > native_w || height > native_h || area > kMaxCanvasPixels ||
+            cross > std::max(source.w, source.h)) {
+            return Attempt{false, Assembly{}, fail(command,
+                "requested upscale size must preserve aspect ratio and fit the native output")};
+        }
+        region.assembled.upscale_target = Extent{width, height};
+    }
+    region.assembled.model_id = model_id;
     Attempt prepped = prep_bytes(command, state, region.assembled, static_cast<std::uint64_t>(seed));
     if (!prepped.ok) {
         return prepped;
@@ -286,11 +389,6 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
     Assembly& assembled = prepped.assembled;
     assembled.include_references = include_references;
 
-    // The role resolves against what this server answered. Previewing without a connection is allowed
-    // only when the caller supplies the numbers the model would have supplied, because guessing them
-    // would be the app asserting a fact it has not read.
-    const ai::Resolution resolution = state.ai.registry->resolve(recipe->role);
-    const ai::ModelEntry* entry = state.ai.registry->resolved_model(recipe->role);
     std::optional<int> steps;
     if (args.contains("steps")) {
         int value = 0;
@@ -307,7 +405,7 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
         }
         cfg = value;
     }
-    if (!resolution.resolved() && (needs_server || !steps.has_value() || !cfg.has_value())) {
+    if (model_id.empty() && (needs_server || !steps.has_value() || !cfg.has_value())) {
         std::string message = "role '" + recipe->role + "' resolves to no model: " +
                               (resolution.reason.empty() ? "nothing matches" : resolution.reason);
         if (!resolution.fix_command.empty()) {
@@ -339,13 +437,20 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
     ai::RequestInput input;
     input.recipe = recipe;
     input.server_name = state.ai.client != nullptr ? state.ai.client->profile().name : "none";
-    input.model_id = resolution.model_id;
+    input.model_id = model_id;
     input.model = entry;
     input.steps_override = steps;
     input.cfg_scale_override = cfg;
     input.width = assembled.plan.requested.w;
     input.height = assembled.plan.requested.h;
     input.prompt = assembled.prompt;
+    if (recipe->endpoint == ai::Endpoint::upscale) {
+        const Extent source = assembled.uploaded_size;
+        const Extent target = assembled.upscale_target;
+        input.upscale_factor = std::max(
+            static_cast<double>(target.w) / static_cast<double>(source.w),
+            static_cast<double>(target.h) / static_cast<double>(source.h));
+    }
     input.seed = static_cast<std::uint64_t>(seed);
     if (uploads_document_image) {
         const std::string document_name = state.doc.path().empty()
@@ -354,8 +459,8 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
                                                     .filename()
                                                     .string();
         input.images.push_back(ai::RequestImageInput{"document", document_name,
-                                                    assembled.plan.requested.w,
-                                                    assembled.plan.requested.h,
+                                                    assembled.uploaded_size.w,
+                                                    assembled.uploaded_size.h,
                                                     std::move(assembled.png)});
         if (recipe->endpoint == ai::Endpoint::edits && include_references) {
             for (const AiReference& reference : state.ai.references) {
@@ -389,6 +494,12 @@ nlohmann::json assembly_json(const AppState& state, const Assembly& assembled,
         assembled.request.images.empty() ? 0 : assembled.request.images.size() - 1;
     return json{{"recipe", assembled.recipe->id},
                 {"role", assembled.recipe->role},
+                {"model", assembled.model_id},
+                {"upscale_target", json::array({assembled.upscale_target.w,
+                                                   assembled.upscale_target.h})},
+                {"generative_upscale", assembled.generative_upscale},
+                {"upload_size", json::array({assembled.uploaded_size.w,
+                                               assembled.uploaded_size.h})},
                 {"role_resolution", role_reason},
                 {"prompt", assembled.prompt},
                 {"prepped", assembled.prepped_path},
@@ -434,9 +545,7 @@ std::optional<RequestQuote> quote_request(AppState& state, const ai::Recipe& rec
     }
     ai::RegionPlan plan;
     if (recipe.endpoint == ai::Endpoint::upscale) {
-        if (!recipe.whole_document() || aspect.has_value() ||
-            static_cast<std::int64_t>(state.doc.width()) * state.doc.height() >
-                policy_for(state, &recipe).max_area_px) {
+        if (!recipe.whole_document() || aspect.has_value()) {
             return std::nullopt;
         }
         plan.requested = state.doc.size();
@@ -447,6 +556,14 @@ std::optional<RequestQuote> quote_request(AppState& state, const ai::Recipe& rec
             return std::nullopt;
         }
         plan = *planned;
+        if (state.deferred_upscale && recipe.endpoint == ai::Endpoint::edits &&
+            recipe.region == ai::RegionScope::selection &&
+            state.deferred_upscale->source == state.doc.size() &&
+            state.deferred_upscale->document_epoch == state.document_epoch) {
+            plan.requested = ai::edit_output_size(state.deferred_upscale->target,
+                state.ai.roles.size_policy.multiple);
+            plan.resampled = false;
+        }
     }
     RequestQuote quote;
     quote.endpoint = ai::request_path(recipe.endpoint);
@@ -592,7 +709,7 @@ void register_ai_commands(AppState& state, CommandTable& table) {
     table.add("ai.preview",
               "Compile a recipe against the document and report the exact request", {},
               {"recipe", "vars", "aspect", "seed", "steps", "cfg_scale",
-               "include_references"},
+               "include_references", "model", "output_width", "output_height"},
               [&state](const json& args) -> CommandResult {
         const Attempt attempt = build_assembly("ai.preview", state, args, /*needs_server=*/false);
         if (!attempt.ok) {
@@ -601,14 +718,14 @@ void register_ai_commands(AppState& state, CommandTable& table) {
         const ai::Recipe& recipe = *attempt.assembled.recipe;
         const ai::Resolution resolution = state.ai.registry->resolve(recipe.role);
         json result = assembly_json(state, attempt.assembled, resolution.reason);
-        result["model"] = resolution.model_id;
+        result["model"] = attempt.assembled.model_id;
         result["policy"] = composite_policy_json(recipe.composite);
         return command_ok(result);
     });
 
     table.add("ai.run", "Queue a recipe against the document", {},
               {"recipe", "vars", "aspect", "seed", "steps", "cfg_scale",
-               "include_references"},
+               "include_references", "model", "output_width", "output_height"},
               [&state](const json& args) -> CommandResult {
         Attempt attempt = build_assembly("ai.run", state, args, /*needs_server=*/true);
         if (!attempt.ok) {
@@ -631,6 +748,8 @@ void register_ai_commands(AppState& state, CommandTable& table) {
         landing.requested = assembled.plan.requested;
         landing.resampled = assembled.plan.resampled;
         landing.canvas = state.doc.size();
+        landing.upscale_target = assembled.upscale_target;
+        landing.generative_upscale = assembled.generative_upscale;
         landing.feather_px = recipe.composite.feather_px;
         landing.colour_match = recipe.composite.colour_match;
         landing.lock_band_px = recipe.composite.lock_band_px;

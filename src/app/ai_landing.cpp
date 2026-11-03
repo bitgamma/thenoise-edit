@@ -7,14 +7,15 @@
 #include "app/state.h"
 #include "app/selection_edit.h"
 
+#include "ai/registry.h"
 #include "core/log.h"
+#include "core/resample.h"
 #include "io/file.h"
 #include "io/png.h"
 
+#include <cstdlib>
 #include <string>
-
-#include "ai/registry.h"
-#include "core/log.h"
+#include <utility>
 
 namespace noise::app {
 
@@ -352,7 +353,7 @@ CommandResult land_job(AppState& state, const ai::JobRecord& record, const char*
         }
         return fail(command, error);
     }
-    const Image answer = io::decode_png(bytes, error);
+    Image answer = io::decode_png(bytes, error);
     if (answer.empty()) {
         const std::string why = error + " (" + record.result_png + ")";
         if (record_outcome) {
@@ -361,35 +362,74 @@ CommandResult land_job(AppState& state, const ai::JobRecord& record, const char*
         return fail(command, why);
     }
     const ai::Recipe* job_recipe = state.ai.recipes.find(record.recipe_id);
-    if (job_recipe != nullptr && job_recipe->endpoint == ai::Endpoint::upscale) {
+    const bool pixel_upscale = job_recipe != nullptr &&
+                               job_recipe->endpoint == ai::Endpoint::upscale;
+    if (pixel_upscale || record.landing.generative_upscale) {
         const Extent initial = record.landing.canvas;
-        const Extent target = answer.size();
+        const Extent target = record.landing.upscale_target;
         const bool correct_document = record.landing.document_epoch == state.document_epoch &&
                                       state.doc.size() == initial &&
                                       state.doc.composite().checksum_hex() ==
                                           record.landing.document_checksum_before;
-        const bool valid_scale = initial.w > 0 && initial.h > 0 &&
-                                 target.w % initial.w == 0 && target.h % initial.h == 0 &&
-                                 target.w / initial.w == target.h / initial.h &&
-                                 (target.w / initial.w == 2 || target.w / initial.w == 4) &&
-                                 static_cast<std::int64_t>(target.w) * target.h <= kMaxCanvasPixels;
-        if (!correct_document || !valid_scale) {
+        const std::int64_t target_pixels = static_cast<std::int64_t>(target.w) * target.h;
+        const bool valid_target = target.w > 0 && target.h > 0 &&
+                                  target_pixels <= kMaxCanvasPixels &&
+                                  target_pixels > static_cast<std::int64_t>(initial.w) * initial.h;
+        if (!correct_document || !valid_target) {
             const std::string refusal = !correct_document
-                ? "the document changed while the upscaler was running"
-                : "the upscaler returned " + std::to_string(target.w) + "x" +
-                      std::to_string(target.h) + "; expected a 2x or 4x image within the canvas limit";
+                ? "the document changed while the upscale edit was running"
+                : "the requested upscale target is not a larger valid canvas";
             if (record_outcome) {
                 state.ai.jobs->set_land_refusal(record.id, refusal);
             }
             return fail(command, refusal);
         }
-        const std::string layer_name = job_recipe->label + " " + record.id;
-        if (!state.doc.apply_upscaled_image(answer, layer_name)) {
+        if (pixel_upscale) {
+            const int native = ai::native_upscale_factor(record.model_id);
+            const bool expected_size = native > 0 &&
+                std::abs(answer.size().w - target.w) <= 1 &&
+                std::abs(answer.size().h - target.h) <= 1;
+            if (!expected_size) {
+                const std::string refusal = "upscaler '" + record.model_id + "' returned " +
+                    std::to_string(answer.size().w) + "x" + std::to_string(answer.size().h) +
+                    "; expected " + std::to_string(target.w) + "x" +
+                    std::to_string(target.h) + " (within 1px rounding)";
+                if (record_outcome) {
+                    state.ai.jobs->set_land_refusal(record.id, refusal);
+                }
+                return fail(command, refusal);
+            }
+        } else if (!ai::edit_output_size_compatible(record.landing.requested, answer.size())) {
+            const std::string refusal = "generative upscale returned " +
+                std::to_string(answer.size().w) + "x" + std::to_string(answer.size().h) +
+                "; requested model output " +
+                std::to_string(record.landing.requested.w) + "x" +
+                std::to_string(record.landing.requested.h) +
+                " (difference exceeds allowed backend grid snapping)";
+            if (record_outcome) {
+                state.ai.jobs->set_land_refusal(record.id, refusal);
+            }
+            return fail(command, refusal);
+        }
+        const Extent model_output = answer.size();
+        const std::string layer_name =
+            std::string(job_recipe != nullptr ? job_recipe->label : record.recipe_id) +
+            " " + record.id;
+        Image output = target != answer.size()
+            ? resample_lanczos3(answer, target) : std::move(answer);
+        if (!state.doc.apply_upscaled_image(std::move(output), layer_name,
+                                            record.landing.generative_upscale)) {
             const std::string refusal = "could not install the upscaled image";
             if (record_outcome) {
                 state.ai.jobs->set_land_refusal(record.id, refusal);
             }
             return fail(command, refusal);
+        }
+        if (record.landing.generative_upscale && state.deferred_upscale &&
+            state.deferred_upscale->target == target &&
+            state.deferred_upscale->source == initial &&
+            state.deferred_upscale->document_epoch == record.landing.document_epoch) {
+            state.deferred_upscale.reset();
         }
         state.edit_plane = LayerPlane::pixels;
         ++state.document_epoch;
@@ -398,11 +438,18 @@ CommandResult land_job(AppState& state, const ai::JobRecord& record, const char*
                     {"layer", state.doc.active()},
                     {"layer_name", layer_name},
                     {"upscaled", true},
+                    {"generative_upscale", record.landing.generative_upscale},
+                    {"model_output", json::array({model_output.w, model_output.h})},
+                    {"requested_model_output", json::array({record.landing.requested.w,
+                                                             record.landing.requested.h})},
                     {"before", json::array({initial.w, initial.h})},
                     {"after", json::array({target.w, target.h})},
                     {"document", document_json(state)}};
         if (record_outcome) {
             state.ai.jobs->set_landed(record.id, layer_name, result);
+            if (record.landing.generative_upscale) {
+                selection_edit_landed(state, record.id);
+            }
         }
         return command_ok(std::move(result));
     }

@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -327,10 +328,37 @@ void test_upscaler_preference_survives_missing_discovery_label() {
              std::string("builtin.RealESRGAN-4xplus-TheNoise"));
 }
 
+
+void test_pixel_upscaler_model_choices_are_safe_and_include_optional_downloads() {
+    CHECK_EQ(noise::ai::native_upscale_factor("RealESRGAN-2xplus-TheNoise"), 2);
+    CHECK_EQ(noise::ai::native_upscale_factor("builtin.RealESRGAN-4xplus-TheNoise"), 4);
+    CHECK_EQ(noise::ai::native_upscale_factor("LSDIR-4x-TheNoise"), 4);
+    CHECK_EQ(noise::ai::native_upscale_factor("Remacri-4x-TheNoise"), 4);
+    CHECK_EQ(noise::ai::native_upscale_factor("GenericImageEditor"), 0);
+
+    const RoleTable table = table_or_fail(json{{"roles", json::array({
+        json{{"id", "upscale"}, {"recipe", "thenoise"},
+             {"requires", json::array({"upscaling"})},
+             {"preference", json::array({"RealESRGAN-2xplus-TheNoise",
+                                           "RealESRGAN-4xplus-TheNoise"})}}
+    })}});
+    Registry registry(table);
+    registry.update({entry("RealESRGAN-2xplus-TheNoise", "thenoise", {}, false, 0.1),
+                     entry("RealESRGAN-4xplus-TheNoise", "thenoise", {"upscaling"}, true, 0.1),
+                     entry("SomethingElse", "thenoise", {"image", "edit"}, true, 7.0)});
+    const auto loaded = registry.candidates("upscale", false);
+    const auto all = registry.candidates("upscale", true);
+    CHECK_EQ(loaded, std::vector<std::string>{"RealESRGAN-4xplus-TheNoise"});
+    CHECK_EQ(all.size(), std::size_t(2));
+    CHECK(std::find(all.begin(), all.end(), "RealESRGAN-2xplus-TheNoise") != all.end());
+    CHECK(std::find(all.begin(), all.end(), "SomethingElse") == all.end());
+}
+
 }  // namespace
 
 int main() {
     test_upscaler_preference_survives_missing_discovery_label();
+    test_pixel_upscaler_model_choices_are_safe_and_include_optional_downloads();
     test_the_shipped_table_states_the_policy_the_compiler_uses();
     test_a_role_table_refuses_to_be_half_read();
     test_resolution_follows_assignment_then_preference_then_capability();

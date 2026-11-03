@@ -30,6 +30,13 @@ struct RegionPolicy {
     int max_area_px;
 };
 
+// The document can have arbitrary dimensions; image edit requests use the model's output grid.
+Extent edit_output_size(Extent target, int multiple);
+
+// Generative backends may independently snap each output axis to a coarser latent grid.
+// Accept small snapping differences; a genuinely different image size is still a refusal.
+bool edit_output_size_compatible(Extent requested, Extent answered);
+
 // What destroys the target's identity in the uploaded crop while keeping the scene's statistics. The
 // whole point of PREP: a blurry copy says where the light comes from without saying what stood there.
 enum class Prep {

@@ -20,7 +20,7 @@ int step_towards(int delta, std::uint8_t coverage) {
 // uncovered, so a selection that fills the document still has a boundary: the edge the user sees is
 // where coverage stops, wherever that is.
 std::vector<MaskRun> runs_of_side(const std::vector<std::uint8_t>& plane, Extent size,
-                                  MaskSide side, Rect window) {
+                                  MaskSide side, Rect window, std::uint8_t threshold) {
     const bool horizontal = side == MaskSide::up || side == MaskSide::down;
     // The positions visited are covered pixels, so a window that holds all of them misses no edge:
     // the caller hands it the mask's bounds. Neighbours are still read outside it, through `covered`.
@@ -34,7 +34,7 @@ std::vector<MaskRun> runs_of_side(const std::vector<std::uint8_t>& plane, Extent
             return false;
         }
         return plane[static_cast<std::size_t>(y) * static_cast<std::size_t>(size.w) +
-                     static_cast<std::size_t>(x)] != kMaskOut;
+                     static_cast<std::size_t>(x)] >= threshold;
     };
     std::vector<MaskRun> runs;
     int run_fixed = -1;
@@ -301,10 +301,12 @@ void Mask::invalidate() const {
     rows_.clear();
     row_dirty_.clear();
     boundary_.reset();
+    display_boundary_.reset();
 }
 
 void Mask::touch_rows(int from, int to) const {
     boundary_.reset();
+    display_boundary_.reset();
     if (rows_.size() != static_cast<std::size_t>(sized() ? size_.h : 0)) {
         invalidate();  // nothing computed yet, or the plane is not the size the rows describe
         return;
@@ -415,13 +417,32 @@ const std::vector<MaskRun>& Mask::boundary() const {
         if (!facts_.bounds.empty()) {
             for (const MaskSide side : kMaskSides) {
                 const std::vector<MaskRun> side_runs =
-                    runs_of_side(plane_, size_, side, facts_.bounds);
+                    runs_of_side(plane_, size_, side, facts_.bounds, 1);
                 runs.insert(runs.end(), side_runs.begin(), side_runs.end());
             }
         }
         boundary_ = std::move(runs);
     }
     return *boundary_;
+}
+
+
+const std::vector<MaskRun>& Mask::display_boundary() const {
+    // Only the ants use the half-coverage contour. Keep the exact any-coverage
+    // boundary available to the compositor and existing mask callers.
+    if (!display_boundary_) {
+        std::vector<MaskRun> runs;
+        refresh();
+        if (!facts_.bounds.empty()) {
+            for (const MaskSide side : kMaskSides) {
+                const std::vector<MaskRun> side_runs =
+                    runs_of_side(plane_, size_, side, facts_.bounds, 128);
+                runs.insert(runs.end(), side_runs.begin(), side_runs.end());
+            }
+        }
+        display_boundary_ = std::move(runs);
+    }
+    return *display_boundary_;
 }
 
 bool Mask::operator==(const Mask& other) const {

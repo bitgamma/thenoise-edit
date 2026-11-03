@@ -105,6 +105,8 @@ nlohmann::json JobRecord::json() const {
                                 {"requested", extent_json(landing.requested)},
                                 {"resampled", landing.resampled},
                                 {"canvas", extent_json(landing.canvas)},
+                                {"upscale_target", extent_json(landing.upscale_target)},
+                                {"generative_upscale", landing.generative_upscale},
                                 {"coverage_png", landing.coverage_png_path},
                                 {"colour_match", landing.colour_match},
                                 {"lock_band_px", landing.lock_band_px},

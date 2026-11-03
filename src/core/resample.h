@@ -42,5 +42,7 @@ inline constexpr int resample_margin_px(double factor) {
 // bounded instead of exact: resampling a mask is a soft operation by nature, and a mask whose edge was
 // drawn hard comes back with an edge that is one pixel wider rather than one that has moved.
 Mask resample_coverage_lanczos3(const Mask& src, Extent size);
+// No negative lobes: soft selections stay soft, hard edges cannot grow ringing islands.
+Mask resample_coverage_linear(const Mask& src, Extent size);
 
 }  // namespace noise
