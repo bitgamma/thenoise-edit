@@ -34,6 +34,21 @@ void paste_coverage(Mask& mask, Rect rect, const std::uint8_t* bytes) {
     }
 }
 
+void exchange_masks(std::optional<Mask>& live, std::optional<Mask>& stored) {
+    if (live && stored) {
+        Mask held{};
+        held = std::move(*live);
+        *live = std::move(*stored);
+        *stored = std::move(held);
+    } else if (live) {
+        stored.emplace(std::move(*live));
+        live.reset();
+    } else if (stored) {
+        live.emplace(std::move(*stored));
+        stored.reset();
+    }
+}
+
 }  // namespace
 
 History::History(std::size_t budget_bytes) : budget_bytes_(budget_bytes) {}
@@ -348,7 +363,7 @@ void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
         // The entry leaves holding the coverage the document had, which is what the other direction
         // needs: the two directions are the same swap, and `nullopt` - no marked area - travels
         // through it exactly like a plane does.
-        std::swap(marked, entry.marked);
+        exchange_masks(marked, entry.marked);
         entry.step = step;
         into.push_back(std::move(entry));
         return;
@@ -358,7 +373,7 @@ void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
         // one the layer had: the same swap in both directions, so a mask taken off comes back with the
         // coverage it was hidden by rather than as a fresh one.
         if (Layer* target = layer_of(layers, entry.layer)) {
-            std::swap(target->mask, entry.mask);
+            exchange_masks(target->mask, entry.mask);
         }
         entry.step = step;
         into.push_back(std::move(entry));
@@ -366,7 +381,7 @@ void History::step_structure(Stacked& entry, std::vector<Stacked>& into,
     }
     if (entry.kind == Kind::canvas_replaced) {
         std::swap(layers, entry.stack);
-        std::swap(marked, entry.marked);
+        exchange_masks(marked, entry.marked);
         entry.step = step;
         into.push_back(std::move(entry));
         return;

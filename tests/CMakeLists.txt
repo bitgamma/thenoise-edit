@@ -108,6 +108,12 @@ target_compile_definitions(test_app
     PRIVATE NOISE_TEST_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets"
             NOISE_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/http")
 target_compile_options(test_app PRIVATE ${NOISE_TEST_WARNINGS})
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+   AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 16
+   AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 17)
+    # GCC 16 false positive in nlohmann::json::dump().
+    target_compile_options(test_app PRIVATE -Wno-error=array-bounds)
+endif()
 add_test(NAME test_app COMMAND test_app)
 
 # File request and answer routing stay testable without opening a desktop dialog.
