@@ -229,7 +229,8 @@ src/
                           `verb.ask`); mark-relative geometry without result-edit controls
     selection_edit.{h,cpp} job lifecycle and post-landing bar suppression: tracks a
                           job and its result layer, derives state from the queue, not a UI timer
-    verb_fields.cpp       the phrase buffers the panel and the bar's box share per asking verb
+    verb_fields.cpp       the growable phrase buffers shared by panel and floating verb boxes
+    ui_prompt.h           wrapped multiline input with height fitting to the text and available UI room
 
     ai_commands.cpp     `ai.compose` (land a result file), `ai.roles`, `ai.recipes`, `ai.preview`
                        (the compiled request, unsent) and `ai.run` (queue it): each reports what the

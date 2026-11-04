@@ -8,6 +8,16 @@ below remain historical. Local image resampling and fast model upscaling are now
 best-quality generative upscaling remains a separate future option.
 `AGENTS.md` is normative and outranks this file.
 
+## 2026-11-04 - Long prompts without clipping
+
+**Architecture verdict:** The panel, selection-verb popup, and New Image dialog share the
+same word-wrapped, height-adjusting multiline widget, backed by the existing shared verb
+buffers and `ai.intent` commands. The shared prompt buffers now use growable strings instead of the former 220-character
+limit. The floating popup grows with the text while capping its field height and remaining
+inside the canvas viewport; beyond that limit the text field scrolls. Enter still runs
+an action in the popup, while Shift+Enter can insert a line break. The normal panel and
+New Image dialog use Enter to insert a new line. No changes to the recipe or AI API.
+
 ## 2026-11-03 - Undo across resolution version creation
 
 The creation of a new image-size version is now a virtual Undo/Redo step in the
