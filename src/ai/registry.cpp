@@ -308,8 +308,8 @@ void Registry::update(const std::vector<ModelEntry>& models) {
     }
 }
 
-void Registry::set_resident(const std::string& id) {
-    resident_ = id;
+void Registry::set_loaded(const std::vector<LoadedModel>& loaded) {
+    loaded_ = loaded;
     for (const RoleDefinition& role : table_.roles) {
         resolved_[role.id] = resolve_one(role);
     }
@@ -411,13 +411,17 @@ Resolution Registry::resolve_one(const RoleDefinition& role) const {
             // resident model when it has the same preferred name and capabilities.
             // Use its actual canonical ID, not the bare alias which may route elsewhere.
             if (entry->id == wanted) {
-                const ModelEntry* resident = model(resident_);
-                if (resident != nullptr && resident->downloaded && satisfies(*resident, role)) {
+                for (const LoadedModel& loaded : loaded_) {
+                    const ModelEntry* resident = model(loaded.id);
+                    if (resident == nullptr || !resident->downloaded ||
+                        !satisfies(*resident, role)) {
+                        continue;
+                    }
                     for (const char* prefix : {"user.", "extra.", "builtin."}) {
-                        if (resident_ == std::string(prefix) + wanted) {
-                            resolution.model_id = resident_;
+                        if (loaded.id == std::string(prefix) + wanted) {
+                            resolution.model_id = loaded.id;
                             resolution.reason = "same preferred model already resident";
-                            break;
+                            return resolution;
                         }
                     }
                 }

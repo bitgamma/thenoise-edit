@@ -97,7 +97,7 @@ std::set<std::string> producible_shortcuts() {
             ev.modifiers = mods & 2u ? SAPP_MODIFIER_CTRL : 0;
             ev.modifiers |= mods & 4u ? SAPP_MODIFIER_ALT : 0;
             ev.modifiers |= mods & 1u ? SAPP_MODIFIER_SHIFT : 0;
-            if (const std::optional<std::string> text = app::shortcut_of(ev)) {
+            if (const std::optional<std::string> text = app::shortcut_of(ev, std::nullopt)) {
                 out.insert(*text);
             }
         }
@@ -115,28 +115,37 @@ sapp_event key(sapp_keycode code, unsigned modifiers = 0, bool repeat = false) {
 }
 
 void test_key_events_become_canonical_text() {
-    const std::optional<std::string> f = app::shortcut_of(key(SAPP_KEYCODE_F));
+    const std::optional<std::string> f = app::shortcut_of(key(SAPP_KEYCODE_F), std::nullopt);
     CHECK_EQ(f.value_or(""), std::string("F"));
     const std::optional<std::string> ctrl_s =
-        app::shortcut_of(key(SAPP_KEYCODE_S, SAPP_MODIFIER_CTRL));
+        app::shortcut_of(key(SAPP_KEYCODE_S, SAPP_MODIFIER_CTRL), std::nullopt);
     CHECK_EQ(ctrl_s.value_or(""), std::string("Ctrl+S"));
-    CHECK_EQ(app::shortcut_of(key(SAPP_KEYCODE_SPACE)).value_or(""), std::string("Space"));
-    CHECK_EQ(app::shortcut_of(key(SAPP_KEYCODE_ESCAPE)).value_or(""), std::string("Escape"));
-    CHECK_EQ(app::shortcut_of(key(SAPP_KEYCODE_F5)).value_or(""), std::string("F5"));
-    CHECK_EQ(app::shortcut_of(key(SAPP_KEYCODE_Z, SAPP_MODIFIER_CTRL | SAPP_MODIFIER_SHIFT))
+    CHECK_EQ(app::shortcut_of(key(SAPP_KEYCODE_SPACE), std::nullopt).value_or(""), std::string("Space"));
+    CHECK_EQ(app::shortcut_of(key(SAPP_KEYCODE_ESCAPE), std::nullopt).value_or(""), std::string("Escape"));
+    CHECK_EQ(app::shortcut_of(key(SAPP_KEYCODE_F5), std::nullopt).value_or(""), std::string("F5"));
+    CHECK_EQ(app::shortcut_of(key(SAPP_KEYCODE_Z, SAPP_MODIFIER_CTRL | SAPP_MODIFIER_SHIFT), std::nullopt)
                  .value_or(""),
              std::string("Ctrl+Shift+Z"));
+    // Sokol reports physical keys: on German QWERTZ the physical Y is labelled Z and vice versa.
+    CHECK_EQ(app::shortcut_of(key(SAPP_KEYCODE_Y, SAPP_MODIFIER_CTRL), 'Z').value_or(""),
+             std::string("Ctrl+Z"));
+    CHECK_EQ(app::shortcut_of(key(SAPP_KEYCODE_Z, SAPP_MODIFIER_CTRL), 'Y').value_or(""),
+             std::string("Ctrl+Y"));
+    CHECK_EQ(app::shortcut_of(key(SAPP_KEYCODE_Y, SAPP_MODIFIER_CTRL | SAPP_MODIFIER_SHIFT),
+                              'Z').value_or(""), std::string("Ctrl+Shift+Z"));
+    // Plain editor tool keys remain physical even if a layout mapping is supplied.
+    CHECK_EQ(app::shortcut_of(key(SAPP_KEYCODE_Y), 'Z').value_or(""), std::string("Y"));
 
-    CHECK(!app::shortcut_of(key(SAPP_KEYCODE_F, 0, true)).has_value());  // held key repeat
+    CHECK(!app::shortcut_of(key(SAPP_KEYCODE_F, 0, true), std::nullopt).has_value());  // held key repeat
     CHECK(!app::shortcut_of([] {
         sapp_event ev{};
         ev.type = SAPP_EVENTTYPE_KEY_UP;
         ev.key_code = SAPP_KEYCODE_F;
         return ev;
-    }()).has_value());
+    }(), std::nullopt).has_value());
     // Bare modifiers and unmapped codes name no key, so they bind nothing.
-    CHECK(!app::shortcut_of(key(SAPP_KEYCODE_LEFT_SHIFT)).has_value());
-    CHECK(!app::shortcut_of(key(SAPP_KEYCODE_WORLD_1)).has_value());
+    CHECK(!app::shortcut_of(key(SAPP_KEYCODE_LEFT_SHIFT), std::nullopt).has_value());
+    CHECK(!app::shortcut_of(key(SAPP_KEYCODE_WORLD_1), std::nullopt).has_value());
 }
 
 // The whole chain one key press takes: event -> canonical text -> the command bound to it. The scan
@@ -151,7 +160,7 @@ void test_a_key_press_lands_on_the_command_bound_to_it() {
     app::register_commands(state, table, wire, hooks);
 
     const auto bound_to = [&table](sapp_keycode code, unsigned modifiers = 0) {
-        const std::optional<std::string> text = app::shortcut_of(key(code, modifiers));
+        const std::optional<std::string> text = app::shortcut_of(key(code, modifiers), std::nullopt);
         return table.command_for_shortcut(text.value_or("<unproducible>"));
     };
     CHECK_EQ(bound_to(SAPP_KEYCODE_COMMA), std::string("brush.hardness_down"));

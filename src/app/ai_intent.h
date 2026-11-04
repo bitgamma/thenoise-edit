@@ -64,6 +64,8 @@ std::string missing_region(const ai::Recipe& recipe, AppState& state);
 
 // Whether running this recipe would first have to load a different model onto the box - tens of
 // seconds on a shared machine, so it is priced before the press rather than discovered after it.
+// The resident model sharing this request's slot, or empty when the slot has no resident.
+std::string resident_for(const AppState& state, const Readiness& readiness);
 bool needs_swap(const AppState& state, const Readiness& readiness);
 
 // Everything the panel shows, from the intent and the document: the intents the selection offers, the

@@ -174,7 +174,7 @@ void test_a_recipe_reads_as_the_policy_it_claims_to_be() {
 void test_a_recipe_that_states_the_impossible_is_refused_by_name() {
     json steps = minimal();
     steps["steps"] = 20;
-    CHECK(parse_refusal(steps).find("image_defaults") != std::string::npos);
+    CHECK(parse_refusal(steps).find("recipe_options") != std::string::npos);
 
     json model = minimal();
     model["model"] = "Flux-2-Klein-9B-TheNoise";

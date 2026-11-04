@@ -150,6 +150,10 @@ endif()
 target_include_directories(noise_platform PUBLIC src)
 if(EMSCRIPTEN)
     target_link_libraries(noise_platform PRIVATE nlohmann_json::nlohmann_json)
+elseif(APPLE)
+    target_link_libraries(noise_platform PRIVATE "-framework Carbon")
+elseif(UNIX AND NOT APPLE)
+    target_link_libraries(noise_platform PRIVATE X11::X11)
 endif()
 
 add_library(noise_core STATIC

@@ -40,7 +40,7 @@ bool key_known(const std::string& key) {
 // would send the next reader hunting for a typo rather than to the fact that the model owns the value.
 bool key_owned_elsewhere(const std::string& key, std::string& why) {
     if (key == "steps" || key == "cfg_scale") {
-        why = "'" + key + "' belongs to the model's image_defaults, which the app reads from "
+        why = "'" + key + "' belongs to the model's recipe_options, which the app reads from "
                          "/v1/models; a recipe that carried it would restate a fact it could read";
         return true;
     }

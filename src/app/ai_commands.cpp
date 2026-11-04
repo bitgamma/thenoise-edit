@@ -332,9 +332,8 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
         region.assembled.seed_source = state.ai.seed_pin.has_value() ? "pinned" : "random";
     }
 
-    // The role resolves against what this server answered. Previewing without a connection is allowed
-    // only when the caller supplies the numbers the model would have supplied, because guessing them
-    // would be the app asserting a fact it has not read.
+    // The role resolves against the advertised model list. Inference defaults are optional
+    // and owned by Lemonade, including when this command only builds a preview.
     const ai::Resolution resolution = state.ai.registry->resolve(recipe->role);
     std::string model_id = resolution.model_id;
     if (args.contains("model")) {
@@ -405,14 +404,11 @@ Attempt build_assembly(const char* command, AppState& state, const json& args, b
         }
         cfg = value;
     }
-    if (model_id.empty() && (needs_server || !steps.has_value() || !cfg.has_value())) {
+    if (model_id.empty()) {
         std::string message = "role '" + recipe->role + "' resolves to no model: " +
                               (resolution.reason.empty() ? "nothing matches" : resolution.reason);
         if (!resolution.fix_command.empty()) {
             message += "; " + resolution.fix_command;
-        }
-        if (!needs_server) {
-            message += " (a preview without a server needs both 'steps' and 'cfg_scale')";
         }
         return Attempt{false, Assembly{}, fail(command, message)};
     }
@@ -573,8 +569,8 @@ std::optional<RequestQuote> quote_request(AppState& state, const ai::Recipe& rec
         const ai::ModelEntry* entry = state.ai.registry->resolved_model(recipe.role);
         if (entry != nullptr) {
             quote.model = entry->id;
-            if (entry->image_defaults.steps > 0) {
-                quote.steps = entry->image_defaults.steps;
+            if (entry->image_options.steps > 0) {
+                quote.steps = entry->image_options.steps;
             }
         }
     }

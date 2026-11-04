@@ -353,27 +353,23 @@ std::optional<BuiltRequest> build_request(RequestInput input, const SizePolicy& 
     }
     request.params.blob_id = image_set_id(request.images);
 
-    // Steps and CFG are the model's numbers. An override is what the user asked for on the command
-    // line; guessing a number here would be the app asserting a fact the server already publishes.
-    const int steps = input.steps_override.has_value()
-                          ? *input.steps_override
-                          : (input.model != nullptr ? input.model->image_defaults.steps : 0);
-    if (recipe.endpoint != Endpoint::upscale && (steps <= 0 || steps > kMaxSteps)) {
-        error = "recipe '" + recipe.id + "': no usable 'steps' for model '" + input.model_id +
-                "' (got " + std::to_string(steps) + ", ceiling " + std::to_string(kMaxSteps) +
-                "); the model's image_defaults do not carry one, so pass steps";
+    if (input.steps_override.has_value() &&
+        (*input.steps_override <= 0 || *input.steps_override > kMaxSteps)) {
+        error = "recipe '" + recipe.id + "': 'steps' must be 1.." +
+                std::to_string(kMaxSteps);
         return std::nullopt;
     }
-    const double cfg = input.cfg_scale_override.has_value()
-                           ? *input.cfg_scale_override
-                           : (input.model != nullptr ? input.model->image_defaults.cfg_scale : 0.0);
-    if (recipe.endpoint != Endpoint::upscale && (!(cfg >= 0.0) || std::isnan(cfg) || cfg > 100.0)) {
-        error = "recipe '" + recipe.id + "': no usable 'cfg_scale' for model '" + input.model_id +
-                "' (got " + trimmed_double(cfg) + ")";
+    if (input.cfg_scale_override.has_value() &&
+        (!std::isfinite(*input.cfg_scale_override) || *input.cfg_scale_override < 0.0 ||
+         *input.cfg_scale_override > 100.0)) {
+        error = "recipe '" + recipe.id + "': invalid 'cfg_scale' (" +
+                trimmed_double(*input.cfg_scale_override) + ")";
         return std::nullopt;
     }
-    request.params.steps = steps;
-    request.params.cfg_scale = cfg;
+    request.params.steps = input.steps_override.value_or(
+        input.model != nullptr ? input.model->image_options.steps : 0);
+    request.params.cfg_scale = input.cfg_scale_override.value_or(
+        input.model != nullptr ? input.model->image_options.cfg_scale : 0.0);
 
     FieldSink sink(recipe.endpoint);
     sink.add_text("model", input.model_id);
@@ -385,8 +381,12 @@ std::optional<BuiltRequest> build_request(RequestInput input, const SizePolicy& 
     } else {
         sink.add_text("prompt", input.prompt);
         sink.add_text("size", size_field(input.width, input.height));
-        sink.add_integer("steps", steps);
-        sink.add_number("cfg_scale", cfg);
+        if (input.steps_override.has_value()) {
+            sink.add_integer("steps", *input.steps_override);
+        }
+        if (input.cfg_scale_override.has_value()) {
+            sink.add_number("cfg_scale", *input.cfg_scale_override);
+        }
         sink.add_integer("seed", static_cast<std::int64_t>(input.seed));
         // Always b64: a `url` response hands back an address on the server's disk, which the app has
         // no business resolving and which no test can replay.

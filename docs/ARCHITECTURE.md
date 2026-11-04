@@ -274,7 +274,7 @@ src/
                        controls whether Brush/Eraser paint coverage instead of image pixels
   ai/
     profile.{h,cpp}    what `/models` and `/health` say: a model's labels, recipe, whether it is
-                       downloaded, its `image_defaults` (steps, cfg, size). Discovery parsing only -
+                       downloaded, its `recipe_options` (steps, cfg, size). Discovery parsing only -
                        no policy lives here, because the server publishes it
     registry.{h,cpp}   `roles.json` ∩ discovery → one model per role: assignment, then the file's
                        preference order, then a capability match. Nothing else in the codebase names a
@@ -679,7 +679,9 @@ panel`, "Regenerate with same params", kept variants) and nothing in the tree st
   no exception, and what stays outside the timeline is the layer's *properties* - visibility, opacity,
   mode - which the stack carries rather than the plane.
 * Undo and redo are commands like any other (`edit.undo`, `edit.redo`, bound to `Ctrl+Z` and
-  `Ctrl+Y`), so a driver can put the pixels back and compare checksums without a keyboard.
+  `Ctrl+Y` or `Ctrl+Shift+Z`), so a driver can put the pixels back and compare checksums without a keyboard.
+  The host translates modified letters through the active keyboard layout, not the physical
+  US key position (German QWERTZ maps Sokol's physical Y to Ctrl+Z).
 * **(planned)** `history.jsonl` — append-only *journal*: every op with timestamp, params, prompt,
   model, seed, digests, timings. Two jobs: (a) the Provenance panel ("which prompt made this
   layer?" → one-click **Regenerate with same params**), (b) recovery/replay after a crash. Nothing is
@@ -919,9 +921,9 @@ What the dev box taught this list (`probes/2026-10-09-live-server.md`):
   `show_all=true`, and the two Klein sizes swapped which one was downloaded between them. Nothing
   may bake in a model id — resolution is `recipe + labels + downloaded` over what is answered now.
   `GET /models` is the short list (the useful one); `?show_all=true` is the whole catalogue.
-* **`image_defaults` per entry is the authoritative source of role defaults** (`steps`,
-  `cfg_scale`, `width`, `height`) and they differ per model — Klein 4 steps, Krea 8. A recipe that
-  carries a step count is restating a fact it could read.
+* **`recipe_options` per entry describes the model's settings** (`steps`, `cfg_scale`,
+  `width`, `height`, `soft_pixel_cap`) for planning and estimates. The API accepts omitted
+  `steps`/`cfg_scale` and applies its own defaults; the editor sends these only as explicit overrides.
 * **An `image` label does not mean a distinct model.** `Krea-2-VAE` appears as a
   `thenoise`+`image` entry with its own defaults; it is a VAE-swap alias. No field separates it
   from a real candidate, so preference order names candidates rather than trusting labels.
@@ -1099,8 +1101,11 @@ with `seed = base + i` against the normal endpoint.
 
 ### Server session & model switching (the constraint that shapes the UX)
 
-TheNoise **loads one model at a time** — `/health` says so in the data:
-`max_models.image == 1`, and `model_loaded` is `None` until something is asked for. The
+TheNoise's **image pool can hold one model at a time** on the measured box:
+`max_models.image == 1`. Other model types can be loaded concurrently, so `model_loaded`
+(the most recently used model, of any type) is not the image resident. The app reads
+`all_models_loaded[]` with each model's `type` to determine whether the selected image model
+is already present or would evict another image model. The
 image checkpoints a box of this class holds are 17–35 GB, the same size class as its memory budget, so a
 swap is a real event: the first request that followed an unloaded model on the dev box cost
 32.0 s for a 512² image. Tens of seconds, sometimes minutes, on a LAN box. Therefore:
@@ -1113,8 +1118,8 @@ swap is a real event: the first request that followed an unloaded model on the d
 * **Swap is explicit and priced.** When a command's role resolves to a model that isn't
   loaded, the confirm dialog says "this switches the server model (~Xs)" and offers to pin.
 * We call `POST /v1/load {model_name, pinned:true}` when the user pins, and
-  `GET /v1/health` (`model_loaded`, `all_models_loaded[] {model_name, recipe, device,
-  pinned, last_use}`) to keep the session state honest. Never auto-swap silently.
+  `GET /v1/health` (`model_loaded`, `all_models_loaded[] {model_name, type, recipe,
+  device, pinned, last_use}`) to keep the session state honest. Never auto-swap silently.
 * **Warm-up** (a 256×256/1-step request right after a swap, so the first real generation is not the
   one that pays model init): designed, not built. What is built is `server.load {model, pin?}`, so the
   swap is at least something the user chooses a moment for.

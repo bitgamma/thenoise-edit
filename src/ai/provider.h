@@ -100,8 +100,8 @@ struct RequestInput {
     const Recipe* recipe = nullptr;
     std::string server_name;
     std::string model_id;
-    // The entry the model resolved to, for `image_defaults`. Null means the caller has no discovery
-    // data, which is only acceptable together with both overrides below.
+    // Discovery values help estimate cost; Lemonade supplies omitted steps/cfg_scale itself.
+    // Null is valid when catalog data is unavailable.
     const ModelEntry* model = nullptr;
     std::optional<int> steps_override;
     std::optional<double> cfg_scale_override;

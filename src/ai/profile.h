@@ -8,10 +8,9 @@
 
 namespace noise::ai {
 
-// What `image_defaults` says about a model. These are the model's own numbers, and they differ per
-// model (measured on the dev box: Klein 4 steps, Krea 8), so a recipe that carried a step count would
-// be restating a fact it could read here.
-struct ImageDefaults {
+// Relevant values from a model's `recipe_options`. Lemonade owns the defaults; the editor reads
+// them for size planning and estimates, not to repeat them in every generation request.
+struct ImageOptions {
     int steps = 0;
     double cfg_scale = 0.0;
     int width = 0;
@@ -32,7 +31,7 @@ struct ModelEntry {
     std::vector<std::string> labels;
     bool downloaded = false;
     double size_gb = 0.0;
-    ImageDefaults image_defaults;
+    ImageOptions image_options;
 
     bool has_label(const std::string& label) const;
     // A `thenoise` entry that carries `image` is an image model; the entry for a VAE-swap alias does
@@ -44,14 +43,19 @@ struct ModelEntry {
 // than aborting the whole list: one bad row must not cost the commands that another model serves.
 std::vector<ModelEntry> parse_models(const nlohmann::json& body, std::string& error);
 
-// `GET /health`. `max_models.image == 1` is the constraint the swap/pin/warm-up design is built on, so
-// it is parsed rather than assumed; `model_loaded` is empty until the server is asked for something.
+// `model_loaded` is Lemonade's most recently used model (possibly a chat model), NOT the image
+// model. The full typed `all_models_loaded` list is the authoritative source for residency.
+struct LoadedModel {
+    std::string id;
+    std::string type;
+};
+
 struct ServerHealth {
     bool ok = false;
     std::string version;
     std::string model_loaded;
     int max_models_image = 0;
-    std::vector<std::string> loaded;
+    std::vector<LoadedModel> loaded;
 };
 
 ServerHealth parse_health(const nlohmann::json& body, std::string& error);

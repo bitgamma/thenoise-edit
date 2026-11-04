@@ -14,6 +14,7 @@
 #include "core/log.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -159,7 +160,7 @@ CommandResult start_intent(AppState& state, CommandTable& table, const ai::Recip
     if (needs_swap(state, readiness) && !confirm) {
         return fail("ai.intent",
                     "'" + id + "' needs " + readiness.model + " and the server is running " +
-                        state.ai.health.model_loaded + "; loading it costs tens of seconds on a "
+                        resident_for(state, readiness) + "; loading it costs tens of seconds on a "
                         "shared box. Re-run with confirm, or load it yourself with server.load");
     }
     // Passed to `ai.run` rather than read back out of the intent, so the run door takes what a press
@@ -206,22 +207,74 @@ std::string missing_region(const ai::Recipe& recipe, noise::AppState& state) {
            "is the document";
 }
 
-bool needs_swap(const noise::AppState& state, const Readiness& readiness) {
-    if (!readiness.ready || readiness.model.empty() || state.ai.health.model_loaded.empty()) {
-        return false;
-    }
-    const std::string& selected = readiness.model;
-    const std::string& resident = state.ai.health.model_loaded;
+namespace {
+
+bool same_model(const noise::AppState& state, const std::string& selected,
+                const std::string& resident) {
     if (selected == resident) {
-        return false;
+        return true;
     }
-    // /models may publish the unprefixed winner while /health reports its canonical ID.
-    // Only treat those as the same model when /models does NOT also list the canonical
-    // ID: if both exist, the bare name and builtin./user./extra. identify distinct models.
     if (state.ai.registry != nullptr && state.ai.registry->model(selected) != nullptr &&
         state.ai.registry->model(resident) == nullptr) {
         for (const char* prefix : {"user.", "extra.", "builtin."}) {
             if (resident == std::string(prefix) + selected) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+std::string model_pool(const ai::ModelEntry& entry) {
+    if (entry.has_label("image") || entry.has_label("upscaling")) {
+        return "image";
+    }
+    if (entry.has_label("chat")) {
+        return "llm";
+    }
+    return {};
+}
+
+}  // namespace
+
+std::string resident_for(const noise::AppState& state, const Readiness& readiness) {
+    if (!readiness.ready || readiness.model.empty() || state.ai.registry == nullptr) {
+        return {};
+    }
+    const ai::ModelEntry* selected = state.ai.registry->model(readiness.model);
+    if (selected == nullptr) {
+        return {};
+    }
+    const std::string pool = model_pool(*selected);
+    if (pool.empty()) {
+        return {};
+    }
+    for (const ai::LoadedModel& loaded : state.ai.health.loaded) {
+        if (same_model(state, readiness.model, loaded.id)) {
+            return loaded.id;
+        }
+    }
+    for (const ai::LoadedModel& loaded : state.ai.health.loaded) {
+        if (loaded.type == pool) {
+            return loaded.id;
+        }
+    }
+    return {};
+}
+
+bool needs_swap(const noise::AppState& state, const Readiness& readiness) {
+    const std::string resident = resident_for(state, readiness);
+    if (resident.empty() || same_model(state, readiness.model, resident)) {
+        return false;
+    }
+    // A free slot allows another image model to load without evicting this one.
+    if (state.ai.health.max_models_image > 1 && state.ai.registry != nullptr) {
+        const ai::ModelEntry* selected = state.ai.registry->model(readiness.model);
+        if (selected != nullptr && model_pool(*selected) == "image") {
+            const auto count = std::count_if(
+                state.ai.health.loaded.begin(), state.ai.health.loaded.end(),
+                [](const ai::LoadedModel& entry) { return entry.type == "image"; });
+            if (count < static_cast<std::ptrdiff_t>(state.ai.health.max_models_image)) {
                 return false;
             }
         }
@@ -383,7 +436,7 @@ nlohmann::json intent_json(AppState& state) {
                 {"reason", readiness.reason},
                 {"fix", readiness.fix},
                 {"model", readiness.model},
-                {"resident", state.ai.health.model_loaded},
+                {"resident", resident_for(state, readiness)},
                 {"swap", needs_swap(state, readiness)},
                 {"estimate_s", estimate.has_value() ? json(*estimate) : json(nullptr)},
                 // Geometry and tables only: what a press would send and roughly how long it takes. The

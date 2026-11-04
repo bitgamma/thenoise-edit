@@ -102,7 +102,7 @@ BuiltRequest edits_request_for(const RecipeSet& recipes, const std::string& mode
     entry.recipe = "thenoise";
     entry.labels = {"image", "edit"};
     entry.downloaded = true;
-    entry.image_defaults = noise::ai::ImageDefaults{4, 1.0, 1024, 1024};
+    entry.image_options = noise::ai::ImageOptions{4, 1.0, 1024, 1024};
 
     RequestInput input;
     input.recipe = recipe;
@@ -130,7 +130,7 @@ BuiltRequest edits_request(const RecipeSet& recipes, int width = 64, int height 
     entry.recipe = "thenoise";
     entry.labels = {"image", "edit"};
     entry.downloaded = true;
-    entry.image_defaults = noise::ai::ImageDefaults{4, 1.0, 1024, 1024};
+    entry.image_options = noise::ai::ImageOptions{4, 1.0, 1024, 1024};
 
     RequestInput input;
     input.recipe = recipe;
@@ -190,7 +190,7 @@ void test_discovery_reads_the_recorded_server() {
         if (entry.id == kModel) {
             CHECK(entry.downloaded);
             CHECK(entry.has_label("edit"));
-            CHECK_NEAR(entry.image_defaults.steps, 4.0, 1e-12);
+            CHECK_NEAR(entry.image_options.steps, 4.0, 1e-12);
             edit_capable = true;
         }
         if (entry.id == std::string("SD-Turbo")) {
@@ -282,7 +282,7 @@ void test_each_failure_the_server_gives_is_a_different_answer() {
         entry.recipe = "thenoise";
         entry.labels = {"image", "edit"};
         entry.downloaded = true;
-        entry.image_defaults = noise::ai::ImageDefaults{4, 1.0, 1024, 1024};
+        entry.image_options = noise::ai::ImageOptions{4, 1.0, 1024, 1024};
         const noise::ai::Recipe* recipe = recipes.find("inpaint-remove");
         REQUIRE(recipe != nullptr);
         RequestInput input;
@@ -331,7 +331,7 @@ void test_cancellation_and_unmatched_requests_are_honest() {
     entry.recipe = "thenoise";
     entry.labels = {"image", "edit"};
     entry.downloaded = true;
-    entry.image_defaults = noise::ai::ImageDefaults{4, 1.0, 1024, 1024};
+    entry.image_options = noise::ai::ImageOptions{4, 1.0, 1024, 1024};
     Client cancel_client(*transport, profile(), [] { return 0.0; });
 
     const RecipeSet recipes = recipes_or_fail();

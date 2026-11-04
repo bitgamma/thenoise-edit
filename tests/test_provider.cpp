@@ -53,7 +53,7 @@ ModelEntry model(const std::string& id = "Klein-TheNoise") {
     entry.recipe = "thenoise";
     entry.labels = {"image", "edit"};
     entry.downloaded = true;
-    entry.image_defaults = noise::ai::ImageDefaults{4, 1.0, 1024, 1024};
+    entry.image_options = noise::ai::ImageOptions{4, 1.0, 1024, 1024};
     return entry;
 }
 
@@ -185,6 +185,10 @@ void test_what_goes_out_is_exactly_the_table() {
     std::vector<std::string> single_fields = noise::ai::allowed_fields(Endpoint::edits);
     single_fields.erase(std::remove(single_fields.begin(), single_fields.end(), "image[]"),
                         single_fields.end());
+    single_fields.erase(std::remove(single_fields.begin(), single_fields.end(), "steps"),
+                        single_fields.end());
+    single_fields.erase(std::remove(single_fields.begin(), single_fields.end(), "cfg_scale"),
+                        single_fields.end());
     CHECK(on_the_wire(edit.request) == sorted(single_fields));
     CHECK(follows_the_table(edit.request));
     // The region rides as the file part and never as a text field: a second copy of the same bytes under
@@ -201,16 +205,21 @@ void test_what_goes_out_is_exactly_the_table() {
 
     const Built generation = build(json{{"endpoint", "generations"}}, policy, {}, 7);
     REQUIRE(generation.error.empty());
-    CHECK(on_the_wire(generation.request) ==
-          sorted(noise::ai::allowed_fields(Endpoint::generations)));
+    std::vector<std::string> generation_fields = noise::ai::allowed_fields(Endpoint::generations);
+    generation_fields.erase(std::remove(generation_fields.begin(), generation_fields.end(), "steps"),
+                            generation_fields.end());
+    generation_fields.erase(std::remove(generation_fields.begin(), generation_fields.end(), "cfg_scale"),
+                            generation_fields.end());
+    CHECK(on_the_wire(generation.request) == sorted(generation_fields));
     CHECK(follows_the_table(generation.request));
     CHECK(!generation.request.multipart());
     // `size` is explicit: without it the engine answers at its own default, at a cost nobody asked for.
     CHECK_EQ(generation.request.json_body()["size"].get<std::string>(), std::string("64x64"));
     CHECK_EQ(generation.request.json_body()["seed"].get<std::uint64_t>(), std::uint64_t(7));
-    // Numbers stay numbers: a stringified `steps` is refused by the server, not by a taste for types.
-    CHECK(generation.request.json_body()["steps"].is_number_integer());
-    CHECK(generation.request.json_body()["cfg_scale"].is_number());
+    // Lemonade supplies model-specific defaults when optional fields are omitted.
+    CHECK(!generation.request.json_body().contains("steps"));
+    CHECK(!generation.request.json_body().contains("cfg_scale"));
+    CHECK_EQ(generation.request.params.steps, 4);
     // The response format is asked for, because `url` points at a file on someone else's disk.
     CHECK_EQ(generation.request.json_body()["response_format"].get<std::string>(),
              std::string("b64_json"));
@@ -240,8 +249,7 @@ void test_what_goes_out_is_exactly_the_table() {
 
     // The preview lists the same fields in the same order, and prints no key material.
     const json preview = generation.request.preview_json();
-    CHECK_EQ(static_cast<std::size_t>(preview["fields"].size()),
-             noise::ai::allowed_fields(Endpoint::generations).size());
+    CHECK_EQ(static_cast<std::size_t>(preview["fields"].size()), generation_fields.size());
     CHECK(preview.dump().find("api_key\":\"") == std::string::npos);
     // An uploaded base64 image is described, not dumped.
     const json upscale_preview = up.request.preview_json();
@@ -293,9 +301,16 @@ void test_a_request_the_server_could_not_answer_is_refused_here() {
     huge.height = 8192;
     refusal("ceiling", huge);
 
-    RequestInput no_steps = base;
-    no_steps.model = nullptr;  // no discovery data and no override: there is no honest number left
-    refusal("steps", no_steps);
+    RequestInput no_defaults = base;
+    no_defaults.model = nullptr;
+    std::string default_error;
+    const std::optional<BuiltRequest> without_defaults =
+        build_request(no_defaults, policy, default_error);
+    REQUIRE(without_defaults.has_value());
+    CHECK(default_error.empty());
+    CHECK_EQ(without_defaults->params.steps, 0);
+    CHECK(field_text(*without_defaults, "steps").empty());
+    CHECK(field_text(*without_defaults, "cfg_scale").empty());
 
     RequestInput too_many_steps = base;
     too_many_steps.steps_override = 5000;
@@ -608,7 +623,7 @@ void test_upscale_accepts_native_odd_size_without_diffusion_defaults() {
                                           {"operation", "transform"},
                                           {"prompt", json::array()}});
     ModelEntry entry = model("RealESRGAN-4xplus-TheNoise");
-    entry.image_defaults = noise::ai::ImageDefaults{};
+    entry.image_options = noise::ai::ImageOptions{};
     const auto bytes = png(137, 89, 73);
     RequestInput input;
     input.recipe = &recipe;
