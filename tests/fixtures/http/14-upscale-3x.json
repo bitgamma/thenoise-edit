@@ -1,0 +1,17 @@
+{
+  "name": "POST /images/upscale - a 3x answer for a 16x16 crop",
+  "method": "POST",
+  "path": "/images/upscale",
+  "match": {
+    "model": "RealESRGAN-4xplus-TheNoise",
+    "upscale_factor": 3.0
+  },
+  "status": 200,
+  "json": {
+    "data": [
+      {
+        "b64_json": "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAAZElEQVR4nO3PMQ0AIADAMPRgEWmIAxEcDcmO/d2Ya5+fGxrQgAY0oAENaEADGtCABjSgAQ1oQAMa0IAGNKABDWhAAxrQgAY0oAENaEADGtCABjSgAQ1oQAMa0IAGNKABDWjAaxeRCFg8DCB53wAAAABJRU5ErkJggg=="
+      }
+    ]
+  }
+}

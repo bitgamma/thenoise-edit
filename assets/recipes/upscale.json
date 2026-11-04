@@ -4,7 +4,7 @@
   "operation": "transform",
   "endpoint": "upscale",
   "role": "upscale",
-  "region": "selection",
+  "region": "document",
   "prep": "none",
   "enhance": "never",
   "include_references_default": false,

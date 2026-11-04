@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <limits>
 #include <set>
 #include <string>
 #include <utility>
@@ -156,6 +157,8 @@ void test_the_whitelist_is_per_endpoint() {
     CHECK(noise::ai::field_allowed(Endpoint::generations, "prompt"));
     CHECK(!noise::ai::field_allowed(Endpoint::upscale, "prompt"));
     CHECK(noise::ai::field_allowed(Endpoint::upscale, "image"));
+    CHECK(noise::ai::field_allowed(Endpoint::upscale, "upscale_factor"));
+    CHECK(!noise::ai::field_allowed(Endpoint::edits, "upscale_factor"));
     CHECK(!noise::ai::field_allowed(Endpoint::generations, "image"));
     // The edits part carries the region; there is no second way to send one and no way to send a mask.
     CHECK(noise::ai::field_allowed(Endpoint::edits, "image"));
@@ -212,9 +215,16 @@ void test_what_goes_out_is_exactly_the_table() {
     CHECK_EQ(generation.request.json_body()["response_format"].get<std::string>(),
              std::string("b64_json"));
 
-    const Built up = build(json{{"endpoint", "upscale"}}, policy, png(), 7);
+    const Built up = build(json{{"endpoint", "upscale"},
+                                 {"role", "upscale"},
+                                 {"region", "document"},
+                                 {"operation", "transform"},
+                                 {"prep", "none"},
+                                 {"prompt", json::array()}},
+                           policy, png(), 7);
     REQUIRE(up.error.empty());
-    CHECK(on_the_wire(up.request) == sorted(noise::ai::allowed_fields(Endpoint::upscale)));
+    CHECK(on_the_wire(up.request) == std::vector<std::string>({"image", "model"}));
+    CHECK(!up.request.json_body().contains("upscale_factor"));
     CHECK(follows_the_table(up.request));
     // `upscale` has no prompt and no steps: sending them would be asking for behaviour it does not have.
     CHECK_EQ(field_text(up.request, "model"), std::string("Klein-TheNoise"));
@@ -545,11 +555,90 @@ void test_recorded_match_includes_every_image_and_its_order() {
     CHECK_EQ(transport->hits().size(), std::size_t(2));
 }
 
+
+void test_upscale_factor_is_optional_numeric_and_validated() {
+    const Recipe recipe = recipe_of(json{{"endpoint", "upscale"},
+                                         {"region", "document"},
+                                         {"prep", "none"},
+                                         {"operation", "transform"},
+                                         {"prompt", json::array()}});
+    const ModelEntry entry = model("RealESRGAN-4xplus-TheNoise");
+    const std::vector<std::uint8_t> bytes = png(32, 32);
+    RequestInput input;
+    input.recipe = &recipe;
+    input.server_name = "recorded";
+    input.model_id = entry.id;
+    input.model = &entry;
+    input.width = 32;
+    input.height = 32;
+    input.images.push_back(RequestImageInput{"document", "current", 32, 32, bytes});
+    input.upscale_factor = 1.5;
+    std::string error;
+    auto built = build_request(input, SizePolicy{16, 1024 * 1024}, error);
+    REQUIRE(built.has_value());
+    CHECK(error.empty());
+    CHECK(on_the_wire(*built) == std::vector<std::string>({"image", "model", "upscale_factor"}));
+    CHECK(built->json_body()["upscale_factor"].is_number());
+    CHECK_EQ(built->json_body()["upscale_factor"].get<double>(), 1.5);
+    CHECK_EQ(built->preview_json()["fields"][2][0], json("upscale_factor"));
+    CHECK(follows_the_table(*built));
+    for (double invalid : {0.5, 4.01, std::numeric_limits<double>::infinity(),
+                           std::numeric_limits<double>::quiet_NaN()}) {
+        input.upscale_factor = invalid;
+        error.clear();
+        CHECK(!build_request(input, SizePolicy{16, 1024 * 1024}, error).has_value());
+        CHECK(error.find("upscale_factor") != std::string::npos);
+    }
+    input.upscale_factor = 4.0;
+    error.clear();
+    built = build_request(input, SizePolicy{16, 1024 * 1024}, error);
+    REQUIRE(built.has_value());
+    CHECK_EQ(built->json_body()["upscale_factor"].get<double>(), 4.0);
+    input.upscale_factor.reset();
+    error.clear();
+    built = build_request(input, SizePolicy{16, 1024 * 1024}, error);
+    REQUIRE(built.has_value());
+    CHECK(!built->json_body().contains("upscale_factor"));
+}
+
+void test_upscale_accepts_native_odd_size_without_diffusion_defaults() {
+    const Recipe recipe = recipe_of(json{{"endpoint", "upscale"},
+                                          {"region", "document"},
+                                          {"prep", "none"},
+                                          {"operation", "transform"},
+                                          {"prompt", json::array()}});
+    ModelEntry entry = model("RealESRGAN-4xplus-TheNoise");
+    entry.image_defaults = noise::ai::ImageDefaults{};
+    const auto bytes = png(137, 89, 73);
+    RequestInput input;
+    input.recipe = &recipe;
+    input.server_name = "recorded";
+    input.model_id = entry.id;
+    input.model = &entry;
+    input.width = 137;
+    input.height = 89;
+    input.images.push_back(RequestImageInput{"document", "current", 137, 89, bytes});
+    std::string error;
+    const std::optional<BuiltRequest> request = build_request(input, SizePolicy{16, 1024 * 1024}, error);
+    REQUIRE(request.has_value());
+    CHECK(error.empty());
+    CHECK_EQ(request->path, std::string("/images/upscale"));
+    CHECK(on_the_wire(*request) == std::vector<std::string>({"image", "model"}));
+    CHECK_EQ(request->images.front().width, 137);
+    CHECK_EQ(request->images.front().height, 89);
+    CHECK_EQ(request->images.front().png, bytes);
+    CHECK(!request->json_body().contains("steps"));
+    CHECK(!request->json_body().contains("cfg_scale"));
+    CHECK(!request->json_body().contains("size"));
+}
+
 }  // namespace
 
 int main() {
     test_a_seed_the_field_cannot_carry_is_refused_here();
     test_the_whitelist_is_per_endpoint();
+    test_upscale_accepts_native_odd_size_without_diffusion_defaults();
+    test_upscale_factor_is_optional_numeric_and_validated();
     test_what_goes_out_is_exactly_the_table();
     test_a_request_the_server_could_not_answer_is_refused_here();
     test_the_upload_blob_names_the_pixels_and_nothing_else();

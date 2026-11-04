@@ -94,15 +94,18 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
         return false;
     }
 
-    if (!manifest.contains("layers") || !manifest.at("layers").is_array() ||
-        manifest.at("layers").empty()) {
+    std::vector<std::string> sources;
+    auto read_payload = [&](const json& root, std::vector<Layer>& loaded,
+                            std::optional<Mask>& selection) -> bool {
+    if (!root.contains("layers") || !root.at("layers").is_array() ||
+        root.at("layers").empty()) {
         error = std::string(kManifestName) + " lists no layers in " + path;
         return false;
     }
 
     Extent claimed{0, 0};
-    if (manifest.contains("size")) {
-        const json& size = manifest.at("size");
+    if (root.contains("size")) {
+        const json& size = root.at("size");
         if (!size.is_array() || size.size() != 2 || !size[0].is_number_integer() ||
             !size[1].is_number_integer()) {
             error = std::string(kManifestName) + " has a malformed 'size' in " + path;
@@ -111,10 +114,7 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
         claimed = Extent{size[0].get<int>(), size[1].get<int>()};
     }
 
-    std::vector<Layer> loaded;
-    std::vector<std::string> sources;
-    std::optional<Mask> selection;
-    const json& declared = manifest.at("layers");
+    const json& declared = root.at("layers");
     for (std::size_t index = 0; index < declared.size(); ++index) {
         const json& layer = declared[index];
         if (!layer.contains("src") || !layer.at("src").is_string()) {
@@ -235,8 +235,8 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
     // Absent is a real answer: it means the document had no selection. Present-but-unreadable is a
     // refusal, because a selection the reader cannot honour would let writes through that the user
     // had fenced off.
-    if (manifest.contains("selection")) {
-        const json& row = manifest.at("selection");
+    if (root.contains("selection")) {
+        const json& row = root.at("selection");
         if (!row.is_object() || !row.contains("src") || !row.at("src").is_string()) {
             error = std::string(kManifestName) +
                     " has a 'selection' with no string 'src' in " + path;
@@ -258,10 +258,78 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
         sources.push_back(source);
     }
 
+        return true;
+    };
+    std::vector<Layer> loaded;
+    std::optional<Mask> selection;
+    if (!read_payload(manifest, loaded, selection)) {
+        return false;
+    }
+    std::uint64_t active_id = 1;
+    std::uint64_t active_parent_id = 0;
+    std::string active_name = "Original";
+    int active_layer = static_cast<int>(loaded.size()) - 1;
+    if (manifest.contains("version")) {
+        const json& version = manifest.at("version");
+        if (!version.is_object() || !version.value("id", json{}).is_number_unsigned() ||
+            !version.value("name", json{}).is_string() ||
+            !version.value("active_layer", json{}).is_number_integer()) {
+            error = "invalid active version metadata in " + path;
+            return false;
+        }
+        if (version.contains("parent_id") && !version.at("parent_id").is_number_unsigned()) {
+            error = "invalid active version parent_id in " + path;
+            return false;
+        }
+        active_id = version.at("id").get<std::uint64_t>();
+        active_parent_id = version.value("parent_id", std::uint64_t{0});
+        active_name = version.at("name").get<std::string>();
+        active_layer = version.at("active_layer").get<int>();
+    }
+    std::vector<DocumentVersion> archived;
+    if (manifest.contains("archived_versions")) {
+        const json& entries_json = manifest.at("archived_versions");
+        if (!entries_json.is_array()) {
+            error = "'archived_versions' must be an array in " + path;
+            return false;
+        }
+        for (const json& row : entries_json) {
+            if (!row.is_object() || !row.value("id", json{}).is_number_unsigned() ||
+                !row.value("name", json{}).is_string() ||
+                !row.value("active_layer", json{}).is_number_integer()) {
+                error = "invalid archived version metadata in " + path;
+                return false;
+            }
+            DocumentVersion archived_version;
+            if (row.contains("parent_id") && !row.at("parent_id").is_number_unsigned()) {
+                error = "invalid archived version parent_id in " + path;
+                return false;
+            }
+            archived_version.id = row.at("id").get<std::uint64_t>();
+            archived_version.parent_id = row.value("parent_id", std::uint64_t{0});
+            archived_version.name = row.at("name").get<std::string>();
+            archived_version.active_layer = row.at("active_layer").get<int>();
+            if (!read_payload(row, archived_version.layers, archived_version.selection)) {
+                return false;
+            }
+            archived.push_back(std::move(archived_version));
+        }
+    }
+    if (active_id == 0 || active_name.empty() || active_layer < 0 ||
+        static_cast<std::size_t>(active_layer) >= loaded.size()) {
+        error = "invalid active version in " + path;
+        return false;
+    }
+
     out = Project{};
     out.format = format;
     out.layers = std::move(loaded);
     out.selection = std::move(selection);
+    out.active_version_id = active_id;
+    out.active_version_parent_id = active_parent_id;
+    out.active_version_name = std::move(active_name);
+    out.active_layer = active_layer;
+    out.archived_versions = std::move(archived);
 
     for (const ZipEntry& entry : *entries) {
         if (entry.name == "mimetype" || entry.name == kManifestName || entry.name == kMergedName ||
@@ -276,7 +344,8 @@ bool load_project(const std::string& path, Project& out, std::string& error) {
 }
 
 bool save_project(const std::string& path, std::span<const Layer> layers, const Image& merged,
-                  const std::optional<Mask>& selection, std::span<const ZipEntry> carried,
+                  const std::optional<Mask>& selection, std::span<const DocumentVersionView> versions,
+                  std::span<const ZipEntry> carried,
                   std::string& error) {
     if (layers.empty()) {
         error = "a project needs at least one layer to save: " + path;
@@ -287,18 +356,22 @@ bool save_project(const std::string& path, std::span<const Layer> layers, const 
         return false;
     }
 
-    json declared = json::array();
-    for (std::size_t index = 0; index < layers.size(); ++index) {
-        json row{{"mode", std::string(blend_mode_name(layers[index].mode))},
-                 {"name", layers[index].name},
-                 {"opacity", layers[index].opacity},
-                 {"src", layer_source(index)},
-                 {"visible", layers[index].visible}};
-        if (layers[index].mask) {
-            row["mask"] = json{{"src", layer_mask_source(index)}};
+    const auto declare_layers = [](std::span<const Layer> version_layers, const std::string& prefix) {
+        json declared = json::array();
+        for (std::size_t index = 0; index < version_layers.size(); ++index) {
+            json row{{"mode", std::string(blend_mode_name(version_layers[index].mode))},
+                     {"name", version_layers[index].name},
+                     {"opacity", version_layers[index].opacity},
+                     {"src", prefix + layer_source(index)},
+                     {"visible", version_layers[index].visible}};
+            if (version_layers[index].mask) {
+                row["mask"] = json{{"src", prefix + layer_mask_source(index)}};
+            }
+            declared.push_back(std::move(row));
         }
-        declared.push_back(std::move(row));
-    }
+        return declared;
+    };
+    const json declared = declare_layers(layers, "");
     json manifest{
         {"format", kFormatVersion},
         {"size", json::array({merged.size().w, merged.size().h})},
@@ -310,6 +383,33 @@ bool save_project(const std::string& path, std::span<const Layer> layers, const 
         manifest["selection"] = json{{"src", kSelectionName}};
     }
 
+    json archived = json::array();
+    for (const DocumentVersionView& version : versions) {
+        if (version.current) {
+            manifest["version"] = json{{"id", version.id}, {"name", version.name},
+                                        {"active_layer", version.active_layer},
+                                        {"parent_id", version.parent_id}};
+            continue;
+        }
+        if (version.layers.empty() || version.selection == nullptr) {
+            error = "cannot save an empty document version";
+            return false;
+        }
+        const std::string prefix = "versions/" + std::to_string(version.id) + "/";
+        json row{{"id", version.id}, {"name", version.name},
+                 {"active_layer", version.active_layer},
+                 {"parent_id", version.parent_id},
+                 {"size", json::array({version.layers.front().pixels.size().w,
+                                       version.layers.front().pixels.size().h})},
+                 {"layers", declare_layers(version.layers, prefix)}};
+        if (*version.selection) {
+            row["selection"] = json{{"src", prefix + kSelectionName}};
+        }
+        archived.push_back(std::move(row));
+    }
+    if (!archived.empty()) {
+        manifest["archived_versions"] = std::move(archived);
+    }
     ZipWriter zip;
     // The order is the format: sniffable mimetype first, then the app's own manifest, then the
     // layers bottom-first, then the composite, then anything this build carried through.
@@ -320,6 +420,25 @@ bool save_project(const std::string& path, std::span<const Layer> layers, const 
         if (layers[index].mask) {
             zip.add(layer_mask_source(index),
                     std::span<const std::uint8_t>(layers[index].mask->plane()));
+        }
+    }
+    for (const DocumentVersionView& version : versions) {
+        if (version.current) {
+            continue;
+        }
+        const std::string prefix = "versions/" + std::to_string(version.id) + "/";
+        for (std::size_t index = 0; index < version.layers.size(); ++index) {
+            const Layer& layer = version.layers[index];
+            zip.add(prefix + layer_source(index),
+                    std::span<const std::uint8_t>(encode_png(layer.pixels)));
+            if (layer.mask) {
+                zip.add(prefix + layer_mask_source(index),
+                        std::span<const std::uint8_t>(layer.mask->plane()));
+            }
+        }
+        if (*version.selection) {
+            zip.add(prefix + kSelectionName,
+                    std::span<const std::uint8_t>((*version.selection)->plane()));
         }
     }
     if (selection) {

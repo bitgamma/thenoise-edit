@@ -420,12 +420,16 @@ void register_paint_commands(AppState& state, CommandTable& table) {
             return fail("edit.undo", "nothing to undo");
         }
         const std::uint64_t geometry_before = state.doc.geometry_revision();
+        const std::uint64_t version_before = state.doc.current_version();
         if (!state.doc.undo()) {
             return fail("edit.undo", "the recorded change no longer fits the document");
         }
         if (geometry_before != state.doc.geometry_revision()) {
             ++state.document_epoch;
             request_fit(state);
+        }
+        if (version_before != state.doc.current_version()) {
+            state.deferred_upscale.reset();
         }
         state.reconcile_edit_plane();
         return command_ok(history_json(state.doc));
@@ -441,12 +445,16 @@ void register_paint_commands(AppState& state, CommandTable& table) {
             return fail("edit.redo", "nothing to redo");
         }
         const std::uint64_t geometry_before = state.doc.geometry_revision();
+        const std::uint64_t version_before = state.doc.current_version();
         if (!state.doc.redo()) {
             return fail("edit.redo", "the recorded change no longer fits the document");
         }
         if (geometry_before != state.doc.geometry_revision()) {
             ++state.document_epoch;
             request_fit(state);
+        }
+        if (version_before != state.doc.current_version()) {
+            state.deferred_upscale.reset();
         }
         state.reconcile_edit_plane();
         return command_ok(history_json(state.doc));

@@ -45,6 +45,27 @@ struct LayerScale {
     Rect picture{};
 };
 
+// A version has a single canvas geometry and its own freely reorderable layer stack.
+// Versions never share mutable layers; an AI result cannot silently mutate the original.
+struct DocumentVersion {
+    std::uint64_t id = 0;
+    std::string name;
+    std::vector<Layer> layers;
+    std::optional<Mask> selection;
+    int active_layer = 0;
+    std::uint64_t parent_id = 0;
+};
+
+struct DocumentVersionView {
+    std::uint64_t id = 0;
+    std::string name;
+    std::span<const Layer> layers;
+    const std::optional<Mask>* selection = nullptr;
+    int active_layer = 0;
+    bool current = false;
+    std::uint64_t parent_id = 0;
+};
+
 // The open document: a stack of layers, and the history of what changed in them. Pixels change
 // only through `paint`, a provisional gesture or undo/redo, so every visible change can be put
 // back exactly - within one layer, which is what a step is recorded against.
@@ -140,6 +161,25 @@ public:
     bool resize_canvas(Extent target, int offset_x, int offset_y, bool mark_added);
     bool crop_canvas(Rect crop);
     bool rotate_canvas(bool clockwise);
+
+    // Create a new resolution version from the current composite, leaving every original
+    // layer at its native resolution. The version owns its own history and layer ordering.
+    bool resample_composite(Extent target);
+    std::uint64_t current_version() const;
+    std::vector<DocumentVersionView> versions() const;
+    bool switch_version(std::uint64_t id);
+    bool load_versions(std::vector<DocumentVersion> versions, std::uint64_t current,
+                       std::string path);
+
+    // Resample all layer pixels, masks and the marked area into a new independent
+    // version. Unlike canvas resize, the content itself grows or shrinks. Switching
+    // to the original returns its exact pixels, ordering and native resolution.
+    bool resample_image(Extent target);
+
+    // A full-document AI result starts a new version, never mixed with the original stack.
+    // The current version remains independently editable and can always be reselected.
+    bool apply_upscaled_image(Image result, std::string name, bool generative);
+
 
     // The layer at `index` onto the one under it, exactly as the canvas shows them: the upper layer's
     // mask, blend mode and opacity are applied on the way down, and it leaves the stack while the layer
@@ -322,6 +362,25 @@ private:
     // change, emptied by the repair; structural changes widen it to the whole canvas.
     mutable Rect pending_;
 
+    struct ArchivedVersion {
+        DocumentVersion data;
+        History history{kHistoryBudgetBytes};
+    };
+    std::vector<ArchivedVersion> archived_;
+    std::uint64_t current_version_ = 1;
+    std::uint64_t current_version_parent_ = 0;
+    std::uint64_t next_version_id_ = 2;
+    std::string current_version_name_ = "Original";
+    struct VersionRedo {
+        std::uint64_t from = 0;
+        std::uint64_t to = 0;
+        HistoryStats parent_history{};
+    };
+    std::vector<VersionRedo> version_redo_;
+    bool activate_version(std::uint64_t id);
+    bool version_redo_ready() const;
+    bool begin_version(std::vector<Layer> layers, std::string name,
+                       std::optional<Mask> selection);
     std::uint64_t next_layer_id_ = 1;
     std::vector<Layer> layers_;
     int active_ = 0;

@@ -2,6 +2,7 @@
 #include "test.h"
 
 #include "app/ai_intent.h"
+#include "app/ai_landing.h"
 #include "ai/provider.h"
 #include "ai/recorded.h"
 #include "ai/recorded.h"
@@ -39,6 +40,7 @@
 #include <numbers>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace noise;
@@ -1095,11 +1097,12 @@ void test_a_two_layer_project_round_trips_and_exports_its_composite() {
     h.value("tool.stroke", full_stroke());
     const json saved_view = h.value("layer.list", json::object());
     const std::string composite = saved_view["composite_checksum"].get<std::string>();
+    CHECK_EQ(saved_view["active"].get<int>(), 0);  // the base layer was selected before save
 
     CHECK_OK(h.run("doc.save", json{{"path", path}}));
     h.value("doc.new", json{{"width", 2}, {"height", 2}});
     const json opened = h.value("doc.open", json{{"path", path}});
-    CHECK_EQ(opened["active"].get<int>(), 1);  // the top of the stack comes back on top
+    CHECK_EQ(opened["active"], saved_view["active"]);  // preserve the active layer
     CHECK(!opened["dirty"].get<bool>());
     // Names and per-layer content come from layer.list; doc.open reports the document, and a
     // stack summary that hashed every layer could not be polled per frame the way app.state is.
@@ -3144,10 +3147,10 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     // What is on show is what a headless run would send: the recipe's own defaults, and no question.
     CHECK_EQ(read["vars"]["context_desc"].get<std::string>(), std::string("background"));
     std::fprintf(stderr, "  [mark B]\n");
-    // Five intents read the marked area and one reads the active layer's own coverage, so the panel has
+    // Four intents read the marked area and one reads the active layer's own coverage, so the panel has
     // *Blend* to offer whether or not anything is marked. The count is here because a dropped intent
     // would otherwise show up only as a missing row somewhere below.
-    CHECK_EQ(read["intents"].size(), std::size_t(6));
+    CHECK_EQ(read["intents"].size(), std::size_t(5));
     bool offers_blend = false;
     for (const json& offered : read["intents"]) {
         offers_blend = offers_blend || offered["id"].get<std::string>() == "blend";
@@ -4456,6 +4459,275 @@ void test_an_answer_lands_on_its_own_layer_over_another_one() {
     CHECK(!odd.ok);
     CHECK(odd.error.find("extent") != std::string::npos);
 }
+
+void test_image_size_and_ai_upscale_keep_resolution_and_undo() {
+    Harness h;
+    h.value("doc.new", json{{"width", 16}, {"height", 16},
+                            {"fill", json::array({32, 64, 128, 255})}});
+    const std::string original = h.state.doc.checksum();
+    const std::uint64_t original_version = h.state.doc.current_version();
+    CHECK(!h.run("doc.resample", json{{"width", 0}, {"height", 32}}).ok);
+    const json resized = h.value("doc.resample", json{{"width", 32}, {"height", 48}});
+    CHECK_EQ(resized["width"].get<int>(), 32);
+    CHECK_EQ(resized["height"].get<int>(), 48);
+    CHECK_EQ(h.state.doc.size(), (Extent{32, 48}));
+    CHECK_EQ(h.state.doc.history().undo_depth, 1);
+    h.value("edit.undo", json::object());
+    CHECK_EQ(h.state.doc.current_version(), original_version);
+    CHECK_EQ(h.state.doc.checksum(), original);
+    h.value("edit.redo", json::object());
+    CHECK_EQ(h.state.doc.size(), (Extent{32, 48}));
+    h.value("doc.version.select", json{{"id", original_version}});
+    CHECK_EQ(h.state.doc.checksum(), original);
+    const json versions = h.value("doc.version.list", json::object());
+    CHECK_EQ(versions["versions"].size(), std::size_t(2));
+    const std::uint64_t resized_id = versions["versions"][1]["id"].get<std::uint64_t>();
+    h.value("doc.version.select", json{{"id", resized_id}});
+    CHECK_EQ(h.state.doc.size(), (Extent{32, 48}));
+    h.value("doc.version.select", json{{"id", original_version}});
+
+    const json connection = h.value("server.connect", json::object());
+    CHECK(connection["connected"].get<bool>());
+    const json preview = h.value("ai.preview", json{{"recipe", "upscale"}});
+    CHECK_EQ(preview["request"]["path"].get<std::string>(), std::string("/images/upscale"));
+    CHECK_EQ(preview["request"]["size"].get<std::string>(), std::string("16x16"));
+    CHECK_EQ(preview["request"]["images"].size(), std::size_t(1));
+    CHECK_EQ(preview["request"]["images"][0]["dimensions"], json::array({16, 16}));
+    CHECK_EQ(preview["request"]["fields"].size(), std::size_t(3));
+    CHECK(preview["request"]["fields"][0][0] == "model");
+    CHECK(preview["request"]["fields"][1][0] == "image");
+    CHECK(preview["request"]["fields"][2] == json::array({"upscale_factor", 4.0}));
+    CHECK_EQ(h.state.doc.checksum(), original);
+
+    const json started = h.value("image.upscale", json::object());
+    const std::string id = started["job"]["id"].get<std::string>();
+    const json finished = h.value("job.wait", json{{"id", id}, {"timeout", 30}});
+    CHECK_EQ(finished["state"].get<std::string>(), std::string("succeeded"));
+    CHECK(finished["landing"]["landed"].get<bool>());
+    CHECK(finished["landing"]["report"]["upscaled"].get<bool>());
+    CHECK_EQ(finished["landing"]["report"]["before"], json::array({16, 16}));
+    CHECK_EQ(finished["landing"]["report"]["after"], json::array({64, 64}));
+    CHECK_EQ(h.state.doc.size(), (Extent{64, 64}));
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(1));
+    CHECK(h.state.doc.layer(0).visible);
+    const std::string upscaled = h.state.doc.checksum();
+    const std::uint64_t upscale_id = h.state.doc.current_version();
+    CHECK_EQ(h.state.doc.history().undo_depth, 1);
+    h.value("edit.undo", json::object());
+    CHECK_EQ(h.state.doc.current_version(), original_version);
+    CHECK_EQ(h.state.doc.size(), (Extent{16, 16}));
+    CHECK_EQ(h.state.doc.checksum(), original);
+    h.value("edit.redo", json::object());
+    CHECK_EQ(h.state.doc.current_version(), upscale_id);
+    CHECK_EQ(h.state.doc.checksum(), upscaled);
+    h.value("doc.version.select", json{{"id", original_version}});
+    CHECK_EQ(h.state.doc.size(), (Extent{16, 16}));
+    CHECK_EQ(h.state.doc.checksum(), original);
+    h.value("doc.version.select", json{{"id", upscale_id}});
+    CHECK_EQ(h.state.doc.size(), (Extent{64, 64}));
+    CHECK_EQ(h.state.doc.checksum(), upscaled);
+}
+
+
+void test_upscale_model_choice_and_non_native_target() {
+    Harness h;
+    h.value("doc.new", json{{"width", 16}, {"height", 16},
+                            {"fill", json::array({32, 64, 128, 255})}});
+    h.value("server.connect", json::object());
+    const std::string original = h.state.doc.checksum();
+    const std::uint64_t original_version = h.state.doc.current_version();
+
+    std::vector<ai::ModelEntry> models = h.state.ai.registry->models();
+    ai::ModelEntry two_x;
+    two_x.id = "RealESRGAN-2xplus-TheNoise";
+    two_x.recipe = "thenoise";
+    two_x.labels = {"upscaling"};
+    two_x.downloaded = false;
+    models.push_back(two_x);
+    h.state.ai.registry->update(std::move(models));
+    const auto choices = h.state.ai.registry->candidates("upscale", true);
+    CHECK(std::find(choices.begin(), choices.end(), two_x.id) != choices.end());
+    CHECK_EQ(ai::native_upscale_factor(two_x.id), 2);
+
+    const json preview = h.value("ai.preview",
+        json{{"recipe", "upscale"}, {"model", two_x.id},
+             {"output_width", 32}, {"output_height", 32}});
+    CHECK_EQ(preview["model"].get<std::string>(), two_x.id);
+    CHECK_EQ(preview["request"]["path"].get<std::string>(), std::string("/images/upscale"));
+    CHECK_EQ(preview["request"]["images"][0]["dimensions"], json::array({16, 16}));
+    CHECK_EQ(preview["request"]["fields"].size(), std::size_t(3));
+    CHECK(preview["request"]["fields"][2] == json::array({"upscale_factor", 2.0}));
+    CHECK(!h.run("ai.preview", json{{"recipe", "upscale"}, {"model", two_x.id},
+                                    {"output_width", 64}, {"output_height", 64}}).ok);
+    CHECK(!h.run("ai.preview", json{{"recipe", "upscale"},
+                                    {"model", "not-an-upscaler"}}).ok);
+
+    // UI exclusivity is also enforced at the command door, not only by disabled buttons.
+    h.state.image_size_form.whole_stack = true;
+    CHECK(!h.run("image.upscale", json{{"width", 32}, {"height", 32}}).ok);
+    CHECK(!h.run("image.upscale.defer", json{{"width", 32}, {"height", 32}}).ok);
+    CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(0));
+    h.state.image_size_form.whole_stack = false;
+
+    // A non-native scale is sent directly, without requesting the 4x intermediate.
+    const json started = h.value("image.upscale",
+        json{{"model", "RealESRGAN-4xplus-TheNoise"},
+             {"width", 48}, {"height", 48}});
+    const json requested = started["job"]["request"];
+    CHECK_EQ(requested["fields"][2], json::array({"upscale_factor", 3.0}));
+    const json done = h.value("job.wait",
+        json{{"id", started["job"]["id"]}, {"timeout", 30}});
+    CHECK_EQ(done["state"].get<std::string>(), std::string("succeeded"));
+    CHECK(done["landing"]["landed"].get<bool>());
+    CHECK_EQ(h.state.doc.size(), (Extent{48, 48}));
+    const std::uint64_t result_version = h.state.doc.current_version();
+    h.value("edit.undo", json::object());
+    CHECK_EQ(h.state.doc.current_version(), original_version);
+    CHECK_EQ(h.state.doc.checksum(), original);
+    h.value("edit.redo", json::object());
+    CHECK_EQ(h.state.doc.current_version(), result_version);
+    CHECK_EQ(h.state.doc.size(), (Extent{48, 48}));
+    h.value("doc.version.select", json{{"id", original_version}});
+    CHECK_EQ(h.state.doc.checksum(), original);
+
+    // Regression for the original 4-MP input bug: edit models have a 2-MP region
+    // budget, but a native ESRGAN 2x output of 16 MP is valid under the document cap.
+    h.value("doc.new", json{{"width", 2048}, {"height", 2048}});
+    const json large = h.value("ai.preview", json{{"recipe", "upscale"},
+        {"model", two_x.id}, {"output_width", 4096}, {"output_height", 4096}});
+    CHECK_EQ(large["request"]["images"][0]["dimensions"], json::array({2048, 2048}));
+    CHECK_EQ(large["upscale_target"], json::array({4096, 4096}));
+    CHECK_EQ(large["request"]["fields"][2], json::array({"upscale_factor", 2.0}));
+    h.value("doc.new", json{{"width", 2500}, {"height", 2500}});
+    const json no_native_intermediate = h.value("ai.preview", json{{"recipe", "upscale"},
+        {"model", "RealESRGAN-4xplus-TheNoise"},
+        {"output_width", 5000}, {"output_height", 5000}});
+    CHECK_EQ(no_native_intermediate["upscale_target"], json::array({5000, 5000}));
+    CHECK_EQ(no_native_intermediate["request"]["fields"][2],
+             json::array({"upscale_factor", 2.0}));
+}
+
+void test_deferred_upscale_accepts_backend_snapping_and_reports_landing_errors() {
+    for (bool compatible : {true, false}) {
+        Harness h;
+        h.value("doc.new", json{{"width", 16}, {"height", 16},
+                                {"fill", json::array({18, 24, 38, 255})}});
+        h.value("select.rect", json{{"rect", json::array({3, 4, 8, 6})}});
+        h.value("server.connect", json::object());
+        const std::string original = h.state.doc.checksum();
+        const std::uint64_t original_version = h.state.doc.current_version();
+        h.value("image.upscale.defer", json{{"width", 741}, {"height", 805}});
+        const json started = h.value("ai.run", json{
+            {"recipe", "inpaint-replace"},
+            {"vars", json{{"instruction", "make the hair blonde"}}},
+            {"seed", 73}});
+        const std::string id = started["job"]["id"].get<std::string>();
+        REQUIRE(h.state.ai.jobs->wait_for(id, 30));
+        const std::optional<ai::JobRecord> pending = h.state.ai.jobs->find(id);
+        REQUIRE(pending.has_value());
+        CHECK_EQ(pending->state, ai::JobState::succeeded);
+        CHECK_EQ(pending->landing.requested, (Extent{752, 816}));
+
+        const Extent backend = compatible ? Extent{768, 832} : Extent{1024, 1024};
+        const std::vector<std::uint8_t> bytes = io::encode_png(patterned_image(backend, 11));
+        std::ofstream answer_file(pending->result_png, std::ios::binary | std::ios::trunc);
+        REQUIRE(answer_file.is_open());
+        answer_file.write(reinterpret_cast<const char*>(bytes.data()),
+                          static_cast<std::streamsize>(bytes.size()));
+        answer_file.close();
+        REQUIRE(answer_file.good());
+        const CommandResult result = app::land_job(h.state, *pending, "answer",
+                                                   std::nullopt, std::nullopt, true);
+        CHECK_EQ(result.ok, compatible);
+        const json record = h.value("job.get", json{{"id", id}});
+        if (compatible) {
+            CHECK(record["landing"]["landed"].get<bool>());
+            CHECK(!record["landing"]["land_refused"].get<bool>());
+            CHECK_EQ(record["landing"]["report"]["model_output"], json::array({768, 832}));
+            CHECK_EQ(record["landing"]["report"]["requested_model_output"],
+                     json::array({752, 816}));
+            CHECK_EQ(h.state.doc.size(), (Extent{741, 805}));
+            CHECK_EQ(h.state.doc.layers().size(), std::size_t(1));
+            const std::uint64_t upgraded = h.state.doc.current_version();
+            h.value("edit.undo", json::object());
+            CHECK_EQ(h.state.doc.current_version(), original_version);
+            CHECK_EQ(h.state.doc.checksum(), original);
+            h.value("edit.redo", json::object());
+            CHECK_EQ(h.state.doc.current_version(), upgraded);
+            CHECK_EQ(h.state.doc.size(), (Extent{741, 805}));
+            h.value("doc.version.select", json{{"id", original_version}});
+            CHECK_EQ(h.state.doc.checksum(), original);
+        } else {
+            CHECK(record["landing"]["land_refused"].get<bool>());
+            CHECK(record["landing"]["land_error"].get<std::string>().find(
+                      "1024x1024") != std::string::npos);
+            CHECK_EQ(h.state.doc.size(), (Extent{16, 16}));
+            CHECK_EQ(h.state.doc.checksum(), original);
+            CHECK_EQ(h.state.doc.layers().size(), std::size_t(1));
+            CHECK(h.value("image.upscale.status", json::object())["armed"].get<bool>());
+        }
+    }
+}
+
+void test_deferred_upscale_uses_one_normal_edit_request() {
+    Harness h;
+    h.value("doc.new", json{{"width", 16}, {"height", 16},
+                            {"fill", json::array({18, 24, 38, 255})}});
+    h.value("select.rect", json{{"rect", json::array({3, 4, 8, 6})}});
+    const std::string original = h.state.doc.checksum();
+    const std::uint64_t original_version = h.state.doc.current_version();
+    CHECK(!h.run("image.upscale.defer", json{{"width", 16}, {"height", 16}}).ok);
+    const json armed = h.value("image.upscale.defer", json{{"width", 49}, {"height", 51}});
+    CHECK(armed["armed"].get<bool>());
+    CHECK_EQ(armed["target"], json::array({49, 51}));
+    CHECK_EQ(armed["model_request"], json::array({64, 64}));
+    CHECK(h.value("image.upscale.status", json::object())["armed"].get<bool>());
+    CHECK_EQ(h.value("image.upscale.status", json::object())["model_request"],
+             json::array({64, 64}));
+    CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(0));
+    h.value("server.connect", json::object());
+    const json preview = h.value("ai.preview",
+        json{{"recipe", "inpaint-replace"},
+             {"vars", json{{"instruction", "make the hair blonde"}}},
+             {"seed", 73}});
+    CHECK(preview["generative_upscale"].get<bool>());
+    CHECK(preview["prompt"].get<std::string>().find("original-image coordinates") != std::string::npos);
+    CHECK_EQ(preview["upscale_target"], json::array({49, 51}));
+    CHECK_EQ(preview["upload_size"], json::array({16, 16}));
+    CHECK_EQ(preview["request"]["path"].get<std::string>(), std::string("/images/edits"));
+    CHECK_EQ(preview["request"]["size"].get<std::string>(), std::string("64x64"));
+    CHECK_EQ(preview["request"]["images"][0]["dimensions"], json::array({16, 16}));
+    CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(0));
+    CHECK(h.value("image.upscale.status", json::object())["armed"].get<bool>());
+
+    const json started = h.value("ai.run",
+        json{{"recipe", "inpaint-replace"},
+             {"vars", json{{"instruction", "make the hair blonde"}}},
+             {"seed", 73}});
+    const json finished = h.value("job.wait",
+        json{{"id", started["job"]["id"]}, {"timeout", 30}});
+    CHECK_EQ(finished["state"].get<std::string>(), std::string("succeeded"));
+    CHECK(finished["landing"]["landed"].get<bool>());
+    CHECK(finished["landing"]["report"]["generative_upscale"].get<bool>());
+    CHECK_EQ(h.state.doc.size(), (Extent{49, 51}));
+    CHECK_EQ(h.state.doc.layers().size(), std::size_t(1));
+    const std::uint64_t deferred_version = h.state.doc.current_version();
+    CHECK_EQ(h.state.doc.history().undo_depth, 1);
+    h.value("edit.undo", json::object());
+    CHECK_EQ(h.state.doc.current_version(), original_version);
+    CHECK_EQ(h.state.doc.checksum(), original);
+    h.value("edit.redo", json::object());
+    CHECK_EQ(h.state.doc.current_version(), deferred_version);
+    CHECK_EQ(h.state.doc.size(), (Extent{49, 51}));
+    CHECK(!h.value("image.upscale.status", json::object())["armed"].get<bool>());
+    CHECK_EQ(h.value("job.list", json::object())["jobs"].size(), std::size_t(1));
+    const std::uint64_t new_version = h.state.doc.current_version();
+    h.value("doc.version.select", json{{"id", original_version}});
+    CHECK_EQ(h.state.doc.checksum(), original);
+    h.value("doc.version.select", json{{"id", new_version}});
+    CHECK_EQ(h.state.doc.size(), (Extent{49, 51}));
+}
+
 }  // namespace
 
 // The front door is state, not an ImGui flag: whether the app is waiting for a person is a fact the
@@ -5014,6 +5286,10 @@ void test_edge_slider_keeps_layer_and_preview_history_consistent() {
 }
 
 int main() {
+    test_image_size_and_ai_upscale_keep_resolution_and_undo();
+    test_upscale_model_choice_and_non_native_target();
+    test_deferred_upscale_uses_one_normal_edit_request();
+    test_deferred_upscale_accepts_backend_snapping_and_reports_landing_errors();
     log::set_level(log::Level::Error);
     test_m0_command_surface_is_registered();
     test_canvas_commands_and_editable_edges_use_the_document_timeline();

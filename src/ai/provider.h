@@ -14,6 +14,8 @@
 
 namespace noise::ai {
 
+inline constexpr int kMaxGeneratedDimensionPx = 4096;
+
 // The tier-1 field set, per endpoint. This function is the only place a field can enter a request:
 // `build_request` adds nothing it has not checked here, and a field absent from this table is
 // unreachable. Tier 2 (`negative_prompt`, `sigmas`, `sampler`, `kv_cache`, the in-generate upscale
@@ -108,6 +110,7 @@ struct RequestInput {
     int width = 0;
     int height = 0;
     std::string prompt;
+    std::optional<double> upscale_factor;
     // Inside `kMaxSeed`: the field goes out signed, and the builder refuses a value it cannot carry
     // rather than sending one the engine misreads.
     std::uint64_t seed = 0;

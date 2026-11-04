@@ -71,6 +71,235 @@ void draw_coverage_transfer(AppState& state, CommandTable& commands, const json&
     }
 }
 
+void muted_wrapped(std::string_view message) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("%.*s", static_cast<int>(message.size()), message.data());
+    ImGui::PopStyleColor();
+}
+
+void draw_latest_ai_landing_error(const AppState& state) {
+    if (state.ai.jobs == nullptr || state.doc.empty()) {
+        return;
+    }
+    const std::vector<ai::JobRecord> jobs = state.ai.jobs->all();
+    for (auto it = jobs.rbegin(); it != jobs.rend(); ++it) {
+        if (it->landing.document_epoch != state.document_epoch) {
+            continue;
+        }
+        if (it->landing.land_refused) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ui_theme::palette(state.ui_theme).danger);
+            ImGui::TextWrapped("AI result %s could not be applied: %s", it->id.c_str(),
+                               it->landing.land_error.c_str());
+            ImGui::PopStyleColor();
+        }
+        break;
+    }
+}
+
+void draw_image_size_controls(AppState& state, CommandTable& commands) {
+    if (!ImGui::CollapsingHeader("Image size / Upscale")) {
+        return;
+    }
+    if (state.doc.empty()) {
+        ImGui::TextDisabled("Open an image first");
+        return;
+    }
+    ImageSizeForm& form = state.image_size_form;
+    const Extent original = state.doc.size();
+    if (form.source != original || form.source_revision != state.doc.geometry_revision()) {
+        form.source = original;
+        form.source_revision = state.doc.geometry_revision();
+        form.width = original.w;
+        form.height = original.h;
+        form.resize_error.clear();
+        form.upscale_error.clear();
+        form.deferred_error.clear();
+    }
+    ImGui::SetNextItemWidth(110.0f);
+    const bool changed_width = ImGui::InputInt("Width##image", &form.width);
+    ImGui::SetNextItemWidth(110.0f);
+    const bool changed_height = ImGui::InputInt("Height##image", &form.height);
+    if (form.lock_aspect && (changed_width || changed_height)) {
+        if (changed_width && form.width > 0) {
+            form.height = std::max(1, static_cast<int>(std::lround(
+                static_cast<double>(form.width) * original.h / original.w)));
+        } else if (changed_height && form.height > 0) {
+            form.width = std::max(1, static_cast<int>(std::lround(
+                static_cast<double>(form.height) * original.w / original.h)));
+        }
+    }
+    if (changed_width || changed_height) {
+        form.resize_error.clear();
+        form.upscale_error.clear();
+        form.deferred_error.clear();
+    }
+    ImGui::Checkbox("Keep aspect ratio##image", &form.lock_aspect);
+    bool preset_changed = false;
+    for (int factor : {2, 4}) {
+        ImGui::PushID(factor);
+        if (factor == 4) {
+            ImGui::SameLine();
+        }
+        if (ImGui::SmallButton(factor == 2 ? "2x" : "4x")) {
+            const std::int64_t width = static_cast<std::int64_t>(original.w) * factor;
+            const std::int64_t height = static_cast<std::int64_t>(original.h) * factor;
+            if (width * height <= kMaxCanvasPixels) {
+                form.width = static_cast<int>(width);
+                form.height = static_cast<int>(height);
+                preset_changed = true;
+                form.resize_error.clear();
+                form.upscale_error.clear();
+                form.deferred_error.clear();
+            } else {
+                form.resize_error = "Target exceeds the document pixel limit";
+            }
+        }
+        ImGui::PopID();
+    }
+    if (ImGui::Checkbox("Entire layer stack##resize", &form.whole_stack) && form.whole_stack) {
+        commands.invoke("image.upscale.defer", json{{"enabled", false}});
+        form.deferred_error.clear();
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("Preserve individually editable layers at the new size (Lanczos3 only)");
+    }
+    if (form.whole_stack) {
+        muted_wrapped("Entire layer stack is available with Lanczos3 only.");
+    }
+    const std::int64_t source_area = static_cast<std::int64_t>(original.w) * original.h;
+    const std::int64_t target_area = static_cast<std::int64_t>(form.width) * form.height;
+    const bool valid = form.width > 0 && form.height > 0 &&
+                       target_area <= kMaxCanvasPixels;
+    const bool enlarged = valid && target_area > source_area;
+    const ai::Recipe* recipe = state.ai.recipes.find("upscale");
+    Readiness ready = assess(state, recipe);
+    const std::vector<std::string> candidates = state.ai.registry != nullptr
+        ? state.ai.registry->candidates("upscale", /*include_not_downloaded=*/true)
+        : std::vector<std::string>{};
+    const std::string selected_model = !form.model.empty() ? form.model
+        : std::find(candidates.begin(), candidates.end(), ready.model) != candidates.end()
+            ? ready.model : candidates.empty() ? std::string{} : candidates.front();
+    const int native = ai::native_upscale_factor(selected_model);
+    const bool valid_model =
+        std::find(candidates.begin(), candidates.end(), selected_model) != candidates.end();
+    ImGui::BeginDisabled(form.whole_stack);
+    ImGui::TextUnformatted("AI Upscaler");
+    if (!candidates.empty()) {
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::BeginCombo("##ai_upscaler", selected_model.c_str())) {
+            for (const std::string& candidate : candidates) {
+                const int factor = ai::native_upscale_factor(candidate);
+                const ai::ModelEntry* entry = state.ai.registry->model(candidate);
+                const std::string label = candidate + (factor > 0
+                    ? " (" + std::to_string(factor) + "x native)" : " (scale unknown)") +
+                    (entry != nullptr && !entry->downloaded ? " - not downloaded" : "");
+                if (ImGui::Selectable(label.c_str(), candidate == selected_model)) {
+                    form.model = candidate;
+                    form.upscale_error.clear();
+                }
+            }
+            ImGui::EndCombo();
+        }
+    } else {
+        muted_wrapped("No AI upscalers available.");
+    }
+    ImGui::EndDisabled();
+    const std::int64_t cross = std::abs(static_cast<std::int64_t>(form.width) * original.h -
+                                        static_cast<std::int64_t>(form.height) * original.w);
+    const ai::ModelEntry* selected_entry = state.ai.registry
+        ? state.ai.registry->model(selected_model) : nullptr;
+    std::string ai_problem;
+    if (!state.ai.connected) {
+        ai_problem = "Connect to Lemonade to use AI upscaling.";
+    } else if (recipe == nullptr || !state.ai.serving()) {
+        ai_problem = "The AI upscale service is unavailable.";
+    } else if (!valid_model) {
+        ai_problem = "Choose an available AI Upscaler.";
+    } else if (selected_entry != nullptr && !selected_entry->downloaded) {
+        ai_problem = "Download this AI Upscaler before running it.";
+    } else if (!valid) {
+        ai_problem = target_area > kMaxCanvasPixels
+            ? "Target exceeds the document's 64-Mi-pixel limit."
+            : "Enter a positive width and height.";
+    } else if (!enlarged || form.width <= original.w || form.height <= original.h) {
+        ai_problem = "AI upscale needs a larger width and height than the source.";
+    } else if (cross > std::max(original.w, original.h)) {
+        ai_problem = "AI upscale must preserve the source aspect ratio.";
+    } else if (native == 0) {
+        ai_problem = "This AI Upscaler has no known native scaling factor.";
+    } else if (form.width > static_cast<std::int64_t>(original.w) * native ||
+               form.height > static_cast<std::int64_t>(original.h) * native) {
+        ai_problem = "This AI Upscaler supports up to " + std::to_string(native) +
+                     "x the source dimensions.";
+    }
+    bool running = false;
+    if (state.ai.jobs) {
+        for (const ai::JobRecord& job : state.ai.jobs->all()) {
+            running = running || (job.recipe_id == "upscale" &&
+                (job.state == ai::JobState::queued || job.state == ai::JobState::running));
+        }
+    }
+    ImGui::BeginDisabled(!valid || (form.width == original.w && form.height == original.h));
+    if (ImGui::Button("Resize (Lanczos3)")) {
+        const CommandResult result = commands.invoke("doc.resample",
+            json{{"width", form.width}, {"height", form.height},
+                 {"whole_stack", form.whole_stack}});
+        form.resize_error = result.ok ? "" : result.error;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(form.whole_stack || !ai_problem.empty() || running);
+    if (ImGui::Button("Upscale (AI)")) {
+        const CommandResult result = commands.invoke("image.upscale",
+            json{{"width", form.width}, {"height", form.height},
+                 {"model", selected_model}});
+        form.upscale_error = result.ok ? "" : result.error;
+    }
+    ImGui::EndDisabled();
+    if (!form.upscale_error.empty()) {
+        ImGui::TextWrapped("AI upscale: %s", form.upscale_error.c_str());
+    } else if (running) {
+        muted_wrapped("AI upscale in progress...");
+    } else if (!ai_problem.empty()) {
+        muted_wrapped(ai_problem);
+    }
+    if (!form.resize_error.empty()) {
+        ImGui::TextWrapped("Resize: %s", form.resize_error.c_str());
+    }
+    ImGui::BeginDisabled(form.whole_stack);
+    ImGui::SeparatorText("Next AI edit");
+    const bool armed = state.deferred_upscale &&
+        state.deferred_upscale->document_epoch == state.document_epoch &&
+        state.deferred_upscale->source == original;
+    bool defer = armed;
+    if (ImGui::Checkbox("Use target size for next AI edit", &defer)) {
+        const CommandResult result = commands.invoke("image.upscale.defer", defer
+            ? json{{"width", form.width}, {"height", form.height}}
+            : json{{"enabled", false}});
+        form.deferred_error = result.ok ? "" : result.error;
+    } else if (armed && (changed_width || changed_height || preset_changed)) {
+        const CommandResult result = commands.invoke("image.upscale.defer",
+            json{{"width", form.width}, {"height", form.height}});
+        form.deferred_error = result.ok ? "" : result.error;
+        if (!result.ok) {
+            commands.invoke("image.upscale.defer", json{{"enabled", false}});
+        }
+    }
+    if (state.deferred_upscale && state.deferred_upscale->source == original &&
+        state.deferred_upscale->document_epoch == state.document_epoch) {
+        const Extent target = state.deferred_upscale->target;
+        muted_wrapped("Next Change, Fill, Remove or Heal generates " +
+                       std::to_string(target.w) + " x " + std::to_string(target.h) +
+                       " in a single model request.");
+    }
+    muted_wrapped("The next AI edit generates the full image at the chosen size. "
+                   "Areas outside the selection may also change.");
+    if (!form.deferred_error.empty()) {
+        ImGui::TextWrapped("Next AI edit: %s", form.deferred_error.c_str());
+    }
+    ImGui::EndDisabled();
+}
+
 void draw_canvas_controls(AppState& state, CommandTable& commands) {
     if (!ImGui::CollapsingHeader("Canvas size / Crop")) {
         return;
@@ -329,6 +558,8 @@ void draw_tool_panel(AppState& state, CommandTable& commands, const json& intent
                      ReferenceThumbs& reference_thumbs) {
     ImGui::Begin(kWindowTool);
     draw_file_row(state, commands);
+    draw_latest_ai_landing_error(state);
+    draw_image_size_controls(state, commands);
     draw_canvas_controls(state, commands);
     draw_edge_controls(state, commands);
     ImGui::Separator();
@@ -385,10 +616,11 @@ void draw_job_status(AppState& state, CommandTable& commands, const json& job,
     if (job_state == "succeeded") {
         ImGui::SameLine();
         const json& landing = job.contains("landing") ? job["landing"] : json::object();
-        const std::string layer = landing.contains("landed_layer")
-                                      ? landing["landed_layer"].get<std::string>()
-                                      : std::string();
-        if (layer.empty()) {
+        const bool refused = landing.value("land_refused", false);
+        const std::string layer = landing.value("landed_layer", std::string());
+        if (refused) {
+            ImGui::TextColored(colors.danger, "result not applied (see Tools)");
+        } else if (layer.empty()) {
             ImGui::TextDisabled("landing...");
         } else {
             ImGui::TextDisabled("on '%s', Ctrl+Z", layer.c_str());

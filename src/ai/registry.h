@@ -6,6 +6,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ai/profile.h"
@@ -72,6 +73,9 @@ struct Resolution {
     bool resolved() const { return !model_id.empty(); }
 };
 
+// Native pixel-upscaler factor advertised by the model name; 0 means unknown.
+int native_upscale_factor(std::string_view model_id);
+
 // role -> exactly one model for one server profile, recomputed on every connect and every model list.
 class Registry {
 public:
@@ -89,6 +93,7 @@ public:
     // An unknown role resolves to nothing with a reason naming the role, rather than to a guess.
     const Resolution& resolve(const std::string& role) const;
     std::vector<Resolution> all() const;
+    std::vector<std::string> candidates(const std::string& role, bool include_not_downloaded) const;
 
     // The entry a resolved role points at, or null. Capability questions ("can this edit?") are
     // answered from the entry, never from the role name.

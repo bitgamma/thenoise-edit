@@ -3,7 +3,8 @@
  "method": "POST",
  "path": "/images/upscale",
  "match": {
-  "model": "RealESRGAN-4xplus-TheNoise"
+  "model": "RealESRGAN-4xplus-TheNoise",
+  "upscale_factor": 4.0
  },
  "status": 200,
  "json": {

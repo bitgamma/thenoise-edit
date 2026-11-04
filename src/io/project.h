@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "core/document.h"
 #include "core/image.h"
 #include "core/layer.h"
 #include "core/mask.h"
@@ -21,6 +22,8 @@ namespace noise::io {
 inline constexpr const char* kMimetype = "application/x-noise+zip";
 inline constexpr const char* kProjectExtension = "noise";
 
+// Format 5 adds independent document versions with their own native-size layer stacks.
+// Version changes preserve pixels without mixing original and upscale layers.
 // Format 4 added a layer's mask: the same coverage plane as the selection, in a member the layer's
 // row names and omits entirely when the layer has no mask - "no mask" and "a mask that hides
 // everything" are different states, exactly as they are for the selection. Format 3 added the
@@ -32,7 +35,7 @@ inline constexpr const char* kProjectExtension = "noise";
 // an older file. The version is bumped for optional fields too, and a file of any other version is
 // refused by number: there is one writer, it is us, and silently guessing a default for a field the
 // format stopped writing is how a document opens wrong.
-inline constexpr int kFormatVersion = 4;
+inline constexpr int kFormatVersion = 5;
 
 // The selection's coverage plane: one byte per canvas pixel, raw, deflate-compressed by the
 // container. Its size is the manifest `size`, restated nowhere.
@@ -50,6 +53,11 @@ struct Project {
     std::vector<Layer> layers;
     // The document's selection, at the canvas size. Absent means no selection, not an empty one.
     std::optional<Mask> selection;
+    std::uint64_t active_version_id = 1;
+    std::uint64_t active_version_parent_id = 0;
+    std::string active_version_name = "Original";
+    int active_layer = 0;
+    std::vector<DocumentVersion> archived_versions;
 
     // Members this build does not define - provenance, thumbnails, a journal from a newer
     // build. Read as they are, written back unchanged: opening a file must not delete what
@@ -60,10 +68,12 @@ struct Project {
 bool load_project(const std::string& path, Project& out, std::string& error);
 
 // `layers` bottom-first and `merged` the flattened stack, both from the document being saved;
-// `selection` is the document's, or nullopt for none; `carried` is whatever the file being replaced
-// held that this build does not define.
+// `selection` is the active version's, or nullopt for none; `versions` includes the
+// current and archived version stacks with their native sizes, and `carried` contains
+// archive members this build does not define.
 bool save_project(const std::string& path, std::span<const Layer> layers, const Image& merged,
-                  const std::optional<Mask>& selection, std::span<const ZipEntry> carried,
+                  const std::optional<Mask>& selection, std::span<const DocumentVersionView> versions,
+                  std::span<const ZipEntry> carried,
                   std::string& error);
 
 }  // namespace noise::io

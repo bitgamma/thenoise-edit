@@ -76,8 +76,9 @@ src/
                        the *picture*, as distinct from the canvas-sized rectangle a layer stores. The
                        move tool and `scale_layer` are both aimed at that, so dragging a layer and
                        scaling it agree on which part of a layer "it" is.
-    document.{h,cpp}   Document: a stack of layers, path, revision, the composite over them
-                       and the history under it. `scale_layer` is the only place that says what resizing
+    document.{h,cpp}   Document: one active version's stack, path, revision and composite,
+                       plus archived native-resolution versions with independent history.
+                       `scale_layer` is the only place that says what resizing
                        a layer means (see §Undo): the layer keeps its canvas-sized store, the picture
                        inside it is resampled about its own middle along with any non-trivial coverage,
                        and a factor that would put either of them outside the canvas is refused with the
@@ -748,7 +749,7 @@ variants/<op>/<i>.png          kept AI variants not committed to a layer
 Thumbnails/thumbnail.png
 ```
 
-### What is written today: `format` 4
+### What is written today: `format` 5
 
 The subset the app can represent, read and written by `io/project.{h,cpp}`, which refuses what it
 would have to guess about. Costs of the v0 layout are in
@@ -764,7 +765,11 @@ on; a row that omits one is refused with the field and the layer named, and a `m
 `format` 3 added the selection plane: an extra member the manifest declares, absent when the
 document has no selection. `format` 4 added a layer's own mask plane, named by that layer's row for
 the same reason - "no mask" and "a mask that hides everything" are different documents. Each is a
-layout change rather than a widened name, so earlier numbers are refused.
+layout change rather than a widened name, so earlier numbers are refused. `format` 5
+stores the active document version plus archived versions, each with its own native canvas
+size, layer order, selection and masks. A version switch never resamples these planes.
+Upscaling creates a new version with a single composite layer; the original stack is
+not silently resized or hidden beneath the AI result.
 
 `mode` grew from one name to the MVP eight (`normal`, `multiply`, `screen`, `overlay`, `darken`,
 `lighten`, `color-dodge`, `color-burn`, spelled as PDF 1.4 and CSS spell them) **without a `format`
@@ -777,9 +782,11 @@ added enum value would make the number mean "the day someone edited a table" and
 | member | written | read |
 |---|---|---|
 | `mimetype` | stored, first member, no extra fields | must match exactly or the file is not ours |
-| `manifest.json` | `format`, `size: [w,h]`, `layers: [{name, src, visible, opacity, mode, mask?}]`, and `selection: {src}` when there is one | `format` must be 4; `size` must agree with the PNG, and both numbers are named if they do not; `src`/`visible`/`opacity`/`mode` are required, `name` is not, because a file from elsewhere may not have named its layers |
+| `manifest.json` | `format`, `size: [w,h]`, `layers: [{name, src, visible, opacity, mode, mask?}]`, `version: {id, name, active_layer}`, `archived_versions: [...]` and `selection: {src}` when there is one | `format` must be 5; `size` must agree with the PNG, and both numbers are named if they do not; `src`/`visible`/`opacity`/`mode` are required, `name` is not, because a file from elsewhere may not have named its layers |
 | `layers/<n>/mask.m8` | a layer's mask plane, same shape, written only when that layer has one and named by that layer's row | read only when the row declares it: no row is no mask, and `covered == 0` is a mask that hides the layer, so the two must not collapse |
 | `selection.m8` | the selection's coverage plane, one byte per pixel, canvas-sized, written only when the document has a selection | read only when the manifest declares it: **no row is no selection, and a declared plane that is missing or the wrong size is refused** — guessing which would turn a corrupt file into a silently unclamped document |
+| `versions/<id>/layers/<n>/layer.png` | PNG for each layer in an inactive resolution version, independent of the active canvas | decoded at that version's declared dimensions, and rejected if they disagree |
+| `versions/<id>/layers/<n>/mask.m8`, `versions/<id>/selection.m8` | mask/selection planes of archived versions, present only when declared | decoded at the version's dimensions, not those of the active canvas |
 | `layers/<n>/layer.png` | one per layer, bottom-first | one PNG per declared row, each covering the whole canvas: a layer of another size is refused naming both sizes, because cropping or padding it silently is data loss |
 | `mergedimage.png` | the composite — which is the layer only when there is one layer and it is visible at full strength | optional |
 | anything else | — | carried through and rewritten byte-identical, so opening a file written by a newer build cannot delete what this one cannot show |
@@ -1019,7 +1026,7 @@ both, so 0 staying unused is our convention for "no seed yet", not an engine rul
 |---|---|---|
 | `POST /v1/images/generations` | JSON | `model`, `prompt`, `size`, `steps`, `cfg_scale`, `seed`, `response_format="b64_json"` |
 | `POST /v1/images/edits` | `multipart/form-data` | `model`, one `image` PNG part for a single-image request; for two or more images, one repeated `image[]` PNG part per image, in order; `prompt`, `size`, `steps`, `cfg_scale`, `seed`, `response_format="b64_json"` |
-| `POST /v1/images/upscale` | JSON | `image` (b64 PNG), `model` |
+| `POST /v1/images/upscale` | JSON | `image` (b64 PNG), `model`, optional `upscale_factor` (1..model native scale, requires updated Lemonade adapter) |
 | `GET /v1/models`, `GET /v1/models/{id}` | — | — |
 | `POST /v1/chat/completions` | JSON | `model`, `messages`, `stream=false` — reserved for the `enhance` role, unused in MVP |
 
@@ -1037,7 +1044,7 @@ knobs we want later:
 | `sigmas` | custom sigma grid replacing `steps` | the community turbo schedules (Viggle Turbo 6 steps, Pruna 5/8) make 28-step Qwen-2.1 draftable |
 | `sampler` | `euler` \| `er_sde` | determinism experiments |
 | `kv_cache`, `ref_method` | reference-latent KV cache / `index_timestep_zero` | 30 %+ faster editing; needs a `-KV` Klein checkpoint |
-| `upscale`, `upscale_factor`, `upscale_type`, `pixel_upscaler` | in-generate 2× latent refine, or pixel upscaler | "generate big" without a second round trip |
+| `upscale`, `upscale_factor` (generation/edit), `upscale_type`, `pixel_upscaler` | in-generate 2× latent refine, or pixel upscaler | "generate big" without a second round trip |
 | `film_grain` (0–10), `sharpening` (RCAS 0–1), `qwen_vae_enhance` | post-processing | **`film_grain` is a seam-hider**: grain on the generated patch masks the composite boundary; `qwen_vae_enhance` kills 2 px grid artifacts from Qwen VAEs |
 | `lora_specs` | `["style:0.8"]` | style packs — server-side files, so a settings feature, not a per-request one |
 
@@ -1420,7 +1427,7 @@ has through `region_scope_name`, the one place a scope becomes a word, and the p
 `selection_intents()` plus `layer_intents()` - the second offered whether or not anything is marked.
 
 The palette of selection operations is therefore `recipes/*.json` filtered to `region: selection` with
-an `edits` or `upscale` endpoint (`RecipeSet::selection_intents`): adding an operation means adding a
+an `edits` endpoint (`RecipeSet::selection_intents`): adding an operation means adding a
 file, and a recipe that stops being a selection operation leaves the palette by itself.
 
 Variables come from the user's instruction (whatever the recipe's `ask` lists) and the layer name. A
@@ -1468,7 +1475,7 @@ fidelity is not a server knob.
 | `heal` | edits | edit | reconstruct | average | selection | the in-process Telea/Chan path for a box with no edit model is designed and **not built**, so `heal` refuses when the edit role is unresolved |
 | `flatten-colorize` | edits | edit | in_place | none | full doc | e.g. "colorize this line art" — the highest-value raster trick for illustration workflows |
 | `reimagine` | edits | edit | in_place | none | full doc | full-frame edit. The whole frame is the region, so there is no hole and nothing to blend at the edge; its answer lands on a layer like any other, and 50 % opacity is a number the user owns |
-| `upscale` | upscale | — | transform | none | full doc or mask bbox | ESRGAN model choice + composite back into the layer |
+| `upscale` | upscale | upscale | transform | none | full document | ESRGAN model choice; `upscale_factor` requests 1..native 2x/4x output, changing document size and adding a top layer over hidden scaled originals |
 | `free-command` | user's choice | user's choice | user's choice | user's choice | user's choice | escape hatch below |
 
 (`variations` deleted — unsupported endpoint.)

@@ -30,11 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wire_drive as wd  # noqa: E402
 
 MIMETYPE = b"application/x-noise+zip"
-# One format is written and read, and a file of another number is refused by that number. Format 3
-# added the selection plane; format 4 added a layer's own mask plane, named by that layer's row.
-# Neither can be inferred from an older file: a missing row means "no selection" and "no mask", which
-# are states, not omissions.
-FORMAT = 4
+# Format 5 adds independent resolution versions and persists the active layer for each one.
+# Earlier formats are deliberately rejected, not silently upgraded.
+FORMAT = 5
 FILL = (7, 14, 21, 255)
 WIDTH = 40
 HEIGHT = 24
@@ -87,6 +85,9 @@ def check_archive(path: Path, fails: list[str], expect_visible: bool = True,
         return
     if doc.get("format") != FORMAT:
         fails.append(f"manifest format is {doc.get('format')!r}, expected {FORMAT}")
+    version = doc.get("version")
+    if version != {"id": 1, "name": "Original", "active_layer": 0, "parent_id": 0}:
+        fails.append(f"manifest active version is {version!r}, expected the original base layer")
     if doc.get("size") != [WIDTH, HEIGHT]:
         fails.append(f"manifest size is {doc.get('size')!r}, expected [{WIDTH}, {HEIGHT}]")
     layers = doc.get("layers")
@@ -130,6 +131,7 @@ def write_foreign(path: Path, compression: int, layer_name: str) -> None:
     manifest = json.dumps({
         "format": FORMAT,
         "size": [WIDTH, HEIGHT],
+        "version": {"id": 1, "name": "Original", "parent_id": 0, "active_layer": 0},
         # A non-default opacity on purpose: a file from elsewhere that disagrees with the app's
         # defaults has to open as it says, not as what a new layer would be.
         "layers": [{"name": layer_name, "src": "layers/0/layer.png",

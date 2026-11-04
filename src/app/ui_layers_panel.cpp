@@ -388,6 +388,27 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
     if (state.doc.empty()) {
         ImGui::TextUnformatted("no document");
     } else {
+        const std::vector<DocumentVersionView> versions = state.doc.versions();
+        if (versions.size() > 1) {
+            const auto active = std::find_if(versions.begin(), versions.end(),
+                                             [](const auto& version) { return version.current; });
+            const std::string label = active->name + " (" +
+                std::to_string(active->layers.front().pixels.size().w) + " x " +
+                std::to_string(active->layers.front().pixels.size().h) + ")";
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::BeginCombo("##document_version", label.c_str())) {
+                for (const DocumentVersionView& version : versions) {
+                    const Extent size = version.layers.front().pixels.size();
+                    const std::string option = version.name + " (" +
+                        std::to_string(size.w) + " x " + std::to_string(size.h) +
+                        ")##" + std::to_string(version.id);
+                    if (ImGui::Selectable(option.c_str(), version.current) && !version.current) {
+                        commands.invoke("doc.version.select", json{{"id", version.id}});
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
         const std::span<const Layer> layers = state.doc.layers();
         const bool live = state.doc.in_provisional();
         thumbs.keep(layers);

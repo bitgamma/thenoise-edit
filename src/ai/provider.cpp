@@ -16,7 +16,6 @@ namespace {
 // The one ceiling on a request dimension. It is a client-side guard for the "size rejected" failure
 // row: the engine snaps an odd size rather than refusing it, so the sizes worth stopping here are the
 // ones out of range, and a refusal that names the number is cheaper than a minute of GPU time.
-inline constexpr int kMaxDimensionPx = 4096;
 inline constexpr int kMaxSteps = 128;
 inline constexpr const char* kResponseFormat = "b64_json";
 const std::uint8_t kPngMagic[8] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
@@ -38,7 +37,7 @@ EndpointShape shape_of(Endpoint endpoint) {
                                  {"model", "image", "image[]", "prompt", "size", "steps",
                                   "cfg_scale", "seed", "response_format"}};
         case Endpoint::upscale:
-            return EndpointShape{"/images/upscale", {"model", "image"}};
+            return EndpointShape{"/images/upscale", {"model", "image", "upscale_factor"}};
         case Endpoint::chat:
             return EndpointShape{"/chat/completions", {"model", "messages", "stream"}};
     }
@@ -246,13 +245,14 @@ std::optional<BuiltRequest> build_request(RequestInput input, const SizePolicy& 
                 size_field(input.width, input.height);
         return std::nullopt;
     }
-    if (input.width > kMaxDimensionPx || input.height > kMaxDimensionPx) {
+    if (recipe.endpoint != Endpoint::upscale &&
+        (input.width > kMaxGeneratedDimensionPx || input.height > kMaxGeneratedDimensionPx)) {
         error = "recipe '" + recipe.id + "': size " + size_field(input.width, input.height) +
-                " exceeds the " + std::to_string(kMaxDimensionPx) +
+                " exceeds the " + std::to_string(kMaxGeneratedDimensionPx) +
                 "px ceiling; compile a smaller region";
         return std::nullopt;
     }
-    if (size_policy.multiple > 1 &&
+    if (recipe.endpoint != Endpoint::upscale && size_policy.multiple > 1 &&
         (input.width % size_policy.multiple != 0 || input.height % size_policy.multiple != 0)) {
         // The region compiler rounds up to this multiple, so arriving here means a request was built
         // around it. The engine would snap the size and answer at dimensions nobody planned.
@@ -312,6 +312,16 @@ std::optional<BuiltRequest> build_request(RequestInput input, const SizePolicy& 
         error = "recipe '" + recipe.id + "': field 'image' is not in the tier-1 field policy";
         return std::nullopt;
     }
+    if (input.upscale_factor.has_value()) {
+        const int native = native_upscale_factor(input.model_id);
+        const double factor = *input.upscale_factor;
+        if (recipe.endpoint != Endpoint::upscale || !std::isfinite(factor) ||
+            factor < 1.0 || native <= 0 || factor > native) {
+            error = "recipe '" + recipe.id +
+                "': 'upscale_factor' must be finite and between 1 and the model's native scale";
+            return std::nullopt;
+        }
+    }
 
     // `seed` goes out as a signed integer and the engines read it as 32 bits, so a larger value leaves
     // here as a number the answer comes back refusing to parse. Checked here because this is the one
@@ -348,7 +358,7 @@ std::optional<BuiltRequest> build_request(RequestInput input, const SizePolicy& 
     const int steps = input.steps_override.has_value()
                           ? *input.steps_override
                           : (input.model != nullptr ? input.model->image_defaults.steps : 0);
-    if (steps <= 0 || steps > kMaxSteps) {
+    if (recipe.endpoint != Endpoint::upscale && (steps <= 0 || steps > kMaxSteps)) {
         error = "recipe '" + recipe.id + "': no usable 'steps' for model '" + input.model_id +
                 "' (got " + std::to_string(steps) + ", ceiling " + std::to_string(kMaxSteps) +
                 "); the model's image_defaults do not carry one, so pass steps";
@@ -357,7 +367,7 @@ std::optional<BuiltRequest> build_request(RequestInput input, const SizePolicy& 
     const double cfg = input.cfg_scale_override.has_value()
                            ? *input.cfg_scale_override
                            : (input.model != nullptr ? input.model->image_defaults.cfg_scale : 0.0);
-    if (!(cfg >= 0.0) || std::isnan(cfg) || cfg > 100.0) {
+    if (recipe.endpoint != Endpoint::upscale && (!(cfg >= 0.0) || std::isnan(cfg) || cfg > 100.0)) {
         error = "recipe '" + recipe.id + "': no usable 'cfg_scale' for model '" + input.model_id +
                 "' (got " + trimmed_double(cfg) + ")";
         return std::nullopt;
@@ -369,6 +379,9 @@ std::optional<BuiltRequest> build_request(RequestInput input, const SizePolicy& 
     sink.add_text("model", input.model_id);
     if (recipe.endpoint == Endpoint::upscale) {
         sink.add_text("image", base64_encode(input.images.front().png));
+        if (input.upscale_factor.has_value()) {
+            sink.add_number("upscale_factor", *input.upscale_factor);
+        }
     } else {
         sink.add_text("prompt", input.prompt);
         sink.add_text("size", size_field(input.width, input.height));

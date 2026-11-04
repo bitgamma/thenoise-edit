@@ -289,10 +289,8 @@ std::vector<const Recipe*> RecipeSet::layer_intents() const {
 std::vector<const Recipe*> RecipeSet::selection_intents() const {
     std::vector<const Recipe*> out;
     for (const Recipe& recipe : recipes) {
-        // An edit or an upscale aimed at the selection. A generation has nothing to select: its
-        // region is the document, and asking what to remove from it is the wrong question.
-        if (recipe.region == RegionScope::selection &&
-            (recipe.endpoint == Endpoint::edits || recipe.endpoint == Endpoint::upscale)) {
+        // An upscaler changes document geometry, not the marked region.
+        if (recipe.region == RegionScope::selection && recipe.endpoint == Endpoint::edits) {
             out.push_back(&recipe);
         }
     }
@@ -363,6 +361,10 @@ std::optional<Recipe> parse_recipe(const nlohmann::json& body, const std::string
     } else {
         error = origin + ": 'region' must be 'selection', 'document' or 'layer' (got '" + region +
                 "')";
+        return std::nullopt;
+    }
+    if (recipe.endpoint == Endpoint::upscale && recipe.region != RegionScope::document) {
+        error = origin + ": upscale changes the whole image size, so 'region' must be 'document'";
         return std::nullopt;
     }
     if (recipe.region == RegionScope::layer && recipe.operation == Operation::from_words) {

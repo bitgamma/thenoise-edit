@@ -107,6 +107,26 @@ std::uint32_t next_noise(std::uint32_t& state) {
 
 }  // namespace
 
+Extent edit_output_size(Extent target, int multiple) {
+    return Extent{round_up_to(target.w, multiple), round_up_to(target.h, multiple)};
+}
+
+bool edit_output_size_compatible(Extent requested, Extent answered) {
+    // TheNoise image models may return a 64-pixel-aligned image even when the request
+    // obeyed the advertised 16-pixel grid. Do not mistake this for a different target.
+    constexpr int kMaxBackendSnapPx = 64;
+    constexpr int kMaxRelativeSnapDivisor = 8;
+    const auto near = [](int expected, int actual) {
+        if (expected <= 0 || actual <= 0) {
+            return false;
+        }
+        const std::int64_t difference = std::abs(static_cast<std::int64_t>(actual) - expected);
+        return difference < kMaxBackendSnapPx &&
+               difference <= expected / kMaxRelativeSnapDivisor;
+    };
+    return near(requested.w, answered.w) && near(requested.h, answered.h);
+}
+
 const char* prep_name(Prep prep) {
     switch (prep) {
         case Prep::none:

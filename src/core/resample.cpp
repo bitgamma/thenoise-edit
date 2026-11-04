@@ -226,3 +226,34 @@ Mask resample_coverage_lanczos3(const Mask& src, Extent size) {
 }
 
 }  // namespace noise
+
+namespace noise {
+Mask resample_coverage_linear(const Mask& src, Extent target) {
+    if (!src.sized() || target.w <= 0 || target.h <= 0) {
+        return Mask{};
+    }
+    Mask out(target);
+    const double sx = static_cast<double>(src.size().w) / target.w;
+    const double sy = static_cast<double>(src.size().h) / target.h;
+    for (int y = 0; y < target.h; ++y) {
+        const double py = (y + 0.5) * sy - 0.5;
+        const int y0 = static_cast<int>(std::floor(py));
+        const double fy = std::clamp(py - y0, 0.0, 1.0);
+        for (int x = 0; x < target.w; ++x) {
+            const double px = (x + 0.5) * sx - 0.5;
+            const int x0 = static_cast<int>(std::floor(px));
+            const double fx = std::clamp(px - x0, 0.0, 1.0);
+            const auto at = [&](int ox, int oy) {
+                return static_cast<double>(src.coverage(
+                    std::clamp(ox, 0, src.size().w - 1),
+                    std::clamp(oy, 0, src.size().h - 1)));
+            };
+            const double a = at(x0, y0) * (1.0 - fx) + at(x0 + 1, y0) * fx;
+            const double b = at(x0, y0 + 1) * (1.0 - fx) + at(x0 + 1, y0 + 1) * fx;
+            out.row(y)[static_cast<std::size_t>(x)] = static_cast<std::uint8_t>(
+                std::clamp(std::lround(a * (1.0 - fy) + b * fy), 0L, 255L));
+        }
+    }
+    return out;
+}
+}  // namespace noise

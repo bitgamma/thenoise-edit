@@ -4,6 +4,7 @@
 #include "io/file.h"
 
 #include <algorithm>
+#include <cctype>
 
 namespace noise::ai {
 
@@ -86,12 +87,29 @@ bool satisfies(const ModelEntry& entry, const RoleDefinition& role) {
     if (!role.recipe.empty() && entry.recipe != role.recipe) {
         return false;
     }
+    bool has_capabilities = true;
     for (const std::string& label : role.requires_labels) {
-        if (!entry.has_label(label)) {
-            return false;
+        has_capabilities = has_capabilities && entry.has_label(label);
+    }
+    if (has_capabilities) {
+        return true;
+    }
+    // Some TheNoise catalogues omit the 'upscaling' label on working ESRGAN models.
+    // Only an explicit role preference is sufficient evidence to use that endpoint.
+    if (role.id != "upscale") {
+        return false;
+    }
+    for (const std::string& preferred : role.preference) {
+        if (entry.id == preferred) {
+            return true;
+        }
+        for (const char* prefix : {"user.", "extra.", "builtin."}) {
+            if (entry.id == std::string(prefix) + preferred) {
+                return true;
+            }
         }
     }
-    return true;
+    return false;
 }
 
 // Lemonade exposes the bare name for the winning catalog entry and a canonical ID (user., extra.,
@@ -135,6 +153,20 @@ std::string missing_preference(const RoleDefinition& role,
 }
 
 }  // namespace
+
+int native_upscale_factor(std::string_view model_id) {
+    std::string lower(model_id);
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    for (int factor : {2, 4}) {
+        const std::string number = std::to_string(factor);
+        if (lower.find(number + "x") != std::string::npos ||
+            lower.find("x" + number) != std::string::npos) {
+            return factor;
+        }
+    }
+    return 0;
+}
 
 const RoleDefinition* RoleTable::find(const std::string& role_id) const {
     for (const RoleDefinition& role : roles) {
@@ -299,6 +331,21 @@ std::vector<Resolution> Registry::all() const {
         out.push_back(resolve(role.id));
     }
     return out;
+}
+
+std::vector<std::string> Registry::candidates(const std::string& role,
+                                               bool include_not_downloaded) const {
+    std::vector<std::string> result;
+    const RoleDefinition* definition = table_.find(role);
+    if (definition == nullptr) {
+        return result;
+    }
+    for (const ModelEntry& entry : models_) {
+        if ((include_not_downloaded || entry.downloaded) && satisfies(entry, *definition)) {
+            result.push_back(entry.id);
+        }
+    }
+    return result;
 }
 
 const ModelEntry* Registry::model(const std::string& id) const {

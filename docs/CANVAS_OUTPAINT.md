@@ -1,8 +1,91 @@
 # Canvas size, crop, outpaint and editable edges
 
 The editor distinguishes **canvas size** (change the picture's bounds, preserve source pixels)
-from **image size** (resample the picture, a separate feature not implemented here). All commands
-are also available from the command/debug wire.
+from **image size** (resample all image content). All commands are also available from the
+command/debug wire.
+
+## Image size, AI upscaling and deferred resolution
+
+**Image size / Upscale** has a shared target **Width / Height**, aspect lock, and 2x/4x presets.
+Choose *one* of these operations; neither changes the canvas by adding empty borders:
+
+- **Resize (Lanczos3)** creates a new document version from the visible composite by default, without altering the original layers. **Entire layer stack** (Lanczos3 only) creates a new version in which every original layer, mask, and blue selection is independently resampled. Both operate locally, and neither invents details.
+- **Upscale (AI)** chooses an explicit model from the server catalogue (including separately
+  named 2x and 4x ESRGAN models). It sends the **entire visible composite at its original
+  resolution** to `/images/upscale`. This endpoint does not take edit-model grid/snapping
+  or the edit model's 2-Mi-pixel region budget. For instance, 4 MP at native 2x yields
+  16 MP, which fits the 64-Mi-pixel document cap. The requested-scale answer becomes
+  a single layer in a **new document version**; the original version retains its
+  native-resolution layers, masks and ordering. Switch versions to return to it.
+- **Use target size for next AI edit** does **not** start an ESRGAN job. It reserves
+  the selected output width/height for the next ordinary **Change / Fill / Remove / Heal**
+  request to `/images/edits`. The original full image is uploaded at its present resolution,
+  the **same edit-model request** asks for the target resolution, and one returned image
+  becomes a new, larger **document version**. A 1024x1024 image can thus be edited (e.g. "make the
+  hair blonde") and requested at 2048x2048 in **a single model generation**, provided
+  that model supports the larger output.
+
+Deferred resolution is one-shot after a successful landing. A failed/cancelled request
+leaves it armed for retry. Changing document geometry invalidates it. If the document
+changes while the request runs, its response cannot replace the newer work. The pending
+request does **not** use a second queue entry or a separate ESRGAN job. **The whole image
+is regenerated at the larger size**; unlike a conventional selection-scoped edit, the
+backend can alter details outside the selection. The panel makes this distinction explicit.
+The chosen document target can have any dimensions. Only the **model request** is rounded
+up to its output grid (normally 16 pixels per axis), and a correctly sized model answer
+is resampled to the exact chosen document size on landing. The rounded request, rather
+than the unsnapped target, must fit the edit model's published output pixel budget and
+4096-pixel axis ceiling. Some edit backends snap the answer to a coarser latent grid
+than the requested size (for example, 752x816 requested, 768x832 returned). Small
+snapping differences are accepted and resampled to the exact chosen document dimensions.
+Large unexpected size differences are refused without changing the document; the landing
+error is shown in the Tools panel and recorded on the job.
+
+The editor sends `upscale_factor` as a JSON number to `/images/upscale`, calculated
+from the requested width/height and source dimensions. This requires a Lemonade build
+that forwards the optional field to TheNoise. The factor must be between 1 and the
+upscaler's native scale, and the **requested output** must fit 64 Mi pixels. Only a
+possible one-pixel dimension-rounding difference is locally resampled; a server that
+ignores the factor and returns full native size is refused rather than silently
+accepted. Upscalers with unknown native factor are not assumed to be 2x or 4x.
+Generative deferred output may change aspect ratio; ESRGAN may not.
+
+A connected server is necessary for the model-based operations. Pixel upscalers use the
+dedicated upscale endpoint; selecting one does not unload the image editing model and
+does not require a model-switch confirmation. The local operation does not require a
+server. A resolution-changing composite/AI upscale creates a new document version. Each version
+has independent layer ordering, selection and Undo/Redo history. Original layers remain at
+native resolution, and the selected version (including all others) is saved in the project.
+Within a version the layer stack is freely reorderable, but layers cannot be dragged across
+versions of different resolutions. A version switch never resamples pixels. Each upscale
+version also remembers the version that created it: **Ctrl+Z** first undoes regular layer
+edits in the active version, then returns to its parent version; **Ctrl+Y** brings the
+upscaled version back without regenerating it or destroying its layers. The parent and
+child retain their independent layer order and undo history. Explicit selection of a
+version in the versions list is navigation, not an Undo action. The version ancestry is
+saved in the project so switching back after a reload still works; individual pixel-edit
+history remains session-local. When **Entire layer stack** is checked, AI Upscale and
+**Use target size for next AI edit** are disabled; only Lanczos3 is available.
+
+Debug wire examples:
+
+```json
+{"cmd": "doc.resample", "args": {"width": 2048, "height": 2048}}
+{"cmd": "doc.resample", "args": {"width": 2048, "height": 2048, "whole_stack": true}}
+{"cmd": "doc.version.list", "args": {}}
+{"cmd": "doc.version.select", "args": {"id": 1}}
+{"cmd": "image.upscale", "args": {"width": 2048, "height": 2048, "model": "RealESRGAN-2xplus-TheNoise"}}
+{"cmd": "image.upscale.defer", "args": {"width": 2048, "height": 2048}}
+{"cmd": "image.upscale.status", "args": {}}
+{"cmd": "ai.preview", "args": {"recipe": "inpaint-replace", "vars": {"instruction": "make the hair blonde"}}}
+{"cmd": "ai.run", "args": {"recipe": "inpaint-replace", "vars": {"instruction": "make the hair blonde"}}}
+{"cmd": "image.upscale.defer", "args": {"enabled": false}}
+```
+
+`image.upscale.defer` and `image.upscale.status` report both `target` (final document
+dimensions) and `model_request` (grid-aligned generation dimensions). The AI Upscaler
+warning appears immediately below its button and only mentions a limit if that specific
+limit blocks the chosen size.
 
 ## Enlarge the canvas and outpaint
 

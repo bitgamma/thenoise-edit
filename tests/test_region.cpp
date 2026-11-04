@@ -519,6 +519,23 @@ void test_the_prep_vocabulary_is_the_one_home() {
     CHECK(!prep_from_name("").has_value());
 }
 
+void test_generative_output_can_snap_without_changing_document_size() {
+    CHECK(ai::edit_output_size_compatible(Extent{752, 816}, Extent{768, 832}));
+    CHECK(ai::edit_output_size_compatible(Extent{912, 992}, Extent{928, 1008}));
+    CHECK(ai::edit_output_size_compatible(Extent{752, 816}, Extent{752, 816}));
+    CHECK(!ai::edit_output_size_compatible(Extent{752, 816}, Extent{1024, 1024}));
+    CHECK(!ai::edit_output_size_compatible(Extent{752, 816}, Extent{768, 896}));
+    CHECK(!ai::edit_output_size_compatible(Extent{64, 64}, Extent{128, 128}));
+    CHECK(!ai::edit_output_size_compatible(Extent{752, 816}, Extent{0, 832}));
+}
+
+void test_edit_model_grid_does_not_change_document_target() {
+    CHECK_EQ(ai::edit_output_size(Extent{900, 982}, 16), (Extent{912, 992}));
+    CHECK_EQ(ai::edit_output_size(Extent{896, 976}, 16), (Extent{896, 976}));
+    CHECK_EQ(ai::edit_output_size(Extent{49, 51}, 16), (Extent{64, 64}));
+    CHECK_EQ(ai::edit_output_size(Extent{900, 982}, 1), (Extent{900, 982}));
+}
+
 }  // namespace
 
 int main() {
@@ -531,5 +548,7 @@ int main() {
     test_prep_touches_the_hole_and_never_the_context();
     test_each_prep_keeps_what_it_says_and_loses_what_it_says();
     test_the_prep_vocabulary_is_the_one_home();
+    test_edit_model_grid_does_not_change_document_target();
+    test_generative_output_can_snap_without_changing_document_size();
     return noise::test::summary(__FILE__);
 }

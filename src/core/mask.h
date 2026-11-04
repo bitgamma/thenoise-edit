@@ -155,6 +155,9 @@ public:
     // report the pixels of a vertical edge once per row, which an overlay stroking along the row
     // paints as a solid line.
     const std::vector<MaskRun>& boundary() const;
+    // Marching ants follow the 50% contour. Very faint resampling fringes remain
+    // usable soft selection coverage but do not create detached visible outlines.
+    const std::vector<MaskRun>& display_boundary() const;
 
     bool operator==(const Mask& other) const;
 
@@ -184,6 +187,7 @@ private:
     mutable std::vector<bool> row_dirty_;
     mutable MaskFacts facts_{};
     mutable std::optional<std::vector<MaskRun>> boundary_;
+    mutable std::optional<std::vector<MaskRun>> display_boundary_;
 };
 
 // Pulls what a write produced back towards what was there, in proportion to the mask: the result at

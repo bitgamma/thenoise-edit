@@ -108,6 +108,25 @@ struct EdgeAdjustment {
 
 // Canvas form values are only applied through commands. Edge slider state is session-local;
 // the actual mask always lives on its layer, even after changing layers or saving the document.
+struct ImageSizeForm {
+    bool whole_stack = false;
+    Extent source{};
+    std::uint64_t source_revision = 0;
+    int width = 0;
+    int height = 0;
+    bool lock_aspect = true;
+    std::string model;
+    std::string resize_error;
+    std::string upscale_error;
+    std::string deferred_error;
+};
+
+struct DeferredUpscale {
+    Extent source{};
+    Extent target{};
+    std::uint64_t document_epoch = 0;
+};
+
 struct CanvasForm {
     Extent source{};
     std::uint64_t source_revision = 0;
@@ -255,6 +274,8 @@ struct AppState {
     InlineField renaming{};
     InlineField scaling{};
     CanvasForm canvas_form{};
+    ImageSizeForm image_size_form{};
+    std::optional<DeferredUpscale> deferred_upscale;
     ScreenRect ai_references_rect{};
     std::uint64_t reference_thumb_rebuilds = 0;
     // And the same for the phrase box the bar opens, so a driver can read the box's own rect rather

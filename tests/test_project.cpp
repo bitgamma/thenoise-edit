@@ -125,7 +125,7 @@ void test_pixels_and_layer_name_come_back_unchanged() {
     const Image original = checker(Extent{41, 23});
     const std::string path = temp("roundtrip.noise");
     std::string error;
-    CHECK(io::save_project(path, one("Sketch", original), original, std::nullopt, {}, error));
+    CHECK(io::save_project(path, one("Sketch", original), original, std::nullopt, {}, {}, error));
 
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
@@ -176,7 +176,7 @@ void test_layer_state_round_trips() {
 
     const std::string path = temp("state.noise");
     std::string error;
-    CHECK(io::save_project(path, stack, image, std::nullopt, {}, error));
+    CHECK(io::save_project(path, stack, image, std::nullopt, {}, {}, error));
 
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
@@ -219,7 +219,7 @@ void test_every_mode_round_trips_under_its_own_name() {
     }
     const std::string path = temp("modes.noise");
     std::string error;
-    CHECK(io::save_project(path, stack, image, std::nullopt, {}, error));
+    CHECK(io::save_project(path, stack, image, std::nullopt, {}, {}, error));
 
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
@@ -252,7 +252,7 @@ void test_another_format_is_refused_by_name() {
     const Image image = checker(Extent{6, 6});
     // Format 2 had no selection row at all, and a missing row now means "no selection" - so the two
     // states could not be told apart across a file, which is the whole reason for the bump.
-    for (const int format : {1, 2, 3, io::kFormatVersion + 6}) {
+    for (const int format : {1, 2, 3, 4, io::kFormatVersion + 6}) {
         const std::string path = temp("format-" + std::to_string(format) + ".noise");
         write_archive(path, minimal_members(image, format, 1));
         io::Project loaded;
@@ -374,7 +374,7 @@ void test_unknown_members_are_carried_through_a_save() {
         io::ZipEntry{"Thumbnails/thumbnail.png", io::encode_png(image)},
     };
     std::string error;
-    CHECK(io::save_project(path, one("Layer 1", image), image, std::nullopt, carried, error));
+    CHECK(io::save_project(path, one("Layer 1", image), image, std::nullopt, {}, carried, error));
 
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
@@ -387,7 +387,7 @@ void test_unknown_members_are_carried_through_a_save() {
     CHECK_EQ(text_of(loaded.carried[1].data), provenance);
 
     // And a save after that open keeps them, so an edit-and-save cannot lose them either.
-    CHECK(io::save_project(path, one("Layer 1", image), image, std::nullopt, loaded.carried, error));
+    CHECK(io::save_project(path, one("Layer 1", image), image, std::nullopt, {}, loaded.carried, error));
     io::Project again;
     CHECK(io::load_project(path, again, error));
     CHECK_EQ(again.carried.size(), 2u);
@@ -405,7 +405,7 @@ void test_layers_keep_their_order_and_names_through_a_save() {
     stack.push_back(Layer{0, "Paper", base, kLayerVisibleDefault, kLayerOpacityDefault, BlendMode::normal, std::nullopt});
     stack.push_back(Layer{0, "Ink", top, kLayerVisibleDefault, kLayerOpacityDefault, BlendMode::normal, std::nullopt});
     std::string error;
-    CHECK(io::save_project(path, stack, top, std::nullopt, {}, error));
+    CHECK(io::save_project(path, stack, top, std::nullopt, {}, {}, error));
 
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
@@ -432,7 +432,7 @@ void test_a_layer_of_another_size_is_refused() {
     stack.push_back(Layer{0, "Paper", base, kLayerVisibleDefault, kLayerOpacityDefault, BlendMode::normal, std::nullopt});
     stack.push_back(Layer{0, "Oversized", odd, kLayerVisibleDefault, kLayerOpacityDefault, BlendMode::normal, std::nullopt});
     std::string error;
-    CHECK(io::save_project(path, stack, base, std::nullopt, {}, error));
+    CHECK(io::save_project(path, stack, base, std::nullopt, {}, {}, error));
 
     io::Project loaded;
     CHECK(!io::load_project(path, loaded, error));
@@ -484,17 +484,17 @@ void test_a_failed_save_leaves_no_file_and_keeps_the_old_one() {
     std::string error;
 
     const std::string nowhere = temp("no-such-directory/project.noise");
-    CHECK(!io::save_project(nowhere, one("Layer 1", image), image, std::nullopt, {}, error));
+    CHECK(!io::save_project(nowhere, one("Layer 1", image), image, std::nullopt, {}, {}, error));
     CHECK(!std::filesystem::exists(nowhere));
 
     const std::string path = temp("replaced.noise");
-    CHECK(io::save_project(path, one("First", image), image, std::nullopt, {}, error));
+    CHECK(io::save_project(path, one("First", image), image, std::nullopt, {}, {}, error));
     // A directory in the place of the target makes the rename fail, and the original file has
     // to still be there and still be readable.
     const std::string occupied = temp("occupied.noise");
-    CHECK(io::save_project(occupied, one("Keep", image), image, std::nullopt, {}, error));
+    CHECK(io::save_project(occupied, one("Keep", image), image, std::nullopt, {}, {}, error));
     std::filesystem::create_directory(occupied + ".noise-tmp");
-    CHECK(!io::save_project(occupied, one("Replace", image), image, std::nullopt, {}, error));
+    CHECK(!io::save_project(occupied, one("Replace", image), image, std::nullopt, {}, {}, error));
     io::Project loaded;
     CHECK(io::load_project(occupied, loaded, error));
     CHECK_EQ(loaded.layers.size(), 1u);
@@ -522,7 +522,7 @@ void test_the_selection_round_trips_byte_for_byte() {
 
     const std::string path = temp("selection.noise");
     std::string error;
-    CHECK(io::save_project(path, one("Layer 1", image), image, saved, {}, error));
+    CHECK(io::save_project(path, one("Layer 1", image), image, saved, {}, {}, error));
 
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
@@ -543,7 +543,7 @@ void test_the_selection_round_trips_byte_for_byte() {
     CHECK_EQ(planes, 1);
     CHECK_EQ(loaded.carried.size(), 0u);
 
-    CHECK(io::save_project(path, one("Layer 1", image), image, loaded.selection, loaded.carried,
+    CHECK(io::save_project(path, one("Layer 1", image), image, loaded.selection, {}, loaded.carried,
                            error));
     io::Project again;
     CHECK(io::load_project(path, again, error));
@@ -558,14 +558,14 @@ void test_no_selection_and_an_empty_selection_are_different_in_the_file() {
     const Image image = checker(size);
     const std::string none_path = temp("no-selection.noise");
     std::string error;
-    CHECK(io::save_project(none_path, one("Layer 1", image), image, std::nullopt, {}, error));
+    CHECK(io::save_project(none_path, one("Layer 1", image), image, std::nullopt, {}, {}, error));
     io::Project none_loaded;
     CHECK(io::load_project(none_path, none_loaded, error));
     CHECK(!none_loaded.selection.has_value());
 
     Mask empty(size);
     const std::string empty_path = temp("empty-selection.noise");
-    CHECK(io::save_project(empty_path, one("Layer 1", image), image, empty, {}, error));
+    CHECK(io::save_project(empty_path, one("Layer 1", image), image, empty, {}, {}, error));
     io::Project empty_loaded;
     CHECK(io::load_project(empty_path, empty_loaded, error));
     CHECK(empty_loaded.selection.has_value());
@@ -668,7 +668,7 @@ void test_a_layer_mask_round_trips_byte_for_byte() {
 
     const std::string path = temp("masked.noise");
     std::string error;
-    CHECK(io::save_project(path, stack, image, std::nullopt, {}, error));
+    CHECK(io::save_project(path, stack, image, std::nullopt, {}, {}, error));
 
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
@@ -693,7 +693,7 @@ void test_a_layer_mask_round_trips_byte_for_byte() {
     CHECK_EQ(planes, 1);
     CHECK_EQ(loaded.carried.size(), 0u);
 
-    CHECK(io::save_project(path, loaded.layers, image, std::nullopt, loaded.carried, error));
+    CHECK(io::save_project(path, loaded.layers, image, std::nullopt, {}, loaded.carried, error));
     io::Project again;
     CHECK(io::load_project(path, again, error));
     CHECK(again.layers[1].mask == stack[1].mask);
@@ -712,7 +712,7 @@ void test_no_mask_and_an_empty_mask_are_different_in_the_file() {
 
     const std::string path = temp("empty-mask.noise");
     std::string error;
-    CHECK(io::save_project(path, stack, image, std::nullopt, {}, error));
+    CHECK(io::save_project(path, stack, image, std::nullopt, {}, {}, error));
     io::Project loaded;
     CHECK(io::load_project(path, loaded, error));
     CHECK_EQ(loaded.layers.size(), 2u);
@@ -769,9 +769,63 @@ void test_a_broken_layer_mask_is_refused_naming_the_problem() {
     }
 }
 
+void test_resolution_versions_round_trip_without_resampling_original_layers() {
+    const Extent original{15, 11};
+    Document doc;
+    std::vector<Layer> stack = one("Background", checker(original));
+    stack.push_back(Layer{0, "Overlay", checker(original), true, 0.75,
+                          BlendMode::normal, std::nullopt});
+    Mask selected(original);
+    selected.op(Rect{3, 2, 6, 5}, MaskOp::replace);
+    doc.reset(std::move(stack), selected, "versions.noise");
+    const std::uint64_t original_id = doc.current_version();
+    CHECK(doc.move_layer(0, 1));
+    const std::string reordered_checksum = doc.checksum();
+    REQUIRE(doc.apply_upscaled_image(checker(Extent{30, 22}), "Enhanced", true));
+    const std::uint64_t enhanced_id = doc.current_version();
+    REQUIRE(doc.add_layer("Corrections", Rgba8{10, 20, 30, 255}) >= 0);
+    CHECK(doc.move_layer(0, 1));
+    const std::string enhanced_checksum = doc.checksum();
+    const std::string path = temp("versions-roundtrip.noise");
+    std::string error;
+    const std::vector<DocumentVersionView> views = doc.versions();
+    CHECK(io::save_project(path, doc.layers(), doc.composite(), doc.selection(), views, {}, error));
+    io::Project project;
+    REQUIRE(io::load_project(path, project, error));
+    CHECK_EQ(project.archived_versions.size(), std::size_t(1));
+    CHECK_EQ(project.active_version_id, enhanced_id);
+    CHECK_EQ(project.active_version_name, std::string("Enhanced"));
+    CHECK_EQ(project.active_version_parent_id, original_id);
+    CHECK_EQ(project.archived_versions[0].parent_id, std::uint64_t(0));
+    std::vector<DocumentVersion> versions = std::move(project.archived_versions);
+    versions.push_back(DocumentVersion{project.active_version_id, project.active_version_name,
+                                       std::move(project.layers), std::move(project.selection),
+                                       project.active_layer, project.active_version_parent_id});
+    Document loaded;
+    REQUIRE(loaded.load_versions(std::move(versions), enhanced_id, path));
+    CHECK_EQ(loaded.size(), (Extent{30, 22}));
+    CHECK_EQ(loaded.checksum(), enhanced_checksum);
+    CHECK_EQ(loaded.history().undo_depth, 1);  // History entries are session-local; the version edge is saved.
+    CHECK(loaded.undo());
+    CHECK_EQ(loaded.current_version(), original_id);
+    CHECK_EQ(loaded.size(), original);
+    CHECK_EQ(loaded.checksum(), reordered_checksum);
+    CHECK(loaded.redo());
+    CHECK_EQ(loaded.current_version(), enhanced_id);
+    CHECK_EQ(loaded.checksum(), enhanced_checksum);
+    CHECK(loaded.switch_version(original_id));
+    CHECK_EQ(loaded.size(), original);
+    CHECK_EQ(loaded.checksum(), reordered_checksum);
+    CHECK(loaded.selection().has_value());
+    CHECK(*loaded.selection() == selected);
+    CHECK(!loaded.undo()); // pixel/history state persists; undo history is session-local.
+    std::filesystem::remove(path);
+}
+
 }  // namespace
 
 int main() {
+    test_resolution_versions_round_trip_without_resampling_original_layers();
     test_pixels_and_layer_name_come_back_unchanged();
     test_the_selection_round_trips_byte_for_byte();
     test_no_selection_and_an_empty_selection_are_different_in_the_file();

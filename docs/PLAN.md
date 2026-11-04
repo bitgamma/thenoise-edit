@@ -4,8 +4,107 @@ Last re-read of the document geometry and AI landing path: **2026-10-29**. `doc.
 `doc.crop` now move pixels, masks and marked coverage together, and undo/redo exchange entire
 canvas states so older per-pixel history is valid again once the original extent returns. New AI
 answers retain the generated crop under a separately editable mask. The prior 2026-10-26 notes
-below remain historical. Image-size resampling and dedicated AI upscale methods are still planned.
+below remain historical. Local image resampling and fast model upscaling are now implemented;
+best-quality generative upscaling remains a separate future option.
 `AGENTS.md` is normative and outranks this file.
+
+## 2026-11-03 - Undo across resolution version creation
+
+The creation of a new image-size version is now a virtual Undo/Redo step in the
+Document, not a stack deletion. Native per-version History continues to undo layer
+strokes and ordering before the switch-back boundary is crossed. Version ancestry
+is saved as `parent_id` with each stack; this allows Ctrl+Z to return to the
+previous resolution, Ctrl+Y to reselect the generated version, and subsequent
+Undo/Redo to retain both stacks exactly. Explicit version navigation leaves the
+per-version histories intact, but clears pending redo transitions to avoid replaying
+an outdated navigation branch. A previously armed deferred upscale is cleared if
+Undo/Redo switches versions. The `Entire layer stack` mode is exclusive to Lanczos3:
+other model choices are visually disabled, and command entry points reject starting
+AI Upscale or deferred AI Upscale until that option is unchecked.
+
+## 2026-11-03 - Resolution versions instead of scaled hidden originals
+
+**Architecture verdict:** A full-image upscale is a new document version, never a hidden
+resampled duplicate stack. The active version owns one layer stack and its own undo/redo;
+inactive versions retain original native pixels, masks, selection, and ordering. Switching
+changes the working version without resampling; pending AI landings compiled for a different
+version are invalidated. The `.noise` format is now v5 and persists all version stacks,
+active version and native extents. Local Lanczos3 defaults to a composite-only version;
+`whole_stack=true` explicitly creates a version whose layers are resampled individually.
+Selection and layer coverage use non-ringing linear interpolation, and marching ants use
+a half-coverage contour rather than treating tiny resampling tails as fully selected.
+A version may not receive a layer dragged from another version until an explicit
+cross-resolution layer copy operation is introduced. Undo history remains session-local.
+
+## 2026-11-03 - Generative landing grid and visible errors
+
+**Architecture verdict:** The edit model may return an image aligned to a coarser backend
+latent grid than the size it was asked for. Deferred upscale now accepts a small bounded
+grid difference (including 752x816 -> 768x832) and resamples to the exact user-selected
+document size. A significantly different answer is still refused. A successful model
+request whose result cannot be applied is a **landing failure**, not an endlessly
+"landing" job; the latest landing error is visible in Tools and on the AI status line,
+while `job.get` preserves its reason and the deferred target remains armed for retry.
+
+## 2026-11-03 - Exact deferred document size and upscaler UI
+
+**Architecture verdict:** The user-selected document size and the edit-model output
+grid are separate geometry. Deferred upscale records the desired document dimensions;
+the edit request rounds up to the model grid while retaining that exact final target
+in the landing record. A correctly sized response is resampled once on landing, inside
+the existing atomic document/Undo operation. Validation uses the snapped request for
+model limits. Pixel upscalers use a dedicated endpoint and do not require confirmation
+to unload the resident image-edit model. The single size panel now names the selected
+AI Upscaler, wraps its help, and gives operation-specific feedback in place.
+
+## 2026-11-03 - Direct pixel-upscale scale factor
+
+**Architecture verdict:** `upscale_factor` is optional in the provider's upscale field
+policy and is sent by the existing request builder as a number. The requested target
+controls the factor, so the client no longer receives/stages a native-scale image
+or rejects targets based on an unnecessary intermediate 64-Mi-pixel client guard.
+TheNoise may still construct a native-resolution intermediate internally.
+The landing only permits at most 1px of server rounding,
+which keeps the selected document dimensions authoritative. The updated Lemonade server
+must forward this field to TheNoise; an older server that ignores it cannot silently
+install the wrong result. Deferred generative edits continue using their own `size` field.
+
+## 2026-11-03 - Unified resolution and next-edit upscale
+
+- A single Image size / Upscale target drives local Lanczos3 and explicit native
+  2x/4x ESRGAN model choices. The upscaler no longer inherits the region editor's
+  2-Mi-pixel input budget. An updated Lemonade endpoint forwards
+  `upscale_factor` for intermediate scales directly to TheNoise.
+- `image.upscale.defer` records the target for the next selection-scoped `/images/edits`
+  request. The model gets the original full image as input and the larger requested
+  **output** `size`; this is one generative edit, not a second queued pixel upscaler.
+  A matching response replaces the document in one undoable layer/geometry change;
+  stale or mis-sized responses are refused. Failure retains the pending target for retry.
+- A selection-guided generative upscale is a **full-frame** recomputation. The
+  surrounding image is not pixel-locked, and the output must fit the chosen edit
+  model's published ceiling. This differs intentionally from ordinary masked edits.
+
+## 2026-11-01 - Image size and pixel upscaling
+
+**Architecture verdict:** Canvas resize only moves image coordinates, while image size
+changes their scale. `Document::resample_image` now performs Lanczos3 over every layer's
+pixels and coverage, including the independent selection, as one undoable geometry step.
+`doc.resample` is the command and UI entry point; geometry epochs invalidate pending
+AI edits when dimensions change.
+
+**Dedicated AI upscale:** The existing `upscale` recipe uses `/images/upscale`, but
+must not share the inpaint region compiler's grid-aligned request or the landing
+compositor that returns an answer to the original canvas. The native composite is
+sent unchanged and the returned 2x/4x image is installed at its native dimensions;
+underlying layers are resampled and kept hidden below the enhancement. Only this
+path bypasses edit-grid snapping. The ordinary model roles, job queue, field-policy
+and recorded transport remain in use. The explicit role preferences can resolve
+known upscalers whose catalogue entry lacks the optional `upscaling` label; model
+recipe and explicit name remain checked.
+
+**Remaining:** A generative `AI upscale (best)` recipe is distinct from fast ESRGAN
+pixel enhancement and is not implemented. Verify the normal ImGui build and full
+recorded-backend suite in CI; the headless core is independently tested with C++20.
 
 ## 2026-10-30 - Explicit selection-edit cycle over the AI result
 
