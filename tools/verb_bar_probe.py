@@ -167,14 +167,30 @@ def main() -> int:
         p.check(aw >= 200 and ah >= 3 * 22, "the box is big enough for its own label and buttons",
                 f"{aw:.0f}x{ah:.0f}")
 
+        # An extended prompt is not truncated by the old short field and expands the dialog.
+        wire.call("verb.ask", {"show": "close"})
+        wd.settle(wire)
+        detail = ("Warm afternoon light through a workshop window, intricate material texture, "
+                  "soft shadows and precise geometric details. ") * 14
+        wire.call("ai.intent", {"recipe": ask["recipe"], "vars": {ask["field"]: detail}})
+        wire.call("verb.ask", {"show": "fill"})
+        wd.settle(wire)
+        extended = wire.call("verb.bar")["ask"]
+        p.check(extended is not None and extended["screen"][3] > ah + 24,
+                "a long prompt grows the floating input dialog", str(extended))
+        p.check(extended["screen"][1] >= 0 and
+                (extended["screen"][1] + extended["screen"][3]) <= HEIGHT + 2,
+                "the expanded input stays on screen", str(extended["screen"]))
+
         # Typed with real keys into the box the click opened, then confirmed with Return: the whole
         # gesture a person makes, with the pointer only ever clicking what the app reported.
         marker = "quartz lampshade"
         for ch in marker:
             inj.key(0x20 if ch == " " else ord(ch))
         wd.settle(wire)
-        p.check(marker in wire.call("ai.intent")["vars"].get("prompt", ""),
-                "the box holds what was typed", str(wire.call("ai.intent")["vars"]))
+        typed = wire.call("ai.intent")["vars"].get("prompt", "")
+        p.check(marker in typed and detail in typed,
+                "editing retains the full long prompt", f"{len(typed)} characters")
         inj.key(KEY_RETURN)
         wd.settle(wire, 2)
         started_fill = wire.call("job.list")["jobs"]

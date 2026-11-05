@@ -3,11 +3,10 @@
 
 #include "app/ui_theme.h"
 #include "app/verb_fields.h"
+#include "app/ui_prompt.h"
 
 #include "imgui.h"
 
-#include <array>
-#include <cstdio>
 #include <map>
 #include <string>
 
@@ -38,20 +37,21 @@ bool draw_verb_button(const json& verb, const std::string& label,
 
 void draw_verb_field(CommandTable& commands, const json& intent, const std::string& id,
                      const std::string& recipe, const std::string& field) {
-    std::map<std::string, std::array<char, kVerbFieldChars>>& boxes = verb_field_boxes();
-    std::array<char, kVerbFieldChars>& box = boxes[id];
+    std::map<std::string, std::string>& boxes = verb_field_boxes();
+    std::string& box = boxes[id];
     if (editing_verb != id) {
         const bool matches = intent["recipe"].is_string() &&
                              recipe == intent["recipe"].get<std::string>();
         const std::string shown = matches ? intent["vars"].value(field, std::string())
                                           : std::string();
-        std::snprintf(box.data(), box.size(), "%s", shown.c_str());
+        box = shown;
     }
     ImGui::TextDisabled("%s", field.c_str());
-    ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::InputText("##words", box.data(), box.size() - 1)) {
+    if (prompt_input("##words", box,
+                     ImGui::GetTextLineHeightWithSpacing() * kPromptMaxVisibleLines,
+                     ImGuiInputTextFlags_None)) {
         commands.invoke("ai.intent",
-                        json{{"recipe", recipe}, {"vars", json{{field, box.data()}}}});
+                        json{{"recipe", recipe}, {"vars", json{{field, box}}}});
     }
     editing_verb = ImGui::IsItemActive() ? id : std::string();
 }

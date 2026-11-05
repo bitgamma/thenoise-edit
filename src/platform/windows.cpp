@@ -149,4 +149,24 @@ std::int64_t pid() {
     return static_cast<std::int64_t>(GetCurrentProcessId());
 }
 
+
+
+std::optional<char> localized_shortcut_letter(char physical_letter) {
+    if (physical_letter < 'A' || physical_letter > 'Z') {
+        return std::nullopt;
+    }
+    // Set-1 scan codes for Sokol's physical A..Z key locations.
+    constexpr UINT scans[] = {
+        0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17,
+        0x24, 0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10, 0x13,
+        0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C,
+    };
+    const UINT vk = MapVirtualKeyExW(scans[physical_letter - 'A'], MAPVK_VSC_TO_VK_EX,
+                                     GetKeyboardLayout(0));
+    if (vk >= 'A' && vk <= 'Z') {
+        return static_cast<char>(vk);
+    }
+    return std::nullopt;
+}
+
 }  // namespace noise::platform

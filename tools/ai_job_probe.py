@@ -166,8 +166,9 @@ def preview_claims(p: Probe, wire: wd.Wire, row: dict, words: dict, seed: int, m
     p.check(w_px % 16 == 0 and h_px % 16 == 0, f"{verb}: the size obeys the 16px policy", size)
     p.check("mask" not in fields, f"{verb}: no mask field is sent",
             "the engine has none: region and prep are the spatial vocabulary")
-    p.check(set(fields) == {"model", "prompt", "size", "steps", "cfg_scale", "seed", "response_format"},
-            f"{verb}: the field list is exactly the tier-1 set", str(sorted(fields)))
+    # Without explicit overrides, Lemonade applies the model's own steps/cfg_scale defaults.
+    p.check(set(fields) == {"model", "prompt", "size", "seed", "response_format"},
+            f"{verb}: the default edit request leaves model tuning to Lemonade", str(sorted(fields)))
     prompt = str(fields["prompt"])
     p.check("{{" not in prompt, f"{verb}: every placeholder was substituted", prompt[:60] + "...")
     for name, value in words.items():

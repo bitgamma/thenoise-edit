@@ -195,7 +195,7 @@ void test_the_keymap_is_reported_with_the_commands() {
     }
     CHECK_EQ(bound["view.fit"], std::string("F "));
     CHECK_EQ(bound["edit.undo"], std::string("Ctrl+Z "));
-    CHECK_EQ(bound["edit.redo"], std::string("Ctrl+Y "));
+    CHECK_EQ(bound["edit.redo"], std::string("Ctrl+Y Ctrl+Shift+Z "));
     CHECK_EQ(bound["doc.save"], std::string("Ctrl+S "));
     CHECK_EQ(bound["app.quit"], std::string("Escape Ctrl+Q "));
     CHECK_EQ(bound["tool.lasso"], std::string("L "));
@@ -3203,6 +3203,43 @@ void test_the_selection_panel_runs_its_intent_through_one_command() {
     const json with_words = h.value("ai.intent", json{{"vars", json{{"context_desc", "a painted wall"}}}});
     CHECK(with_words["ready"].get<bool>());
     CHECK(!with_words["swap"].get<bool>());   // nothing was resident, so nothing has to change
+
+    // A recently used chat model must not mask the separately resident editor model.
+    const std::string edit_model = with_words["model"].get<std::string>();
+    h.state.ai.health.model_loaded = "gemma-3-4b-it";
+    h.state.ai.health.loaded = {{edit_model, "image"}, {"gemma-3-4b-it", "llm"}};
+    const json shared_box = h.value("ai.intent", json::object());
+    CHECK(!shared_box["swap"].get<bool>());
+    CHECK_EQ(shared_box["resident"].get<std::string>(), edit_model);
+    const json resident_verbs = h.value("ai.verbs", json::object());
+    bool remove_resident = false;
+    for (const json& verb : resident_verbs["verbs"]) {
+        if (verb["id"] == "remove" && verb["ready"] == true) {
+            CHECK_EQ(verb["resident"].get<std::string>(), edit_model);
+            CHECK(!verb["swap"].get<bool>());
+            remove_resident = true;
+        }
+    }
+    CHECK(remove_resident);
+
+    // The same chat model alone occupies no image slot and must not demand a swap confirmation.
+    h.state.ai.health.loaded = {{"gemma-3-4b-it", "llm"}};
+    const json chat_only = h.value("ai.intent", json::object());
+    CHECK(!chat_only["swap"].get<bool>());
+    CHECK_EQ(chat_only["resident"].get<std::string>(), std::string());
+
+    // The image-slot conflict still matters even when chat is the most recently used model.
+    h.state.ai.health.loaded = {{"Krea-v0.3.1-INT8", "image"}, {"gemma-3-4b-it", "llm"}};
+    const json image_conflict = h.value("ai.intent", json::object());
+    CHECK(image_conflict["swap"].get<bool>());
+    CHECK_EQ(image_conflict["resident"].get<std::string>(), std::string("Krea-v0.3.1-INT8"));
+    h.state.ai.health.max_models_image = 2;
+    CHECK(!h.value("ai.intent", json::object())["swap"].get<bool>());
+    h.state.ai.health.loaded.push_back({"Another-Editor", "image"});
+    CHECK(h.value("ai.intent", json::object())["swap"].get<bool>());
+    h.state.ai.health.max_models_image = 1;
+    h.state.ai.health.loaded.clear();
+    h.state.ai.health.model_loaded.clear();
 
     // The exact request is a thing a person asks for - `ai.preview` - and asking for it is what encodes
     // the upload. Nothing on the frame path does.

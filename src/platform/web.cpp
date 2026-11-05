@@ -43,6 +43,13 @@ EM_JS(void, fill_random_js, (unsigned char* bytes), {
     crypto.getRandomValues(HEAPU8.subarray(bytes, bytes + 8));
 });
 
+EM_JS(int, layout_letter_js, (int physical), {
+    const last = Module['noiseShortcutKey'];
+    if (!last || last.code !== 'Key' + String.fromCharCode(physical)) return 0;
+    const key = last.key;
+    return /^[a-z]$/i.test(key) ? key.toUpperCase().charCodeAt(0) : 0;
+});
+
 }  // namespace
 
 std::string config_dir() { return "/config"; }
@@ -68,6 +75,11 @@ std::uint64_t random_seed() {
 }
 void sleep_ms(int) {}  // A browser's render thread must never sleep.
 std::int64_t pid() { return 0; }
+std::optional<char> localized_shortcut_letter(char physical_letter) {
+    const int letter = layout_letter_js(static_cast<int>(physical_letter));
+    return letter >= 'A' && letter <= 'Z' ? std::optional<char>(static_cast<char>(letter))
+                                         : std::nullopt;
+}
 
 std::string browser_config() {
     char* text = read_config_js();

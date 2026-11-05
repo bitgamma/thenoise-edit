@@ -62,7 +62,7 @@ const char* region_scope_name(RegionScope scope);
 std::optional<Operation> operation_from_name(const std::string& name);
 
 // One `recipes/*.json`. A recipe is an operation + prompt template + region policy + hole policy +
-// composite policy and nothing else: no model id (a role), no step count (the model's `image_defaults`),
+// composite policy and nothing else: no model id (a role), no step count (the model's `image_options`),
 // no mask (the engine has none).
 struct Recipe {
     std::string id;

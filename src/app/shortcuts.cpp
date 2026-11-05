@@ -46,15 +46,20 @@ const char* named_key(sapp_keycode code) {
 
 }
 
-std::optional<std::string> shortcut_of(const sapp_event& event) {
+std::optional<std::string> shortcut_of(const sapp_event& event,
+                                       std::optional<char> localized_letter) {
     if (event.type != SAPP_EVENTTYPE_KEY_DOWN || event.key_repeat) {
         return std::nullopt;
     }
 
     std::string key;
     if (event.key_code >= kFirstPrintable && event.key_code <= kLastPrintable) {
+        const char code = static_cast<char>(event.key_code);
+        const char letter = (event.modifiers & SAPP_MODIFIER_CTRL) && localized_letter.has_value()
+                                ? *localized_letter
+                                : code;
         key = std::string(1, static_cast<char>(
-                                 std::toupper(static_cast<unsigned char>(event.key_code))));
+                                 std::toupper(static_cast<unsigned char>(letter))));
     } else if (const char* named = named_key(event.key_code)) {
         key = named;
     } else {

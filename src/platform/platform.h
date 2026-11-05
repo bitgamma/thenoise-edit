@@ -24,4 +24,8 @@ void sleep_ms(int ms);
 
 std::int64_t pid();
 
+// Resolve the letter printed by the active keyboard layout for a Sokol physical A..Z key.
+// Empty means no layout information is available; callers retain the physical letter.
+std::optional<char> localized_shortcut_letter(char physical_letter);
+
 }

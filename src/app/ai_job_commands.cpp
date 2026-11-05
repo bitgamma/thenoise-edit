@@ -77,7 +77,7 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
         state.ai.connected = true;
         state.ai.connect_error.clear();
         state.ai.registry->update(*models);
-        state.ai.registry->set_resident(health->model_loaded);
+        state.ai.registry->set_loaded(health->loaded);
         log::info(std::string(state.ai.replaying
                                   ? "handshake answered by the recordings in $NOISE_AI_FIXTURES"
                                   : "connected to " + state.ai.client->profile().base_url) +
@@ -88,6 +88,13 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
                                {"base_url", state.ai.client->profile().base_url},
                                {"version", health->version},
                                {"model_loaded", health->model_loaded},
+                               {"all_models_loaded", [&] {
+                                   json rows = json::array();
+                                   for (const ai::LoadedModel& loaded : health->loaded) {
+                                       rows.push_back({{"model_name", loaded.id}, {"type", loaded.type}});
+                                   }
+                                   return rows;
+                               }()},
                                {"max_models_image", health->max_models_image},
                                {"models", static_cast<std::size_t>(models->size())},
                                {"models_warning", state.ai.client->models_warning()},
@@ -106,6 +113,11 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
             server["has_key"] = !state.ai.client->profile().api_key.empty();
             server["prefix"] = state.ai.client->using_alternate_prefix() ? "/api/v1" : "/v1";
             server["model_loaded"] = state.ai.health.model_loaded;
+            server["all_models_loaded"] = json::array();
+            for (const ai::LoadedModel& loaded : state.ai.health.loaded) {
+                server["all_models_loaded"].push_back(
+                    json{{"model_name", loaded.id}, {"type", loaded.type}});
+            }
             server["version"] = state.ai.health.version;
             server["request_timeout_s"] = state.ai.client->profile().request_timeout_s;
             server["transport"] = state.ai.transport == nullptr
@@ -148,7 +160,27 @@ void register_ai_job_commands(AppState& state, CommandTable& table) {
         }
         state.ai.health.model_loaded = model;
         if (state.ai.registry != nullptr) {
-            state.ai.registry->set_resident(model);
+            const ai::ModelEntry* entry = state.ai.registry->model(model);
+            std::string type;
+            if (entry != nullptr) {
+                if (entry->has_label("image") || entry->has_label("upscaling")) {
+                    type = "image";
+                } else if (entry->has_label("chat")) {
+                    type = "llm";
+                }
+            }
+            auto& loaded = state.ai.health.loaded;
+            if (!type.empty()) {
+                loaded.erase(std::remove_if(loaded.begin(), loaded.end(),
+                                           [&](const ai::LoadedModel& item) {
+                                               return item.type == type &&
+                                                      ((type == "image" &&
+                                                        state.ai.health.max_models_image == 1) ||
+                                                       item.id == model);
+                                           }), loaded.end());
+                loaded.push_back(ai::LoadedModel{model, type});
+            }
+            state.ai.registry->set_loaded(loaded);
         }
         log::info("loaded " + model + (pinned ? " (pinned)" : ""));
         return command_ok(json{{"model", model}, {"pinned", pinned}});

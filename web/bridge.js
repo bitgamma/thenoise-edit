@@ -2,6 +2,11 @@
 var Module = typeof Module !== 'undefined' ? Module : {};
 
 (function () {
+  // Capture the browser's layout-resolved key before sokol receives its physical `code`.
+  window.addEventListener('keydown', (event) => {
+    Module['noiseShortcutKey'] = {code: event.code, key: event.key};
+  }, true);
+
   let nextFile = 0;
   const copyFile = async (file) => {
     const directory = `/uploads/${++nextFile}`;

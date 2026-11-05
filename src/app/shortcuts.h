@@ -12,6 +12,7 @@ namespace noise::app {
 // (core/shortcut.h): modifiers in table order, then the key. nullopt when the event cannot
 // be a shortcut at all - a bare modifier, a key repeat, an unmapped code - so a caller can
 // dispatch on it without guessing.
-std::optional<std::string> shortcut_of(const sapp_event& event);
+std::optional<std::string> shortcut_of(const sapp_event& event,
+                                       std::optional<char> localized_letter);
 
 }

@@ -222,7 +222,7 @@ void register_ai_verb_commands(AppState& state, CommandTable& table) {
                                 {"reason", table_error.empty() ? readiness.reason : table_error},
                                 {"fix", readiness.fix},
                                 {"model", readiness.model},
-                                {"resident", state.ai.health.model_loaded},
+                                {"resident", resident_for(state, readiness)},
                                 // Priced before the press: a verb that would swap the model on a shared
                                 // box says so, and the press that goes ahead carries `confirm`.
                                 {"swap", needs_swap(state, readiness)}});

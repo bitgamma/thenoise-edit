@@ -2,6 +2,7 @@
 #include "app/ui_internal.h"
 
 #include "app/verb_fields.h"
+#include "app/ui_prompt.h"
 
 #include "core/log.h"
 
@@ -19,7 +20,7 @@ namespace {
 // The menu and the front door both ask for a path and act on the answer later: a native dialog is
 // asynchronous by design, so the click that opened it and the document it produced cannot share a
 // frame. This remembers which door the open picker is behind.
-char front_door_prompt[kVerbFieldChars] = "";
+std::string front_door_prompt;
 // Which box the keyboard has, by name, taken after the widget drew: the same rule the verb fields use, so
 // the form can fill a box a driver wrote to without rewriting one a hand is typing into.
 std::string front_door_editing;
@@ -132,14 +133,12 @@ void draw_new_document_body(AppState& state, CommandTable& commands) {
     }
     ImGui::TextDisabled("what should it be?  (empty makes a blank canvas)");
     if (front_door_editing != "prompt") {
-        std::snprintf(front_door_prompt, sizeof(front_door_prompt), "%s",
-                      state.new_document.prompt.c_str());
+        front_door_prompt = state.new_document.prompt;
     }
-    ImGui::SetNextItemWidth(-1.0f);
-    // The value goes out as typed, blanks included: clearing the box means a blank canvas, which is what
-    // the label above it says.
-    if (ImGui::InputTextMultiline("##new_prompt", front_door_prompt, sizeof(front_door_prompt) - 1,
-                                  ImVec2(-1.0f, ImGui::GetTextLineHeight() * 3.0f))) {
+    // Clearing the prompt still means a blank canvas.
+    if (prompt_input("##new_prompt", front_door_prompt,
+                     ImGui::GetTextLineHeightWithSpacing() * kPromptMaxVisibleLines,
+                     ImGuiInputTextFlags_None)) {
         commands.invoke("new_document", json{{"prompt", front_door_prompt}});
     }
     front_door_editing = ImGui::IsItemActive() ? "prompt" : std::string();
@@ -157,8 +156,7 @@ void create_from_front_door(CommandTable& commands) {
 void draw_front_door(AppState& state, CommandTable& commands) {
     const bool wanted = state.front_door != FrontDoor::closed;
     if (wanted && !front_door_drawn) {
-        std::snprintf(front_door_prompt, sizeof(front_door_prompt), "%s",
-                      state.new_document.prompt.c_str());
+        front_door_prompt = state.new_document.prompt;
         ImGui::OpenPopup("Welcome");
         front_door_drawn = true;
     }

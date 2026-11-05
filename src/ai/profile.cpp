@@ -45,13 +45,13 @@ std::vector<std::string> list_at(const nlohmann::json& object, const char* key) 
     return out;
 }
 
-ImageDefaults defaults_at(const nlohmann::json& object) {
-    ImageDefaults defaults;
-    if (!object.is_object() || !object.contains("image_defaults") ||
-        !object.at("image_defaults").is_object()) {
+ImageOptions options_at(const nlohmann::json& object) {
+    ImageOptions defaults;
+    if (!object.is_object() || !object.contains("recipe_options") ||
+        !object.at("recipe_options").is_object()) {
         return defaults;
     }
-    const nlohmann::json& source = object.at("image_defaults");
+    const nlohmann::json& source = object.at("recipe_options");
     defaults.steps = static_cast<int>(number_at(source, "steps", 0.0));
     defaults.cfg_scale = number_at(source, "cfg_scale", 0.0);
     defaults.width = static_cast<int>(number_at(source, "width", 0.0));
@@ -100,7 +100,7 @@ std::vector<ModelEntry> parse_models(const nlohmann::json& body, std::string& er
         model.labels = list_at(entry, "labels");
         model.downloaded = flag_at(entry, "downloaded", false);
         model.size_gb = number_at(entry, "size", 0.0);
-        model.image_defaults = defaults_at(entry);
+        model.image_options = options_at(entry);
         out.push_back(std::move(model));
     }
     if (skipped != 0) {
@@ -128,7 +128,7 @@ ServerHealth parse_health(const nlohmann::json& body, std::string& error) {
         for (const nlohmann::json& entry : body.at("all_models_loaded")) {
             const std::string name = text_at(entry, "model_name");
             if (!name.empty()) {
-                health.loaded.push_back(name);
+                health.loaded.push_back(LoadedModel{name, text_at(entry, "type")});
             }
         }
     }

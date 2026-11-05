@@ -30,7 +30,7 @@ ModelEntry entry(const std::string& id, const std::string& recipe,
     model.labels = labels;
     model.downloaded = downloaded;
     model.size_gb = size_gb;
-    model.image_defaults = noise::ai::ImageDefaults{4, 1.0, 1024, 1024};
+    model.image_options = noise::ai::ImageOptions{4, 1.0, 1024, 1024};
     return model;
 }
 
@@ -226,6 +226,13 @@ void test_canonical_model_ids_keep_preference_order_without_changing_server_ids(
                      entry("builtin.Qwen-Image-2.1-Turbo-INT8", "thenoise",
                            {"image", "edit"}, true, 16.1)});
     CHECK_EQ(registry.resolve("edit").model_id, std::string("Qwen-Image-2.1-Turbo-INT8"));
+    // The last-used chat model must not hide a canonical image model that is also resident.
+    registry.set_loaded({{"gemma-3-4b-it", "llm"},
+                         {"builtin.Qwen-Image-2.1-Turbo-INT8", "image"}});
+    CHECK_EQ(registry.resolve("edit").model_id,
+             std::string("builtin.Qwen-Image-2.1-Turbo-INT8"));
+    registry.set_loaded({});
+    CHECK_EQ(registry.resolve("edit").model_id, std::string("Qwen-Image-2.1-Turbo-INT8"));
 
     // A non-downloaded shadowed entry is visible as such, but must not invent a command to import
     // it by an ambiguous bare name. Wrong recipe/labels cannot impersonate a preferred model.
@@ -263,7 +270,7 @@ void test_discovery_reads_what_the_server_actually_sends() {
     std::string error;
     const json body = json::parse(R"({"data":[
         {"id":"Klein","recipe":"thenoise","labels":["image","edit"],"downloaded":true,"size":32.5,
-         "image_defaults":{"steps":4,"cfg_scale":1.0,"width":1024,"height":1024,
+         "recipe_options":{"steps":4,"cfg_scale":1.0,"width":1024,"height":1024,
                             "soft_pixel_cap":2097152}},
         {"id":"Noprimes","recipe":"thenoise","labels":["image"],"downloaded":0,"size":"3"},
         {"recipe":"thenoise","labels":["image"]},
@@ -273,12 +280,12 @@ void test_discovery_reads_what_the_server_actually_sends() {
     CHECK_EQ(models.size(), std::size_t(3));
     CHECK(!error.empty());  // the row with no id is reported, not fatal
     CHECK(models[0].downloaded);
-    CHECK_EQ(models[0].image_defaults.steps, 4);
+    CHECK_EQ(models[0].image_options.steps, 4);
     // The pixel ceiling a model serves, which is what a region is compiled under. Dropped on the floor
     // here, the compiler falls back to the table's stand-in and quietly shrinks answers the model would
     // have served at full size.
-    CHECK_EQ(models[0].image_defaults.soft_pixel_cap, 2097152);
-    CHECK_EQ(models[1].image_defaults.soft_pixel_cap, 0);
+    CHECK_EQ(models[0].image_options.soft_pixel_cap, 2097152);
+    CHECK_EQ(models[1].image_options.soft_pixel_cap, 0);
     // `downloaded` arrives as 0/1 on some rows and a bool on others; a string size is not a number.
     CHECK(!models[1].downloaded);
     CHECK_EQ(models[1].size_gb, 0.0);
@@ -296,12 +303,14 @@ void test_discovery_reads_what_the_server_actually_sends() {
              {"version", "2026.41.0"},
              {"model_loaded", "Klein"},
              {"max_models", {{"image", 1}}},
-             {"all_models_loaded", json::array({json{{"model_name", "Klein"}, {"pinned", true}}})}},
+             {"all_models_loaded", json::array({json{{"model_name", "Klein"}, {"type", "image"}, {"pinned", true}}})}},
         health_error);
     CHECK(health.ok);
     CHECK_EQ(health.model_loaded, std::string("Klein"));
     CHECK_EQ(health.max_models_image, 1);
     CHECK_EQ(health.loaded.size(), std::size_t(1));
+    CHECK_EQ(health.loaded[0].id, std::string("Klein"));
+    CHECK_EQ(health.loaded[0].type, std::string("image"));
     CHECK(health_error.empty());
 
     std::string bad_error;

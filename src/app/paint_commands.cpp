@@ -435,7 +435,7 @@ void register_paint_commands(AppState& state, CommandTable& table) {
         return command_ok(history_json(state.doc));
     });
 
-    table.add("edit.redo", "Redo the change that undo took back", {"Ctrl+Y"}, {},
+    table.add("edit.redo", "Redo the change that undo took back", {"Ctrl+Y", "Ctrl+Shift+Z"}, {},
               [&state](const json&) -> CommandResult {
         CommandResult guard = require_document(state);
         if (!guard.ok) {

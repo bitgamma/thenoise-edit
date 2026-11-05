@@ -3,8 +3,8 @@
 
 namespace noise::app {
 
-std::map<std::string, std::array<char, kVerbFieldChars>>& verb_field_boxes() {
-    static std::map<std::string, std::array<char, kVerbFieldChars>> boxes;
+std::map<std::string, std::string>& verb_field_boxes() {
+    static std::map<std::string, std::string> boxes;
     return boxes;
 }
 

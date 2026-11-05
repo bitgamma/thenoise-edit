@@ -58,8 +58,8 @@ Extent extent_of(const nlohmann::json& value) {
     return extent;
 }
 
-// The step count the request carried, for the latency key. It is in the stored preview, which is also
-// what the model was asked, so the two cannot disagree about what was asked.
+// The effective step count for the latency key. The preview retains the model's advertised
+// count even if the request omits `steps` to let Lemonade apply its default.
 int steps_of(const JobRecord& record) {
     if (record.request.is_object() && record.request.contains("steps") &&
         record.request.at("steps").is_number_integer()) {

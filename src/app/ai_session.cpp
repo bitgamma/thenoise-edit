@@ -79,8 +79,8 @@ ai::RegionPolicy AiSession::region_policy(const ai::Recipe& recipe) const {
     // answer can serve costs detail the answer never needed to lose.
     if (registry != nullptr) {
         const ai::ModelEntry* entry = registry->resolved_model(recipe.role);
-        if (entry != nullptr && entry->image_defaults.soft_pixel_cap > 0) {
-            policy.max_area_px = entry->image_defaults.soft_pixel_cap;
+        if (entry != nullptr && entry->image_options.soft_pixel_cap > 0) {
+            policy.max_area_px = entry->image_options.soft_pixel_cap;
         }
     }
     return policy;

@@ -4,13 +4,12 @@
 #include "imgui.h"
 
 #include "app/verb_fields.h"
+#include "app/ui_prompt.h"
 #include "app/selection_edit.h"
 #include "imgui_internal.h"  // BringWindowToDisplayFront: the bar has to sit above the canvas
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <array>
-#include <cstdio>
 #include <string>
 
 #include "app/state.h"
@@ -25,8 +24,6 @@ using nlohmann::json;
 // the boundary is unreadable exactly where the feather is.
 constexpr double kBarGapPx = 10.0;
 constexpr double kBarPadPx = 6.0;
-// A prompt is a sentence: a box that shows eight characters of it is a box nobody types into, so the
-// phrase box is wider than the bar it hangs from.
 constexpr double kAskWidthPx = 340.0;
 
 // The words a marked-area verb asks for, typed over the mark rather than in the panel across the
@@ -47,26 +44,45 @@ void draw_ask(AppState& state, CommandTable& commands, const json& ask, bool bar
     const bool just_opened = verb != open_for;
     open_for = verb;
 
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const double width = std::max(kAskWidthPx, static_cast<double>(state.verb_bar.w));
-    // Room enough for the tallest it can be (label, field, buttons, refusal) is used only to decide
-    // which side of the bar it goes on; the box sizes itself to what it actually holds, because a box
-    // measured by hand is a box that clips its own buttons.
-    const double reserve = ImGui::GetTextLineHeight() * 4.0 + style.FramePadding.y * 4.0 +
-                           style.ItemSpacing.y * 3.0 + kBarPadPx * 2.0;
-
-    // On the far side of the bar from the mark: a box over the boundary would hide the edge whose
-    // coverage is being described, and the bar is already on the other side of it.
-    double x = state.verb_bar.x;
-    double y = bar_above_mark ? state.verb_bar.y - kBarGapPx - reserve
-                              : state.verb_bar.y + state.verb_bar.h + kBarGapPx;
-    if (bar_above_mark && y < state.canvas_origin.y) {
-        y = state.verb_bar.y + state.verb_bar.h + kBarGapPx;
-    } else if (!bar_above_mark && y + reserve > state.canvas_origin.y + state.viewport.h) {
-        y = state.verb_bar.y - kBarGapPx - reserve;
+    const std::string field = ask["field"].get<std::string>();
+    std::string& box = verb_field_boxes()[verb];
+    if (!field_held) {
+        box = ask["value"].get<std::string>();
     }
-    x = std::min(x, state.canvas_origin.x + state.viewport.w - width);
-    x = std::max(x, static_cast<double>(state.canvas_origin.x));
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const double width = std::min(std::max(kAskWidthPx, static_cast<double>(state.verb_bar.w)),
+                                  std::max(1.0, static_cast<double>(state.viewport.w)));
+    const double above = state.verb_bar.y - kBarGapPx - state.canvas_origin.y;
+    const double below = state.canvas_origin.y + state.viewport.h -
+                         (state.verb_bar.y + state.verb_bar.h + kBarGapPx);
+    const float line = ImGui::GetTextLineHeightWithSpacing();
+    const float error_height = refused.empty() ? 0.0f
+        : ImGui::CalcTextSize(refused.c_str(), nullptr, false,
+                              static_cast<float>(width - kBarPadPx * 2.0)).y +
+              style.ItemSpacing.y;
+    const double chrome = kBarPadPx * 2.0 + line * 2.0 + ImGui::GetFrameHeight() +
+                          style.ItemSpacing.y * 3.0 + error_height;
+    const float prompt_max = std::max(kPromptMinVisibleLines * line,
+                                     std::min(kPromptMaxVisibleLines * line,
+                                              static_cast<float>(std::max(above, below) - chrome)));
+    const float input_height = prompt_field_height(box, static_cast<float>(width) -
+                                                    static_cast<float>(kBarPadPx * 2.0), prompt_max);
+    const double reserve = chrome + input_height;
+    bool popup_above = bar_above_mark;
+    if ((popup_above ? above : below) < reserve &&
+        (popup_above ? below : above) > (popup_above ? above : below)) {
+        popup_above = !popup_above;
+    }
+    double x = state.verb_bar.x;
+    double y = popup_above ? state.verb_bar.y - kBarGapPx - reserve
+                           : state.verb_bar.y + state.verb_bar.h + kBarGapPx;
+    x = std::clamp(x, static_cast<double>(state.canvas_origin.x),
+                   std::max(static_cast<double>(state.canvas_origin.x),
+                            state.canvas_origin.x + state.viewport.w - width));
+    y = std::clamp(y, static_cast<double>(state.canvas_origin.y),
+                   std::max(static_cast<double>(state.canvas_origin.y),
+                            state.canvas_origin.y + state.viewport.h - reserve));
 
     ImGui::SetNextWindowPos(ImVec2(static_cast<float>(x), static_cast<float>(y)), ImGuiCond_Always);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(22, 22, 26, 242));
@@ -83,33 +99,31 @@ void draw_ask(AppState& state, CommandTable& commands, const json& ask, bool bar
     state.verb_ask = {ImGui::GetWindowPos().x, ImGui::GetWindowPos().y, ImGui::GetWindowSize().x,
                       ImGui::GetWindowSize().y};
 
-    const std::string field = ask["field"].get<std::string>();
-    std::array<char, kVerbFieldChars>& box = verb_field_boxes()[verb];
-    if (!field_held) {
-        std::snprintf(box.data(), box.size(), "%s", ask["value"].get<std::string>().c_str());
-    }
     ImGui::TextUnformatted(ask["label"].get<std::string>().c_str());
     ImGui::SameLine();
     ImGui::TextDisabled("(%s)", field.c_str());
     if (just_opened) {
         ImGui::SetKeyboardFocusHere();
     }
-    ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::InputText("##ask_words", box.data(), box.size() - 1)) {
+    const bool confirmed_enter = prompt_input("##ask_words", box, input_height,
+        ImGuiInputTextFlags_CtrlEnterForNewLine | ImGuiInputTextFlags_EnterReturnsTrue);
+    if (ImGui::IsItemEdited()) {
         refused.clear();
         commands.invoke("ai.intent", json{{"recipe", ask["recipe"]},
-                                          {"vars", json{{field, box.data()}}}});
+                                          {"vars", json{{field, box}}}});
     }
     field_held = ImGui::IsItemActive();
+    ImGui::TextDisabled("Enter: Run   Shift+Enter: New line");
 
-    const bool confirmed_enter = ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter, false);
     const bool confirmed_click = ImGui::Button("Run");
     ImGui::SameLine();
     if (ImGui::Button("Cancel")) {
         commands.invoke("verb.ask", json{{"show", "close"}});
     }
     if (!refused.empty()) {
-        ImGui::TextDisabled("%s", refused.c_str());
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        ImGui::TextWrapped("%s", refused.c_str());
+        ImGui::PopStyleColor();
     }
     // A press that is refused leaves the box standing with the reason in it: the words are already in
     // the intent, so the fix is one edit away rather than a retyped phrase.

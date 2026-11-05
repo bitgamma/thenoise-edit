@@ -399,7 +399,12 @@ void event(const sapp_event* ev) {
     if (ImGui::GetIO().WantCaptureKeyboard || typing_in_layer_field(g.state)) {
         return;
     }
-    const std::optional<std::string> shortcut = app::shortcut_of(*ev);
+    const bool ctrl_letter = (ev->modifiers & SAPP_MODIFIER_CTRL) &&
+                             ev->key_code >= SAPP_KEYCODE_A && ev->key_code <= SAPP_KEYCODE_Z;
+    const std::optional<char> translated = ctrl_letter
+        ? platform::localized_shortcut_letter(static_cast<char>(ev->key_code))
+        : std::nullopt;
+    const std::optional<std::string> shortcut = app::shortcut_of(*ev, translated);
     if (!shortcut) {
         return;
     }
