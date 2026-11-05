@@ -7,14 +7,8 @@ two dropdowns are where the recipe table meets a person: a row that draws a rati
 or a style that changes the label without changing what the shortcut runs, would leave every
 command-level test green while the button did something else.
 
-The controls are found, not remembered. Each sweep step clicks, then clicks once more where an opened
-list's second entry would be, and asks the app what its intent now holds. A pair that makes `aspect`
-read back as a ratio *is* the aspect row; a pair that makes `recipe` read back as another member of the
-family *is* the style row. Rows moving up or down the panel cost a few more clicks rather than a false
-failure, and a control that never commits fails the claim.
-
-The document is blank and unmarked, and no words are typed until the row has been found, so a stray
-click lands on a verb that refuses rather than on one that edits.
+The controls publish their on-screen rectangles through app.state; the probe clicks those widgets
+and their actual popup entries, instead of sweeping across unrelated controls after a layout change.
 
     python3 tools/panel_aspect_probe.py --bin build/noise-edit
 
@@ -30,14 +24,6 @@ import tempfile
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import wire_drive as wd  # noqa: E402
 import wire_input as wi  # noqa: E402
-
-# The tool panel is scrollable; the controls under test follow the file and tool controls.
-# Entries of an opened list, counted from the row that opened it. The first entry is skipped: it is
-# "canvas" for aspects and the row's own recipe for styles, and picking what is already held commits
-# nothing. `ai.verbs` reports both lists head-first, so entry 2 is the first real choice.
-LIST_ENTRIES = (2, 3, 4)
-LIST_ROW_HEIGHT = 22
-ENTRY_CENTER = LIST_ROW_HEIGHT // 2
 
 
 class Probe:
@@ -66,29 +52,34 @@ def click(inj: wi.Injector, x: int, y: int) -> None:
     inj.move(x, y)
 
 
-def find_row(wire: wd.Wire, inj: wi.Injector, reads, p: Probe, what: str, x: int,
-             start: int, stop: int) -> int | None:
-    """Click through the tool panel until a dropdown commits a change to `reads()`.
+def click_box(inj: wi.Injector, box: list) -> None:
+    x, y, width, height = box
+    click(inj, round(x + width / 2), round(y + height / 2))
 
-    The list is reopened for every entry tried: picking an entry closes it, so a second attempt after a
-    no-op pick (the entry already held) would otherwise click on the panel behind. Returns the y of the
-    row that worked, so a later claim points at the same widget.
-    """
-    step = max(1, min(LIST_ROW_HEIGHT // 2, (stop - start) // 4))
-    for y in range(start, stop, step):
-        for entry in LIST_ENTRIES:
-            before = reads()
-            click(inj, x, y)
-            wd.settle(wire, 1)
-            click(inj, x, y + entry * LIST_ROW_HEIGHT + ENTRY_CENTER)
-            wd.settle(wire, 2)
-            if reads() != before:
-                p.check(True, f"the {what} row commits from a click", f"y={y} entry {entry}")
-                return y
-        # No Escape here to close a leftover list: `Escape` is `app.quit`. The next position's first
-        # click is what closes it, which costs that position and nothing else.
-    p.check(False, f"the {what} row commits from a click")
-    return None
+
+def picker_rect(wire: wd.Wire, inj: wi.Injector, kind: str) -> list:
+    for _ in range(12):
+        state = wire.call("app.state")
+        box = state["ai_pickers"][kind]
+        tool_x, tool_bottom, tool_width, _ = state["layers_window"]
+        del tool_width
+        if box[2] > 20 and 30 <= box[1] and box[1] + box[3] <= tool_bottom - 8:
+            return box
+        inj.move(round(tool_x + 80), round(max(60, tool_bottom * 0.5)))
+        inj.wheel(-3 if box[1] + box[3] > tool_bottom - 8 else 3)
+        wd.settle(wire)
+    raise wd.WireError(f"{kind} picker remained outside the visible tool panel: {box}")
+
+
+def choose_picker_option(wire: wd.Wire, inj: wi.Injector, kind: str, choice: str) -> None:
+    click_box(inj, picker_rect(wire, inj, kind))
+    wd.settle(wire)
+    entries = {entry["id"]: entry["screen"]
+               for entry in wire.call("app.state")["ai_pickers"][f"{kind}_options"]}
+    if choice not in entries:
+        raise wd.WireError(f"{kind} dropdown opened without option {choice}: {entries}")
+    click_box(inj, entries[choice])
+    wd.settle(wire)
 
 
 def run(wire: wd.Wire, inj_display: str, p: Probe, tmp: pathlib.Path) -> None:
@@ -104,24 +95,9 @@ def run(wire: wd.Wire, inj_display: str, p: Probe, tmp: pathlib.Path) -> None:
                 str([m["id"] for m in row.get("variants", [])]))
         p.check(row["active"] == "new-image", "and names what a press would run")
 
-        state = wire.call("app.state")
-        framebuffer_width, framebuffer_height = state["framebuffer"]
-        layers_x, tool_bottom, layers_width, _ = state["layers_window"]
-        tool_x = round(layers_x + layers_width / 2)
-        tool_bottom = round(tool_bottom)
-        if not (0 < tool_x < framebuffer_width and 0 < tool_bottom < framebuffer_height):
-            raise wd.WireError(
-                f"invalid tool panel geometry: x={tool_x}, bottom={tool_bottom}, "
-                f"framebuffer={framebuffer_width}x{framebuffer_height}")
-        inj.move(tool_x, round(tool_bottom * 0.5))
-        inj.wheel(-10)
-        wd.settle(wire)
-
-        y_aspect = find_row(wire, inj, lambda: wire.call("ai.intent", {})["aspect"], p, "aspect",
-                            x=tool_x, start=round(tool_bottom * 0.18),
-                            stop=round(tool_bottom * 0.62))
-        if y_aspect is None:
-            return
+        choose_picker_option(wire, inj, "aspect", "1:1")
+        p.check(wire.call("ai.intent", {})["aspect"] == "1:1",
+                "the aspect row commits from a click")
         chosen = wire.call("ai.intent", {})["aspect"]
         p.check(chosen is not None, "the dropdown chose a ratio", str(chosen))
 
@@ -133,22 +109,10 @@ def run(wire: wd.Wire, inj_display: str, p: Probe, tmp: pathlib.Path) -> None:
         p.check(wide == 512 or high == 512, "and one axis still fills the canvas",
                 f"{wide}x{high}")
 
-        # The style row sits below the aspect row, so start the sweep where the aspect sweep stopped and
-        # look for a click pair that changes which recipe the intent holds.
         held = wire.call("ai.intent", {})["recipe"]
-        # The style row is the next one down from the aspect row, so the sweep is bounded rather than
-        # running to the bottom of the dock: what it would find there is a slider.
-        # The list the aspect sweep left open hangs down over the row beneath it, so it is put away
-        # first: the status bar has nothing to press, and a sweep that started below the entries would
-        # miss a style row that sits right where the aspect row's neighbour belongs.
-        click(inj, framebuffer_width // 2, framebuffer_height - 1)
-        wd.settle(wire)
-        style_start = y_aspect + LIST_ROW_HEIGHT * 2
-        style_stop = min(y_aspect + LIST_ROW_HEIGHT * 4, tool_bottom - 8)
-        style_y = find_row(wire, inj, lambda: wire.call("ai.intent", {})["recipe"], p, "style",
-                           x=tool_x, start=style_start, stop=style_stop)
-        if style_y is None:
-            return
+        choose_picker_option(wire, inj, "style", "new-image-anime")
+        p.check(wire.call("ai.intent", {})["recipe"] == "new-image-anime",
+                "the style row commits from a click")
         style = wire.call("ai.intent", {})["recipe"]
         p.check(style != held, "the style row changed the recipe the intent holds",
                 f"{held} -> {style}")
@@ -174,6 +138,10 @@ def run(wire: wd.Wire, inj_display: str, p: Probe, tmp: pathlib.Path) -> None:
             stacked = wire.call("layer.list")["layers"]
             p.check(len(stacked) == 2, "and the next answer landed on a layer of its own",
                     f"{len(stacked)} layers")
+
+        state = wire.call("app.state")
+        tool_x = round(state["layers_window"][0] + state["layers_window"][2] / 2)
+        tool_bottom = round(state["layers_window"][1])
 
         # A long References group can extend beyond the scrollable tool window. The published drop
         # target must be the visible intersection, so a drop over another panel or the canvas keeps its

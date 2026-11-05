@@ -187,9 +187,11 @@ def main() -> int:
                                            1.6 * expected_wide)
         p.check(wide_diameter > diameter + 2.0, "a wider brush draws a wider ring",
                 f"{diameter:.1f} px to {wide_diameter:.1f} px")
-        p.check(abs(wide_diameter - expected_wide) <= 2.0 * RADIUS_TOLERANCE_PX,
-                "and still matches the size the app reports",
-                f"measured {wide_diameter:.1f} px, expected {expected_wide:.1f} px")
+        growth = wide_diameter - diameter
+        expected_growth = expected_wide - expected
+        p.check(abs(growth - expected_growth) <= RADIUS_TOLERANCE_PX,
+                "and its growth matches the size the app reports",
+                f"measured +{growth:.1f} px, expected +{expected_growth:.1f} px")
         shutil.copy(wide_ring_path, "/tmp/pointer_brush_wide.png")
 
         # Leaving the canvas has to hand the cursor back: the brush hid it, and nothing else in the build

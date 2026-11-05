@@ -15,6 +15,8 @@ inline constexpr const char* kWindowStatus = "Status";
 
 void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
                  const gfx::Checker& checker, CoverageTint& tint, CoverageTint& mask_tint);
+void draw_tool_palette(AppState& state, CommandTable& commands);
+void draw_tool_options(AppState& state, CommandTable& commands);
 void draw_tool_panel(AppState& state, CommandTable& commands, const nlohmann::json& intent,
                      ReferenceThumbs& thumbs);
 void draw_ai_references(AppState& state, CommandTable& commands, ReferenceThumbs& thumbs,

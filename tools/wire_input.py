@@ -211,12 +211,49 @@ PAINT_STEPS = 8
 MOVE = (40, 20)        # document pixels of the test move drag
 
 
+def hoverable_image_point(wire: wd.Wire, inj: Injector) -> tuple[float, float, dict]:
+    state = wire.call("app.state", {})
+    left, top, right, bottom = wd.document_screen_rect(state)
+    ox, oy, cw, ch = state["canvas"]
+    x0, y0 = max(left, ox), max(top, oy)
+    x1, y1 = min(right, ox + cw), min(bottom, oy + ch)
+    if x1 - x0 < 16 or y1 - y0 < 16:
+        raise wd.WireError(f"pixel brush: document {left, top, right, bottom} "
+                           f"has no usable overlap with canvas {state['canvas']}")
+
+    probes = []
+    for fx, fy in ((0.5, 0.5), (0.3, 0.3), (0.7, 0.3),
+                   (0.3, 0.7), (0.7, 0.7)):
+        x, y = x0 + fx * (x1 - x0), y0 + fy * (y1 - y0)
+        inj.move(x, y)
+        wd.settle(wire)
+        observed = wire.call("app.state", {})
+        pointer = observed["pointer"]
+        at = pointer["at"]
+        in_image = (at is not None and 0 <= at[0] < observed["view"]["image"][0]
+                    and 0 <= at[1] < observed["view"]["image"][1])
+        if pointer["over_canvas"] and in_image:
+            return x, y, observed
+        probes.append((round(x), round(y), pointer["over_canvas"], at))
+    raise wd.WireError(f"pixel brush: no interactive point in visible document; "
+                       f"document={left, top, right, bottom}, canvas={state['canvas']}, "
+                       f"tried={probes}")
+
+
 def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -> list[str]:
     fails: list[str] = []
     state = wd.wait_for_fit(wire)
     ox, oy, cw, ch = state["canvas"]
-    base_scale = state["view"]["scale"]
     px, py = ox + cw * 0.62, oy + ch * 0.44
+
+    # A fitted image may be centred by clamp_origin after a wheel tick. Give it room to pan
+    # before testing that a zoom anchors the world coordinate under the pointer.
+    image_w, image_h = state["view"]["image"]
+    wire.call("view.set", {"scale": 2.0 * max(cw / image_w, ch / image_h),
+                           "origin": [0.0, 0.0]})
+    wd.settle(wire)
+    state = wire.call("app.state")
+    base_scale = state["view"]["scale"]
 
     # Wheel over a point: zoom, and the document point under the cursor stays put.
     inj.move(px, py)
@@ -720,17 +757,35 @@ def drive(wire: wd.Wire, inj: Injector, proc: subprocess.Popen, fixture: Path) -
     if pixels_before_brush != pixels_after_brush:
         fails.append("Brush shortcut changed pixels while the mask was active")
 
-    wire.call("layer.plane", {"plane": "pixels"})
+    switched = wire.call("layer.plane", {"plane": "pixels"})
     wire.call("select.clear", {})
+    wire.call("tool.set", {"tool": "brush", "size": 14.0, "opacity": 1.0, "flow": 1.0,
+                           "color": [249, 37, 183, 255]})
+    wd.settle(wire)
+    click_x, click_y, hovering_state = hoverable_image_point(wire, inj)
     pixels_before_colour, _ = view()
-    inj.move(doc[0] + doc[2] * 0.5, doc[1] + doc[3] * 0.5)
+    depth_before_colour = hovering_state["document"]["history"]["undo_depth"]
     inj.button(1, True)
     wd.settle(wire)
+    colour_stroke = wire.call("app.state", {})["stroke"]
     inj.button(1, False)
     wd.settle(wire)
+    after_colour = wire.call("app.state", {})
     pixels_after_colour, _ = view()
+    print(f"Brush on pixels: click ({click_x:.1f},{click_y:.1f}) "
+          f"in canvas {hovering_state['canvas']}; selected {switched['plane']}, "
+          f"hovering {hovering_state['pointer']['over_canvas']}, "
+          f"target {colour_stroke['plane']}, dabs {colour_stroke['dabs']}, "
+          f"pixels changed {pixels_before_colour != pixels_after_colour}; "
+          f"history {depth_before_colour} -> {after_colour['document']['history']['undo_depth']}")
+    if switched["plane"] != "pixels" or hovering_state["brush"]["edit_plane"] != "pixels":
+        fails.append("image thumbnail did not select the pixel plane")
+    if colour_stroke["plane"] != "pixels" or colour_stroke["dabs"] < 1:
+        fails.append("pixel brush click did not reach the pixel plane")
     if pixels_before_colour == pixels_after_colour:
         fails.append("Brush did not edit image pixels after selecting the image thumbnail")
+    if after_colour["document"]["history"]["undo_depth"] != depth_before_colour + 1:
+        fails.append("image brush click was not one undo step")
     if wire.call("mask.get")["mask"]["covered"] != painted_mask["mask"]["covered"]:
         fails.append("image Brush unexpectedly changed layer mask")
 

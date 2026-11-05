@@ -20,6 +20,9 @@ WIDTH, HEIGHT = 1280, 800
 SCREEN_WIDTH, SCREEN_HEIGHT = 2000, 1200
 KEY_ESCAPE = 0xFF1B
 KEY_RETURN = 0xFF0D
+KEY_CTRL_L = 0xFFE3
+KEY_SHIFT_L = 0xFFE1
+KEY_L = ord('l')
 
 
 def check(condition: bool, message: str) -> None:
@@ -92,6 +95,9 @@ class NativeWindows:
         self.x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
         self.x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
         self.x11.XKeysymToKeycode.restype = ctypes.c_uint
+        self.x11.XkbKeycodeToKeysym.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_int]
+        self.x11.XkbKeycodeToKeysym.restype = ctypes.c_ulong
         self.xtst.XTestFakeKeyEvent.argtypes = [
             ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
         self.xtst.XTestFakeMotionEvent.argtypes = [
@@ -194,6 +200,41 @@ class NativeWindows:
         self.x11.XFlush(self.dpy)
         time.sleep(0.05)
 
+    def shortcut(self, keysym: int, modifier: int) -> None:
+        mod = self.x11.XKeysymToKeycode(self.dpy, modifier)
+        key = self.x11.XKeysymToKeycode(self.dpy, keysym)
+        if not mod or not key:
+            raise wd.WireError('keyboard layout cannot type native dialog shortcut')
+        self.xtst.XTestFakeKeyEvent(self.dpy, mod, 1, 0)
+        self.xtst.XTestFakeKeyEvent(self.dpy, key, 1, 0)
+        self.xtst.XTestFakeKeyEvent(self.dpy, key, 0, 0)
+        self.xtst.XTestFakeKeyEvent(self.dpy, mod, 0, 0)
+        self.x11.XSync(self.dpy, 0)
+        time.sleep(0.15)
+
+    def type_ascii(self, text: str) -> None:
+        shift = self.x11.XKeysymToKeycode(self.dpy, KEY_SHIFT_L)
+        for char in text:
+            if ord(char) > 127:
+                raise wd.WireError('fixture path must be ASCII for the XTest keyboard probe')
+            key = self.x11.XKeysymToKeycode(self.dpy, ord(char))
+            if not key:
+                raise wd.WireError(f'cannot type {char!r} in native dialog')
+            if self.x11.XkbKeycodeToKeysym(self.dpy, key, 0, 0) == ord(char):
+                shifted = False
+            elif self.x11.XkbKeycodeToKeysym(self.dpy, key, 0, 1) == ord(char):
+                shifted = True
+            else:
+                raise wd.WireError(f'keyboard layout does not map {char!r}')
+            if shifted:
+                self.xtst.XTestFakeKeyEvent(self.dpy, shift, 1, 0)
+            self.xtst.XTestFakeKeyEvent(self.dpy, key, 1, 0)
+            self.xtst.XTestFakeKeyEvent(self.dpy, key, 0, 0)
+            if shifted:
+                self.xtst.XTestFakeKeyEvent(self.dpy, shift, 0, 0)
+        self.x11.XSync(self.dpy, 0)
+        time.sleep(0.15)
+
     def click(self, window: int, x_offset: int, y_offset: int) -> None:
         root = ctypes.c_ulong()
         x, y = ctypes.c_int(), ctypes.c_int()
@@ -269,8 +310,13 @@ def choose_file(wire: wd.Wire, windows: NativeWindows, proc, image: pathlib.Path
     wire.call("file.pick", request)
     dialog = wait_for_dialog(windows, proc, request["title"])
     print("native file chooser opened", flush=True)
-    windows.click(dialog, 280, 84)
-    windows.click(dialog, 1046, 798)
+    windows.focus(dialog)
+    windows.shortcut(KEY_L, KEY_CTRL_L)
+    windows.type_ascii(str(image))
+    windows.key(KEY_RETURN)
+    time.sleep(0.5)
+    if windows.find(request["title"]) is not None:
+        windows.key(KEY_RETURN)
     return wait_for_pick(wire, False)
 
 

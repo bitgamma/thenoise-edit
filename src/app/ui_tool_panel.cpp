@@ -11,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 
@@ -23,17 +24,6 @@ struct BrushSlider {
     const char* label;
     const double Brush::*member;
 };
-
-void draw_tool_picker(AppState& state, CommandTable& commands) {
-    for (const ToolInfo& tool : kTools) {
-        const std::string label = std::string(tool.id) + "###" + tool.id;
-        if (ImGui::Selectable(label.c_str(), state.tool == tool.id)) {
-            commands.invoke(std::string("tool.") + tool.id, json::object());
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("[%s]", tool.select_key);
-    }
-}
 
 void draw_coverage_operations(CommandTable& commands) {
     if (ImGui::Button("All")) {
@@ -500,47 +490,53 @@ std::string brush_step_hint(const CommandTable& commands, const char* field) {
     return hint;
 }
 
+void record_tool_option(AppState& state, const char* name) {
+    const ImVec2 start = ImGui::GetItemRectMin();
+    const ImVec2 end = ImGui::GetItemRectMax();
+    state.tool_option_controls.push_back(ToolPaletteButton{
+        name, ScreenRect{start.x, start.y, end.x - start.x, end.y - start.y}});
+}
+
 void draw_brush_size(AppState& state, CommandTable& commands) {
+    ImGui::TextUnformatted("Size");
     float size = static_cast<float>(state.brush.size);
-    if (ImGui::SliderFloat("size", &size, static_cast<float>(kMinBrushSize),
-                           static_cast<float>(kMaxBrushSize), "%.1f px",
-                           ImGuiSliderFlags_Logarithmic) &&
-        static_cast<double>(size) != state.brush.size) {
+    ImGui::SetNextItemWidth(-1.0f);
+    const bool changed = ImGui::SliderFloat("##value", &size, static_cast<float>(kMinBrushSize),
+                                             static_cast<float>(kMaxBrushSize), "%.1f px",
+                                             ImGuiSliderFlags_Logarithmic);
+    record_tool_option(state, "size");
+    if (changed && static_cast<double>(size) != state.brush.size) {
         commands.invoke("tool.set", json{{"size", static_cast<double>(size)}});
     }
 }
 
 void draw_brush_slider(AppState& state, CommandTable& commands, const BrushSlider& slider) {
+    ImGui::TextUnformatted(slider.label);
     float value = static_cast<float>(state.brush.*(slider.member));
-    if (ImGui::SliderFloat(slider.label, &value, 0.0f, 1.0f, "%.2f") &&
-        static_cast<double>(value) != state.brush.*(slider.member)) {
+    ImGui::SetNextItemWidth(-1.0f);
+    const bool changed = ImGui::SliderFloat("##value", &value, 0.0f, 1.0f, "%.2f");
+    record_tool_option(state, slider.label);
+    if (changed && static_cast<double>(value) != state.brush.*(slider.member)) {
         commands.invoke("tool.set", json{{slider.label, static_cast<double>(value)}});
     }
-    const std::string hint = brush_step_hint(commands, slider.label);
-    if (!hint.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-        ImGui::SetTooltip("step keys\n%s", hint.c_str());
-    }
-}
-
-void draw_brush_sliders(AppState& state, CommandTable& commands) {
-    constexpr BrushSlider sliders[]{
-        {"hardness", &Brush::hardness}, {"opacity", &Brush::opacity},
-        {"flow", &Brush::flow},         {"spacing", &Brush::spacing},
-    };
-    draw_brush_size(state, commands);
-    for (const BrushSlider& slider : sliders) {
-        draw_brush_slider(state, commands, slider);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        const std::string hint = brush_step_hint(commands, slider.label);
+        if (!hint.empty()) {
+            ImGui::SetTooltip("step keys\n%s", hint.c_str());
+        }
     }
 }
 
 void draw_brush_color(AppState& state, CommandTable& commands) {
+    ImGui::TextUnformatted("Color");
     float rgba[4] = {static_cast<float>(state.color.r) / 255.0f,
                      static_cast<float>(state.color.g) / 255.0f,
                      static_cast<float>(state.color.b) / 255.0f,
                      static_cast<float>(state.color.a) / 255.0f};
-    if (!ImGui::ColorEdit4("color", rgba, ImGuiColorEditFlags_AlphaBar)) {
-        return;
-    }
+    const bool changed = ImGui::ColorEdit4("##value", rgba, ImGuiColorEditFlags_NoInputs |
+                                            ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_AlphaBar);
+    record_tool_option(state, "color");
+    if (!changed) return;
     const auto channel = [](float value) {
         return static_cast<std::int64_t>(std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
     };
@@ -549,30 +545,162 @@ void draw_brush_color(AppState& state, CommandTable& commands) {
 }
 }
 
-void draw_verb_section(CommandTable& commands, const json& intent, io::Theme theme);
+// Size gets the longest track in every width class. The other controls wrap into
+// separate rows instead of shrinking every slider to an unreadable few pixels.
+namespace {
+enum class ToolOptionField { size, hardness, opacity, flow, spacing, color };
+
+struct ToolOptionColumn {
+    ToolOptionField field;
+    float width;
+};
+
+const char* option_field_name(ToolOptionField field) {
+    switch (field) {
+        case ToolOptionField::size: return "size";
+        case ToolOptionField::hardness: return "hardness";
+        case ToolOptionField::opacity: return "opacity";
+        case ToolOptionField::flow: return "flow";
+        case ToolOptionField::spacing: return "spacing";
+        case ToolOptionField::color: return "color";
+    }
+    return "";
+}
+
+void draw_option_row(AppState& state, CommandTable& commands, const char* id,
+                     std::initializer_list<ToolOptionColumn> columns) {
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_SizingStretchProp |
+                                      ImGuiTableFlags_NoSavedSettings;
+    if (!ImGui::BeginTable(id, static_cast<int>(columns.size()), flags)) return;
+    for (const ToolOptionColumn& column : columns) {
+        const bool color = column.field == ToolOptionField::color;
+        ImGui::TableSetupColumn(option_field_name(column.field),
+                                color ? ImGuiTableColumnFlags_WidthFixed
+                                      : ImGuiTableColumnFlags_WidthStretch,
+                                column.width);
+    }
+    ImGui::TableNextRow();
+    for (const ToolOptionColumn& column : columns) {
+        ImGui::TableNextColumn();
+        const char* name = option_field_name(column.field);
+        const double Brush::*member = nullptr;
+        switch (column.field) {
+            case ToolOptionField::size:
+            case ToolOptionField::color: break;
+            case ToolOptionField::hardness: member = &Brush::hardness; break;
+            case ToolOptionField::opacity: member = &Brush::opacity; break;
+            case ToolOptionField::flow: member = &Brush::flow; break;
+            case ToolOptionField::spacing: member = &Brush::spacing; break;
+        }
+        ImGui::PushID(name);
+        if (column.field == ToolOptionField::size) {
+            draw_brush_size(state, commands);
+        } else if (column.field == ToolOptionField::color) {
+            draw_brush_color(state, commands);
+        } else {
+            draw_brush_slider(state, commands, BrushSlider{name, member});
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
+}
+} // namespace
+
+void draw_tool_options(AppState& state, CommandTable& commands) {
+    state.tool_option_controls.clear();
+    const std::optional<ToolAction> action = tool_action(state.tool);
+    const bool paints = action == ToolAction::paint || action == ToolAction::coverage;
+    const bool has_color = action == ToolAction::paint &&
+                           tool_mode(state.tool) == PaintMode::Over && !state.editing_mask();
+    const float width = ImGui::GetContentRegionAvail().x;
+    const bool wide = width >= (has_color ? 900.0f : 830.0f);
+    const bool narrow = width < 520.0f;
+    const float height = paints ? (wide ? 85.0f : narrow ? 177.0f : 133.0f) : 67.0f;
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar |
+                                   ImGuiWindowFlags_NoScrollWithMouse;
+    if (ImGui::BeginChild("##tool_options", ImVec2(0.0f, height),
+                          ImGuiChildFlags_Borders, flags)) {
+        const ImVec2 pos = ImGui::GetWindowPos();
+        const ImVec2 size = ImGui::GetWindowSize();
+        state.tool_options_window = ScreenRect{pos.x, pos.y, size.x, size.y};
+        if (!paints) {
+            for (const ToolInfo& tool : kTools) {
+                if (state.tool == tool.id) {
+                    ImGui::TextUnformatted(tool.title);
+                    break;
+                }
+            }
+            if (action == ToolAction::select) {
+                if (ImGui::SmallButton("All")) commands.invoke("select.all", json::object());
+                ImGui::SameLine();
+                if (ImGui::SmallButton("None")) commands.invoke("select.clear", json::object());
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Invert")) commands.invoke("select.invert", json::object());
+            }
+        } else {
+            const char* target = action == ToolAction::coverage ? "AI selection" :
+                                 state.editing_mask() ? "layer mask" : "layer pixels";
+            ImGui::TextDisabled("%s  |  %s", state.tool.c_str(), target);
+            using Field = ToolOptionField;
+            if (wide) {
+                if (has_color) {
+                    draw_option_row(state, commands, "##wide_row", {
+                        {Field::size, 3.4f}, {Field::hardness, 1.0f},
+                        {Field::opacity, 1.0f}, {Field::flow, 1.0f},
+                        {Field::spacing, 1.0f}, {Field::color, 42.0f}});
+                } else {
+                    draw_option_row(state, commands, "##wide_row", {
+                        {Field::size, 3.4f}, {Field::hardness, 1.0f},
+                        {Field::opacity, 1.0f}, {Field::flow, 1.0f},
+                        {Field::spacing, 1.0f}});
+                }
+            } else if (!narrow) {
+                draw_option_row(state, commands, "##main_row", {
+                    {Field::size, 2.4f}, {Field::hardness, 1.0f}});
+                if (has_color) {
+                    draw_option_row(state, commands, "##detail_row", {
+                        {Field::opacity, 1.0f}, {Field::flow, 1.0f},
+                        {Field::spacing, 1.0f}, {Field::color, 42.0f}});
+                } else {
+                    draw_option_row(state, commands, "##detail_row", {
+                        {Field::opacity, 1.0f}, {Field::flow, 1.0f},
+                        {Field::spacing, 1.0f}});
+                }
+            } else {
+                if (has_color) {
+                    draw_option_row(state, commands, "##size_row", {
+                        {Field::size, 1.0f}, {Field::color, 42.0f}});
+                } else {
+                    draw_option_row(state, commands, "##size_row", {{Field::size, 1.0f}});
+                }
+                draw_option_row(state, commands, "##detail_row_1", {
+                    {Field::hardness, 1.0f}, {Field::opacity, 1.0f}});
+                draw_option_row(state, commands, "##detail_row_2", {
+                    {Field::flow, 1.0f}, {Field::spacing, 1.0f}});
+            }
+        }
+    }
+    ImGui::EndChild();
+}
+
+
+void draw_verb_section(AppState& state, CommandTable& commands, const json& intent, io::Theme theme);
 void draw_ai_status_line(AppState& state, CommandTable& commands, const json& view);
 
 // Every widget here is a front-end for a command: the panel, a key and a wire client cannot
 // drift apart because there is nothing else to keep in step.
 void draw_tool_panel(AppState& state, CommandTable& commands, const json& intent,
                      ReferenceThumbs& reference_thumbs) {
-    ImGui::Begin(kWindowTool);
+    ImGui::Begin(kWindowTool, nullptr, ImGuiWindowFlags_NoTitleBar);
     draw_file_row(state, commands);
     draw_latest_ai_landing_error(state);
     draw_image_size_controls(state, commands);
     draw_canvas_controls(state, commands);
     draw_edge_controls(state, commands);
     ImGui::Separator();
-    draw_tool_picker(state, commands);
     draw_coverage_controls(state, commands);
     draw_ai_references(state, commands, reference_thumbs, intent);
-    draw_verb_section(commands, intent, state.ui_theme);
-    if (tool_mode(state.tool).has_value()) {
-        draw_brush_sliders(state, commands);
-        if (!state.editing_mask()) {
-            draw_brush_color(state, commands);
-        }
-    }
+    draw_verb_section(state, commands, intent, state.ui_theme);
     ImGui::End();
 }
 

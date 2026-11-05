@@ -291,6 +291,7 @@ add_library(noise_ui STATIC
     src/app/ui_canvas.cpp
     src/app/ui_front_door.cpp
     src/app/ui_layers_panel.cpp
+    src/app/ui_palette.cpp
     src/app/ui_theme.cpp
     src/app/ui_tool_panel.cpp
     src/app/ui_verbs.cpp

@@ -209,6 +209,11 @@ struct PointerSelection {
     Rect mask_bounds{};
 };
 
+struct ToolPaletteButton {
+    std::string id;
+    ScreenRect screen{};
+};
+
 struct AppState {
     Document doc;
     io::Theme ui_theme = io::Theme::dark;
@@ -265,6 +270,14 @@ struct AppState {
     // Where the layers panel drew this frame: the panel's own box and one card per layer, top card
     // first, each with the box its visibility control occupies. A driver clicks what the app reports
     // rather than a coordinate it remembered from a screenshot.
+    ScreenRect tool_palette_window{};
+    ScreenRect tool_options_window{};
+    std::vector<ToolPaletteButton> tool_option_controls{};
+    std::vector<ToolPaletteButton> tool_palette_buttons{};
+    ScreenRect ai_aspect_picker{};
+    ScreenRect ai_style_picker{};
+    std::vector<ToolPaletteButton> ai_aspect_options{};
+    std::vector<ToolPaletteButton> ai_style_options{};
     ScreenRect layers_window{};
     // The panel's picture cache, read out of it each frame it draws: how many thumbnails it has had to
     // resample since the run started.
