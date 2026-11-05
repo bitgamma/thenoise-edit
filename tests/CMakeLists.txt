@@ -247,6 +247,15 @@ if(Python3_Interpreter_FOUND AND NOT WIN32)
                          TIMEOUT 420
                          DEPENDS noise-edit)
 
+    # The left tool palette must expose every pointer tool, and clicks must select it.
+    add_test(NAME test_tool_palette_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/tool_palette_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_tool_palette_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 180
+                         DEPENDS noise-edit)
+
     # That the ring on the canvas is the brush: measured off a capture against the size and zoom the app
     # reports, because a cursor that cannot show its own size is a tool nobody can aim.
     add_test(NAME test_pointer_probe

@@ -42,9 +42,12 @@ void build_default_dock(ImGuiID dockspace, const ImVec2& size) {
                                 &down, &main_area);
     ImGui::DockBuilderGetNode(down)->LocalFlags |= ImGuiDockNodeFlags_NoTabBar;
 
+    ImGui::DockBuilderGetNode(main_area)->LocalFlags |= ImGuiDockNodeFlags_NoTabBar;
+
     ImGuiID tool_slot = 0;
     ImGuiID lower_right = 0;
     ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, kToolPanelFraction, &tool_slot, &lower_right);
+    ImGui::DockBuilderGetNode(tool_slot)->LocalFlags |= ImGuiDockNodeFlags_NoTabBar;
 
     ImGui::DockBuilderDockWindow(kWindowCanvas, main_area);
     ImGui::DockBuilderDockWindow(kWindowTool, tool_slot);

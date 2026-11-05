@@ -39,6 +39,28 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
 
     table.add("app.state", "Report application, document and view state", {}, {},
               [&state, &wire](const json&) -> CommandResult {
+        json option_controls = json::array();
+        for (const ToolPaletteButton& control : state.tool_option_controls) {
+            option_controls.push_back(json{{"id", control.id},
+                                           {"screen", json::array({control.screen.x, control.screen.y,
+                                                                   control.screen.w, control.screen.h})}});
+        }
+        json palette_buttons = json::array();
+        for (const ToolPaletteButton& button : state.tool_palette_buttons) {
+            palette_buttons.push_back(json{{"id", button.id},
+                                           {"screen", json::array({button.screen.x, button.screen.y,
+                                                                   button.screen.w, button.screen.h})}});
+        }
+        const auto screen_json = [](const ScreenRect& rect) {
+            return json::array({rect.x, rect.y, rect.w, rect.h});
+        };
+        const auto choices_json = [&screen_json](const std::vector<ToolPaletteButton>& choices) {
+            json result = json::array();
+            for (const ToolPaletteButton& choice : choices) {
+                result.push_back(json{{"id", choice.id}, {"screen", screen_json(choice.screen)}});
+            }
+            return result;
+        };
         json doc = json::object();
         if (!state.doc.empty()) {
             doc = document_summary_json(state);
@@ -62,6 +84,21 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                {"view", view_json(state)},
                                {"pointer", pointer_json(state)},
                                // Where the layer cards are, so a driver presses the one it means.
+                               {"tool_palette", json{{"active", state.tool},
+                                                      {"window", json::array({state.tool_palette_window.x,
+                                                                               state.tool_palette_window.y,
+                                                                               state.tool_palette_window.w,
+                                                                               state.tool_palette_window.h})},
+                                                      {"buttons", palette_buttons}}},
+                               {"tool_options", json::array({state.tool_options_window.x,
+                                                            state.tool_options_window.y,
+                                                            state.tool_options_window.w,
+                                                            state.tool_options_window.h})},
+                               {"tool_option_controls", option_controls},
+                               {"ai_pickers", json{{"aspect", screen_json(state.ai_aspect_picker)},
+                                                   {"style", screen_json(state.ai_style_picker)},
+                                                   {"aspect_options", choices_json(state.ai_aspect_options)},
+                                                   {"style_options", choices_json(state.ai_style_options)}}},
                                {"layers_window", json::array({state.layers_window.x,
                                                               state.layers_window.y,
                                                               state.layers_window.w,

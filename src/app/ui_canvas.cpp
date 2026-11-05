@@ -325,10 +325,16 @@ void handle_canvas_input(AppState& state, CommandTable& commands, const ImVec2& 
 
 void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_texture,
                  const gfx::Checker& checker, CoverageTint& tint, CoverageTint& mask_tint) {
-    if (!ImGui::Begin(kWindowCanvas)) {
+    if (!ImGui::Begin(kWindowCanvas, nullptr, ImGuiWindowFlags_NoTitleBar)) {
         ImGui::End();
         return;
     }
+    draw_tool_palette(state, commands);
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    draw_tool_options(state, commands);
+    ImGui::BeginChild("##canvas_view", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     state.viewport.w = std::max(1, static_cast<int>(avail.x));
     state.viewport.h = std::max(1, static_cast<int>(avail.y));
@@ -344,6 +350,8 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
         draw_document(list, state, canvas_texture, checker, tint, mask_tint, origin, avail, io);
         handle_canvas_input(state, commands, origin, io, hovered);
     }
+    ImGui::EndChild();
+    ImGui::EndGroup();
     ImGui::End();
 }
 

@@ -19,7 +19,6 @@ import os
 import shutil
 import sys
 import tempfile
-from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -63,11 +62,23 @@ def main() -> int:
     fails: list[str] = []
     try:
         wire = wd.Wire(wd.wire_port(runtime, proc, args.startup_timeout))
+        wd.wait_for_fit(wire)
+        wire.call('view.fit')
+        wd.settle(wire)
         wire.call('ants.freeze', {'phases': [0.0]})
         wire.call('select.clear')
         plain = Path(wire.call('screenshot', {'name': 'plain'})['path'])
 
-        # Calibrate: the whole-canvas selection's dashes sit on the document's own edges.
+        state = wire.call('app.state')
+        scale = state['view']['scale']
+        left, top, right, bottom = wd.document_screen_rect(state)
+        ox, oy, cw, ch = state['canvas']
+        if (left < ox - 2 or top < oy - 2 or right > ox + cw + 2 or bottom > oy + ch + 2):
+            fails.append(f'fit did not keep the document within the canvas: '
+                         f'{[left, top, right, bottom]} vs {[ox, oy, cw, ch]}')
+            raise SystemExit
+        print(f'document on screen: {left:.0f},{top:.0f} to {right:.0f},{bottom:.0f} '
+              f'(scale {scale:.4f})')
         wire.call('select.all')
         whole = Path(wire.call('screenshot', {'name': 'whole'})['path'])
         image = Image.open(plain)
@@ -75,22 +86,6 @@ def main() -> int:
         if len(points) < 200:
             fails.append(f'nothing was drawn for a selection of the whole canvas ({points[:5]})')
             raise SystemExit
-        columns = Counter(x for x, _ in points)
-        rows = Counter(y for _, y in points)
-        # The two edges are the lines with the most pixels; panel text changes are scattered.
-        # An edge is a line hundreds of pixels long; panel text is a handful of pixels per column, so
-        # "at least half as long as the longest" separates them.
-        best_column = max(columns.values())
-        best_row = max(rows.values())
-        tall = sorted(c for c, n in columns.items() if n >= best_column * 0.5)
-        wide = sorted(r for r, n in rows.items() if n >= best_row * 0.5)
-        if len(tall) < 2 or len(wide) < 2:
-            fails.append(f'could not find the document edges: columns {tall[:4]}, rows {wide[:4]}')
-            raise SystemExit
-        left, right = tall[0], tall[-1]
-        top, bottom = wide[0], wide[-1]
-        scale = (right - left) / float(SIDE)
-        print(f'document on screen: {left},{top} to {right},{bottom} (scale {scale:.4f})')
 
         wire.call('select.clear')
         wire.call('tool.set', {'tool': 'select'})

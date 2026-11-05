@@ -56,7 +56,13 @@ void draw_verb_field(CommandTable& commands, const json& intent, const std::stri
     editing_verb = ImGui::IsItemActive() ? id : std::string();
 }
 
-void draw_aspect_picker(CommandTable& commands, const json& intent,
+ScreenRect item_box() {
+    const ImVec2 a = ImGui::GetItemRectMin();
+    const ImVec2 b = ImGui::GetItemRectMax();
+    return ScreenRect{a.x, a.y, b.x - a.x, b.y - a.y};
+}
+
+void draw_aspect_picker(AppState& state, CommandTable& commands, const json& intent,
                         const std::string& recipe, const json& aspects) {
     if (!aspects.is_array() || aspects.empty()) {
         return;
@@ -65,18 +71,20 @@ void draw_aspect_picker(CommandTable& commands, const json& intent,
         intent["aspect"].is_null() ? std::string() : intent["aspect"].get<std::string>();
     ImGui::TextDisabled("aspect");
     ImGui::SetNextItemWidth(-1.0f);
-    if (!ImGui::BeginCombo("##aspect", chosen.empty() ? "canvas" : chosen.c_str())) {
-        return;
-    }
+    const bool opened = ImGui::BeginCombo("##aspect", chosen.empty() ? "canvas" : chosen.c_str());
+    state.ai_aspect_picker = item_box();
+    if (!opened) return;
     if (ImGui::Selectable("canvas", chosen.empty())) {
         commands.invoke("ai.intent", json{{"recipe", recipe}, {"aspect", nullptr}});
     }
+    state.ai_aspect_options.push_back(ToolPaletteButton{"canvas", item_box()});
     for (const json& offered : aspects) {
         const std::string name = offered.get<std::string>();
         const bool selected = name == chosen;
         if (ImGui::Selectable(name.c_str(), selected)) {
             commands.invoke("ai.intent", json{{"recipe", recipe}, {"aspect", name}});
         }
+        state.ai_aspect_options.push_back(ToolPaletteButton{name, item_box()});
         if (selected) {
             ImGui::SetItemDefaultFocus();
         }
@@ -84,7 +92,7 @@ void draw_aspect_picker(CommandTable& commands, const json& intent,
     ImGui::EndCombo();
 }
 
-void draw_style_picker(CommandTable& commands, const json& verb, const std::string& label,
+void draw_style_picker(AppState& state, CommandTable& commands, const json& verb, const std::string& label,
                        const std::string& recipe, const json& variants) {
     if (!variants.is_array() || variants.empty()) {
         return;
@@ -100,12 +108,13 @@ void draw_style_picker(CommandTable& commands, const json& verb, const std::stri
     }
     ImGui::TextDisabled("style");
     ImGui::SetNextItemWidth(-1.0f);
-    if (!ImGui::BeginCombo("##style", shown.c_str())) {
-        return;
-    }
+    const bool opened = ImGui::BeginCombo("##style", shown.c_str());
+    state.ai_style_picker = item_box();
+    if (!opened) return;
     if (ImGui::Selectable(label.c_str(), active == recipe)) {
         commands.invoke("ai.intent", json{{"recipe", recipe}});
     }
+    state.ai_style_options.push_back(ToolPaletteButton{recipe, item_box()});
     for (const json& member : variants) {
         const std::string id = member["id"].get<std::string>();
         const std::string name = member["label"].get<std::string>();
@@ -113,6 +122,7 @@ void draw_style_picker(CommandTable& commands, const json& verb, const std::stri
         if (ImGui::Selectable(name.c_str(), selected)) {
             commands.invoke("ai.intent", json{{"recipe", id}});
         }
+        state.ai_style_options.push_back(ToolPaletteButton{id, item_box()});
         if (selected) {
             ImGui::SetItemDefaultFocus();
         }
@@ -133,7 +143,7 @@ void activate_verb(CommandTable& commands, const json& verb) {
     ImGui::OpenPopup("Switch model?");
 }
 
-void draw_verb_row(CommandTable& commands, const json& intent, const json& verb) {
+void draw_verb_row(AppState& state, CommandTable& commands, const json& intent, const json& verb) {
     const std::string id = verb["id"].get<std::string>();
     const std::string label = verb["label"].is_null() ? id : verb["label"].get<std::string>();
     const std::string reason = verb["reason"].get<std::string>();
@@ -147,8 +157,8 @@ void draw_verb_row(CommandTable& commands, const json& intent, const json& verb)
     if (!field.empty()) {
         draw_verb_field(commands, intent, id, recipe, field);
     }
-    draw_aspect_picker(commands, intent, recipe, verb["aspects"]);
-    draw_style_picker(commands, verb, label, recipe, verb["variants"]);
+    draw_aspect_picker(state, commands, intent, recipe, verb["aspects"]);
+    draw_style_picker(state, commands, verb, label, recipe, verb["variants"]);
     ImGui::PopID();
     if (pressed) {
         activate_verb(commands, verb);
@@ -175,7 +185,11 @@ void draw_model_switch_popup(CommandTable& commands) {
 }
 }
 
-void draw_verb_section(CommandTable& commands, const json& intent, io::Theme theme) {
+void draw_verb_section(AppState& state, CommandTable& commands, const json& intent, io::Theme theme) {
+    state.ai_aspect_picker = ScreenRect{};
+    state.ai_style_picker = ScreenRect{};
+    state.ai_aspect_options.clear();
+    state.ai_style_options.clear();
     ImGui::SeparatorText("verbs");
     const json view = commands.invoke("ai.verbs", json::object()).value;
     const std::string table_error = view["error"].get<std::string>();
@@ -185,7 +199,7 @@ void draw_verb_section(CommandTable& commands, const json& intent, io::Theme the
     }
     for (const json& verb : view["verbs"]) {
         if (verb["scope"].get<std::string>() != "selection") {
-            draw_verb_row(commands, intent, verb);
+            draw_verb_row(state, commands, intent, verb);
         }
     }
     draw_model_switch_popup(commands);
