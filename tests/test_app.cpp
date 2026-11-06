@@ -3951,7 +3951,9 @@ void test_a_style_choice_moves_which_recipe_the_key_runs() {
     CHECK_EQ(chosen["recipe"].get<std::string>(), std::string("new-image-anime"));
     CHECK(chosen["job"].is_null());
     CHECK_EQ(h.state.upload_encodes, encodes);
-    CHECK_EQ(generate_row()["active"].get<std::string>(), std::string("new-image-anime"));
+    const json active_row = generate_row();
+    CHECK_EQ(active_row["active"].get<std::string>(), std::string("new-image-anime"));
+    CHECK_EQ(active_row["model"].get<std::string>(), chosen["model"].get<std::string>());
 
     // The press carries nothing and still runs the style that is showing.
     const json ran = h.value("ai.generate", json::object());

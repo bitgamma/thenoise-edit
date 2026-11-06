@@ -290,6 +290,7 @@ add_library(noise_ui STATIC
     src/app/ui.cpp
     src/app/ui_canvas.cpp
     src/app/ui_front_door.cpp
+    src/app/ui_icons.cpp
     src/app/ui_layers_panel.cpp
     src/app/ui_palette.cpp
     src/app/ui_theme.cpp
@@ -332,6 +333,9 @@ else()
     install(FILES "${nfd_SOURCE_DIR}/LICENSE"
             DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/thenoise-edit"
             RENAME NativeFileDialog-Extended-LICENSE)
+    install(FILES "${CMAKE_SOURCE_DIR}/assets/icons/LUCIDE-LICENSE"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/thenoise-edit"
+            RENAME Lucide-LICENSE)
 endif()
 
 if(EMSCRIPTEN)

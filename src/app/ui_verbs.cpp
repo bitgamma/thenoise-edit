@@ -2,6 +2,7 @@
 #include "app/ui_internal.h"
 
 #include "app/ui_theme.h"
+#include "app/ui_icons.h"
 #include "app/verb_fields.h"
 #include "app/ui_prompt.h"
 
@@ -25,18 +26,27 @@ bool draw_verb_button(const json& verb, const std::string& label,
                       const std::string& reason) {
     const bool ready = verb["ready"].get<bool>();
     ImGui::BeginDisabled(!ready);
-    const bool pressed = ImGui::Button(label.c_str());
+    const ui_icons::Icon icon = ui_icons::for_verb(verb["id"].get<std::string>());
+    const bool pressed = ui_icons::labeled_button(icon, label.c_str(), ImVec2(0.0f, 0.0f));
+    const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort |
+                                              ImGuiHoveredFlags_AllowWhenDisabled);
     ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::TextDisabled("[%s]", verb["key"].get<std::string>().c_str());
-    if (!ready && !reason.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+    if (!ready && !reason.empty() && hovered) {
         ImGui::SetTooltip("%s", reason.c_str());
     }
+    ImGui::SameLine();
+    ImGui::TextDisabled("[%s]", verb["key"].get<std::string>().c_str());
     return pressed;
 }
 
-void draw_verb_field(CommandTable& commands, const json& intent, const std::string& id,
-                     const std::string& recipe, const std::string& field) {
+ScreenRect item_box() {
+    const ImVec2 a = ImGui::GetItemRectMin();
+    const ImVec2 b = ImGui::GetItemRectMax();
+    return ScreenRect{a.x, a.y, b.x - a.x, b.y - a.y};
+}
+
+void draw_verb_field(AppState& state, CommandTable& commands, const json& intent,
+                     const std::string& id, const std::string& recipe, const std::string& field) {
     std::map<std::string, std::string>& boxes = verb_field_boxes();
     std::string& box = boxes[id];
     if (editing_verb != id) {
@@ -46,20 +56,16 @@ void draw_verb_field(CommandTable& commands, const json& intent, const std::stri
                                           : std::string();
         box = shown;
     }
-    ImGui::TextDisabled("%s", field.c_str());
-    if (prompt_input("##words", box,
-                     ImGui::GetTextLineHeightWithSpacing() * kPromptMaxVisibleLines,
-                     ImGuiInputTextFlags_None)) {
+    ImGui::TextDisabled("%s", field == "prompt" ? "Prompt" : field.c_str());
+    const bool changed = prompt_input("##words", box,
+                                      ImGui::GetTextLineHeightWithSpacing() * kPromptMaxVisibleLines,
+                                      ImGuiInputTextFlags_None);
+    state.ai_prompt_input = item_box();
+    if (changed) {
         commands.invoke("ai.intent",
                         json{{"recipe", recipe}, {"vars", json{{field, box}}}});
     }
     editing_verb = ImGui::IsItemActive() ? id : std::string();
-}
-
-ScreenRect item_box() {
-    const ImVec2 a = ImGui::GetItemRectMin();
-    const ImVec2 b = ImGui::GetItemRectMax();
-    return ScreenRect{a.x, a.y, b.x - a.x, b.y - a.y};
 }
 
 void draw_aspect_picker(AppState& state, CommandTable& commands, const json& intent,
@@ -69,7 +75,7 @@ void draw_aspect_picker(AppState& state, CommandTable& commands, const json& int
     }
     const std::string chosen =
         intent["aspect"].is_null() ? std::string() : intent["aspect"].get<std::string>();
-    ImGui::TextDisabled("aspect");
+    ImGui::TextDisabled("Aspect ratio");
     ImGui::SetNextItemWidth(-1.0f);
     const bool opened = ImGui::BeginCombo("##aspect", chosen.empty() ? "canvas" : chosen.c_str());
     state.ai_aspect_picker = item_box();
@@ -106,7 +112,7 @@ void draw_style_picker(AppState& state, CommandTable& commands, const json& verb
             shown = member["label"].get<std::string>();
         }
     }
-    ImGui::TextDisabled("style");
+    ImGui::TextDisabled("Style");
     ImGui::SetNextItemWidth(-1.0f);
     const bool opened = ImGui::BeginCombo("##style", shown.c_str());
     state.ai_style_picker = item_box();
@@ -152,17 +158,29 @@ void draw_verb_row(AppState& state, CommandTable& commands, const json& intent, 
     const std::string field =
         ask.is_array() && !ask.empty() ? ask[0].get<std::string>() : std::string();
 
+    const std::string active_recipe = verb["active"].is_string()
+                                          ? verb["active"].get<std::string>()
+                                          : recipe;
     ImGui::PushID(id.c_str());
-    const bool pressed = draw_verb_button(verb, label, reason);
+    const bool generate = id == "generate";
+    bool pressed = false;
+    if (!generate) {
+        pressed = draw_verb_button(verb, label, reason);
+    }
     if (!field.empty()) {
-        draw_verb_field(commands, intent, id, recipe, field);
+        draw_verb_field(state, commands, intent, id, active_recipe, field);
     }
-    draw_aspect_picker(state, commands, intent, recipe, verb["aspects"]);
-    draw_style_picker(state, commands, verb, label, recipe, verb["variants"]);
+    if (generate) {
+        draw_style_picker(state, commands, verb, label, recipe, verb["variants"]);
+    }
+    draw_aspect_picker(state, commands, intent, active_recipe, verb["aspects"]);
+    if (!generate) {
+        draw_style_picker(state, commands, verb, label, recipe, verb["variants"]);
+    } else {
+        pressed = draw_verb_button(verb, "Generate", reason);
+    }
     ImGui::PopID();
-    if (pressed) {
-        activate_verb(commands, verb);
-    }
+    if (pressed) activate_verb(commands, verb);
 }
 
 void draw_model_switch_popup(CommandTable& commands) {
@@ -186,11 +204,11 @@ void draw_model_switch_popup(CommandTable& commands) {
 }
 
 void draw_verb_section(AppState& state, CommandTable& commands, const json& intent, io::Theme theme) {
+    state.ai_prompt_input = ScreenRect{};
     state.ai_aspect_picker = ScreenRect{};
     state.ai_style_picker = ScreenRect{};
     state.ai_aspect_options.clear();
     state.ai_style_options.clear();
-    ImGui::SeparatorText("verbs");
     const json view = commands.invoke("ai.verbs", json::object()).value;
     const std::string table_error = view["error"].get<std::string>();
     if (!table_error.empty()) {
@@ -199,6 +217,11 @@ void draw_verb_section(AppState& state, CommandTable& commands, const json& inte
     }
     for (const json& verb : view["verbs"]) {
         if (verb["scope"].get<std::string>() != "selection") {
+            if (verb["id"] == "generate") {
+                ImGui::SeparatorText("Generate image");
+            } else if (verb["id"] == "blend") {
+                ImGui::SeparatorText("Layer AI");
+            }
             draw_verb_row(state, commands, intent, verb);
         }
     }

@@ -2,28 +2,16 @@
 #include "app/ui_internal.h"
 
 #include "app/ui_theme.h"
+#include "app/ui_icons.h"
 #include "core/brush.h"
 #include "imgui.h"
 
 #include <array>
 #include <string>
-#include <string_view>
 
 namespace noise::app {
 
 namespace {
-
-const char* badge(std::string_view id) {
-    if (id == "move") return "MV";
-    if (id == "select") return "RC";
-    if (id == "select_ellipse") return "EL";
-    if (id == "lasso") return "LS";
-    if (id == "cover") return "+MK";
-    if (id == "un-cover") return "-MK";
-    if (id == "brush") return "BR";
-    if (id == "eraser") return "ER";
-    return "?";
-}
 
 void draw_group(AppState& state, CommandTable& commands, ToolAction group) {
     const auto& colors = ui_theme::palette(state.ui_theme);
@@ -37,7 +25,8 @@ void draw_group(AppState& state, CommandTable& commands, ToolAction group) {
         }
         ImGui::PushID(tool.id);
         const float width = ImGui::GetContentRegionAvail().x;
-        if (ImGui::Button(badge(tool.id), ImVec2(width, 39.0f))) {
+        const ui_icons::Icon icon = ui_icons::for_tool(tool.id).value();
+        if (ui_icons::button(icon, tool.id, ImVec2(width, 39.0f), nullptr)) {
             commands.invoke(std::string("tool.") + tool.id, nlohmann::json::object());
         }
         const ImVec2 min = ImGui::GetItemRectMin();

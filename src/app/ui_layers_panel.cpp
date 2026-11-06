@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/ui_internal.h"
+#include "app/ui_icons.h"
 
 #include "app/command_args.h"
 #include "app/layer_thumbs.h"
@@ -26,7 +27,6 @@ using nlohmann::json;
 namespace {
 constexpr float kLayerOpacitySliderPx = 88.0f;
 constexpr float kLayerModeMinPx = 64.0f;
-constexpr const char* kLabelScale = "Scale";
 constexpr float kLayerScaleFieldPx = 64.0f;
 constexpr float kLayerCardPaddingX = 8.0f;
 constexpr float kLayerCardPaddingY = 4.0f;
@@ -34,9 +34,7 @@ constexpr float kLayerCardSpacingX = 6.0f;
 constexpr float kLayerCardSpacingY = 5.0f;
 constexpr ImU32 kCardShadow = IM_COL32(0, 0, 0, 0);
 constexpr float kLayerNameMinPx = 40.0f;
-constexpr const char* kLabelMoveUp = "Up";
-constexpr const char* kLabelMoveDown = "Down";
-constexpr const char* kLabelMergeDown = "Merge down";
+constexpr float kLayerActionPx = 26.0f;
 
 // The box a layer's picture is drawn into: the long edge is the thumbnail size, the other follows the
 // layer's own proportions, so a wide document's card does not show its picture stretched.
@@ -73,18 +71,12 @@ ScreenRect item_rect() {
     return ScreenRect{from.x, from.y, to.x - from.x, to.y - from.y};
 }
 
-// A button is its label plus the frame padding on each side, which is `ButtonEx`'s own formula. Measured
-// rather than estimated: `ItemHoverable` gives a point to the *first* item submitted under it, so a
-// button left overlapping a wider one draws, lights up, and never answers a press.
-float button_px(const char* label) {
-    return ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
-}
-
 void draw_layer_title(AppState& state, LayerCard& card, const Layer& layer, int row,
                       int layer_count, float arrows_px, CommandTable& commands) {
-    bool visible = layer.visible;
-    if (ImGui::Checkbox("##visible", &visible)) {
-        commands.invoke("layer.set", json{{"index", row}, {"visible", visible}});
+    if (ui_icons::button(layer.visible ? ui_icons::Icon::Eye : ui_icons::Icon::EyeOff,
+                         "visible", ImVec2(kLayerActionPx, kLayerActionPx),
+                         layer.visible ? "Hide layer" : "Show layer")) {
+        commands.invoke("layer.set", json{{"index", row}, {"visible", !layer.visible}});
     }
     card.visibility = item_rect();
     ImGui::SameLine();
@@ -136,14 +128,14 @@ void draw_layer_title(AppState& state, LayerCard& card, const Layer& layer, int 
     card.can_merge = card.index > 0;
     ImGui::SameLine();
     ImGui::BeginDisabled(!card.can_move_up);
-    if (ImGui::Button(kLabelMoveUp)) {
+    if (ui_icons::button(ui_icons::Icon::ArrowUp, "up", ImVec2(kLayerActionPx, kLayerActionPx), "Move layer up")) {
         commands.invoke("layer.move", json{{"index", row}, {"to", row + 1}});
     }
     ImGui::EndDisabled();
     card.move_up = item_rect();
     ImGui::SameLine();
     ImGui::BeginDisabled(!card.can_move_down);
-    if (ImGui::Button(kLabelMoveDown)) {
+    if (ui_icons::button(ui_icons::Icon::ArrowDown, "down", ImVec2(kLayerActionPx, kLayerActionPx), "Move layer down")) {
         commands.invoke("layer.move", json{{"index", row}, {"to", row - 1}});
     }
     ImGui::EndDisabled();
@@ -187,7 +179,7 @@ void draw_layer_preview(AppState& state, LayerCard& card_state, const Layer& lay
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!card_state.can_merge);
-    if (ImGui::Button(kLabelMergeDown)) {
+    if (ui_icons::button(ui_icons::Icon::Merge, "merge", ImVec2(kLayerActionPx, kLayerActionPx), "Merge down")) {
         commands.invoke("layer.merge", json{{"index", row}});
     }
     ImGui::EndDisabled();
@@ -230,7 +222,7 @@ void draw_layer_preview(AppState& state, LayerCard& card_state, const Layer& lay
             state.scaling = InlineField{};
         }
     } else {
-        if (ImGui::Button(kLabelScale)) {
+        if (ui_icons::button(ui_icons::Icon::Scaling, "scale_button", ImVec2(kLayerActionPx, kLayerActionPx), "Scale layer")) {
             begin_layer_scale(state, row);
         }
         card_state.scale = item_rect();
@@ -310,19 +302,19 @@ void draw_layer_card(AppState& state, CommandTable& commands, LayerThumbs& thumb
 }
 
 void draw_stack_actions(AppState& state, CommandTable& commands, std::size_t layer_count) {
-    if (ImGui::Button("Add layer")) {
+    if (ui_icons::button(ui_icons::Icon::LayersPlus, "add", ImVec2(kLayerActionPx, kLayerActionPx), "Add layer")) {
         commands.invoke("layer.add", json::object());
     }
     state.layer_panel.add = item_rect();
     ImGui::SameLine();
-    if (ImGui::Button("Delete layer")) {
+    if (ui_icons::button(ui_icons::Icon::Trash, "remove", ImVec2(kLayerActionPx, kLayerActionPx), "Delete layer")) {
         commands.invoke("layer.remove", json::object());
     }
     state.layer_panel.remove = item_rect();
     ImGui::SameLine();
     state.layer_panel.can_flatten = layer_count > 1;
     ImGui::BeginDisabled(!state.layer_panel.can_flatten);
-    if (ImGui::Button("Flatten")) {
+    if (ui_icons::labeled_button(ui_icons::Icon::Layers2, "Flatten", ImVec2(0.0f, kLayerActionPx))) {
         commands.invoke("layer.flatten", json::object());
     }
     ImGui::EndDisabled();
@@ -335,7 +327,7 @@ void draw_mask_controls(AppState& state, CommandTable& commands) {
     const json facts = active.mask.has_value() ? layer_mask_json(active) : json(nullptr);
     state.layer_panel.has_mask = !facts.is_null();
     if (facts.is_null()) {
-        if (ImGui::Button("Add mask")) {
+        if (ui_icons::labeled_button(ui_icons::Icon::MaskAdd, "Add mask", ImVec2(0.0f, 0.0f))) {
             commands.invoke("mask.add", json::object());
         }
         state.layer_panel.mask_add = item_rect();
@@ -343,20 +335,20 @@ void draw_mask_controls(AppState& state, CommandTable& commands) {
         ImGui::TextDisabled("nothing hidden");
         return;
     }
-    if (ImGui::Button("Remove")) {
+    if (ui_icons::button(ui_icons::Icon::MaskRemove, "remove_mask", ImVec2(kLayerActionPx, kLayerActionPx), "Remove layer mask")) {
         commands.invoke("mask.remove", json::object());
     }
     state.layer_panel.mask_remove = item_rect();
     ImGui::SameLine();
-    if (ImGui::Button("Show all")) {
+    if (ui_icons::button(ui_icons::Icon::Eye, "show_all", ImVec2(kLayerActionPx, kLayerActionPx), "Show all mask")) {
         commands.invoke("mask.fill", json{{"to", "show"}});
     }
     ImGui::SameLine();
-    if (ImGui::Button("Hide all")) {
+    if (ui_icons::button(ui_icons::Icon::EyeOff, "hide_all", ImVec2(kLayerActionPx, kLayerActionPx), "Hide all mask")) {
         commands.invoke("mask.fill", json{{"to", "hide"}});
     }
     ImGui::SameLine();
-    if (ImGui::Button("Invert")) {
+    if (ui_icons::button(ui_icons::Icon::RefreshCw, "invert", ImVec2(kLayerActionPx, kLayerActionPx), "Invert mask")) {
         commands.invoke("mask.invert", json::object());
     }
     if (state.editing_mask()) {
@@ -424,8 +416,7 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
         }
         // Both arrows take the right end of every title row, so their width is known before the first
         // name of the stack is measured.
-        const float arrows_px = button_px(kLabelMoveUp) + ImGui::GetStyle().ItemSpacing.x +
-                                button_px(kLabelMoveDown);
+        const float arrows_px = kLayerActionPx * 2.0f + ImGui::GetStyle().ItemSpacing.x;
         // The stack's own verbs are pinned under the list rather than being its last entry: with three
         // layers they fell past the panel's bottom edge - reported at y=926 in a window ending at 800 -
         // controls for the whole stack, drawn nowhere and reachable only by scrolling to them. What the
