@@ -4,6 +4,7 @@
 #include "imgui.h"
 
 #include "app/verb_fields.h"
+#include "app/ui_icons.h"
 #include "app/ui_prompt.h"
 #include "app/selection_edit.h"
 #include "imgui_internal.h"  // BringWindowToDisplayFront: the bar has to sit above the canvas
@@ -173,7 +174,7 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
     double row_height = 0.0;
     for (const json& row : rows) {
         const ImVec2 text = ImGui::CalcTextSize(row["label"].get<std::string>().c_str());
-        row_width += text.x + style.FramePadding.x * 2.0 + style.ItemSpacing.x;
+        row_width += text.x + ImGui::CalcTextSize("     ").x + style.FramePadding.x * 2.0 + style.ItemSpacing.x;
         row_height = std::max(row_height, static_cast<double>(text.y + style.FramePadding.y * 2.0f));
     }
     row_width -= style.ItemSpacing.x;
@@ -227,7 +228,9 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
         }
         ImGui::BeginDisabled(mode == SelectionEditPhase::generating ||
                              !row["ready"].get<bool>());
-        const bool pressed = ImGui::Button(row["label"].get<std::string>().c_str());
+        const bool pressed = ui_icons::labeled_button(
+            ui_icons::for_verb(row["verb"].get<std::string>()),
+            row["label"].get<std::string>().c_str(), ImVec2(0.0f, 0.0f));
         ImGui::EndDisabled();
         // A verb that wants words opens the box over the mark instead of running on whatever the panel
         // happens to hold; one that wants none runs, because a dialog in its way would be theatre.

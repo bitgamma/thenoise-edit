@@ -2,6 +2,7 @@
 #include "app/ui_internal.h"
 
 #include "app/ui_theme.h"
+#include "app/ui_icons.h"
 
 #include "imgui.h"
 #include "sokol_app.h"
@@ -79,18 +80,18 @@ void draw_reference_row(AppState& state, CommandTable& commands, ReferenceThumbs
     }
     ImGui::EndGroup();
     ImGui::BeginDisabled(index == 0);
-    if (ImGui::SmallButton("Up")) {
+    if (ui_icons::button(ui_icons::Icon::ArrowUp, "ref_up", ImVec2(25.0f, 24.0f), "Move reference up")) {
         commands.invoke("ai.references.move", json{{"id", id}, {"to", static_cast<int>(index) - 1}});
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(index + 1 >= static_cast<std::size_t>(count));
-    if (ImGui::SmallButton("Down")) {
+    if (ui_icons::button(ui_icons::Icon::ArrowDown, "ref_down", ImVec2(25.0f, 24.0f), "Move reference down")) {
         commands.invoke("ai.references.move", json{{"id", id}, {"to", static_cast<int>(index) + 1}});
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::SmallButton("Remove")) {
+    if (ui_icons::button(ui_icons::Icon::Trash, "ref_remove", ImVec2(25.0f, 24.0f), "Remove reference")) {
         commands.invoke("ai.references.remove", json{{"id", id}});
     }
     ImGui::PopID();
@@ -156,12 +157,11 @@ void draw_ai_references(AppState& state, CommandTable& commands, ReferenceThumbs
         ImGui::TextDisabled("Drop more files here");
     }
     ImGui::BeginDisabled(state.doc.empty());
-    if (ImGui::Button("+ Add images")) {
+    if (ui_icons::labeled_button(ui_icons::Icon::ImagePlus, "Add images", ImVec2(0.0f, 0.0f))) {
         commands.invoke("file.pick", json{{"for", "reference"},
                                            {"title", "Add AI reference images"},
                                            {"multiple", true}});
     }
-    ImGui::SameLine();
     add_from_layer(state, commands);
     ImGui::EndDisabled();
     if (!view["error"].get<std::string>().empty()) {

@@ -274,6 +274,7 @@ struct AppState {
     ScreenRect tool_options_window{};
     std::vector<ToolPaletteButton> tool_option_controls{};
     std::vector<ToolPaletteButton> tool_palette_buttons{};
+    ScreenRect ai_prompt_input{};
     ScreenRect ai_aspect_picker{};
     ScreenRect ai_style_picker{};
     std::vector<ToolPaletteButton> ai_aspect_options{};

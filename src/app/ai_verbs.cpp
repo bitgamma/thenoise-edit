@@ -174,7 +174,8 @@ void register_ai_verb_commands(AppState& state, CommandTable& table) {
         json rows = json::array();
         for (const VerbInfo& verb : kVerbs) {
             const ai::Recipe* recipe = state.ai.recipes.find(verb.recipe);
-            const Readiness readiness = assess(state, recipe);
+            const ai::Recipe* active = pressed_recipe(state, verb);
+            const Readiness readiness = assess(state, active);
             const std::string table_error = state.ai.verbs_error;
             rows.push_back(json{{"id", verb_name(verb.id)},
                                 {"command", std::string("ai.") + verb_name(verb.id)},
@@ -215,9 +216,7 @@ void register_ai_verb_commands(AppState& state, CommandTable& table) {
                                                  : json::array()},
                                 // Which of them a press would run right now, from the one function the
                                 // press itself uses.
-                                {"active", pressed_recipe(state, verb) != nullptr
-                                               ? json(pressed_recipe(state, verb)->id)
-                                               : json(nullptr)},
+                                {"active", active != nullptr ? json(active->id) : json(nullptr)},
                                 {"ready", table_error.empty() && readiness.ready},
                                 {"reason", table_error.empty() ? readiness.reason : table_error},
                                 {"fix", readiness.fix},

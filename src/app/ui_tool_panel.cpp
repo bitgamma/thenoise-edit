@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "app/ui_internal.h"
+#include "app/ui_icons.h"
 
 #include "app/brush_steps.h"
 #include "app/command_args.h"
@@ -25,16 +26,33 @@ struct BrushSlider {
     const double Brush::*member;
 };
 
+bool fits_button_row(std::initializer_list<const char*> labels) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    float width = 0.0f;
+    for (const char* label : labels) {
+        width += ImGui::CalcTextSize((std::string("     ") + label).c_str()).x +
+                 style.FramePadding.x * 2.0f;
+    }
+    width += static_cast<float>(labels.size() - 1) * style.ItemSpacing.x;
+    return ImGui::GetContentRegionAvail().x >= width;
+}
+
+bool fits_button_pair(const char* first, const char* second) {
+    return fits_button_row({first, second});
+}
+
 void draw_coverage_operations(CommandTable& commands) {
-    if (ImGui::Button("All")) {
+    const bool all_in_one_row = fits_button_row({"All", "None", "Invert"});
+    const bool first_two_fit = fits_button_pair("All", "None");
+    if (ui_icons::labeled_button(ui_icons::Icon::SquareDashed, "All", ImVec2(0.0f, 0.0f))) {
         commands.invoke("select.all", json::object());
     }
-    ImGui::SameLine();
-    if (ImGui::Button("None")) {
+    if (all_in_one_row || first_two_fit) ImGui::SameLine();
+    if (ui_icons::labeled_button(ui_icons::Icon::SquareDashedX, "None", ImVec2(0.0f, 0.0f))) {
         commands.invoke("select.clear", json::object());
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Invert")) {
+    if (all_in_one_row) ImGui::SameLine();
+    if (ui_icons::labeled_button(ui_icons::Icon::RefreshCw, "Invert", ImVec2(0.0f, 0.0f))) {
         commands.invoke("select.invert", json::object());
     }
 }
@@ -44,14 +62,15 @@ void draw_coverage_transfer(AppState& state, CommandTable& commands, const json&
         return;
     }
     const Layer& active = state.active_layer();
+    const bool same_row = fits_button_pair("To layer mask", "From layer mask");
     ImGui::BeginDisabled(!selection["active"].get<bool>());
-    if (ImGui::Button("To layer mask")) {
+    if (ui_icons::labeled_button(ui_icons::Icon::Contrast, "To layer mask", ImVec2(0.0f, 0.0f))) {
         commands.invoke("mask.from_selection", json::object());
     }
     ImGui::EndDisabled();
-    ImGui::SameLine();
+    if (same_row) ImGui::SameLine();
     ImGui::BeginDisabled(!active.mask.has_value());
-    if (ImGui::Button("From layer mask")) {
+    if (ui_icons::labeled_button(ui_icons::Icon::Contrast, "From layer mask", ImVec2(0.0f, 0.0f))) {
         commands.invoke("select.from_mask", json::object());
     }
     ImGui::EndDisabled();
@@ -229,17 +248,18 @@ void draw_image_size_controls(AppState& state, CommandTable& commands) {
                 (job.state == ai::JobState::queued || job.state == ai::JobState::running));
         }
     }
+    const bool same_image_row = fits_button_pair("Resize (Lanczos3)", "Upscale (AI)");
     ImGui::BeginDisabled(!valid || (form.width == original.w && form.height == original.h));
-    if (ImGui::Button("Resize (Lanczos3)")) {
+    if (ui_icons::labeled_button(ui_icons::Icon::Scaling, "Resize (Lanczos3)", ImVec2(0.0f, 0.0f))) {
         const CommandResult result = commands.invoke("doc.resample",
             json{{"width", form.width}, {"height", form.height},
                  {"whole_stack", form.whole_stack}});
         form.resize_error = result.ok ? "" : result.error;
     }
     ImGui::EndDisabled();
-    ImGui::SameLine();
+    if (same_image_row) ImGui::SameLine();
     ImGui::BeginDisabled(form.whole_stack || !ai_problem.empty() || running);
-    if (ImGui::Button("Upscale (AI)")) {
+    if (ui_icons::labeled_button(ui_icons::Icon::ImageUpscale, "Upscale (AI)", ImVec2(0.0f, 0.0f))) {
         const CommandResult result = commands.invoke("image.upscale",
             json{{"width", form.width}, {"height", form.height},
                  {"model", selected_model}});
@@ -341,21 +361,23 @@ void draw_canvas_controls(AppState& state, CommandTable& commands) {
                                    {"mark_added", form.mark_added}});
         form.error = result.ok ? "" : result.error;
     };
-    if (ImGui::Button("Resize canvas")) {
+    const bool same_resize_row = fits_button_pair("Resize canvas", "Resize & Fill...");
+    if (ui_icons::labeled_button(ui_icons::Icon::Expand, "Resize canvas", ImVec2(0.0f, 0.0f))) {
         resize(false);
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Resize & Fill...")) {
+    if (same_resize_row) ImGui::SameLine();
+    if (ui_icons::labeled_button(ui_icons::Icon::PaintBucket, "Resize & Fill...", ImVec2(0.0f, 0.0f))) {
         resize(true);
     }
     ImGui::TextDisabled("Fill opens a prompt; Run starts the AI request.");
     ImGui::SeparatorText("Rotate");
-    if (ImGui::Button("90 deg CCW")) {
+    const bool same_rotate_row = fits_button_pair("90 deg CCW", "90 deg CW");
+    if (ui_icons::labeled_button(ui_icons::Icon::RotateCcw, "90 deg CCW", ImVec2(0.0f, 0.0f))) {
         const CommandResult result = commands.invoke("doc.rotate", json{{"direction", "ccw"}});
         form.error = result.ok ? "" : result.error;
     }
-    ImGui::SameLine();
-    if (ImGui::Button("90 deg CW")) {
+    if (same_rotate_row) ImGui::SameLine();
+    if (ui_icons::labeled_button(ui_icons::Icon::RotateCw, "90 deg CW", ImVec2(0.0f, 0.0f))) {
         const CommandResult result = commands.invoke("doc.rotate", json{{"direction", "cw"}});
         form.error = result.ok ? "" : result.error;
     }
@@ -364,13 +386,14 @@ void draw_canvas_controls(AppState& state, CommandTable& commands) {
     if (ImGui::InputInt4("x, y, w, h##crop", crop.data())) {
         form.crop = Rect{crop[0], crop[1], crop[2], crop[3]};
     }
-    if (ImGui::Button("Crop to rectangle")) {
+    const bool same_crop_row = fits_button_pair("Crop to rectangle", "Crop to selection");
+    if (ui_icons::labeled_button(ui_icons::Icon::Crop, "Crop to rectangle", ImVec2(0.0f, 0.0f))) {
         const auto result = commands.invoke("doc.crop", json{{"rect", json::array(
             {form.crop.x, form.crop.y, form.crop.w, form.crop.h})}});
         form.error = result.ok ? "" : result.error;
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Crop to selection")) {
+    if (same_crop_row) ImGui::SameLine();
+    if (ui_icons::labeled_button(ui_icons::Icon::Crop, "Crop to selection", ImVec2(0.0f, 0.0f))) {
         const auto result = commands.invoke("doc.crop", json::object());
         form.error = result.ok ? "" : result.error;
     }

@@ -110,14 +110,29 @@ def run(wire: wd.Wire, inj_display: str, p: Probe, tmp: pathlib.Path) -> None:
                 f"{wide}x{high}")
 
         held = wire.call("ai.intent", {})["recipe"]
-        choose_picker_option(wire, inj, "style", "new-image-anime")
-        p.check(wire.call("ai.intent", {})["recipe"] == "new-image-anime",
-                "the style row commits from a click")
+        choose_picker_option(wire, inj, "style", "new-image-photo")
         style = wire.call("ai.intent", {})["recipe"]
-        p.check(style != held, "the style row changed the recipe the intent holds",
-                f"{held} -> {style}")
+        p.check(style == "new-image-photo" and style != held,
+                "the style dropdown selects photo", f"{held} -> {style}")
         active = {v["id"]: v for v in wire.call("ai.verbs")["verbs"]}["generate"]["active"]
-        p.check(active == style, "and the row reports that recipe as the one a press would run")
+        p.check(active == style, "and Generate uses the selected photo recipe")
+
+        # Both controls must keep the chosen style, not silently switch to `new-image`.
+        choose_picker_option(wire, inj, "aspect", "3:4")
+        p.check(wire.call("ai.intent", {})["recipe"] == style,
+                "changing aspect keeps the chosen style")
+        click_box(inj, picker_rect(wire, inj, "prompt"))
+        for letter in "oak":
+            inj.key(ord(letter))
+        wd.settle(wire, 3)
+        prompted = wire.call("ai.intent", {})
+        p.check(prompted["recipe"] == style and prompted["vars"].get("prompt") == "oak",
+                "typing in the prompt keeps the chosen style", str(prompted["vars"]))
+
+        choose_picker_option(wire, inj, "aspect", "1:1")
+        choose_picker_option(wire, inj, "style", "new-image-anime")
+        active = {v["id"]: v for v in wire.call("ai.verbs")["verbs"]}["generate"]["active"]
+        p.check(active == "new-image-anime", "and Generate follows the next style")
 
         # A style is a recipe, so running it is an ordinary job: the recording answers and it lands.
         wire.call("ai.intent", {"vars": {"prompt": "a red cube on a shelf"}})

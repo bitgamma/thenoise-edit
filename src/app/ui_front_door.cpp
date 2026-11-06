@@ -3,6 +3,7 @@
 
 #include "app/verb_fields.h"
 #include "app/ui_prompt.h"
+#include "app/ui_icons.h"
 
 #include "core/log.h"
 
@@ -33,22 +34,22 @@ void start_pick(CommandTable& commands, const char* set, const char* title) {
 
 #ifndef __EMSCRIPTEN__
 void draw_file_buttons(CommandTable& commands, bool has_document, bool can_save) {
-    if (ImGui::Button("New")) {
+    if (ui_icons::button(ui_icons::Icon::FilePlus, "new", ImVec2(30.0f, 28.0f), "New")) {
         commands.invoke("file.new", json::object());
     }
     ImGui::SameLine();
-    if (ImGui::Button("Open")) {
+    if (ui_icons::button(ui_icons::Icon::FolderOpen, "open", ImVec2(30.0f, 28.0f), "Open")) {
         start_pick(commands, "open", "Open an image or a document");
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!can_save);
-    if (ImGui::Button("Save")) {
+    if (ui_icons::button(ui_icons::Icon::Save, "save", ImVec2(30.0f, 28.0f), "Save")) {
         commands.invoke("doc.save", json::object());
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!has_document);
-    if (ImGui::Button("Save As")) {
+    if (ui_icons::button(ui_icons::Icon::SaveAs, "save_as", ImVec2(30.0f, 28.0f), "Save As")) {
         start_pick(commands, "project", "Save document");
     }
     ImGui::EndDisabled();
@@ -59,11 +60,11 @@ void draw_file_buttons(CommandTable& commands, bool has_document, bool can_save)
 void draw_export_insert_buttons(CommandTable& commands, bool has_document) {
     ImGui::SameLine();
     ImGui::BeginDisabled(!has_document);
-    if (ImGui::Button("Export")) {
+    if (ui_icons::button(ui_icons::Icon::FileOutput, "export", ImVec2(30.0f, 28.0f), "Export")) {
         start_pick(commands, "flat", "Export an image");
     }
     ImGui::SameLine();
-    if (ImGui::Button("Insert")) {
+    if (ui_icons::button(ui_icons::Icon::ImagePlus, "insert", ImVec2(30.0f, 28.0f), "Insert image")) {
         start_pick(commands, "image", "Insert an image");
     }
     ImGui::EndDisabled();
@@ -180,7 +181,7 @@ void draw_front_door(AppState& state, CommandTable& commands) {
     }
     if (ImGui::BeginChild("new", ImVec2(welcome ? 340.0f : 0.0f, 0.0f), false)) {
         draw_new_document_body(state, commands);
-        if (ImGui::Button("Create")) {
+        if (ui_icons::labeled_button(ui_icons::Icon::ImagePlus, "Create", ImVec2(0.0f, 0.0f))) {
             create_from_front_door(commands);
         }
         ImGui::SameLine();
@@ -207,7 +208,7 @@ void draw_front_door(AppState& state, CommandTable& commands) {
                     commands.invoke("front_door", json{{"show", "close"}});
                 }
             }
-            if (ImGui::Button("Browse...")) {
+            if (ui_icons::labeled_button(ui_icons::Icon::FolderOpen, "Browse...", ImVec2(0.0f, 0.0f))) {
                 start_pick(commands, "open", "Open an image or a document");
             }
         }
