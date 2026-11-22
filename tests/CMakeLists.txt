@@ -215,6 +215,15 @@ if(Python3_Interpreter_FOUND AND NOT WIN32)
                          TIMEOUT 420
                          DEPENDS noise-edit)
 
+    # Without a server, a click on any selection AI verb must explain why it cannot run.
+    add_test(NAME test_ai_offline_feedback_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ai_offline_feedback_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_ai_offline_feedback_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 180
+                         DEPENDS noise-edit)
+
     # That marked coverage is a wash over the covered area and nowhere else: a haze over the whole
     # document, or a wash that misses the part of the mark away from the origin, both fail here, and
     # only a capture can say.
@@ -247,11 +256,45 @@ if(Python3_Interpreter_FOUND AND NOT WIN32)
                          TIMEOUT 420
                          DEPENDS noise-edit)
 
+    add_test(NAME test_dock_persistence_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/dock_persistence_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_dock_persistence_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 180
+                         DEPENDS noise-edit)
+
+    add_test(NAME test_dock_center_recovery_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/dock_center_recovery_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_dock_center_recovery_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 180
+                         DEPENDS noise-edit)
+
+    add_test(NAME test_ai_workspace_dock_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ai_workspace_dock_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_ai_workspace_dock_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 180
+                         DEPENDS noise-edit)
+
     # The left tool palette must expose every pointer tool, and clicks must select it.
     add_test(NAME test_tool_palette_probe
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/tool_palette_probe.py
                      --bin $<TARGET_FILE:noise-edit>)
     set_tests_properties(test_tool_palette_probe PROPERTIES
+                         SKIP_REGULAR_EXPRESSION "SKIP:"
+                         TIMEOUT 180
+                         DEPENDS noise-edit)
+
+    # Image geometry is reached through menus now: drive each dialog and prove its operation and Undo
+    # against the running document, including the new-area selection and the Rotate submenu.
+    add_test(NAME test_image_menu_probe
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/image_menu_probe.py
+                     --bin $<TARGET_FILE:noise-edit>)
+    set_tests_properties(test_image_menu_probe PROPERTIES
                          SKIP_REGULAR_EXPRESSION "SKIP:"
                          TIMEOUT 180
                          DEPENDS noise-edit)

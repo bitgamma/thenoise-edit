@@ -93,6 +93,23 @@ def main() -> int:
         p.check(empty["shown"] is False and empty["buttons"] == [],
                 "an unmarked canvas offers no bar", str(empty["mark"]))
 
+        wire.call("select.all")
+        wd.settle(wire)
+        full = wire.call("verb.bar")
+        full_state = wire.call("app.state")
+        fx, fy, fw, fh = full["screen"]
+        canvas_x, canvas_y, canvas_w, canvas_h = full_state["canvas"]
+        p.check(full["shown"], "a full-image selection keeps the action bar available")
+        p.check(fx >= canvas_x and fy >= canvas_y and fx + fw <= canvas_x + canvas_w and
+                fy + fh <= canvas_y + canvas_h,
+                "full-image action bar stays within the canvas and clear of the status bar",
+                str(full["screen"]))
+        p.check(fy <= canvas_y + canvas_h * 0.25,
+                "full-image fallback stays near the upper canvas instead of hugging the bottom",
+                f"bar y={fy:.0f}, canvas y={canvas_y:.0f}..{canvas_y + canvas_h:.0f}")
+        wire.call("select.clear")
+        wd.settle(wire)
+
         blank_checksum = wire.call("doc.get")["checksum"]
         wire.call("select.rect", {"rect": MARK})
         wd.settle(wire)

@@ -37,6 +37,7 @@ struct ViewPolicy {
     int overpan_px;
 };
 inline constexpr ViewPolicy kViewPolicy{0.05, 64.0, 1.10, 16, 48};
+inline constexpr double kDefaultLayerPanelUpperRatio = 0.46;
 
 inline constexpr const char* kAppVersion = "0.0.0-m0";
 inline constexpr const char* kWindowTitle = "noise-edit";
@@ -115,6 +116,7 @@ struct ImageSizeForm {
     int width = 0;
     int height = 0;
     bool lock_aspect = true;
+    bool use_for_next_edit = false;
     std::string model;
     std::string resize_error;
     std::string upscale_error;
@@ -280,11 +282,20 @@ struct AppState {
     std::vector<ToolPaletteButton> ai_aspect_options{};
     std::vector<ToolPaletteButton> ai_style_options{};
     ScreenRect layers_window{};
+    bool ai_workspace_open = true;
+    bool ai_workspace_focus_requested = false;
+    bool ai_workspace_visible = false;
+    bool ai_workspace_docked = false;
+    bool ai_workspace_settings_dirty = false;
+    bool ai_workspace_placement_initialized = false;
+    ScreenRect ai_workspace_window{};
     // The panel's picture cache, read out of it each frame it draws: how many thumbnails it has had to
     // resample since the run started.
     std::uint64_t layer_thumb_rebuilds = 0;
     std::vector<LayerCard> layer_cards{};
     LayerPanelControls layer_panel{};
+    double layer_panel_upper_ratio = kDefaultLayerPanelUpperRatio;
+    bool layer_panel_settings_dirty = false;
     InlineField renaming{};
     InlineField scaling{};
     CanvasForm canvas_form{};

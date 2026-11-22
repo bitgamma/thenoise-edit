@@ -168,7 +168,8 @@ void test_m0_command_surface_is_registered() {
     }
     for (const char* required : {"app.state", "app.quit", "command.list", "command.invoke",
                                  "doc.new", "doc.open", "doc.save", "doc.get", "image.get",
-                                 "screenshot", "pixels.compare", "log.tail", "ui.theme", "view.fit",
+                                 "screenshot", "pixels.compare", "log.tail", "ui.theme",
+                                 "ui.layer_split", "view.fit",
                                  "view.pan", "view.zoom", "view.set", "ai.references",
                                  "ai.references.add", "ai.references.remove", "ai.references.move",
                                  "select.lasso"}) {
@@ -5066,6 +5067,29 @@ void test_theme_switch_persists_without_changing_the_document() {
     std::filesystem::remove_all(config);
 }
 
+void test_layer_split_command_reports_and_sets_the_shared_ratio() {
+    Harness harness;
+    const json initial = harness.value("app.state", json::object());
+    CHECK_EQ(initial["layer_split"]["upper_ratio"].get<double>(),
+             kDefaultLayerPanelUpperRatio);
+    CHECK_EQ(harness.value("ui.layer_split", json::object())["upper_ratio"].get<double>(),
+             initial["layer_split"]["upper_ratio"].get<double>());
+
+    const CommandResult changed = harness.run("ui.layer_split", json{{"upper_ratio", 0.31}});
+    CHECK_OK(changed);
+    CHECK_EQ(changed.value["upper_ratio"].get<double>(), 0.31);
+    CHECK_EQ(harness.value("app.state", json::object())["layer_split"]["upper_ratio"].get<double>(),
+             0.31);
+    CHECK(harness.state.layer_panel_settings_dirty);
+
+    for (const json& invalid : {json{{"upper_ratio", 0}}, json{{"upper_ratio", 1}},
+                                json{{"upper_ratio", "0.5"}}}) {
+        const CommandResult rejected = harness.run("ui.layer_split", invalid);
+        CHECK(!rejected.ok);
+        CHECK_EQ(harness.state.layer_panel_upper_ratio, 0.31);
+    }
+}
+
 // The command wire is the editor surface: every canvas operation and edge tweak must be
 // reachable here, and an undo/redo changing geometry must invalidate queued AI landings.
 void test_canvas_commands_and_editable_edges_use_the_document_timeline() {
@@ -5428,5 +5452,6 @@ int main() {
     test_the_new_document_form_offers_the_sizes_and_refuses_the_impossible();
     test_the_recent_files_are_the_documents_this_app_touched();
     test_theme_switch_persists_without_changing_the_document();
+    test_layer_split_command_reports_and_sets_the_shared_ratio();
     return noise::test::summary(__FILE__);
 }

@@ -163,7 +163,9 @@ def main() -> int:
                 str(ImageChops.difference(without, plain).getbbox()))
 
         left, top, _, _ = wd.document_screen_rect(brush_state)
-        diameter, changed = ring_measurement(plain, without, (px - left, py - top),
+        pointer_x, pointer_y = screen_of(brush_state, *brush_state["pointer"]["at"])
+        diameter, changed = ring_measurement(plain, without,
+                                             (pointer_x - left, pointer_y - top),
                                              1.6 * expected)
         shutil.copy(without_path, "/tmp/pointer_brush.png")
         p.check(changed > 20, "the ring is on screen", f"{changed} px")
@@ -177,13 +179,15 @@ def main() -> int:
         wd.settle(wire)
         wider = wire.call("app.state")
         expected_wide = wider["brush"]["size"] * wider["view"]["scale"]
+        pointer_x, pointer_y = screen_of(wider, *wider["pointer"]["at"])
         wire.call("pointer.footprint", {"show": False})
         wd.settle(wire)
         wide_plain, wide_plain_path = doc_capture(wire)
         wire.call("pointer.footprint", {"show": True})
         wd.settle(wire)
         wide_ring, wide_ring_path = doc_capture(wire)
-        wide_diameter, _ = ring_measurement(wide_plain, wide_ring, (px - left, py - top),
+        wide_diameter, _ = ring_measurement(wide_plain, wide_ring,
+                                           (pointer_x - left, pointer_y - top),
                                            1.6 * expected_wide)
         p.check(wide_diameter > diameter + 2.0, "a wider brush draws a wider ring",
                 f"{diameter:.1f} px to {wide_diameter:.1f} px")

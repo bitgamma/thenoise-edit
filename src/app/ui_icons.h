@@ -22,6 +22,7 @@ enum class Icon : std::uint16_t {
 
 void draw(Icon icon, ImVec2 top_left, float size, ImU32 color);
 bool button(Icon icon, const char* id, ImVec2 size, const char* tooltip);
+float labeled_button_width(const char* text);
 bool labeled_button(Icon icon, const char* text, ImVec2 size);
 std::optional<Icon> for_tool(std::string_view tool);
 Icon for_verb(std::string_view verb);

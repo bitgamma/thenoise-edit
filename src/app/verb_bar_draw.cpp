@@ -5,6 +5,7 @@
 
 #include "app/verb_fields.h"
 #include "app/ui_icons.h"
+#include "app/ui_theme.h"
 #include "app/ui_prompt.h"
 #include "app/selection_edit.h"
 #include "imgui_internal.h"  // BringWindowToDisplayFront: the bar has to sit above the canvas
@@ -26,6 +27,9 @@ using nlohmann::json;
 constexpr double kBarGapPx = 10.0;
 constexpr double kBarPadPx = 6.0;
 constexpr double kAskWidthPx = 340.0;
+constexpr float kAiNoticeWidthPx = 380.0f;
+constexpr float kAiNoticeGapPx = 9.0f;
+bool action_notice_visible = false;
 
 // The words a marked-area verb asks for, typed over the mark rather than in the panel across the
 // window. The words belong to the intent and the press to `ai.<verb>`; this holds nothing of its own
@@ -142,6 +146,58 @@ void draw_ask(AppState& state, CommandTable& commands, const json& ask, bool bar
     ImGui::PopStyleColor(2);
 }
 
+void draw_ai_action_notice(AppState& state, CommandTable& commands) {
+    const std::string& error = state.ai_intent.error;
+    if (error.empty() || state.verb_bar.empty()) {
+        action_notice_visible = false;
+        return;
+    }
+    if (!action_notice_visible) return;
+    const json intent = commands.invoke("ai.intent", json::object()).value;
+    const float width = std::max(1.0f, std::min(kAiNoticeWidthPx,
+                              static_cast<float>(state.viewport.w) - 12.0f));
+    const float line = ImGui::GetTextLineHeightWithSpacing();
+    const float text_height = ImGui::CalcTextSize(error.c_str(), nullptr, false,
+                                                  width - 24.0f).y;
+    const float estimated_height = text_height + line * 4.0f + 28.0f;
+    const float canvas_top = static_cast<float>(state.canvas_origin.y);
+    const float canvas_bottom = canvas_top + static_cast<float>(state.viewport.h);
+    const float space_below = canvas_bottom - state.verb_bar.y - state.verb_bar.h;
+    const float x = std::clamp(state.verb_bar.x, static_cast<float>(state.canvas_origin.x),
+                               std::max(static_cast<float>(state.canvas_origin.x),
+                                        static_cast<float>(state.canvas_origin.x + state.viewport.w) - width));
+    const float preferred_y = space_below >= estimated_height + kAiNoticeGapPx
+        ? state.verb_bar.y + state.verb_bar.h + kAiNoticeGapPx
+        : state.verb_bar.y - estimated_height - kAiNoticeGapPx;
+    const float y = std::clamp(preferred_y, canvas_top + kAiNoticeGapPx,
+                               std::max(canvas_top + kAiNoticeGapPx,
+                                        canvas_bottom - estimated_height - kAiNoticeGapPx));
+    ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(width, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::GetStyleColorVec4(ImGuiCol_PopupBg));
+    ImGui::PushStyleColor(ImGuiCol_Border, ui_theme::palette(state.ui_theme).danger);
+    ImGui::Begin("##ai_action_notice", nullptr,
+                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::TextColored(ui_theme::palette(state.ui_theme).danger, "AI action unavailable");
+    ImGui::TextWrapped("%s", error.c_str());
+    if (!intent.value("configured", false)) {
+        ImGui::TextDisabled("Set $THENOISE_URL and restart the editor.");
+    } else if (!intent.value("connected", false)) {
+        if (ImGui::Button("Retry connection")) {
+            commands.invoke("ai.intent", json{{"connect", true}});
+        }
+        ImGui::SameLine();
+    }
+    if (ImGui::Button("Dismiss")) {
+        commands.invoke("ai.intent", json{{"connect", false}});
+        action_notice_visible = false;
+    }
+    ImGui::End();
+    ImGui::PopStyleColor(2);
+}
+
 }  // namespace
 
 void draw_verb_bar(AppState& state, CommandTable& commands) {
@@ -149,6 +205,7 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
     const SelectionEditPhase mode = selection_edit_phase(state);
     const std::optional<Rect> mark = verb_bar_mark(state);
     if (!mark || selection_edit_hides_bar(state)) {
+        action_notice_visible = false;
         return;
     }
     const json rows = verb_bar_rows(commands, nullptr);
@@ -173,26 +230,34 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
     double row_width = kBarPadPx * 2.0;
     double row_height = 0.0;
     for (const json& row : rows) {
-        const ImVec2 text = ImGui::CalcTextSize(row["label"].get<std::string>().c_str());
-        row_width += text.x + ImGui::CalcTextSize("     ").x + style.FramePadding.x * 2.0 + style.ItemSpacing.x;
-        row_height = std::max(row_height, static_cast<double>(text.y + style.FramePadding.y * 2.0f));
+        const std::string label = row["label"].get<std::string>();
+        const ImVec2 text = ImGui::CalcTextSize(label.c_str());
+        row_width += ui_icons::labeled_button_width(label.c_str()) + style.ItemSpacing.x;
+        row_height = std::max(row_height,
+                              static_cast<double>(text.y + style.FramePadding.y * 2.0f));
     }
     row_width -= style.ItemSpacing.x;
     width = std::max(width, row_width);
     height = row_height;
     height += kBarPadPx * 2.0;
 
-    // Above the mark when there is room, below when there is not, and always inside the canvas area so
-    // the bar cannot hide behind the panel edge.
     double x = anchor_x + (far_x - anchor_x - width) * 0.5;
-    double y = anchor_y - kBarGapPx - height;
+    const double canvas_top = state.canvas_origin.y;
+    const double canvas_bottom = state.canvas_origin.y + state.viewport.h;
+    const double above_y = anchor_y - kBarGapPx - height;
+    const double below_y = far_y + kBarGapPx;
+    const bool above_fits = above_y >= canvas_top && above_y + height <= canvas_bottom;
+    const bool below_fits = below_y >= canvas_top && below_y + height <= canvas_bottom;
+    double y = above_y;
     bool bar_above_mark = true;
-    if (y < state.canvas_origin.y) {
-        y = far_y + kBarGapPx;
+    if (!above_fits && below_fits) {
+        y = below_y;
         bar_above_mark = false;
+    } else if (!above_fits) {
+        y = canvas_top + kBarGapPx;
     }
     const double limit_x = state.canvas_origin.x + state.viewport.w - width;
-    const double limit_y = state.canvas_origin.y + state.viewport.h - height;
+    const double limit_y = canvas_bottom - height;
     x = std::min(std::max(x, state.canvas_origin.x), std::max(state.canvas_origin.x, limit_x));
     y = std::min(std::max(y, state.canvas_origin.y), std::max(state.canvas_origin.y, limit_y));
 
@@ -226,8 +291,7 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
         if (i > 0) {
             ImGui::SameLine();
         }
-        ImGui::BeginDisabled(mode == SelectionEditPhase::generating ||
-                             !row["ready"].get<bool>());
+        ImGui::BeginDisabled(mode == SelectionEditPhase::generating);
         const bool pressed = ui_icons::labeled_button(
             ui_icons::for_verb(row["verb"].get<std::string>()),
             row["label"].get<std::string>().c_str(), ImVec2(0.0f, 0.0f));
@@ -235,15 +299,20 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
         // A verb that wants words opens the box over the mark instead of running on whatever the panel
         // happens to hold; one that wants none runs, because a dialog in its way would be theatre.
         if (pressed) {
-            if (row["field"].is_null()) {
-                commands.invoke(row["command"].get<std::string>(), json::object());
+            if (!row["ready"].get<bool>() || row["field"].is_null()) {
+                const CommandResult result = commands.invoke(
+                    row["command"].get<std::string>(), json::object());
+                action_notice_visible = !result.ok;
             } else {
-                commands.invoke("verb.ask", json{{"show", row["verb"]}});
+                const CommandResult result = commands.invoke(
+                    "verb.ask", json{{"show", row["verb"]}});
+                action_notice_visible = !result.ok;
             }
         }
         // Why a button is dim, where a person looks when a button does nothing. The panel states the
         // same reason beside its own copy; the bar has no room for it and no need to restate it.
-        if (!row["ready"].get<bool>() && ImGui::IsItemHovered()) {
+        if (!row["ready"].get<bool>() &&
+            ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
             ImGui::SetTooltip("%s", row["reason"].get<std::string>().c_str());
         }
     }
@@ -252,6 +321,7 @@ void draw_verb_bar(AppState& state, CommandTable& commands) {
     ImGui::PopStyleColor(2);
 
     draw_ask(state, commands, verb_ask_state(state, commands), bar_above_mark);
+    draw_ai_action_notice(state, commands);
 }
 
 }  // namespace noise::app

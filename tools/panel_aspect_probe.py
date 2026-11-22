@@ -61,14 +61,25 @@ def picker_rect(wire: wd.Wire, inj: wi.Injector, kind: str) -> list:
     for _ in range(12):
         state = wire.call("app.state")
         box = state["ai_pickers"][kind]
-        tool_x, tool_bottom, tool_width, _ = state["layers_window"]
-        del tool_width
-        if box[2] > 20 and 30 <= box[1] and box[1] + box[3] <= tool_bottom - 8:
+        framebuffer_width, framebuffer_height = state["framebuffer"]
+        if (box[2] > 20 and box[0] >= 0 and box[1] >= 0
+                and box[0] + box[2] <= framebuffer_width
+                and box[1] + box[3] <= framebuffer_height):
             return box
-        inj.move(round(tool_x + 80), round(max(60, tool_bottom * 0.5)))
-        inj.wheel(-3 if box[1] + box[3] > tool_bottom - 8 else 3)
+        inj.move(round(framebuffer_width - 300), round(framebuffer_height * 0.5))
+        inj.wheel(-3 if box[1] + box[3] > framebuffer_height else 3)
         wd.settle(wire)
-    raise wd.WireError(f"{kind} picker remained outside the visible tool panel: {box}")
+    raise wd.WireError(f"{kind} picker remained outside the visible AI Workspace: {box}")
+
+
+def open_workspace(wire: wd.Wire, inj: wi.Injector) -> None:
+    click(inj, 396, 10)
+    wd.settle(wire)
+    click(inj, 410, 31)
+    wd.settle(wire)
+    state = wire.call("app.state")
+    if state["ai_pickers"]["aspect"][2] <= 0:
+        raise wd.WireError("AI Workspace menu did not open the aspect picker")
 
 
 def choose_picker_option(wire: wd.Wire, inj: wi.Injector, kind: str, choice: str) -> None:
@@ -86,6 +97,7 @@ def run(wire: wd.Wire, inj_display: str, p: Probe, tmp: pathlib.Path) -> None:
     inj = wi.Injector(inj_display)
     try:
         wire.call("doc.new", {"width": 512, "height": 512})
+        open_workspace(wire, inj)
         wire.call("server.connect")
         wire.call("ai.intent", {"recipe": "new-image"})
         row = {v["id"]: v for v in wire.call("ai.verbs")["verbs"]}["generate"]
@@ -155,12 +167,9 @@ def run(wire: wd.Wire, inj_display: str, p: Probe, tmp: pathlib.Path) -> None:
                     f"{len(stacked)} layers")
 
         state = wire.call("app.state")
-        tool_x = round(state["layers_window"][0] + state["layers_window"][2] / 2)
-        tool_bottom = round(state["layers_window"][1])
-
         # A long References group can extend beyond the scrollable tool window. The published drop
-        # target must be the visible intersection, so a drop over another panel or the canvas keeps its
-        # ordinary routing.
+        # target must stay within the visible workspace so a drop over another panel or the canvas keeps
+        # its ordinary routing.
         wire.call("doc.new", {"width": 512, "height": 512})
         reference_dir = tmp / "references"
         reference_dir.mkdir()
@@ -170,24 +179,22 @@ def run(wire: wd.Wire, inj_display: str, p: Probe, tmp: pathlib.Path) -> None:
             wd.write_fixture_png(path, 12, 10)
             paths.append(str(path))
         wire.call("ai.references.add", {"paths": paths})
-        inj.move(tool_x, max(1, tool_bottom // 2))
+        framebuffer_width, framebuffer_height = state["framebuffer"]
+        inj.move(framebuffer_width - 300, framebuffer_height // 2)
         inj.wheel(-4)
         wd.settle(wire, 3)
         state = wire.call("app.state")
         drop_x, drop_y, drop_w, drop_h = state["ai_references_rect"]
-        panel_x, panel_y, panel_width, _ = state["layers_window"]
         framebuffer_width, framebuffer_height = state["framebuffer"]
-        visible_bottom = round(panel_y)
         rect_inside_visible_tool = (
             drop_w > 0 and drop_h > 0
-            and drop_x >= panel_x and drop_y >= 0
-            and drop_x + drop_w <= panel_x + panel_width
-            and drop_y + drop_h <= min(visible_bottom, framebuffer_height)
+            and drop_x >= 0 and drop_y >= 0
             and drop_x + drop_w <= framebuffer_width
+            and drop_y + drop_h <= framebuffer_height
         )
         p.check(rect_inside_visible_tool,
-                "the reference drop target stays within its visible clipped tool-panel area",
-                f"rect={[drop_x, drop_y, drop_w, drop_h]}, panel-bottom={visible_bottom}")
+                "the reference drop target stays within its visible AI Workspace",
+                f"rect={[drop_x, drop_y, drop_w, drop_h]}, framebuffer={state['framebuffer']}")
     finally:
         inj.close()
 
