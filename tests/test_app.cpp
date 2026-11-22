@@ -3794,6 +3794,29 @@ void test_the_new_dialog_creates_the_document_and_the_idea_it_holds() {
     CHECK_EQ(h.state.doc.width(), 256);
 }
 
+void test_create_image_without_ai_does_not_replace_the_document() {
+    Harness h(Harness::Config::unconfigured);
+    h.value("doc.new", json{{"width", 64}, {"height", 32}});
+    h.value("front_door", json{{"show", "new"}});
+    h.value("new_document", json{{"width", 128}, {"height", 128},
+                                   {"prompt", "a sunset over the ocean"}});
+    const std::uint64_t epoch = h.state.document_epoch;
+    const CommandResult refused = h.run("front_door.create", json::object());
+    CHECK(!refused.ok);
+    CHECK(refused.error.find("THENOISE_URL") != std::string::npos);
+    CHECK_EQ(h.state.doc.width(), 64);
+    CHECK_EQ(h.state.doc.height(), 32);
+    CHECK_EQ(h.state.document_epoch, epoch);
+    CHECK(h.state.front_door == app::FrontDoor::new_document);
+
+    h.value("new_document", json{{"prompt", " \n\t  "}});
+    const json blank = h.value("front_door.create", json::object());
+    CHECK_EQ(blank["asked"].get<bool>(), false);
+    CHECK(!blank.contains("job"));
+    CHECK_EQ(h.state.doc.width(), 128);
+    CHECK_EQ(h.state.doc.height(), 128);
+}
+
 // What a picked path *does* is a command, so the routing is testable without a desktop: the words a
 // dialog answers with and the words a probe sends have to do the same thing, or the button and the
 // wire are two doors again.
@@ -5381,6 +5404,7 @@ int main() {
     test_an_aspect_choice_prices_the_frame_it_will_ask_for();
     test_a_frame_reaches_the_request_and_leaves_the_canvas_outside_it_alone();
     test_the_new_dialog_creates_the_document_and_the_idea_it_holds();
+    test_create_image_without_ai_does_not_replace_the_document();
     test_a_picked_path_does_what_its_file_set_promised();
     test_a_dropped_picture_lands_where_the_pointer_was();
     test_an_answer_on_a_blank_canvas_becomes_the_canvas();

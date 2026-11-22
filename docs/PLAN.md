@@ -1,9 +1,19 @@
+# PLAN — what is next, and the reasoning the code cannot carry
+
+Last full reread of `docs/ARCHITECTURE.md` against the tree: **2026-11-19**. `doc.resize` and
+`doc.crop` move pixels, masks and marked coverage together, and undo/redo exchange entire canvas
+states so older per-pixel history is valid again once the original extent returns. New AI answers
+retain the generated crop under a separately editable mask. Local image resampling and fast model
+upscaling are implemented; best-quality generative upscaling remains a separate future option. The
+prior 2026-10-26 notes below remain historical.
+`AGENTS.md` is normative and outranks this file.
+
 ## 2026-11-22 - AI Workspace docking
 
 **Architecture verdict:** The AI Workspace is a peer ImGui dock window, not a section of the
-Layers panel or a second docking framework. New layouts place its tab beside Layers and Log;
-existing layouts keep their saved docking tree and migrate the previously non-dockable AI
-window to the Layers/Log dock once. A stored placement flag prevents later restarts from
+Layers panel or a second docking framework. Fresh layouts show Layers by default, with AI
+Workspace and Log in adjacent tabs. Existing layouts keep their saved docking tree and migrate
+the previously non-dockable AI window to the Layers/Log dock once. A stored placement flag prevents later restarts from
 re-docking a workspace that the user deliberately floated. Dragging the tab floats it;
 dropping it on a docking target restores a regular tab. Window > AI Workspace dispatches
 `ui.ai_workspace` (open/focus); closing the window hides only the UI, not any AI job.
@@ -21,22 +31,12 @@ so placing Layers, Log or AI Workspace into that same node hides the panel with 
 select it. The dockspace now rejects central-node drops, while side docking and floating
 remain available. For previously persisted layouts, only panels sharing the Canvas dock
 node are moved to an existing noncentral tab node; if none exists, they are floated. Other
-saved dock arrangements are left intact. No new layout state or debug-wire command is needed:
-the regression probe corrupts the persisted DockId and verifies recovery via `app.state`
+saved dock arrangements are left intact, and recovered Layers becomes the selected tab.
+The regression probe corrupts the persisted DockId and verifies recovery via `app.state`
 and the next saved `imgui.ini`.
 
 **Verification:** Patch and Python syntax checks completed; the GUI-driven regression
 requires the user's pinned ImGui build and a display.
-
-# PLAN — what is next, and the reasoning the code cannot carry
-
-Last full reread of `docs/ARCHITECTURE.md` against the tree: **2026-11-19**. `doc.resize` and
-`doc.crop` move pixels, masks and marked coverage together, and undo/redo exchange entire canvas
-states so older per-pixel history is valid again once the original extent returns. New AI answers
-retain the generated crop under a separately editable mask. Local image resampling and fast model
-upscaling are implemented; best-quality generative upscaling remains a separate future option. The
-prior 2026-10-26 notes below remain historical.
-`AGENTS.md` is normative and outranks this file.
 
 ## 2026-11-19 - Branded title row and offline AI-action feedback
 
@@ -61,10 +61,6 @@ Under the X11 window manager, titlebar dragging, minimize, maximize/restore butt
 maximize/restore, and the 100% zoom menu were exercised. The corrected viewport golden is a verified
 561×440 PNG and `test_view_golden` passed. The offline feedback probe now keeps its screenshot separate
 from its job-count baseline, so its no-job assertion runs against the intended value.
-
-Screenshots: `/tmp/thenoise-titlebar-1700x900.png`, `/tmp/thenoise-titlebar-1280x800.png`,
-`/tmp/thenoise-titlebar-800x600.png`, `/tmp/thenoise-titlebar-file-open-exact.png`, and
-`/tmp/thenoise-titlebar-recent-tooltip-exact.png`.
 
 ## 2026-11-19 - Clean Top Canvas composition correction
 
@@ -92,9 +88,7 @@ the outer dock to 280 px and back, and verified both allocations after restart. 
 checked full-image placement; the pointer probe now centers its image measurement on the app-reported
 pointer position and passed without changing its tolerance. The app was run and captured at 1700×900,
 1280×800 and 800×600, with the long-filename fixture, mask overlay, expanded brush settings and a
-near-full selection. The screenshots are `/tmp/thenoise-clean-top-canvas/clean-top-1700x900.png`,
-`/tmp/thenoise-clean-top-canvas/clean-top-1280x800.png` and
-`/tmp/thenoise-clean-top-canvas/clean-top-800x600.png`; rendered output was inspected at each size.
+near-full selection. Rendered output was inspected at each size.
 The 800×600 lower dock requires scrolling to reach every Tool Settings control. Xvfb has no window
 manager, so native title-bar controls and the operating-system filename presentation were not visually
 verified. `python3 tools/sweep_procs.py` reported a clean process state.

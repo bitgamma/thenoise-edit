@@ -21,6 +21,7 @@ DOCK_NARROW_DRAG_PX = 180
 SPLIT_DRAG_PX = 60
 SPLIT_RESIZE_TOLERANCE_PX = 20
 COMMAND_SPLIT_RATIO = 0.60
+SCROLL_SPLIT_RATIO = 0.75
 
 
 class Probe:
@@ -56,13 +57,6 @@ def click(inj: wi.Injector, x: float, y: float) -> None:
     inj.move(x, y)
     inj.button(1, True)
     inj.button(1, False)
-
-
-def open_edge_adjustment(inj: wi.Injector, wire: wd.Wire) -> None:
-    click(inj, 226, 13)
-    inj.move(244, 109)
-    wd.settle(wire, 3)
-    click(inj, 350, 109)
 
 
 def drag_split(inj: wi.Injector, wire: wd.Wire, delta: int) -> dict:
@@ -127,22 +121,26 @@ def run(binary: pathlib.Path, runtime: pathlib.Path, stderr_path: pathlib.Path,
                         f"{lowered_list[3]:.0f}px → {commanded['layer_panel']['list'][3]:.0f}px")
 
             wire.call("mask.add", {})
-            open_edge_adjustment(inj, wire)
             wd.settle(wire, 8)
-            edge_state = wire.call("app.state")
-            settings_header = edge_state["tool_options"]
+            settings_header = wire.call("app.state")["tool_options"]
             click(inj, settings_header[0] + settings_header[2] * 0.5,
                   settings_header[1] + settings_header[3] * 0.5)
             wd.settle(wire, 8)
             expanded = wire.call("app.state")
             controls = expanded["tool_option_controls"]
             probe.check(len(controls) == 5,
-                        "Tool Settings expands below mask-edge controls",
+                        "Tool Settings expands below the mask controls",
                         f"{len(controls)} brush controls")
+            # Make the lower pane short *after* opening its header, so every scroll
+            # test hits the lower child instead of a menu or an offscreen header.
+            wire.call("ui.layer_split", {"upper_ratio": SCROLL_SPLIT_RATIO})
+            wd.settle(wire, 8)
+            compressed = wire.call("app.state")
+            controls = compressed["tool_option_controls"]
             control_y = controls[0]["screen"][1] if controls else 0.0
-            list_height = expanded["layer_panel"]["list"][3]
-            panel = expanded["layers_window"]
-            lower_y = (split_y(expanded) + panel[1] + panel[3]) * 0.5
+            list_height = compressed["layer_panel"]["list"][3]
+            panel = compressed["layers_window"]
+            lower_y = (split_y(compressed) + panel[1] + panel[3]) * 0.5
             inj.move(panel[0] + panel[2] * 0.5, lower_y)
             inj.wheel(-5)
             wd.settle(wire, 8)
@@ -154,6 +152,8 @@ def run(binary: pathlib.Path, runtime: pathlib.Path, stderr_path: pathlib.Path,
                         f"first control y={control_y:.0f} → {after_y:.0f}")
             probe.check(abs(scrolled_lower["layer_panel"]["list"][3] - list_height) <= 1.0,
                         "lower scrolling leaves the layer-list allocation unchanged")
+            wire.call("ui.layer_split", {"upper_ratio": COMMAND_SPLIT_RATIO})
+            wd.settle(wire, 8)
 
             divider_x = round(initial[0] - 4.0)
             divider_y = round(initial[1] + initial[3] * 0.5)

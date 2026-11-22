@@ -398,7 +398,15 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
     ImGuiWindowClass dock_class{};
     dock_class.DockNodeFlagsOverrideSet = ImGuiDockNodeFlags_NoWindowMenuButton;
     ImGui::SetNextWindowClass(&dock_class);
-    ImGui::Begin(kWindowLayers);
+    if (!ImGui::Begin(kWindowLayers)) {
+        state.layer_cards.clear();
+        state.layer_panel = LayerPanelControls{};
+        state.layers_window = ScreenRect{};
+        state.tool_options_window = ScreenRect{};
+        state.tool_option_controls.clear();
+        ImGui::End();
+        return;
+    }
     const ui_theme::Palette& colors = ui_theme::palette(state.ui_theme);
     state.layer_cards.clear();
     state.layer_panel = LayerPanelControls{};

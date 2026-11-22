@@ -11,7 +11,10 @@ void draw_log_panel() {
     ImGuiWindowClass dock_class{};
     dock_class.DockNodeFlagsOverrideSet = ImGuiDockNodeFlags_NoWindowMenuButton;
     ImGui::SetNextWindowClass(&dock_class);
-    ImGui::Begin(kWindowLog);
+    if (!ImGui::Begin(kWindowLog)) {
+        ImGui::End();
+        return;
+    }
     static bool follow = true;
     ImGui::Checkbox("Follow", &follow);
     if (ImGui::BeginChild("log-lines")) {

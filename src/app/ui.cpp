@@ -93,14 +93,16 @@ ImGuiID recovery_dock(ImGuiID dockspace, ImGuiID canvas_dock, const char* name) 
     return 0;
 }
 
-void recover_canvas_docked_panels(ImGuiID dockspace) {
+bool recover_canvas_docked_panels(ImGuiID dockspace) {
     const ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(dockspace);
     const ImGuiWindow* canvas = ImGui::FindWindowByName(kWindowCanvas);
-    if (central == nullptr || canvas == nullptr || canvas->DockId != central->ID) return;
+    if (central == nullptr || canvas == nullptr || canvas->DockId != central->ID) return false;
 
+    bool layers_recovered = false;
     for (const char* name : kAuxDockWindows) {
         const ImGuiWindow* panel = ImGui::FindWindowByName(name);
         if (panel == nullptr || panel->DockId != central->ID) continue;
+        if (std::string_view(name) == kWindowLayers) layers_recovered = true;
         const ImGuiID target = recovery_dock(dockspace, central->ID, name);
         ImGui::DockBuilderDockWindow(name, target);
         if (target != 0) continue;
@@ -113,6 +115,7 @@ void recover_canvas_docked_panels(ImGuiID dockspace) {
                    viewport->WorkPos.y + kClientTitlebarHeightPx + kRecoveredPanelMarginPx),
             ImGuiCond_Always);
     }
+    return layers_recovered;
 }
 
 std::string shortcut_for(const CommandTable& commands, const char* id,
@@ -585,6 +588,7 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
     const ImGuiDockNode* saved_layout = ImGui::DockBuilderGetNode(dockspace);
     if (saved_layout == nullptr || !saved_layout->IsDockSpace()) {
         build_default_dock(dockspace, dockspace_size);
+        state.layers_focus_requested = true;
         state.ai_workspace_placement_initialized = true;
         state.ai_workspace_settings_dirty = true;
     }
@@ -598,7 +602,7 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
     ImGui::PopStyleVar();
     ImGui::End();
     ImGui::PopStyleVar(3);
-    recover_canvas_docked_panels(dockspace);
+    if (recover_canvas_docked_panels(dockspace)) state.layers_focus_requested = true;
 
     draw_canvas(state, commands, canvas_texture, checker, tint, mask_tint);
     const json ai_view = commands.invoke("ai.intent", json::object()).value;
@@ -623,6 +627,10 @@ void draw_ui(AppState& state, CommandTable& commands, gfx::Texture& canvas_textu
     draw_status_bar(state, ai_view);
     draw_image_dialogs(state, commands);
     draw_about_window();
+    if (state.layers_focus_requested && state.front_door == FrontDoor::closed) {
+        ImGui::SetWindowFocus(kWindowLayers);
+        state.layers_focus_requested = false;
+    }
 }
 
 }

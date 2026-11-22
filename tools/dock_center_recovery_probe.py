@@ -61,7 +61,7 @@ def assert_layers_accessible(wire) -> None:
     layer = state["layers_window"]
     canvas = state["canvas"]
     if layer[2] <= 200 or layer[2] >= canvas[2] * 0.75:
-        raise AssertionError(f"Layers remains merged into the hidden Canvas tab: {layer}")
+        raise AssertionError(f"Layers is not visible in the recovered right dock: {layer}")
     if not state["ai_workspace"]["open"]:
         raise AssertionError("repair unexpectedly closed AI Workspace")
 
@@ -95,7 +95,8 @@ def run(binary: pathlib.Path, runtime: pathlib.Path, stderr_path: pathlib.Path) 
             assert_layers_accessible(wire)
             print("ok: recovered arrangement survives restart")
     finally:
-        wd.shutdown(proc, wire)
+        if proc is not None:
+            wd.shutdown(proc, wire)
 
 
 def main() -> int:

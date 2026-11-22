@@ -169,9 +169,11 @@ void draw_new_document_body(AppState& state, CommandTable& commands) {
     }
 }
 
-void draw_new_footer(CommandTable& commands) {
+void draw_new_footer(const AppState& state, CommandTable& commands) {
     ImGui::Separator();
-    if (ui_icons::labeled_button(ui_icons::Icon::ImagePlus, "Create image",
+    const bool generate = state.new_document.has_prompt_text();
+    if (ui_icons::labeled_button(generate ? ui_icons::Icon::ImagePlus : ui_icons::Icon::FilePlus,
+                                 generate ? "Create Image" : "Create Canvas",
                                  ImVec2(148.0f, kFooterButtonHeightPx))) {
         create_from_front_door(commands);
     }
@@ -212,7 +214,7 @@ void draw_new_pane(AppState& state, CommandTable& commands, ImVec2 size) {
             draw_new_document_body(state, commands);
         }
         ImGui::EndChild();
-        draw_new_footer(commands);
+        draw_new_footer(state, commands);
     }
     ImGui::EndChild();
 }

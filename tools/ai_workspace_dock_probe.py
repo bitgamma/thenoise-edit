@@ -39,12 +39,16 @@ def run(binary: pathlib.Path, runtime: pathlib.Path, stderr_path: pathlib.Path) 
             ai = initial["ai_workspace"]
             require(ai["open"] and ai["docked"], "AI Workspace starts in the dock")
             require(ai["window"][2] >= 280, "docked workspace has useful width")
+            require(initial["layers_window"][2] >= 280 and not ai["visible"],
+                    "Layers is the visible default tab; AI Workspace stays docked")
             response = wire.call("ui.ai_workspace", {"open": True, "focus": True})
             require(response["open"], "open/focus command succeeds")
             wd.settle(wire, 8)
             focused = wire.call("app.state")["ai_workspace"]
             require(focused["visible"], "focus selects the AI Workspace tab")
             require(focused["docked"], "focusing does not float the workspace")
+            require(wire.call("app.state")["layers_window"][2] == 0,
+                    "the inactive Layers tab is not rendered over the AI workspace")
             wire.call("ui.ai_workspace", {"open": False})
             wd.settle(wire, 8)
             hidden = wire.call("app.state")["ai_workspace"]
@@ -70,7 +74,8 @@ def run(binary: pathlib.Path, runtime: pathlib.Path, stderr_path: pathlib.Path) 
             require(reopened["open"] and reopened["visible"] and reopened["docked"],
                     "reopening returns AI Workspace to its saved tab")
     finally:
-        wd.shutdown(proc, wire)
+        if proc is not None:
+            wd.shutdown(proc, wire)
 
 
 def main() -> int:

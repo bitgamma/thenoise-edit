@@ -282,6 +282,7 @@ struct AppState {
     std::vector<ToolPaletteButton> ai_aspect_options{};
     std::vector<ToolPaletteButton> ai_style_options{};
     ScreenRect layers_window{};
+    bool layers_focus_requested = false;
     bool ai_workspace_open = true;
     bool ai_workspace_focus_requested = false;
     bool ai_workspace_visible = false;

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import shutil
 import sys
 import tempfile
 
@@ -37,13 +38,13 @@ def main() -> int:
     runtime = temp / "runtime"
     runtime.mkdir()
     display = wd.ensure_display(WIDTH, HEIGHT)
-    proc = wd.start_app(args, runtime, WIDTH, HEIGHT, None,
-                        open(temp / "app.stderr", "wb"),
-                        {"THENOISE_URL": None, "THENOISE_API_KEY": None,
-                         "NOISE_AI_FIXTURES": None}, start_dialog=False)
-    wire = None
+    proc = wire = injector = None
+    stderr = (temp / "app.stderr").open("wb")
     failed = []
     try:
+        proc = wd.start_app(args, runtime, WIDTH, HEIGHT, None, stderr,
+                            {"THENOISE_URL": None, "THENOISE_API_KEY": None,
+                             "NOISE_AI_FIXTURES": None}, start_dialog=False)
         wire = wd.Wire(wd.wire_port(runtime, proc, 60.0), timeout=60)
         injector = wi.Injector(display)
         injector.focus_app_window(WIDTH, HEIGHT)
@@ -95,7 +96,12 @@ def main() -> int:
         print("Offline Heal/Remove/Fill/Change clicks report actionable failure and queue no jobs.")
         return 0
     finally:
-        wd.shutdown(proc, wire)
+        if injector is not None:
+            injector.close()
+        if proc is not None:
+            wd.shutdown(proc, wire)
+        stderr.close()
+        shutil.rmtree(temp, ignore_errors=True)
 
 
 if __name__ == "__main__":
