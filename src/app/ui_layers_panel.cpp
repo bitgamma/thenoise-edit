@@ -10,12 +10,14 @@
 #include "core/log.h"
 
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "sokol_app.h"
 #include "sokol_imgui.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -26,15 +28,18 @@ using nlohmann::json;
 
 namespace {
 constexpr float kLayerOpacitySliderPx = 88.0f;
-constexpr float kLayerModeMinPx = 64.0f;
+constexpr float kLayerModeMinPx = 48.0f;
 constexpr float kLayerScaleFieldPx = 64.0f;
-constexpr float kLayerCardPaddingX = 8.0f;
-constexpr float kLayerCardPaddingY = 4.0f;
-constexpr float kLayerCardSpacingX = 6.0f;
-constexpr float kLayerCardSpacingY = 5.0f;
+constexpr float kLayerCardPaddingX = 6.0f;
+constexpr float kLayerCardPaddingY = 3.0f;
+constexpr float kLayerCardSpacingX = 4.0f;
+constexpr float kLayerCardSpacingY = 2.0f;
 constexpr ImU32 kCardShadow = IM_COL32(0, 0, 0, 0);
-constexpr float kLayerNameMinPx = 40.0f;
-constexpr float kLayerActionPx = 26.0f;
+constexpr float kLayerNameMinPx = 32.0f;
+constexpr float kLayerActionPx = 22.0f;
+constexpr float kMaskActionPx = 26.0f;
+constexpr float kLayerSplitterPx = 6.0f;
+constexpr float kLayersMinimumWidthPx = 280.0f;
 
 // The box a layer's picture is drawn into: the long edge is the thumbnail size, the other follows the
 // layer's own proportions, so a wide document's card does not show its picture stretched.
@@ -45,9 +50,6 @@ ImVec2 thumb_draw_size(Extent size) {
                   std::max(1.0f, static_cast<float>(size.h) * scale));
 }
 
-// A factor off the field's text: a whole number, a decimal, either sign rejected downstream. Anything
-// else - "big", "1.5x", empty - is not a factor, and the field keeps what was typed rather than sending a
-// zero the command would have to guess about.
 bool reads_factor(const char* text, double& factor) {
     char* end = nullptr;
     const double parsed = std::strtod(text, &end);
@@ -156,7 +158,8 @@ void draw_layer_preview(AppState& state, LayerCard& card_state, const Layer& lay
         }
         if (card_state.editing_pixels) {
             ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
-                                                IM_COL32(100, 185, 255, 255), 0.0f, 0, 2.0f);
+                ImGui::ColorConvertFloat4ToU32(ui_theme::palette(state.ui_theme).accent),
+                2.0f, 0, 2.0f);
         }
     }
     if (preview.has_mask && preview.mask.valid()) {
@@ -286,9 +289,7 @@ void draw_layer_card(AppState& state, CommandTable& commands, LayerThumbs& thumb
                       ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
     draw_layer_title(state, card, layer, static_cast<int>(row), static_cast<int>(layers.size()),
                      arrows_px, commands);
-    ImGui::NewLine();
     draw_layer_preview(state, card, layer, static_cast<int>(row), thumbs, commands);
-    ImGui::NewLine();
     draw_layer_properties(card, layer, static_cast<int>(row), commands);
     ImGui::EndChild();
     ImGui::PopStyleVar(2);
@@ -323,63 +324,118 @@ void draw_stack_actions(AppState& state, CommandTable& commands, std::size_t lay
 
 void draw_mask_controls(AppState& state, CommandTable& commands) {
     const Layer& active = state.doc.layer(static_cast<std::size_t>(state.doc.active()));
-    ImGui::SeparatorText("mask");
     const json facts = active.mask.has_value() ? layer_mask_json(active) : json(nullptr);
     state.layer_panel.has_mask = !facts.is_null();
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    if (!ImGui::CollapsingHeader("Mask")) {
+        return;
+    }
     if (facts.is_null()) {
-        if (ui_icons::labeled_button(ui_icons::Icon::MaskAdd, "Add mask", ImVec2(0.0f, 0.0f))) {
+        if (ui_icons::button(ui_icons::Icon::MaskAdd, "mask_add",
+                             ImVec2(kMaskActionPx, kMaskActionPx), "Add mask")) {
             commands.invoke("mask.add", json::object());
         }
         state.layer_panel.mask_add = item_rect();
         ImGui::SameLine();
-        ImGui::TextDisabled("nothing hidden");
-        return;
-    }
-    if (ui_icons::button(ui_icons::Icon::MaskRemove, "remove_mask", ImVec2(kLayerActionPx, kLayerActionPx), "Remove layer mask")) {
-        commands.invoke("mask.remove", json::object());
-    }
-    state.layer_panel.mask_remove = item_rect();
-    ImGui::SameLine();
-    if (ui_icons::button(ui_icons::Icon::Eye, "show_all", ImVec2(kLayerActionPx, kLayerActionPx), "Show all mask")) {
-        commands.invoke("mask.fill", json{{"to", "show"}});
-    }
-    ImGui::SameLine();
-    if (ui_icons::button(ui_icons::Icon::EyeOff, "hide_all", ImVec2(kLayerActionPx, kLayerActionPx), "Hide all mask")) {
-        commands.invoke("mask.fill", json{{"to", "hide"}});
-    }
-    ImGui::SameLine();
-    if (ui_icons::button(ui_icons::Icon::RefreshCw, "invert", ImVec2(kLayerActionPx, kLayerActionPx), "Invert mask")) {
-        commands.invoke("mask.invert", json::object());
-    }
-    if (state.editing_mask()) {
-        ImGui::Separator();
+        ImGui::TextDisabled("No mask");
+    } else {
+        if (ui_icons::button(ui_icons::Icon::Eye, "reveal_all",
+                             ImVec2(kMaskActionPx, kMaskActionPx), "Reveal all")) {
+            commands.invoke("mask.fill", json{{"to", "show"}});
+        }
+        ImGui::SameLine();
+        if (ui_icons::button(ui_icons::Icon::EyeOff, "hide_all",
+                             ImVec2(kMaskActionPx, kMaskActionPx), "Hide all")) {
+            commands.invoke("mask.fill", json{{"to", "hide"}});
+        }
+        ImGui::SameLine();
+        if (ui_icons::button(ui_icons::Icon::RefreshCw, "invert",
+                             ImVec2(kMaskActionPx, kMaskActionPx), "Invert mask")) {
+            commands.invoke("mask.invert", json::object());
+        }
+        ImGui::SameLine();
+        const ui_theme::Palette& colors = ui_theme::palette(state.ui_theme);
+        ImGui::PushStyleColor(ImGuiCol_Button, colors.danger);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, colors.danger);
+        if (ui_icons::button(ui_icons::Icon::MaskRemove, "remove_mask",
+                             ImVec2(kMaskActionPx, kMaskActionPx), "Remove mask")) {
+            commands.invoke("mask.remove", json::object());
+        }
+        ImGui::PopStyleColor(2);
+        state.layer_panel.mask_remove = item_rect();
         bool overlay = state.mask_overlay_visible;
         if (ImGui::Checkbox("Show hidden area in red", &overlay)) {
             commands.invoke("view.mask_overlay", json{{"show", overlay}});
         }
-        ImGui::TextDisabled("Brush reveals / Eraser hides. Cover always marks an AI selection.");
     }
-    const json& bounds = facts["bounds"];
-    ImGui::TextDisabled("%d px touched, %.1f px shown",
-                        static_cast<int>(facts["covered"].get<std::int64_t>()),
-                        facts["area"].get<double>());
-    ImGui::TextDisabled("%d x %d at %d,%d", bounds[2].get<int>(), bounds[3].get<int>(),
-                        bounds[0].get<int>(), bounds[1].get<int>());
+
+    ImGui::SetNextItemOpen(false, ImGuiCond_Once);
+    if (!ImGui::CollapsingHeader("Selection / Mask")) {
+        return;
+    }
+    const bool has_selection = state.doc.selection().has_value();
+    ImGui::BeginDisabled(!has_selection);
+    if (ui_icons::button(ui_icons::Icon::Contrast, "mask_from_selection",
+                         ImVec2(kMaskActionPx, kMaskActionPx), "Make mask from selection")) {
+        commands.invoke("mask.from_selection", json::object());
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!active.mask.has_value());
+    if (ui_icons::button(ui_icons::Icon::SquareDashed, "selection_from_mask",
+                         ImVec2(kMaskActionPx, kMaskActionPx), "Make selection from mask")) {
+        commands.invoke("select.from_mask", json::object());
+    }
+    ImGui::EndDisabled();
 }
 
 }
 
 void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thumbs) {
-    ImGui::Begin(kWindowLayers);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(kLayersMinimumWidthPx, 0.0f),
+                                        ImVec2(std::numeric_limits<float>::max(),
+                                               std::numeric_limits<float>::max()));
+    ImGuiWindowClass dock_class{};
+    dock_class.DockNodeFlagsOverrideSet = ImGuiDockNodeFlags_NoWindowMenuButton;
+    ImGui::SetNextWindowClass(&dock_class);
+    if (!ImGui::Begin(kWindowLayers)) {
+        state.layer_cards.clear();
+        state.layer_panel = LayerPanelControls{};
+        state.layers_window = ScreenRect{};
+        state.tool_options_window = ScreenRect{};
+        state.tool_option_controls.clear();
+        ImGui::End();
+        return;
+    }
     const ui_theme::Palette& colors = ui_theme::palette(state.ui_theme);
     state.layer_cards.clear();
     state.layer_panel = LayerPanelControls{};
     const ImVec2 panel_pos = ImGui::GetWindowPos();
     const ImVec2 panel_size = ImGui::GetWindowSize();
     state.layers_window = ScreenRect{panel_pos.x, panel_pos.y, panel_size.x, panel_size.y};
-    if (state.doc.empty()) {
-        ImGui::TextUnformatted("no document");
-    } else {
+    const std::span<const Layer> layers = state.doc.layers();
+    float upper_height = 0.0f;
+    float lower_height = 0.0f;
+    const ImVec2 content_origin = ImGui::GetCursorScreenPos();
+    const ImVec2 content_size = ImGui::GetContentRegionAvail();
+    const float item_gap = ImGui::GetStyle().ItemSpacing.y;
+    const float pane_height = std::max(
+        0.0f, content_size.y - kLayerSplitterPx - item_gap * 2.0f);
+    upper_height = layer_panel_upper_height(pane_height, state.layer_panel_upper_ratio);
+    lower_height = std::max(0.0f, pane_height - upper_height);
+    ImGui::SetCursorScreenPos(ImVec2(content_origin.x,
+                                     content_origin.y + upper_height + item_gap));
+    draw_layer_panel_splitter(state.layer_panel_upper_ratio, content_size.x,
+                              kLayerSplitterPx, upper_height, lower_height);
+    const ImVec2 lower_origin(content_origin.x,
+                              content_origin.y + upper_height + item_gap +
+                                  kLayerSplitterPx + item_gap);
+
+    ImGui::SetCursorScreenPos(content_origin);
+    if (ImGui::BeginChild("layer-stack-region", ImVec2(0.0f, upper_height))) {
+        if (state.doc.empty()) {
+            ImGui::TextDisabled("No document");
+        } else {
         const std::vector<DocumentVersionView> versions = state.doc.versions();
         if (versions.size() > 1) {
             const auto active = std::find_if(versions.begin(), versions.end(),
@@ -401,7 +457,6 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
                 ImGui::EndCombo();
             }
         }
-        const std::span<const Layer> layers = state.doc.layers();
         const bool live = state.doc.in_provisional();
         thumbs.keep(layers);
         const auto gone_from_stack = [&layers](std::uint64_t id) {
@@ -409,51 +464,37 @@ void draw_layers_panel(AppState& state, CommandTable& commands, LayerThumbs& thu
                                 [id](const Layer& layer) { return layer.id == id; }) == layers.end();
         };
         if (state.renaming.layer != 0 && gone_from_stack(state.renaming.layer)) {
-            state.renaming = InlineField{};  // a card that left the stack is not being typed into
+            state.renaming = InlineField{};
         }
         if (state.scaling.layer != 0 && gone_from_stack(state.scaling.layer)) {
             state.scaling = InlineField{};
         }
-        // Both arrows take the right end of every title row, so their width is known before the first
-        // name of the stack is measured.
         const float arrows_px = kLayerActionPx * 2.0f + ImGui::GetStyle().ItemSpacing.x;
-        // The stack's own verbs are pinned under the list rather than being its last entry: with three
-        // layers they fell past the panel's bottom edge - reported at y=926 in a window ending at 800 -
-        // controls for the whole stack, drawn nowhere and reachable only by scrolling to them. What the
-        // panel has left after one button row is the list's, and a row is a frame tall plus the gap above
-        // it, both from the style; the list carries no padding of its own, so the cards are the width
-        // they were.
-        const float pinned_row_px = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y;
+        const float list_height = std::max(
+            0.0f, ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeight() -
+                      ImGui::GetStyle().ItemSpacing.y);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{0.0f, 0.0f});
-        ImGui::BeginChild("layer-list", ImVec2(0.0f, -pinned_row_px));
+        ImGui::BeginChild("layer-list", ImVec2(0.0f, list_height), ImGuiChildFlags_None);
         for (std::size_t row = layers.size(); row-- > 0;) {
             draw_layer_card(state, commands, thumbs, layers, row, live, colors, arrows_px);
         }
-        draw_mask_controls(state, commands);
         ImGui::EndChild();
         ImGui::PopStyleVar();
-        // The scrolling region: what a card has to be inside to be on screen, and where the pinned row
-        // begins.
         state.layer_panel.list = item_rect();
         draw_stack_actions(state, commands, layers.size());
-    }
-    state.layer_thumb_rebuilds = thumbs.rebuilds;
-    ImGui::End();
-}
-
-void draw_log_panel() {
-    ImGui::Begin(kWindowLog);
-    static bool follow = true;
-    ImGui::Checkbox("Follow", &follow);
-    if (ImGui::BeginChild("log-lines")) {
-        for (const std::string& line : log::tail(400)) {
-            ImGui::TextUnformatted(line.c_str());
-        }
-        if (follow && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4.0f) {
-            ImGui::SetScrollHereY(1.0f);
         }
     }
     ImGui::EndChild();
+    ImGui::SetCursorScreenPos(lower_origin);
+    if (ImGui::BeginChild("layer-controls-region", ImVec2(0.0f, lower_height))) {
+        if (!state.doc.empty()) {
+            draw_mask_controls(state, commands);
+            draw_mask_edge_controls(state, commands);
+        }
+        draw_tool_settings(state, commands);
+    }
+    ImGui::EndChild();
+    state.layer_thumb_rebuilds = thumbs.rebuilds;
     ImGui::End();
 }
 

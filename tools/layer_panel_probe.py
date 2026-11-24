@@ -622,11 +622,8 @@ def main() -> int:
                                           canvas_shot(wire, "after-refusal")).getbbox() is None,
                     "and a refusal has moved no pixel")
 
-        # A card's title row selects its layer - and about the awkward one, which is the last card down:
-        # three of them do not fit a panel this tall, so the wheel is how a person reaches it, and the
-        # press has to land where the app now says the control is rather than where it used to be.
-        # Back to the top of the list first: the claims below are about a wheel-down reaching the last
-        # card, which is nothing if the panel is already at the bottom.
+        # A short stack fits without scrolling; longer stacks use the list's own scroll region. A card's
+        # title row selects its layer, at the coordinates the panel published for it.
         fold = wire.call("app.state")["layer_panel"]["list"]
         inj.move(fold[0] + fold[2] / 2.0, fold[1] + fold[3] / 2.0)
         for _ in range(10):
@@ -634,16 +631,11 @@ def main() -> int:
             wd.settle(wire)
         wire.call("layer.select", {"index": cards(wire)[0]["index"]})
         wd.settle(wire)
-        above_fold = card_at(cards(wire), 0)
-        inj.wheel(-6)
-        wd.settle(wire)
         got = cards(wire)
         bottom = card_at(got, 0)
-        p.check(bottom["title"][1] < above_fold["title"][1],
-                "the wheel brings the last card up through the list",
-                f"{round(above_fold['title'][1])} to {round(bottom['title'][1])}")
         p.check(inside_box(bottom["title"], wire.call("app.state")["layer_panel"]["list"]),
-                "until its title row is on screen", str([round(v) for v in bottom["title"]]))
+                "a short stack keeps its last title row visible without scrolling",
+                str([round(v) for v in bottom["title"]]))
         p.check([card["index"] for card in got if card["active"]] != [bottom["index"]],
                 "and another layer is the active one before the click", str(got[0]["index"]))
         click(inj, *centre(bottom["title"]))
@@ -737,6 +729,27 @@ def main() -> int:
                                       interior(restored_thumb)).getbbox() is None,
                 "holding the picture again, not the blank a brand-new layer would show",
                 apart(interior(victim_thumb), interior(restored_thumb)))
+
+        for _ in range(6):
+            wire.call("layer.add", {})
+        wd.settle(wire)
+        list_box = wire.call("app.state")["layer_panel"]["list"]
+        bottom_before_scroll = card_at(cards(wire), 0)["title"]
+        p.check(not inside_box(bottom_before_scroll, list_box),
+                "a larger stack puts the last row beyond the list viewport",
+                str([round(v) for v in bottom_before_scroll]))
+        inj.move(*centre(list_box))
+        inj.wheel(-14)
+        wd.settle(wire)
+        bottom = card_at(cards(wire), 0)
+        list_box = wire.call("app.state")["layer_panel"]["list"]
+        p.check(inside_box(bottom["title"], list_box),
+                "scrolling the list brings its last row into view",
+                str([round(v) for v in bottom["title"]]))
+        click(inj, *centre(bottom["title"]))
+        wd.settle(wire)
+        p.check(card_at(cards(wire), 0)["active"],
+                "the scrolled title row still selects its layer")
 
     finally:
         wd.shutdown(proc, wire)

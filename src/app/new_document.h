@@ -47,6 +47,10 @@ struct NewDocumentForm {
     std::string prompt;
     // Which recipe of `kNewDocumentFamily` the prompt will run.
     std::string kind = kNewDocumentFamily;
+
+    bool has_prompt_text() const {
+        return prompt.find_first_not_of(" \t\n\r\f\v") != std::string::npos;
+    }
 };
 
 }  // namespace noise::app

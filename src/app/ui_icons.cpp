@@ -13,6 +13,7 @@ namespace {
 constexpr float kLucideGrid = 24.0f;
 constexpr float kIconSize = 18.0f;
 constexpr float kTextIconSize = 15.0f;
+constexpr float kLabeledButtonGap = 6.0f;
 static_assert(data::glyph_count == static_cast<std::size_t>(Icon::MarkAdd));
 
 void draw_outline(Icon icon, ImVec2 pos, float size, ImU32 color, float min_stroke = 0.0f) {
@@ -115,15 +116,30 @@ bool button(Icon icon, const char* id, ImVec2 size, const char* tooltip) {
     return pressed;
 }
 
+float labeled_button_width(const char* text) {
+    const float text_width = ImGui::CalcTextSize(text).x;
+    const ImVec2 padding = ImGui::GetStyle().FramePadding;
+    return text_width + kTextIconSize + kLabeledButtonGap + padding.x * 2.0f;
+}
+
 bool labeled_button(Icon icon, const char* text, ImVec2 size) {
-    const std::string label = std::string("     ") + text;
-    const bool pressed = ImGui::Button(label.c_str(), size);
+    const ImVec2 padding = ImGui::GetStyle().FramePadding;
+    const float width = size.x > 0.0f ? size.x : labeled_button_width(text);
+    const float height = size.y > 0.0f ? size.y : ImGui::GetFrameHeight();
+    ImGui::PushID(text);
+    ImGui::PushID(static_cast<int>(icon));
+    const bool pressed = ImGui::Button("##labeled_button", ImVec2(width, height));
     const ImVec2 min = ImGui::GetItemRectMin();
     const ImVec2 max = ImGui::GetItemRectMax();
-    const float text_width = ImGui::CalcTextSize(label.c_str()).x;
-    const ImVec2 pos(min.x + std::max(0.0f, (max.x - min.x - text_width) * 0.5f),
+    const ImVec2 pos(min.x + padding.x,
                      min.y + (max.y - min.y - kTextIconSize) * 0.5f);
     draw(icon, pos, kTextIconSize, text_color());
+    ImGui::GetWindowDrawList()->AddText(
+        ImVec2(pos.x + kTextIconSize + kLabeledButtonGap,
+               min.y + (max.y - min.y - ImGui::GetTextLineHeight()) * 0.5f),
+        ImGui::GetColorU32(ImGuiCol_Text), text);
+    ImGui::PopID();
+    ImGui::PopID();
     return pressed;
 }
 

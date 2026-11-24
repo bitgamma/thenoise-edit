@@ -4,6 +4,7 @@
 #include "app/verb_fields.h"
 #include "app/ui_prompt.h"
 #include "app/ui_icons.h"
+#include "app/ui_theme.h"
 
 #include "core/log.h"
 
@@ -11,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <iterator>
 #include <string>
 
 namespace noise::app {
@@ -18,203 +20,280 @@ namespace noise::app {
 using nlohmann::json;
 
 namespace {
-// The menu and the front door both ask for a path and act on the answer later: a native dialog is
-// asynchronous by design, so the click that opened it and the document it produced cannot share a
-// frame. This remembers which door the open picker is behind.
+
+constexpr float kWelcomeWidthPx = 900.0f;
+constexpr float kWelcomeHeightPx = 600.0f;
+constexpr float kNewOnlyWidthPx = 430.0f;
+constexpr float kWindowMarginPx = 24.0f;
+constexpr float kPanelGapPx = 18.0f;
+constexpr float kNewPanelFraction = 0.51f;
+constexpr float kSinglePanelThresholdPx = 670.0f;
+constexpr float kPresetRowHeightPx = 29.0f;
+constexpr float kStyleButtonHeightPx = 28.0f;
+constexpr float kFooterButtonHeightPx = 33.0f;
+constexpr float kNewFooterSeparatorHeightPx = 1.0f;
+constexpr float kRecentFooterHeightPx = 54.0f;
+constexpr float kPromptVisibleLines = 3.0f;
+constexpr float kWelcomeHeadingScale = 1.22f;
+
 std::string front_door_prompt;
-// Which box the keyboard has, by name, taken after the widget drew: the same rule the verb fields use, so
-// the form can fill a box a driver wrote to without rewriting one a hand is typing into.
 std::string front_door_editing;
+std::string front_door_error;
+std::string recent_open_error;
 bool front_door_drawn = false;
 
-
 void start_pick(CommandTable& commands, const char* set, const char* title) {
-    commands.invoke("file.pick", json{{"for", set}, {"title", title}});
+    const CommandResult picked = commands.invoke(
+        "file.pick", json{{"for", set}, {"title", title}});
+    recent_open_error = picked.ok ? std::string() : picked.error;
 }
 
-#ifndef __EMSCRIPTEN__
-void draw_file_buttons(CommandTable& commands, bool has_document, bool can_save) {
-    if (ui_icons::button(ui_icons::Icon::FilePlus, "new", ImVec2(30.0f, 28.0f), "New")) {
-        commands.invoke("file.new", json::object());
-    }
-    ImGui::SameLine();
-    if (ui_icons::button(ui_icons::Icon::FolderOpen, "open", ImVec2(30.0f, 28.0f), "Open")) {
-        start_pick(commands, "open", "Open an image or a document");
-    }
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!can_save);
-    if (ui_icons::button(ui_icons::Icon::Save, "save", ImVec2(30.0f, 28.0f), "Save")) {
-        commands.invoke("doc.save", json::object());
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!has_document);
-    if (ui_icons::button(ui_icons::Icon::SaveAs, "save_as", ImVec2(30.0f, 28.0f), "Save As")) {
-        start_pick(commands, "project", "Save document");
-    }
-    ImGui::EndDisabled();
-}
-#endif
-
-#ifndef __EMSCRIPTEN__
-void draw_export_insert_buttons(CommandTable& commands, bool has_document) {
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!has_document);
-    if (ui_icons::button(ui_icons::Icon::FileOutput, "export", ImVec2(30.0f, 28.0f), "Export")) {
-        start_pick(commands, "flat", "Export an image");
-    }
-    ImGui::SameLine();
-    if (ui_icons::button(ui_icons::Icon::ImagePlus, "insert", ImVec2(30.0f, 28.0f), "Insert image")) {
-        start_pick(commands, "image", "Insert an image");
-    }
-    ImGui::EndDisabled();
-}
-#endif
-}
-
-// Files first, in the panel rather than in a menu bar: `BeginMainMenuBar()` asserts in this frame
-// (`Missing End()` from `ErrorRecoveryTryToRecoverState`) with sokol_imgui and a fullscreen dockspace
-// in ImGui 1.93 WIP, so a menu bar is a sokol/version question rather than a layout one. Until it is
-// answered the actions are here, where they work, and the keys in the command table are the same keys
-// a menu would have shown.
-void draw_file_row(AppState& state, CommandTable& commands) {
-    const bool has_document = !state.doc.empty();
-#ifndef __EMSCRIPTEN__
-    const bool can_save = has_document && !state.doc.path().empty();
-    draw_file_buttons(commands, has_document, can_save);
-    draw_export_insert_buttons(commands, has_document);
-    ImGui::NewLine();
-#endif
-    if (has_document && state.doc.dirty()) {
-        ImGui::TextDisabled("unsaved");
-    }
-}
-
-// The body both doors draw: a size and, if the person already knows what they want, the words. Reading
-// the fields through the command rather than writing the struct keeps a click, a key and a driver
-// asking for the same Create.
-void draw_new_document_body(AppState& state, CommandTable& commands) {
-    ImGui::TextDisabled("size");
-    for (const NewDocumentPreset& preset : kNewDocumentPresets) {
+void draw_size_presets(AppState& state, CommandTable& commands) {
+    ImGui::TextUnformatted("Canvas size");
+    const ui_theme::Palette& theme = ui_theme::palette(state.ui_theme);
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_SizingStretchSame |
+                                      ImGuiTableFlags_NoSavedSettings |
+                                      ImGuiTableFlags_NoPadOuterX;
+    if (!ImGui::BeginTable("##new_size_presets", 2, flags)) return;
+    for (std::size_t index = 0; index < std::size(kNewDocumentPresets); ++index) {
+        const NewDocumentPreset& preset = kNewDocumentPresets[index];
+        if (index % 2 == 0) ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(static_cast<int>(index % 2));
+        const bool selected = state.new_document.width == preset.width &&
+                              state.new_document.height == preset.height;
         char label[96];
-        std::snprintf(label, sizeof(label), "%d x %d   %s", preset.width, preset.height, preset.label);
-        if (ImGui::Selectable(label, state.new_document.width == preset.width &&
-                                      state.new_document.height == preset.height)) {
-            commands.invoke("new_document",
-                            json{{"width", preset.width}, {"height", preset.height}});
+        std::snprintf(label, sizeof(label), "%d x %d  %s", preset.width, preset.height,
+                      preset.label);
+        ImGui::PushID(static_cast<int>(index));
+        if (selected) ImGui::PushStyleColor(ImGuiCol_Header, theme.accent_soft);
+        if (ImGui::Selectable(label, selected, ImGuiSelectableFlags_None,
+                              ImVec2(0.0f, kPresetRowHeightPx))) {
+            commands.invoke("new_document", json{{"width", preset.width},
+                                                  {"height", preset.height}});
+            front_door_error.clear();
         }
+        if (selected) ImGui::PopStyleColor();
+        ImGui::PopID();
     }
+    ImGui::EndTable();
+}
+
+void draw_custom_size(AppState& state, CommandTable& commands) {
+    ImGui::TextDisabled("Custom dimensions");
     int width = state.new_document.width;
     int height = state.new_document.height;
-    bool resized = false;
-    ImGui::PushItemWidth(96.0f);
-    resized = ImGui::InputInt("Width", &width, 0, 0) || resized;
-    ImGui::SameLine();
-    resized = ImGui::InputInt("Height", &height, 0, 0) || resized;
-    ImGui::PopItemWidth();
-    if (resized) {
-        commands.invoke("new_document", json{{"width", width}, {"height", height}});
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_SizingStretchSame |
+                                      ImGuiTableFlags_NoSavedSettings |
+                                      ImGuiTableFlags_NoPadOuterX;
+    if (!ImGui::BeginTable("##new_custom_size", 2, flags)) return;
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("Width (px)");
+    ImGui::SetNextItemWidth(-1.0f);
+    const bool width_changed = ImGui::InputInt("##new_width", &width, 0, 0);
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextUnformatted("Height (px)");
+    ImGui::SetNextItemWidth(-1.0f);
+    const bool height_changed = ImGui::InputInt("##new_height", &height, 0, 0);
+    ImGui::EndTable();
+    if (width_changed || height_changed) {
+        const CommandResult result = commands.invoke(
+            "new_document", json{{"width", width}, {"height", height}});
+        front_door_error = result.ok ? std::string() : result.error;
     }
-    // The kinds are the recipe family's rows, read through the command that stores the choice: the label
-    // that says "photo" and the recipe a press runs are one table read, so they cannot drift.
+}
+
+void draw_document_style(AppState& state, CommandTable& commands) {
     const json form = commands.invoke("new_document", json::object()).value;
     const json& kinds = form["kinds"];
-    if (!kinds.empty()) {
-        ImGui::TextDisabled("kind");
-        const std::string chosen = form["kind"].get<std::string>();
-        for (const json& kind : kinds) {
-            const std::string id = kind["id"].get<std::string>();
-            const std::string label = kind["label"].get<std::string>() + "###" + id;
-            if (ImGui::RadioButton(label.c_str(), chosen == id)) {
-                commands.invoke("new_document", json{{"kind", id}});
-            }
-            ImGui::SameLine();
+    if (kinds.empty()) return;
+    ImGui::TextUnformatted("Style");
+    const std::string chosen = form["kind"].get<std::string>();
+    const ui_theme::Palette& theme = ui_theme::palette(state.ui_theme);
+    const float count = static_cast<float>(kinds.size());
+    const float gap = ImGui::GetStyle().ItemSpacing.x;
+    const float button_width = std::max(1.0f,
+        (ImGui::GetContentRegionAvail().x - gap * (count - 1.0f)) / count);
+    bool first = true;
+    for (const json& kind : kinds) {
+        if (!first) ImGui::SameLine();
+        first = false;
+        const std::string id = kind["id"].get<std::string>();
+        const bool selected = chosen == id;
+        ImGui::PushID(id.c_str());
+        ImGui::PushStyleColor(ImGuiCol_Button, selected ? theme.accent_soft : theme.surface);
+        if (ImGui::Button(kind["label"].get<std::string>().c_str(),
+                          ImVec2(button_width, kStyleButtonHeightPx))) {
+            commands.invoke("new_document", json{{"kind", id}});
+            front_door_error.clear();
         }
-        ImGui::NewLine();
+        ImGui::PopStyleColor();
+        ImGui::PopID();
     }
-    ImGui::TextDisabled("what should it be?  (empty makes a blank canvas)");
-    if (front_door_editing != "prompt") {
-        front_door_prompt = state.new_document.prompt;
-    }
-    // Clearing the prompt still means a blank canvas.
+}
+
+void draw_document_prompt(AppState& state, CommandTable& commands) {
+    ImGui::TextUnformatted("Prompt (optional)");
+    ImGui::TextDisabled("Leave empty to create a blank canvas.");
+    if (front_door_editing != "prompt") front_door_prompt = state.new_document.prompt;
     if (prompt_input("##new_prompt", front_door_prompt,
-                     ImGui::GetTextLineHeightWithSpacing() * kPromptMaxVisibleLines,
+                     ImGui::GetTextLineHeightWithSpacing() * kPromptVisibleLines,
                      ImGuiInputTextFlags_None)) {
         commands.invoke("new_document", json{{"prompt", front_door_prompt}});
+        front_door_error.clear();
     }
     front_door_editing = ImGui::IsItemActive() ? "prompt" : std::string();
 }
 
 void create_from_front_door(CommandTable& commands) {
     const CommandResult made = commands.invoke("front_door.create", json::object());
-    if (!made.ok) {
-        // The door stays open on a refusal: the words are usually what is wrong, and a dialog that shut
-        // on the way out would throw away what was typed with it.
-        log::error("new document: " + made.error);
+    front_door_error = made.ok ? std::string() : made.error;
+    if (!made.ok) log::error("new document: " + made.error);
+}
+
+void draw_new_document_body(AppState& state, CommandTable& commands) {
+    ImGui::TextUnformatted("New image");
+    ImGui::TextDisabled("Choose a size or enter custom dimensions.");
+    ImGui::Separator();
+    draw_size_presets(state, commands);
+    ImGui::Spacing();
+    draw_custom_size(state, commands);
+    ImGui::Spacing();
+    draw_document_style(state, commands);
+    ImGui::Spacing();
+    draw_document_prompt(state, commands);
+    if (!front_door_error.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ui_theme::palette(state.ui_theme).danger);
+        ImGui::TextWrapped("%s", front_door_error.c_str());
+        ImGui::PopStyleColor();
     }
 }
+
+void draw_new_footer(const AppState& state, CommandTable& commands) {
+    ImGui::Separator();
+    const bool generate = state.new_document.has_prompt_text();
+    if (ui_icons::labeled_button(generate ? ui_icons::Icon::ImagePlus : ui_icons::Icon::FilePlus,
+                                 generate ? "Create Image" : "Create Canvas",
+                                 ImVec2(148.0f, kFooterButtonHeightPx))) {
+        create_from_front_door(commands);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(84.0f, kFooterButtonHeightPx))) {
+        commands.invoke("front_door", json{{"show", "close"}});
+    }
+}
+
+void draw_recent_panel(AppState& state, CommandTable& commands) {
+    ImGui::TextUnformatted("Open a file");
+    ImGui::TextDisabled("Pick up where you left off.");
+    ImGui::Separator();
+    if (!recent_open_error.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ui_theme::palette(state.ui_theme).danger);
+        ImGui::TextWrapped("%s", recent_open_error.c_str());
+        ImGui::PopStyleColor();
+    }
+    if (ImGui::BeginChild("##recent_items", ImVec2(0.0f, -kRecentFooterHeightPx))) {
+        draw_recent_files_list(commands, recent_open_error);
+    }
+    ImGui::EndChild();
+    ImGui::Separator();
+    if (ui_icons::labeled_button(ui_icons::Icon::FolderOpen, "Browse files...",
+                                  ImVec2(ImGui::GetContentRegionAvail().x,
+                                         kFooterButtonHeightPx))) {
+        start_pick(commands, "open", "Open an image or a document");
+    }
+}
+
+void draw_new_pane(AppState& state, CommandTable& commands, ImVec2 size) {
+    if (ImGui::BeginChild("##new_pane", size, ImGuiChildFlags_AlwaysUseWindowPadding,
+                          ImGuiWindowFlags_None)) {
+        const float footer_reserve = kFooterButtonHeightPx +
+            2.0f * ImGui::GetStyle().ItemSpacing.y + kNewFooterSeparatorHeightPx;
+        if (ImGui::BeginChild("##new_form", ImVec2(0.0f, -footer_reserve),
+                              ImGuiChildFlags_None, ImGuiWindowFlags_None)) {
+            draw_new_document_body(state, commands);
+        }
+        ImGui::EndChild();
+        draw_new_footer(state, commands);
+    }
+    ImGui::EndChild();
+}
+
+void draw_open_pane(AppState& state, CommandTable& commands, ImVec2 size) {
+    if (ImGui::BeginChild("##recent_pane", size, ImGuiChildFlags_AlwaysUseWindowPadding,
+                          ImGuiWindowFlags_None)) {
+        draw_recent_panel(state, commands);
+    }
+    ImGui::EndChild();
+}
+
+void draw_welcome_content(AppState& state, CommandTable& commands, bool welcome) {
+    const float available = ImGui::GetContentRegionAvail().x;
+    if (welcome && available < kSinglePanelThresholdPx) {
+        if (ImGui::BeginTabBar("##welcome_tabs")) {
+            if (ImGui::BeginTabItem("New image")) {
+                draw_new_pane(state, commands, ImVec2(0.0f, 0.0f));
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Recent files")) {
+                draw_open_pane(state, commands, ImVec2(0.0f, 0.0f));
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+        return;
+    }
+    const float new_width = welcome
+        ? (available - kPanelGapPx) * kNewPanelFraction : available;
+    draw_new_pane(state, commands, ImVec2(new_width, 0.0f));
+    if (welcome) {
+        ImGui::SameLine(0.0f, kPanelGapPx);
+        draw_open_pane(state, commands, ImVec2(0.0f, 0.0f));
+    }
+}
+
+} // namespace
 
 void draw_front_door(AppState& state, CommandTable& commands) {
     const bool wanted = state.front_door != FrontDoor::closed;
     if (wanted && !front_door_drawn) {
         front_door_prompt = state.new_document.prompt;
+        front_door_editing.clear();
+        front_door_error.clear();
+        recent_open_error.clear();
         ImGui::OpenPopup("Welcome");
         front_door_drawn = true;
     }
-    if (!wanted && front_door_drawn) {
-        // Not drawn is not open: the popup only exists while its Begin is called, so closing the door
-        // is stopping the call rather than fighting the popup stack.
-        front_door_drawn = false;
-    }
-    if (!front_door_drawn) {
-        return;
-    }
+    if (!wanted && front_door_drawn) front_door_drawn = false;
+    if (!front_door_drawn) return;
+
     const bool welcome = state.front_door == FrontDoor::welcome;
-    const ImGuiViewport* door_viewport = ImGui::GetMainViewport();
-    const ImVec2 door_size(welcome ? 760.0f : 360.0f, 380.0f);
-    ImGui::SetNextWindowSize(door_size, ImGuiCond_Appearing);
-    ImGui::SetNextWindowPos(ImVec2(door_viewport->Pos.x + (door_viewport->Size.x - door_size.x) * 0.5f,
-                                   door_viewport->Pos.y + (door_viewport->Size.y - door_size.y) * 0.4f),
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float width = std::min(welcome ? kWelcomeWidthPx : kNewOnlyWidthPx,
+                                 viewport->WorkSize.x - kWindowMarginPx * 2.0f);
+    const float height = std::min(kWelcomeHeightPx,
+                                  viewport->WorkSize.y - kWindowMarginPx * 2.0f);
+    const ImVec2 size(std::max(width, 1.0f), std::max(height, 1.0f));
+    ImGui::SetNextWindowSize(size, ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + (viewport->WorkSize.x - size.x) * 0.5f,
+                                   viewport->WorkPos.y + (viewport->WorkSize.y - size.y) * 0.5f),
                             ImGuiCond_Appearing);
-    if (!ImGui::BeginPopupModal("Welcome", nullptr, 0)) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 12.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 6.0f));
+    if (!ImGui::BeginPopupModal("Welcome", nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::PopStyleVar(2);
         return;
     }
-    if (ImGui::BeginChild("new", ImVec2(welcome ? 340.0f : 0.0f, 0.0f), false)) {
-        draw_new_document_body(state, commands);
-        if (ui_icons::labeled_button(ui_icons::Icon::ImagePlus, "Create", ImVec2(0.0f, 0.0f))) {
-            create_from_front_door(commands);
-        }
-        ImGui::SameLine();
-        // Inside the column rather than under both of them: the children take the dialog's height, and
-        // a button below them was a pixel or two of blue at the bottom edge.
-        if (ImGui::Button("Cancel")) {
-            commands.invoke("front_door", json{{"show", "close"}});
-        }
-    }
-    ImGui::EndChild();
-    if (welcome) {
-        ImGui::SameLine();
-        if (ImGui::BeginChild("open", ImVec2(0.0f, 0.0f), false)) {
-            ImGui::TextDisabled("or open what is already there");
-            const json files = commands.invoke("file.recent", json::object()).value.value(
-                "files", json::array());
-            if (files.empty()) {
-                ImGui::TextDisabled("nothing opened yet");
-            }
-            for (const json& entry : files) {
-                const std::string path = entry.get<std::string>();
-                if (ImGui::Selectable(path.c_str())) {
-                    commands.invoke("doc.open", json{{"path", path}});
-                    commands.invoke("front_door", json{{"show", "close"}});
-                }
-            }
-            if (ui_icons::labeled_button(ui_icons::Icon::FolderOpen, "Browse...", ImVec2(0.0f, 0.0f))) {
-                start_pick(commands, "open", "Open an image or a document");
-            }
-        }
-        ImGui::EndChild();
-    }
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * kWelcomeHeadingScale);
+    ImGui::TextUnformatted(welcome ? "Welcome to TheNoise-Edit" : "Create a new image");
+    ImGui::PopFont();
+    ImGui::TextDisabled(welcome ? "Start a new image or open an existing project."
+                                : "Set up your canvas and start creating.");
+    ImGui::Spacing();
+
+    draw_welcome_content(state, commands, welcome);
     ImGui::EndPopup();
+    ImGui::PopStyleVar(2);
 }
 
 // A key asked to leave and the document is not saved. The question is `app.quit`'s, held in
@@ -251,8 +330,8 @@ void draw_quit_guard(AppState& state, CommandTable& commands) {
         }
         ImGui::EndPopup();
     }
-    // `Escape` closes a modal before the key reaches anyone, so the popup closing on its own is the
-    // answer: the question is withdrawn rather than re-opened the next frame, which is what a person
+    // `Escape` closes a modal before the key reaches anyone, so the popup closing on its own is
+    // the answer: the question is withdrawn rather than re-opened the next frame, which is what a person
     // pressing Escape means.
     if (shown && !open_now) {
         state.quit_pending = false;

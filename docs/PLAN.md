@@ -1,12 +1,163 @@
 # PLAN — what is next, and the reasoning the code cannot carry
 
-Last re-read of the document geometry and AI landing path: **2026-10-29**. `doc.resize` and
-`doc.crop` now move pixels, masks and marked coverage together, and undo/redo exchange entire
-canvas states so older per-pixel history is valid again once the original extent returns. New AI
-answers retain the generated crop under a separately editable mask. The prior 2026-10-26 notes
-below remain historical. Local image resampling and fast model upscaling are now implemented;
-best-quality generative upscaling remains a separate future option.
+Last full reread of `docs/ARCHITECTURE.md` against the tree: **2026-11-19**. `doc.resize` and
+`doc.crop` move pixels, masks and marked coverage together, and undo/redo exchange entire canvas
+states so older per-pixel history is valid again once the original extent returns. New AI answers
+retain the generated crop under a separately editable mask. Local image resampling and fast model
+upscaling are implemented; best-quality generative upscaling remains a separate future option. The
+prior 2026-10-26 notes below remain historical.
 `AGENTS.md` is normative and outranks this file.
+
+## 2026-11-22 - AI Workspace docking
+
+**Architecture verdict:** The AI Workspace is a peer ImGui dock window, not a section of the
+Layers panel or a second docking framework. Fresh layouts show Layers by default, with AI
+Workspace and Log in adjacent tabs. Existing layouts keep their saved docking tree and migrate
+the previously non-dockable AI window to the Layers/Log dock once. A stored placement flag prevents later restarts from
+re-docking a workspace that the user deliberately floated. Dragging the tab floats it;
+dropping it on a docking target restores a regular tab. Window > AI Workspace dispatches
+`ui.ai_workspace` (open/focus); closing the window hides only the UI, not any AI job.
+The open preference and the dock position survive restart in the existing `imgui.ini`.
+`app.state.ai_workspace` reports open, visible, docked and screen geometry for UI probes.
+No AI backend or document behavior changes.
+
+**Verification:** Static validation and diff checks completed; full UI build and runtime dock
+probe still require a machine with the pinned CMake dependencies and a graphical test display.
+
+## 2026-11-22 - Recover hidden central-dock tabs
+
+**Architecture verdict:** The Canvas occupies the dockspace central node without a tab bar,
+so placing Layers, Log or AI Workspace into that same node hides the panel with no tab to
+select it. The dockspace now rejects central-node drops, while side docking and floating
+remain available. For previously persisted layouts, only panels sharing the Canvas dock
+node are moved to an existing noncentral tab node; if none exists, they are floated. Other
+saved dock arrangements are left intact, and recovered Layers becomes the selected tab.
+The regression probe corrupts the persisted DockId and verifies recovery via `app.state`
+and the next saved `imgui.ini`.
+
+**Verification:** Patch and Python syntax checks completed; the GUI-driven regression
+requires the user's pinned ImGui build and a display.
+
+## 2026-11-19 - Branded title row and offline AI-action feedback
+
+**Architecture verdict:** On Linux/X11 with an EWMH-capable window manager, the app now uses
+one ImGui-rendered row for the bundled logo, existing menus, clipped document label, zoom and
+native window actions. X11 decoration/move/resize requests stay behind `platform/window_chrome.h`;
+Windows, macOS and browsers retain the native window frame and show the same logo in their menu row.
+The existing dock and menu commands remain the only source of application behavior. Selection
+Heal/Remove/Fill/Change buttons can be pressed without a backend, making the existing `ai.intent`
+refusal visible in a dismissible notice, with reconnect when configured. No new AI command or
+backend transport was introduced; the previously approved `ui.layer_split` wire remains unchanged.
+The shipped Noto Sans Regular file is loaded from the existing resource root, the atlas is built and
+checked before it becomes `FontDefault`, and a failed load is logged before the ImGui fallback is used.
+Recent-file labels use the basename and width-aware UTF-8 truncation; tooltips and `doc.open` retain
+the original full path. Dropdown row spacing is scoped to the custom titlebar.
+
+**Verification:** `cmake -B build && cmake --build build -j2` completed warning-free, and all 47
+CTest tests passed. The runtime log confirmed Noto Sans at 15 ImGui px. Screenshots were captured and
+inspected at 1700×900, 1280×800 and 800×600. File and Open Recent menus were inspected with a long
+UTF-8 filename; the recent-item tooltip exposed the full path and opening it preserved that path.
+Under the X11 window manager, titlebar dragging, minimize, maximize/restore buttons, double-click
+maximize/restore, and the 100% zoom menu were exercised. The corrected viewport golden is a verified
+561×440 PNG and `test_view_golden` passed. The offline feedback probe now keeps its screenshot separate
+from its job-count baseline, so its no-job assertion runs against the intended value.
+
+## 2026-11-19 - Clean Top Canvas composition correction
+
+**Architecture verdict:** The Layers dock now has two independently scrollable child regions split by
+Dear ImGui's draggable horizontal splitter. The split ratio is stored by an ImGui settings handler in
+the existing `imgui.ini`; the dock's outer width floor is applied only for the dockspace pass and
+reduces with the available width. Layer cards use content sizing, compact actions and thumbnails. Mask
+reveal, hide, invert and remove are compact icon actions; selection conversion and edge refinement remain
+available in collapsed sections, followed by collapsed contextual Tool Settings. The Log tab is a
+separate module. The split fraction lives in `AppState`, is reported at
+`app.state.layer_split.upper_ratio`, and is read or set through `ui.layer_split`; drag changes and
+wire changes use the same value and the existing ImGui ini handler.
+
+The palette keeps each existing tool while separating selection, AI coverage, and paint groups. The
+selection action bar now sizes itself from the same labeled-button width calculation as its buttons,
+and its full-selection fallback remains near the top of the canvas. The Image menu keeps mask-edge
+adjustment under Layer > Mask. The Noto Sans font and updated golden are actual binary files; the
+golden remains a valid 561×440 PNG and passed the unchanged comparison.
+
+**Verification:** `cmake -B build && cmake --build build -j2` completed warning-free. The full
+`env -u DISPLAY ctest --test-dir build --output-on-failure` run passed all 46 tests in 385.26 seconds.
+The dock probe dragged its internal split both ways, set and read the same ratio through the wire,
+independently scrolled the lower controls, dragged
+the outer dock to 280 px and back, and verified both allocations after restart. The verb-bar probe
+checked full-image placement; the pointer probe now centers its image measurement on the app-reported
+pointer position and passed without changing its tolerance. The app was run and captured at 1700×900,
+1280×800 and 800×600, with the long-filename fixture, mask overlay, expanded brush settings and a
+near-full selection. Rendered output was inspected at each size.
+The 800×600 lower dock requires scrolling to reach every Tool Settings control. Xvfb has no window
+manager, so native title-bar controls and the operating-system filename presentation were not visually
+verified. `python3 tools/sweep_procs.py` reported a clean process state.
+
+## 2026-11-18 - Clean Top Canvas corrections
+
+**Architecture verdict:** The top bar now reads zoom from the existing `View` state and routes Fit,
+100% and 200% through `view.fit` / `view.zoom`; Ctrl+Alt+I/C/U are registrations in the same command
+table as menu actions. Opening size dialogs derives dimensions from the current document, while Cancel
+only closes the modal. AI upscaling remains a separate existing operation and its action stays disabled
+when the registry has no usable upscaler. No second zoom state, resize backend or inference path was added.
+
+The Layers and Mask dock now names its reveal, hide, invert, remove and selection-conversion actions.
+The shared labeled-button widget reserves measured icon space instead of relying on hard-coded blanks.
+The dock's existing ImGui settings file is respected; a default tree is built only when its dockspace is
+missing or invalid. A real splitter drag followed by restart verifies the saved width survives. Noto Sans
+is bundled with its OFL notice and loaded through the existing asset directory, including installed and
+browser asset layouts.
+
+**Golden decision:** `test_view_golden` initially found the previous 612×479 capture incompatible with
+the new 561×440 canvas viewport at the 960×600 probe size. The rendered fixture contents were visually
+checked; the capture bounds changed because the Layers dock now uses the intended 320 px default width.
+`tools/wire_drive.py --update-golden` regenerated the actual binary fixture, then the ordinary comparison
+passed. No unrelated expectation was changed.
+
+**Verification:** `cmake -B build`, `cmake --build build -j2`, and
+`env -u DISPLAY ctest --test-dir build --output-on-failure` passed; all 46 tests were green. The Image
+menu probe exercises menu actions, all three registered shortcuts, unchanged documents after Cancel,
+dialog values resetting after reopen, 100% / 200% / Fit and mouse-wheel zoom state. The dock probe
+resizes the splitter and confirms persistence after restart. Real application screenshots were inspected
+at 1280×800 and 800×600; the Sans font is active, the mask actions remain legible, and the dock and canvas
+fit both sizes. `python3 tools/sweep_procs.py` reported no stray editor or Xvfb processes.
+
+## 2026-11-18 - Clean Top Canvas UI
+
+**Architecture verdict:** The canvas no longer owns brush settings or image-operation forms. A
+regular ImGui menu bar now sits above a dockspace in the app root, avoiding the old
+`BeginMainMenuBar()` path that failed with the pinned ImGui/sokol integration. File, edit,
+layer, selection and view actions dispatch through their existing command-table entries.
+Image Size, Canvas Size and Crop are compact modal dialogs over the existing resize, resample,
+crop, upscale and outpaint commands; Rotate remains a 90-degree submenu because those are the
+only supported rotations.
+
+The right dock is Layers, Mask, editable result-edge controls and collapsed Tool Settings.
+Brush sliders moved into a compact settings table with numeric steppers and amber styling.
+AI generation/edit verbs, prompt/style/aspect fields, references, Blend and backend status remain
+in an on-demand AI Workspace. The selection action bar stays anchored to the active mark. No
+wire commands, document format, AI request fields, or editing semantics changed.
+
+The startup fit waits until the docked canvas reports the same size on consecutive frames. The
+first capture exposed that DockBuilder can change the central width after the first canvas
+submission; fitting then used the pre-split viewport and overflowed the actual canvas. The layer
+list sizes to short stacks and scrolls when the stack outgrows its viewport. At narrow widths the
+mask-to-selection controls stack vertically so both remain reachable.
+
+**Control map:** File operations → File menu; undo/redo → Edit; image geometry → Image dialogs;
+layer stack operations → Layer menu and dock; selection/all/none/invert/conversions → Select menu
+and Mask dock; brush parameters → Tool Settings; generation, editing, references, model state and
+Blend → AI Workspace; Heal/Remove/Fill/Change → floating selection bar.
+
+**Verification:** `cmake --build build -j2` passed warning-free; `env -u DISPLAY ctest
+--test-dir build --output-on-failure` passed all 45 tests. The palette probe passed at 800×600,
+the layer-panel probe covered scrolling with nine layers, the aspect/style probe opened the
+AI Workspace from its menu, and the image-menu probe applied resize, canvas extension, crop and
+rotation with Undo checks. `tools/wire_drive.py` verified startup fit and regenerated
+`tests/golden/view_pan_zoom.png` for the narrower canvas crop. Running-app captures at 1280×800
+and 800×600 showed no clipped controls in the visible layers/mask layout; the 800×600 capture
+confirmed both mask-selection buttons stay visible. The Image Size dialog showed the AI upscaler
+unavailable with the current backend and kept its action disabled.
 
 ## 2026-11-04 - Long prompts without clipping
 

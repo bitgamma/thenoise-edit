@@ -134,18 +134,22 @@ if(EMSCRIPTEN)
     add_library(noise_platform STATIC
         src/platform/web.cpp
         src/platform/net_web.cpp
-        src/platform/file_dialog_web.cpp)
+        src/platform/file_dialog_web.cpp
+        src/platform/window_chrome_stub.cpp)
 elseif(WIN32)
     add_library(noise_platform STATIC
         src/platform/windows.cpp
         src/platform/windows_net.cpp
-        src/platform/file_dialog_filters.cpp)
+        src/platform/file_dialog_filters.cpp
+        src/platform/window_chrome_stub.cpp)
     target_link_libraries(noise_platform PUBLIC ws2_32)
 else()
     add_library(noise_platform STATIC
         src/platform/posix.cpp
         src/platform/posix_net.cpp
-        src/platform/file_dialog_filters.cpp)
+        src/platform/file_dialog_filters.cpp
+        $<$<PLATFORM_ID:Linux>:src/platform/window_chrome_x11.cpp>
+        $<$<NOT:$<PLATFORM_ID:Linux>>:src/platform/window_chrome_stub.cpp>)
 endif()
 target_include_directories(noise_platform PUBLIC src)
 if(EMSCRIPTEN)
@@ -289,12 +293,22 @@ add_library(noise_ui STATIC
     src/app/shortcuts.cpp
     src/app/ui.cpp
     src/app/ui_canvas.cpp
+    src/app/ui_canvas_dialogs.cpp
     src/app/ui_front_door.cpp
     src/app/ui_icons.cpp
+    src/app/ui_image_dialogs.cpp
     src/app/ui_layers_panel.cpp
+    src/app/ui_layer_splitter.cpp
+    src/app/ui_workspace_settings.cpp
+    src/app/ui_log_panel.cpp
+    src/app/ui_mask_controls.cpp
     src/app/ui_palette.cpp
     src/app/ui_theme.cpp
+    src/app/ui_titlebar.cpp
+    src/app/ui_recent_menu.cpp
+    src/app/ui_text.cpp
     src/app/ui_tool_panel.cpp
+    src/app/ui_tool_settings.cpp
     src/app/ui_verbs.cpp
     src/app/ui_references.cpp
     src/app/verb_bar_draw.cpp

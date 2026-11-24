@@ -12,8 +12,11 @@
 #include "dbg/wire.h"
 #include "gfx/checker.h"
 #include "gfx/renderer.h"
+#include "io/png.h"
 #include "io/config.h"
 #include "platform/platform.h"
+#include "platform/window_chrome.h"
+#include "platform/paths.h"
 #ifdef __EMSCRIPTEN__
 #include "platform/web.h"
 #include <emscripten/emscripten.h>
@@ -32,6 +35,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -43,7 +47,20 @@ using nlohmann::json;
 
 constexpr int kDefaultWidth = 1280;
 constexpr int kDefaultHeight = 800;
+constexpr float kUiFontSizePx = 15.0f;
+constexpr const char* kUiFontRelativePath = "fonts/NotoSans-Regular.ttf";
+constexpr const char* kBrandLogoRelativePath = "branding/thenoise-edit-logo.png";
 constexpr const char* kWireAddress = "127.0.0.1";
+constexpr ImWchar kUiGlyphRanges[] = {
+    0x0020, 0x024f,
+    0x0370, 0x052f,
+    0x2000, 0x206f,
+    0x20a0, 0x20cf,
+    0x2100, 0x214f,
+    0x2190, 0x21ff,
+    0x2200, 0x22ff,
+    0,
+};
 
 std::optional<std::string> value_after(const std::string& arg, const std::string& prefix) {
     if (arg.rfind(prefix, 0) != 0) {
@@ -106,6 +123,8 @@ Args parse_args(int argc, char** argv) {
 struct Runtime {
     AppState state;
     gfx::Texture canvas_texture;
+    gfx::Texture brand_logo;
+    bool client_titlebar = false;
     gfx::Checker checker;
     app::CoverageTint coverage_tint;
     app::CoverageTint mask_tint;
@@ -114,6 +133,7 @@ struct Runtime {
     CommandTable commands;
     dbg::DebugWire wire{commands};
     Args args;
+    std::vector<unsigned char> ui_font_data;
 };
 
 Runtime g;
@@ -143,8 +163,58 @@ std::string& ini_path() {
     return path;
 }
 
+void load_ui_font() {
+    const std::filesystem::path font_path =
+        platform::path_from_utf8(g.state.ai.resource_dir) / kUiFontRelativePath;
+    std::ifstream file(font_path, std::ios::binary | std::ios::ate);
+    if (file) {
+        const std::streamoff size = file.tellg();
+        if (size > 0 && size <= std::numeric_limits<int>::max()) {
+            g.ui_font_data.resize(static_cast<std::size_t>(size));
+            file.seekg(0);
+            file.read(reinterpret_cast<char*>(g.ui_font_data.data()),
+                      static_cast<std::streamsize>(size));
+            if (!file) g.ui_font_data.clear();
+        }
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+    if (!g.ui_font_data.empty()) {
+        ImFontConfig config{};
+        config.FontDataOwnedByAtlas = false;
+        ImFont* font = io.Fonts->AddFontFromMemoryTTF(
+            g.ui_font_data.data(), static_cast<int>(g.ui_font_data.size()), kUiFontSizePx,
+            &config, kUiGlyphRanges);
+        if (font != nullptr && io.Fonts->Build() && font->IsLoaded()) {
+            io.FontDefault = font;
+            log::info("loaded Noto Sans UI font '" + platform::path_to_utf8(font_path) +
+                      "' at " + std::to_string(kUiFontSizePx) + " ImGui px");
+            return;
+        }
+    }
+    if (io.FontDefault == nullptr) {
+        log::error("UI font '" + platform::path_to_utf8(font_path) +
+                   "' could not be loaded; using the Dear ImGui default font");
+        io.FontDefault = io.Fonts->AddFontDefault();
+    }
+}
+
 void init(void) {
     gfx::init();
+    const std::filesystem::path logo_path =
+        platform::path_from_utf8(g.state.ai.resource_dir) / kBrandLogoRelativePath;
+    std::string logo_error;
+    const Image brand = io::load_png(platform::path_to_utf8(logo_path), logo_error);
+    if (!brand.empty()) {
+        g.brand_logo.sync(brand, 1);
+    } else {
+        log::warn("could not load UI logo '" + platform::path_to_utf8(logo_path) +
+                  "': " + logo_error);
+    }
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+    g.client_titlebar = platform::enable_client_titlebar(sapp_x11_get_display(),
+                                                         sapp_x11_get_window());
+#endif
 
     const sg_swapchain swapchain = sglue_swapchain();
     g.checker.init();
@@ -156,8 +226,13 @@ void init(void) {
     simgui.sample_count = swapchain.sample_count;
     ini_path() = (std::filesystem::path(g.state.runtime_dir) / "imgui.ini").string();
     simgui.ini_filename = ini_path().c_str();
+    simgui.no_default_font = true;
     simgui.logger.func = slog_func;
     simgui_setup(&simgui);
+    app::register_layer_panel_settings(g.state.layer_panel_upper_ratio);
+    app::register_ai_workspace_settings(g.state.ai_workspace_open,
+                                        g.state.ai_workspace_placement_initialized);
+    load_ui_font();
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     g.state.ui_theme = io::load_theme();
 #ifdef __EMSCRIPTEN__
@@ -179,6 +254,7 @@ void init(void) {
     }
     const app::HostHooks hooks{&gfx::read_framebuffer, &sapp_quit};
     app::register_commands(g.state, g.commands, g.wire, hooks);
+    app::register_ui_commands(g.state, g.commands);
 #ifdef __EMSCRIPTEN__
     platform::enable_browser_drop();
 #endif
@@ -205,16 +281,16 @@ void init(void) {
 inline constexpr int kMaxDroppedFiles = 8;
 inline constexpr int kDroppedPathBytes = 4096;
 
-std::string window_title() {
+std::string document_title() {
     std::string name = "untitled";
     if (!g.state.doc.path().empty()) {
-        const std::filesystem::path file(g.state.doc.path());
-        name = file.filename().string();
+        const std::filesystem::path file = platform::path_from_utf8(g.state.doc.path());
+        name = platform::path_to_utf8(file.filename());
     }
     if (!g.state.doc.empty() && g.state.doc.dirty()) {
         name += " *";
     }
-    return name + " - " + kWindowTitle;
+    return name;
 }
 
 void frame(void) {
@@ -227,7 +303,7 @@ void frame(void) {
 #endif
     g.state.framebuffer = Extent{sapp_width(), sapp_height()};
     static std::string title;
-    if (const std::string wanted = window_title(); wanted != title) {
+    if (const std::string wanted = document_title() + " - " + kWindowTitle; wanted != title) {
         title = wanted;
         sapp_set_window_title(title.c_str());
     }
@@ -246,7 +322,8 @@ void frame(void) {
     // Pick results are routed on the frame thread before a queued native dialog opens.
     app::pump_picked_files(g.state, g.commands);
     app::draw_ui(g.state, g.commands, g.canvas_texture, g.checker, g.coverage_tint, g.mask_tint,
-                 g.layer_thumbs, g.reference_thumbs);
+                 g.layer_thumbs, g.reference_thumbs, g.brand_logo, g.client_titlebar,
+                 document_title());
 #ifndef __EMSCRIPTEN__
     app::draw_native_file_dialog(g.state);
 #endif
@@ -279,9 +356,33 @@ void frame(void) {
             sapp_show_mouse(false);
             break;
     }
+    if (g.client_titlebar) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const int direction = platform::client_edge_resize_direction(
+            mouse.x, mouse.y, sapp_width(), sapp_height());
+        if (direction >= 0) {
+            sapp_show_mouse(true);
+            switch (direction) {
+                case 0: case 4:
+                    sapp_set_mouse_cursor(SAPP_MOUSECURSOR_RESIZE_NWSE); break;
+                case 2: case 6:
+                    sapp_set_mouse_cursor(SAPP_MOUSECURSOR_RESIZE_NESW); break;
+                case 1: case 5:
+                    sapp_set_mouse_cursor(SAPP_MOUSECURSOR_RESIZE_NS); break;
+                case 3: case 7:
+                    sapp_set_mouse_cursor(SAPP_MOUSECURSOR_RESIZE_EW); break;
+            }
+        }
+    }
     // The UI has now measured the canvas for this frame, so a fit that was waiting for a
     // real viewport can be applied before the commands this frame's wire poll serves.
-    g.state.viewport_published = true;
+    // DockBuilder applies its initial split after the first submitted canvas; a fit against that old
+    // width spills past the settled central dock.
+    static Extent previous_viewport{};
+    if (previous_viewport == g.state.viewport) {
+        g.state.viewport_published = true;
+    }
+    previous_viewport = g.state.viewport;
     app::apply_pending_fit(g.state);
     // flush() must run outside the UI pass; draw() inside it.
     simgui_flush();
@@ -324,6 +425,12 @@ void invoke_command(const std::string& id, const json& args, const std::string& 
 }
 
 void event(const sapp_event* ev) {
+    if (g.client_titlebar && ev->type == SAPP_EVENTTYPE_MOUSE_DOWN &&
+        ev->mouse_button == SAPP_MOUSEBUTTON_LEFT &&
+        platform::begin_client_edge_resize(ev->mouse_x, ev->mouse_y, sapp_width(),
+                                           sapp_height())) {
+        return;
+    }
     // ImGui is offered every event, but its return value mixes keyboard and mouse capture
     // and the pointer is always over UI chrome, so acting on it would drop every key
     // before a shortcut could see it.
@@ -421,6 +528,7 @@ void cleanup(void) {
     app::shutdown_native_file_dialog();
 #endif
     g.canvas_texture.discard();
+    g.brand_logo.discard();
     g.checker.discard();
     simgui_shutdown();
     gfx::shutdown();

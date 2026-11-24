@@ -331,8 +331,6 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
     }
     draw_tool_palette(state, commands);
     ImGui::SameLine();
-    ImGui::BeginGroup();
-    draw_tool_options(state, commands);
     ImGui::BeginChild("##canvas_view", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -351,7 +349,6 @@ void draw_canvas(AppState& state, CommandTable& commands, gfx::Texture& canvas_t
         handle_canvas_input(state, commands, origin, io, hovered);
     }
     ImGui::EndChild();
-    ImGui::EndGroup();
     ImGui::End();
 }
 

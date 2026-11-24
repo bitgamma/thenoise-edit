@@ -14,6 +14,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <string>
 
 namespace noise::app {
@@ -106,6 +107,11 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
                                                               state.layers_window.h})},
                                {"layer_cards", layer_cards_json(state)},
                                {"layer_panel", layer_panel_json(state)},
+                               {"layer_split", json{{"upper_ratio", state.layer_panel_upper_ratio}}},
+                               {"ai_workspace", json{{"open", state.ai_workspace_open},
+                                                      {"visible", state.ai_workspace_visible},
+                                                      {"docked", state.ai_workspace_docked},
+                                                      {"window", screen_json(state.ai_workspace_window)}}},
                                {"ai_references_rect", json::array({state.ai_references_rect.x,
                                                                    state.ai_references_rect.y,
                                                                    state.ai_references_rect.w,
@@ -145,6 +151,27 @@ void register_commands(AppState& state, CommandTable& table, dbg::DebugWire& wir
         }
         state.ui_theme = theme;
         return command_ok(json{{"theme", io::theme_name(state.ui_theme)}});
+    });
+
+    table.add("ui.layer_split", "Read or set the Layers dock split ratio", {}, {"upper_ratio"},
+              [&state](const json& args) -> CommandResult {
+        if (!args.contains("upper_ratio")) {
+            return command_ok(json{{"upper_ratio", state.layer_panel_upper_ratio}});
+        }
+        if (!args.at("upper_ratio").is_number()) {
+            return fail("ui.layer_split",
+                        "'upper_ratio' must be a number greater than 0 and less than 1");
+        }
+        const double ratio = args.at("upper_ratio").get<double>();
+        if (!std::isfinite(ratio) || ratio <= 0.0 || ratio >= 1.0) {
+            return fail("ui.layer_split",
+                        "'upper_ratio' must be finite and greater than 0 and less than 1");
+        }
+        if (ratio != state.layer_panel_upper_ratio) {
+            state.layer_panel_upper_ratio = ratio;
+            state.layer_panel_settings_dirty = true;
+        }
+        return command_ok(json{{"upper_ratio", state.layer_panel_upper_ratio}});
     });
 
     // A key does not throw away work. `Escape`, `Ctrl+Q` and the window manager's close all come

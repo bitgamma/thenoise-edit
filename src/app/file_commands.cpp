@@ -310,6 +310,14 @@ void register_file_commands(AppState& state, CommandTable& table) {
     table.add("front_door.create", "Make the document the New dialog describes", {}, {},
               [&state, &table](const json&) -> CommandResult {
                   const NewDocumentForm form = state.new_document;
+                  const bool generate = form.has_prompt_text();
+                  if (generate && !state.ai.connected) {
+                      const std::string reason = state.ai.connect_error.empty()
+                          ? "AI server is not connected"
+                          : state.ai.connect_error;
+                      return fail("front_door.create", "Create Image requires a connected AI server: " +
+                               reason + ". Set $THENOISE_URL and reconnect.");
+                  }
                   const CommandResult made = table.invoke(
                       "doc.new", json{{"width", form.width}, {"height", form.height}});
                   if (!made.ok) {
@@ -318,8 +326,8 @@ void register_file_commands(AppState& state, CommandTable& table) {
                   json out{{"width", form.width},
                            {"height", form.height},
                            {"kind", form.kind},
-                           {"asked", !form.prompt.empty()}};
-                  if (!form.prompt.empty()) {
+                           {"asked", generate}};
+                  if (generate) {
                       const CommandResult intent = table.invoke(
                           "ai.intent", json{{"recipe", form.kind},
                                             {"vars", {{"prompt", form.prompt}}}});

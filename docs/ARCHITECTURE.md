@@ -186,7 +186,7 @@ src/
                        here: `app/ants.{h,cpp}` draws them, `ants.freeze` pins their phase for a capture
   app/
     main.cpp           (src/main.cpp, above the app dir with the other entry glue) sokol entry, frame
-                       loop, wire poll, the shortcut gate that lets a text field keep a key
+                       loop, wire poll, shortcut gate, and verified Noto Sans atlas loading
     commands.cpp       assembles the whole command table from the groups below
     command_args.{h,cpp} shared argument readers and the JSON each command answers with
     brush_steps.h    the rows behind the step keys: which field, which direction, which key —
@@ -194,7 +194,7 @@ src/
                      for its hover hint, so a binding exists once
     document_commands.cpp doc.* image.get
     paint_commands.cpp tool.stroke/pointer/set, tool.<name>, the brush step commands, edit.undo/redo
-    view_commands.cpp  view.*, and the fit that waits for a real canvas area
+    view_commands.cpp  view.*, and the fit that waits for a stable docked canvas area
     tools/             one file per tool: brush.cpp (press/drag/release over the provisional edit),
                        move.cpp (the same gesture, sliding the layer's pixels), select.cpp (rectangle,
                        ellipse and freehand path gestures over the marked selection). Lasso paths
@@ -204,18 +204,37 @@ src/
                        and operation captured at press.
     shortcuts.{h,cpp}  platform key event -> canonical shortcut text (the only sokol-aware
                        part of the app layer)
-    ui.cpp             docking layout and status bar; it reads the AI intent once per frame and shares
-                       that answer between the tool panel and the status line
+    ui.cpp             compact application menu bar, zoom selector, status bar and dockable AI
+                       workspace; it restores a valid ImGui dock layout and builds the default only
+                       when the saved dockspace is missing or invalid, constraining dock-node widths
+                       only during the dockspace pass; the central Canvas accepts no other dock tabs,
+                       and legacy hidden central tabs recover into an existing dock or float
+    ui_titlebar.cpp    on Linux/X11, one client-rendered title/menu/zoom/window-control row with the
+                       bundled brand logo, clipped document label and scoped dropdown spacing; other
+                       hosts retain native decorations and show the logo in the ordinary ImGui menu row
+    ui_recent_menu.cpp recent-file labels use basenames, bounded width and full-path tooltips; opening
+                       one dispatches the original UTF-8 path through the existing document command
+    ui_text.{h,cpp}   width-constrained filename and label truncation at UTF-8 codepoint boundaries
     ui_canvas.cpp      checker, document composite, pointer interaction, selection overlays and brush
-                       footprint
-    ui_front_door.cpp  file actions, recent files, new-document and quit dialogs
-    ui_layers_panel.cpp layer cards in a scrolling list with the stack's own add / delete / flatten row
-                       pinned below it, so the verbs for the whole stack are never the thing a person has
-                       to wheel to; a name typed in a card's title row and a factor typed in the place of
-                       the card's `Scale` button, each holding its text in `AppState` until the command
-                       that does the work confirms it, so nothing half-typed reaches the document;
-                       thumbnails, stack actions, mask controls and log panel
-    ui_tool_panel.cpp  tool selection, coverage controls, brush controls, AI references and AI status
+                       footprint, with the left tool palette beside the image and no persistent controls
+                       above it
+    ui_front_door.cpp  new-document and quit dialogs
+    ui_layers_panel.cpp layer cards and stack actions in an independently scrolling upper region;
+                       mask, optional edge controls and collapsed Tool Settings live in a separate
+                       scrolling lower region; card names and scale factors remain command-backed fields
+    ui_layer_splitter.cpp draggable division between those regions; its ratio is read and written by
+                       ImGui's existing settings file
+    ui_log_panel.cpp  the Log dock tab
+    ui_palette.cpp    persistent grouped tool rail with selection, AI coverage and paint distinctions
+    verb_bar_draw.cpp selection-relative Heal / Remove / Fill / Change actions, clamped to the canvas;
+                       offline clicks use the existing ai.intent refusal and show an actionable notice
+    ui_image_dialogs.cpp Image Size and AI Upscale dialogs over the existing resample and upscale commands
+    ui_canvas_dialogs.cpp Canvas Size, anchor, added-area and crop dialogs over existing commands
+    ui_mask_controls.cpp editable result-edge controls inside the Layers and Mask dock
+    ui_workspace_settings.cpp ImGui ini handler for the AI Workspace open preference; docking
+                       position and selected tab remain owned by Dear ImGui's docking settings
+    ui_tool_panel.cpp  dockable AI Workspace tab, references, recipe-backed verbs and AI status
+    ui_tool_settings.cpp compact, tool-aware brush settings below the mask controls
     ui_references.cpp  ordered reference rows, thumbnails, file/layer actions and drop target
     reference_thumbs.{h,cpp} GPU thumbnails keyed by reference id and content revision
     ui_verbs.cpp       recipe-backed verb rows, their fields, aspect/style selectors and model-swap
@@ -343,8 +362,8 @@ src/
     project.{h,cpp}    .noise read/write (the only layered format we read or write)
     config.{h,cpp}     app preferences: recent files and `ui_theme` in `$NOISE_CONFIG_DIR`; keymap and
                        keyring access remain planned
-assets/        shipped role and recipe tables; CMake installs this tree in the native
-               install prefix's shared data directory (the GUI uses ImGui's default font)
+assets/        shipped role and recipe tables plus the Noto Sans UI font; CMake installs this tree
+               in the native install prefix's shared data directory and preloads it for the browser
 tests/         core + ai unit tests (no GPU), golden-image tests, and `fixtures/http` - the recorded
                server the default `ctest` run answers from
 tools/         the probes that drive the running app over the wire, and the shared harness
@@ -1613,7 +1632,7 @@ not a debugging afterthought: **if the wire cannot show you a state, you cannot 
 | Group | Commands | Why |
 |---|---|---|
 | state | `app.state`, `command.list`, `wire.info`, `doc.get`, `layer.list`, `select.get`, `ai.references`, `server.state`, `job.list`, `job.get {id}`, `ai.roles`, `ai.recipes`, `log.tail` | read what the app believes, cheaply |
-| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.lasso {points, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `ui.theme {theme?}`, `doc.new/open/save/export {path, quality?}/get`, `doc.resize {width, height, offset_x?, offset_y?, mark_added?}`, `doc.outpaint.prepare {width, height, offset_x?, offset_y?, prompt?}`, `doc.crop {rect?}`, `doc.rotate {direction: cw|ccw}`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at?, mode?}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `layer.move {index?, to}`, `layer.merge {index?}`, `layer.flatten`, `layer.rename {index?, name}`, `layer.rename.begin {index?}` (`F2`), `layer.scale {index?, factor}`, `layer.import {path, at}`, `mask.from_selection/add/remove/fill {to}/invert/get`, `layer.plane {index?, plane?}`, `view.mask_overlay {show?}`, `mask.edge {shift?, hard?, feather?}`, `mask.edge.state`, `mask.edge.preview {shift?, feather?}`, `mask.edge.finish`, `mask.edge.cancel`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
+| drive | `select.rect {rect, mode?}`, `select.ellipse {…}`, `select.lasso {points, mode?}`, `select.all`, `select.clear`, `select.invert`, `select.from_mask`, `select.get`, `mask.from_selection`, `command.invoke`, `app.quit`, `ui.theme {theme?}`, `ui.layer_split {upper_ratio?}`, `ui.ai_workspace {open?, focus?}`, `ui.image_size` (`Ctrl+Alt+I`), `ui.canvas_size` (`Ctrl+Alt+C`), `ui.crop`, `ui.upscale` (`Ctrl+Alt+U`), `doc.new/open/save/export {path, quality?}/get`, `doc.resize {width, height, offset_x?, offset_y?, mark_added?}`, `doc.outpaint.prepare {width, height, offset_x?, offset_y?, prompt?}`, `doc.crop {rect?}`, `doc.rotate {direction: cw|ccw}`, `image.get`, `log.level`, `view.fit/set/pan/zoom`, `edit.undo/redo`, `tool.stroke {points, tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.pointer {phase, at?, mode?}`, `tool.set {tool?, size?, hardness?, opacity?, flow?, spacing?, color?}`, `tool.<name>`, `brush.larger/smaller`, `layer.list/add/remove/select/set {index?, visible?, opacity?, mode?}`, `layer.move {index?, to}`, `layer.merge {index?}`, `layer.flatten`, `layer.rename {index?, name}`, `layer.rename.begin {index?}` (`F2`), `layer.scale {index?, factor}`, `layer.import {path, at}`, `mask.from_selection/add/remove/fill {to}/invert/get`, `layer.plane {index?, plane?}`, `view.mask_overlay {show?}`, `mask.edge {shift?, hard?, feather?}`, `mask.edge.state`, `mask.edge.preview {shift?, feather?}`, `mask.edge.finish`, `mask.edge.cancel`, `brush.larger/smaller`, `brush.hardness_up/down`, `brush.opacity_up/down`, `screenshot`, `pixels.compare`, `wire.info` |
  `tool.stroke` drives the *real* stroke path, so painting is testable without a mouse; its brush fields are declared and every one is optional, inheriting what the app is on, so a recorded stroke that sends them replays without knowing what the UI had selected. The fields that belong to `tool.set` are not accepted here and vice versa, and both say so. `tool.pointer` is the same path one event at a time - the UI drives the pointer through this command, so a gesture can be recorded and replayed. Its `cancel` phase closes a provisional selection without committing it; Lasso press may also carry `mode: replace|add|subtract`. `tool.<name>` is generated per row of `core::kTools`, so a tool exists in exactly one table |
 | pixels | `image.get {region, base64}`, `screenshot {region, name, base64}`, `pixels.compare {a, b}` | screenshots exist so a vision model can look; `pixels.compare` is the pixel-lock invariant made checkable. It decodes either path through the flat-format table, so a golden may be a PNG, JPEG or WebP — what is compared is pixels, not a container |
 | layer editing | `layer.plane {index?,plane?}` (select image/mask thumbnail), `view.mask_overlay {show?}` (red hidden-area preview), `brush.edit_plane`, `stroke.plane` and `layer_cards[*].editing_mask/editing_pixels` (wire-observable targets) | Selection tools always edit the marked area; Brush/Eraser use the thumbnail. The result plane does not change on landing. |
@@ -1624,7 +1643,10 @@ Live now: every row. The AI row is driven end to end by `tools/ai_job_probe.py` 
 request, the queue, the landing, the pixels the report claims - is checked in the default `ctest`
 without a socket. `--live` runs the same probe against the dev box and asserts only what holds whatever
 model answers; it is registered under the `live` label and skips without `$THENOISE_URL`.
-`app.state` reports `ui_theme` (`dark` or `light`), `frame` (frames presented), `frame_ms` (last presented frame), `canvas`
+`app.state` reports `ui_theme` (`dark` or `light`), `layer_split.upper_ratio` (the Layers dock's
+upper-region fraction, also read and set by `ui.layer_split`) and `ai_workspace` (open,
+visible, docked and screen window bounds, controlled through `ui.ai_workspace`), `frame` (frames presented),
+`frame_ms` (last presented frame), `canvas`
 (origin + size of the canvas content area in framebuffer px) and the view transform
 (`scale`, `origin`, `image`, `fit_pending`), the brush and tool the last stroke ran with, the
 document's `history` depths, and its `selection` (`active`, `bounds`, `covered`, `area`, `canvas`,
@@ -1649,9 +1671,10 @@ failure this found: a widget submitted inside another widget's rect draws, light
 never fires, so a dead control looks exactly like a button nobody clicked. Enough for a driver to place an image rect on screen, wait
 for the frame that drew it, and tell a stroke from an undo. `doc.get` is the call that hashes
 the pixels and answers with a checksum; `app.state` deliberately does not, because a driver
-polls it every frame. `fit_pending` is true while a fit waits for a
-frame to publish a canvas area wide enough to hold the document: the framebuffer is not the
-canvas, and fitting against it latches a scale that spills past the panel.
+polls it every frame. `fit_pending` is true while a fit waits for the docked canvas area to keep the
+same size across frames and be wide enough to hold the document: the framebuffer is not the canvas,
+and the first DockBuilder frame can still have the pre-split width, so fitting against it latches a
+scale that spills past the panel.
 It also reports the References section's screen rectangle for file drops and the cached thumbnail rebuild
 count; `ai.references` reports the session-only source list, order, dimensions, cache revisions and errors.
 `ui_vertices` / `ui_vertex_limit` report the geometry the last frame demanded against the

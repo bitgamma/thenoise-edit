@@ -13,7 +13,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import wire_drive as wd  # noqa: E402
 import wire_input as wi  # noqa: E402
 
-WIDTH, HEIGHT = 1100, 760
+WIDTH, HEIGHT = 800, 600
 EXPECTED = {"move", "select", "select_ellipse", "lasso", "cover", "un-cover", "brush", "eraser"}
 
 
@@ -62,10 +62,21 @@ def main() -> int:
         if window[0] + window[2] > canvas_left + 2:
             failures.append(f"palette overlaps canvas: {window}, canvas at {canvas_left}")
         options = state["tool_options"]
-        if not (options[2] > 200 and options[3] >= 80 and
-                options[0] >= window[0] + window[2] - 2 and
-                options[1] + options[3] <= canvas[1] + 2):
-            failures.append(f"tool options must stay above canvas, after the palette: {options}, {canvas}")
+        layers_window = state["layers_window"]
+        if not (options[2] > 120 and options[3] >= 18 and
+                options[0] >= layers_window[0] - 1 and
+                options[1] >= layers_window[1] - 1 and
+                options[1] + options[3] <= layers_window[1] + layers_window[3] + 1):
+            failures.append(f"collapsed Tool Settings must be in the right dock: {options}, {layers_window}")
+        if state["tool_option_controls"]:
+            failures.append("Tool Settings must start collapsed")
+        if canvas[3] < HEIGHT * 0.65:
+            failures.append(f"canvas should use the height freed by the removed top controls: {canvas}")
+        x, y, w, h = options
+        inj.move(round(x + w / 2), round(y + h / 2))
+        inj.button(1, True)
+        inj.button(1, False)
+        wd.settle(wire)
         wire.call("tool.brush")
         wd.settle(wire)
         options = wire.call("app.state")
@@ -75,14 +86,13 @@ def main() -> int:
         if sliders.keys() != required:
             failures.append(f"tool options missing controls: {sliders}")
         else:
-            if not all(sliders["size"][2] > sliders[key][2] * 1.2 for key in
-                       ("hardness", "opacity", "flow", "spacing")):
-                failures.append(f"Size must be widest: {sliders}")
             for name, rect in sliders.items():
-                if not (rect[0] >= toolbar[0] - 1 and rect[1] >= toolbar[1] - 1 and
+                minimum_width = 18 if name == "color" else 100
+                if not (rect[2] > minimum_width and rect[3] >= 16 and
+                        rect[0] >= toolbar[0] - 1 and rect[1] >= toolbar[1] - 1 and
                         rect[0] + rect[2] <= toolbar[0] + toolbar[2] + 1 and
                         rect[1] + rect[3] <= toolbar[1] + toolbar[3] + 1):
-                    failures.append(f"{name} clips outside toolbar: {rect}, {toolbar}")
+                    failures.append(f"{name} slider and numeric stepper clip outside settings: {rect}, {toolbar}")
         for button in buttons:
             if not inside(button["screen"], window):
                 continue

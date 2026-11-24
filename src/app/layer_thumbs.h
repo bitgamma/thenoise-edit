@@ -15,7 +15,7 @@ namespace app {
 // What a layer's longest edge is fitted into, in panel pixels. Small on purpose: the card is a name
 // tag with a picture on it, and a bigger thumbnail costs a bigger resample for detail the panel has no
 // room to show.
-inline constexpr int kLayerThumbLongEdge = 44;
+inline constexpr int kLayerThumbLongEdge = 32;
 // The colour a layer is shown against. The panel is dark, so a transparent layer reads as the panel
 // showing through rather than as a hole in the picture next to it.
 inline constexpr std::uint8_t kThumbBackdrop = 38;
